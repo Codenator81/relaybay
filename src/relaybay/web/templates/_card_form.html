@@ -1,0 +1,40 @@
+<form class="card card-form" id="card-{{ t.key }}" data-key="{{ t.key }}"
+      hx-post="/p/{{ slug }}/t/{{ t.key }}" hx-target="#board" hx-swap="innerHTML">
+  <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+  <input type="hidden" name="version" value="{{ t.version }}">
+  <div class="card-top"><span class="card-key">{{ t.key }}</span><span class="muted">v{{ t.version }}</span></div>
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  <label class="field"><span>Title</span>
+    <input name="title" required maxlength="200" value="{{ values.get('title', t.title) }}">
+  </label>
+  <label class="field"><span>Stage</span>
+    <select name="stage">
+      {% for stage in stages %}
+      <option value="{{ stage }}"{% if stage == values.get('stage', t.stage.value) %} selected{% endif %}>{{ label(stage) }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field"><span>Waiting on</span>
+    <input name="waiting_on" list="waiting-values-{{ t.key }}" value="{{ values.get('waiting_on', t.waiting_on or '') }}">
+    <datalist id="waiting-values-{{ t.key }}">
+      {% for v in waiting_values %}<option value="{{ v }}">{% endfor %}
+    </datalist>
+  </label>
+  <label class="field"><span>Next step</span>
+    <textarea name="next_step" rows="2">{{ values.get('next_step', t.next_step or '') }}</textarea>
+  </label>
+  <label class="field"><span>Branch</span>
+    <input name="branch" value="{{ values.get('branch', t.branch or '') }}" spellcheck="false">
+  </label>
+  <div class="form-actions">
+    <button type="submit" class="btn primary">Save</button>
+    <button type="button" class="btn" hx-get="/p/{{ slug }}/col/{{ t.stage.value }}"
+            hx-target="closest .col" hx-swap="outerHTML">Cancel</button>
+  </div>
+  {% if last %}
+  <details class="last-report">
+    <summary>Last report · {{ last.author }} · <time datetime="{{ last.created_at }}" data-age>{{ last.created_at|age }}</time></summary>
+    <div class="markdown">{{ last.body_md|markdown }}</div>
+  </details>
+  {% endif %}
+</form>

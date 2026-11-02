@@ -1,0 +1,148 @@
+"""Settings: defaults → `config.toml` in the home directory → `RELAYBAY_*` env → CLI flags."""
+
+import os
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import platformdirs
+
+from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
+from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
+from relaybay.domain.stages import STAGES
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+@dataclass(slots=True)
+class Settings:
+    home: Path
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    allowed_hosts: list[str] = field(default_factory=list)
+    stage_labels: dict[str, str] = field(default_factory=dict)
+    report_labels: dict[str, str] = field(default_factory=dict)
+    report_hints: dict[str, str] = field(default_factory=dict)
+    desktop_link_template: str = DEFAULT_DESKTOP_LINK_TEMPLATE
+    replay_limit: int = 5000
+    heartbeat_seconds: float = 15.0
+
+    @property
+    def db_path(self) -> Path:
+        return self.home / "relaybay.sqlite"
+
+    @property
+    def token_path(self) -> Path:
+        return self.home / "token"
+
+    @property
+    def config_path(self) -> Path:
+        return self.home / "config.toml"
+
+    @property
+    def base_url(self) -> str:
+        host = self.host
+        if host in ("0.0.0.0", "::", ""):
+            host = "127.0.0.1"
+        elif ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"http://{host}:{self.port}"
+
+    def label(self, stage: str) -> str:
+        return self.stage_labels.get(stage, stage)
+
+    def report_label(self, key: str) -> str:
+        """Display label of a report state (`verified`) or size (`M`)."""
+        return self.report_labels.get(key, REPORT_LABELS.get(key, key))
+
+    def report_hint(self, key: str) -> str:
+        """Tooltip of a report state or size badge."""
+        return self.report_hints.get(key, REPORT_HINTS.get(key, ""))
+
+    def host_allow_list(self) -> list[str]:
+        """Host names (without port) accepted in the Host header."""
+        names = [*LOCAL_HOSTS, *self.allowed_hosts]
+        if self.host not in ("0.0.0.0", "::", ""):
+            names.append(f"[{self.host}]" if ":" in self.host else self.host)
+        return list(dict.fromkeys(n.lower() for n in names))
+
+
+def default_home() -> Path:
+    return Path(platformdirs.user_data_dir("relaybay", appauthor=False))
+
+
+def _split_list(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
+    if "host" in data:
+        settings.host = str(data["host"])
+    if "port" in data:
+        try:
+            settings.port = int(data["port"])
+        except (TypeError, ValueError):
+            raise ValueError(f"{source}: port must be an integer, got {data['port']!r}") from None
+    if "desktop_link_template" in data:
+        template = str(data["desktop_link_template"])
+        if "{id}" not in template:
+            raise ValueError(f"{source}: desktop_link_template must contain '{{id}}'")
+        settings.desktop_link_template = template
+    if "allowed_hosts" in data:
+        value = data["allowed_hosts"]
+        settings.allowed_hosts = _split_list(value) if isinstance(value, str) else list(value)
+
+
+def load_settings(
+    *,
+    home: Path | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    environ: dict[str, str] | None = None,
+) -> Settings:
+    env = os.environ if environ is None else environ
+    if home is None:
+        home = Path(env["RELAYBAY_HOME"]).expanduser() if env.get("RELAYBAY_HOME") else None
+    settings = Settings(home=(home or default_home()).resolve())
+
+    if settings.config_path.is_file():
+        with settings.config_path.open("rb") as fh:
+            data = tomllib.load(fh)
+        _apply(settings, data, str(settings.config_path))
+        labels = data.get("stages", {}).get("labels", {})
+        unknown = set(labels) - set(STAGES)
+        if unknown:
+            raise ValueError(
+                f"{settings.config_path}: unknown stage(s) in [stages.labels]: "
+                + ", ".join(sorted(unknown))
+            )
+        settings.stage_labels = {str(k): str(v) for k, v in labels.items()}
+        reports = data.get("reports", {})
+        for table in ("labels", "hints"):
+            values = reports.get(table, {})
+            unknown = set(values) - set(REPORT_LABELS)
+            if unknown:
+                raise ValueError(
+                    f"{settings.config_path}: unknown key(s) in [reports.{table}]: "
+                    + ", ".join(sorted(unknown))
+                )
+        settings.report_labels = {str(k): str(v) for k, v in reports.get("labels", {}).items()}
+        settings.report_hints = {str(k): str(v) for k, v in reports.get("hints", {}).items()}
+
+    _apply(
+        settings,
+        {
+            key: env[f"RELAYBAY_{key.upper()}"]
+            for key in ("host", "port", "allowed_hosts", "desktop_link_template")
+            if env.get(f"RELAYBAY_{key.upper()}")
+        },
+        "environment",
+    )
+    if host is not None:
+        settings.host = host
+    if port is not None:
+        settings.port = port
+    return settings

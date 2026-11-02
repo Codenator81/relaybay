@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% set t = detail.task %}
+{% block title %}{{ t.key }} · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ t.project_slug }}">{{ t.project_slug }}</a><span class="crumb-sep">/</span><span class="crumb">{{ t.key }}</span>{% endblock %}
+{% block content %}
+<main class="page task-page" id="live" hx-ext="sse" sse-connect="/events?project={{ t.project_slug }}"
+      data-last-event-id="{{ last_event_id }}" data-project="{{ t.project_slug }}" data-task="{{ t.key }}">
+  <h1>{{ t.title }}</h1>
+
+  <dl class="fields">
+    <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
+    {% if t.waiting_on %}<dt>Waiting on</dt><dd><span class="chip waiting">{{ t.waiting_on }}</span></dd>{% endif %}
+    {% if t.next_step %}<dt>Next step</dt><dd>{{ t.next_step }}</dd>{% endif %}
+    {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
+    {% if t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code></dd>{% endif %}
+    <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
+  </dl>
+
+  <section class="panel">
+    <h2>Session</h2>
+    {% if t.session_name %}
+    <div class="card-session">
+      {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
+    </div>
+    {% if t.session_external_id %}<p class="muted mono">{{ t.session_external_id }}</p>{% endif %}
+    {% else %}
+    <p class="muted">No session is bound to this task.</p>
+    {% endif %}
+    {% if detail.bindings %}
+    <h3>History</h3>
+    <ol class="history">
+      {% for b in detail.bindings %}
+      <li>
+        <span class="history-name">{{ b.session_name }}</span>
+        {% if b.session_external_id and b.session_external_id != b.session_name %}<span class="muted mono">{{ b.session_external_id }}</span>{% endif %}
+        <span class="muted">
+          bound <time datetime="{{ b.bound_at }}" data-age>{{ b.bound_at|age }}</time> by {{ b.bound_by }}
+          {% if b.unbound_at %}· until <time datetime="{{ b.unbound_at }}" data-age>{{ b.unbound_at|age }}</time>{% else %}· current{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Reports</h2>
+    {% for r in detail.reports %}
+    <article class="report">
+      <header class="report-head">
+        {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
+        <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
+      </header>
+      <div class="markdown">{{ r.body_md|markdown }}</div>
+    </article>
+    {% else %}
+    <p class="muted">No reports yet.</p>
+    {% endfor %}
+  </section>
+
+  {% if detail.decisions %}
+  <section class="panel">
+    <h2>Decisions</h2>
+    <ul class="history">
+      {% for d in detail.decisions %}
+      <li>{{ d.text }} <span class="muted">· {{ d.created_at[:10] }}{% if d.decided_by %} · {{ d.decided_by }}{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</main>
+{% endblock %}

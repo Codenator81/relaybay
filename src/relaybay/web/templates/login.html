@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Sign in · relaybay{% endblock %}
+{% block live %}{% endblock %}
+{% block content %}
+<main class="login">
+  <form class="login-card" method="post" action="/login">
+    <h1>Sign in to relaybay</h1>
+    <p class="muted">This board runs on your machine and is protected by an access token.</p>
+    {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+    <label class="field">Access token
+      <input type="password" name="token" autocomplete="current-password" required autofocus
+             spellcheck="false" autocapitalize="off">
+    </label>
+    <input type="hidden" name="next" value="{{ next_path }}">
+    <input type="hidden" name="login_csrf" value="{{ login_csrf }}">
+    <button class="btn primary login-submit" type="submit">Sign in</button>
+    <p class="login-hint muted">Run <code>relaybay token</code> in a terminal to get the login link
+      or token. <a href="{{ docs_url }}" target="_blank" rel="noopener">Documentation</a></p>
+  </form>
+</main>
+{% endblock %}
