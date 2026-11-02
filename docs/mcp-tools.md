@@ -19,15 +19,19 @@ Conventions:
   board shows as "Open in desktop" and that `task_get` prints. Plain names have no link.
 - **Clearing a field** — in `task_update`, an omitted field stays unchanged and an empty string
   clears it.
+- **Description and progress** — two markdown fields per task. `description` says what to do and
+  why (1–5 sentences). `progress` is a running summary of everything done so far, not the last
+  step: the session rewrites it as it goes, ideally with every report (`report_add(progress=…)`).
+  The board shows the first lines of both on the card and the full text in the task dialog.
 
 ## Reading
 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `project_list` | — | Table of projects with task counts per stage. |
-| `project_snapshot` | `project`, `include_done?` | Open tasks grouped by stage (waiting on, next step, branch, session name and desktop id, version, last report) and recent decisions. |
+| `project_snapshot` | `project`, `include_done?` | Open tasks grouped by stage (waiting on, next step, branch, session name and desktop id, version, the start of the description and progress, last report) and recent decisions. |
 | `task_list` | `project?`, `stage?`, `waiting_on?`, `session?` (id or name), `include_done?` | One line per task. Done tasks are left out unless `stage` or `include_done` is given. |
-| `task_get` | `task`, `reports?` (default 5) | All fields, current `version`, the bound session (name and desktop id, link), session binding history, latest reports with their bodies, decisions. |
+| `task_get` | `task`, `reports?` (default 5) | All fields, description and progress in full, current `version`, the bound session (name and desktop id, link), session binding history, latest reports with their bodies, decisions. |
 | `events_since` | `since_id?` (default 0), `project?`, `limit?` (default 50, max 500) | Events oldest first and the `since_id` for the next call. |
 
 ## Writing
@@ -35,11 +39,12 @@ Conventions:
 | Tool | Arguments | Effect |
 |---|---|---|
 | `project_upsert` | `slug`, `name?`, `repo_path?`, `description?`, `session?`, `session_title?` | Creates the project, or updates the given fields. Slugs: lowercase letters, digits, dashes. |
-| `task_create` | `project`, `title`, `stage?` (default `plan`), `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `session?`, `session_title?` | Creates a task with the next key of the project (`acme-shop-1`, `acme-shop-2`, …). With `session`, the task is bound to it. |
-| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage_note?`, `expected_version?`, `session?`, `session_title?` | Patches fields. With `expected_version`, fails instead of overwriting when the task changed meanwhile. |
+| `task_create` | `project`, `title`, `stage?` (default `plan`), `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `session?`, `session_title?` | Creates a task with the next key of the project (`acme-shop-1`, `acme-shop-2`, …). With `session`, the task is bound to it. |
+| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage_note?`, `description?`, `progress?`, `expected_version?`, `session?`, `session_title?` | Patches fields. With `expected_version`, fails instead of overwriting when the task changed meanwhile. |
 | `task_set_stage` | `task`, `stage`, `note?`, `session?`, `session_title?` | Moves the task; `note` is shown next to the stage. Moving to `done` sets the closed time. |
 | `task_bind_session` | `task`, `session`, `session_title?` | Shows the session on the card as the one working on the task. The previous binding is closed and kept in the task's history (event `task.session_bound`). |
-| `report_add` | `task`, `body`, `session?`, `session_title?` | Appends a markdown report. Its first line is the card summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`). |
+| `task_unbind_session` | `task`, `session?` | Removes the bound session from the task; the binding is closed and kept in the history (event `task.session_unbound`). With `session` (desktop id or name), fails without changes if another session is bound. Nothing bound: says so, changes nothing. |
+| `report_add` | `task`, `body`, `progress?`, `session?`, `session_title?` | Appends a markdown report. Its first line is the card summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`). `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays. |
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `session?`, `session_title?` | Records a decision; it appears in the project snapshot. |
 
 Writes that change a task increment its `version`. Every change appends an event and updates open
@@ -55,10 +60,14 @@ project snapshot as context.
 ```text
 project_upsert(slug="acme-shop", name="Acme Shop")
 task_create(project="acme-shop", title="Checkout page", branch="feat/checkout",
+            description="Let customers pay by card without leaving the shop.",
             session="local_8f14e45f-ceea-467f-a0b6-1f1a2b3c4d5e", session_title="Checkout")
   → Created **acme-shop-1** “Checkout page” · stage plan · version 1.
 task_set_stage(task="acme-shop-1", stage="dev", session="local_8f14e45f-ceea-467f-a0b6-1f1a2b3c4d5e")
 report_add(task="acme-shop-1", body="verified · M · checkout works\n\nTests pass.",
+           progress="- Cart with totals\n- Card form with validation\n- Tests",
            session="local_8f14e45f-ceea-467f-a0b6-1f1a2b3c4d5e")
   → Report #1 added to **acme-shop-1** (verified · M): checkout works
+task_unbind_session(task="acme-shop-1", session="local_8f14e45f-ceea-467f-a0b6-1f1a2b3c4d5e")
+  → Unbound Checkout (local_8f14e45f-ceea-467f-a0b6-1f1a2b3c4d5e) from **acme-shop-1** “Checkout page” · stage dev · version 4.
 ```

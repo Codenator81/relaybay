@@ -2,11 +2,12 @@
          hx-get="/p/{{ slug }}/t/{{ t.key }}/card" hx-trigger="rb:refresh" hx-swap="outerHTML">
   <div class="card-top">
     <a class="card-key" href="/t/{{ t.key }}" title="Task page">{{ t.key }}</a>
+    {% if not t.session_name %}<span class="chip no-session" title="No session is bound to this task">no session</span>{% endif %}
   </div>
   <h3 class="card-title">
-    <button type="button" class="card-open" hx-get="/p/{{ slug }}/t/{{ t.key }}/edit"
-            hx-target="closest .card" hx-swap="outerHTML">{{ t.title }}</button>
+    <a class="card-open" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}">{{ t.title }}</a>
   </h3>
+  {% if t.description %}<div class="card-desc clamp clamp-3 markdown">{{ t.description|markdown }}</div>{% endif %}
   {% if t.waiting_on or t.branch %}
   <div class="card-meta">
     {% if t.waiting_on %}<span class="chip waiting" title="Waiting on">waiting on {{ t.waiting_on }}</span>{% endif %}
@@ -19,6 +20,12 @@
   </div>
   {% endif %}
   {% if t.next_step %}<p class="card-next"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
+  {% if t.progress %}
+  <div class="card-progress">
+    <span class="card-label">Done:</span>
+    <div class="clamp clamp-3 markdown">{{ t.progress|markdown }}</div>
+  </div>
+  {% endif %}
   {% if last %}
   <div class="card-report">
     {% with state = last.state, size = last.size %}{% include "_report_badges.html" %}{% endwith %}

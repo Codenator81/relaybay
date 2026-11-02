@@ -25,8 +25,10 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 TITLE_MAX = 200
 TEXT_MAX = 2000
 NAME_MAX = 100
+MARKDOWN_MAX = 20000
 
 TEXT_FIELDS = ("stage_note", "waiting_on", "next_step", "branch", "doc_path")
+MARKDOWN_FIELDS = ("description", "progress")
 
 
 def now_iso() -> str:
@@ -92,10 +94,15 @@ class Snapshot:
 def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
+    # Browsers submit textareas with CRLF; stored text uses LF so unchanged values compare equal.
+    text = str(value).replace("\r\n", "\n").strip()
     if len(text) > limit:
         raise ValidationError(f"{name} is longer than {limit} characters.")
     return text or None
+
+
+def _clean_field(name: str, value: Any) -> str | None:
+    return _clean_text(value, name, MARKDOWN_MAX if name in MARKDOWN_FIELDS else TEXT_MAX)
 
 
 def _clean_title(value: Any) -> str:
@@ -399,6 +406,8 @@ class Service:
         branch: str | None = None,
         doc_path: str | None = None,
         stage_note: str | None = None,
+        description: str | None = None,
+        progress: str | None = None,
         priority: int = 0,
         session: str | None = None,
         session_title: str | None = None,
@@ -412,6 +421,8 @@ class Service:
             "branch": _clean_text(branch, "branch"),
             "doc_path": _clean_text(doc_path, "doc_path"),
             "stage_note": _clean_text(stage_note, "stage_note"),
+            "description": _clean_field("description", description),
+            "progress": _clean_field("progress", progress),
             "priority": int(priority),
         }
         fields["stage"] = fields["stage"].value
@@ -462,7 +473,7 @@ class Service:
             elif name == "priority":
                 clean[name] = int(value or 0)
             else:
-                clean[name] = _clean_text(value, name)
+                clean[name] = _clean_field(name, value)
         default_actor = actor
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
@@ -531,6 +542,49 @@ class Service:
             await self._bind(tx, task, sess, sess.name)
             return await self.get_task(task.id, tx.conn)
 
+    async def unbind_session(
+        self, ref: str | int, session: str | None = None, *, actor: str = "mcp"
+    ) -> tuple[Task, Session | None]:
+        """Close the task's current binding (history is kept) and clear its session.
+
+        With `session`, the task must be bound to that session (desktop id or name), so a stale
+        caller cannot unbind a session that took over meanwhile. Returns the unbound session, or
+        None when nothing was bound (then nothing is written).
+        """
+        expected = _clean_text(session, "session", NAME_MAX)
+        needle = (parse_session_id(expected) or expected) if expected else None
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            current_id = await repo.open_binding(tx.conn, task.id) or task.session_id
+            if current_id is None:
+                if needle is not None:
+                    raise ConflictError(f"No session is bound to {task.key}; nothing changed.")
+                return task, None
+            current = await repo.get_session_by_id(tx.conn, current_id)
+            if current is None:
+                raise NotFoundError(f"Session #{current_id} bound to {task.key} not found.")
+            if needle is not None and needle not in (current.external_id, current.name):
+                raise ConflictError(
+                    f"{task.key} is bound to {current.name}, not {expected}; nothing changed."
+                    " Re-read the task with task_get."
+                )
+            await repo.unbind(tx.conn, task.id, tx.now)
+            if task.session_id is not None:
+                await repo.update_task(tx.conn, task.id, {"session_id": None}, tx.now)
+            await tx.event(
+                "task.session_unbound",
+                actor,
+                project_id=task.project_id,
+                task_id=task.id,
+                session_id=current.id,
+                project=task.project_slug,
+                key=task.key,
+                stage=task.stage.value,
+                session=current.name,
+                session_external_id=current.external_id,
+            )
+            return await self.get_task(task.id, tx.conn), current
+
     async def add_report(
         self,
         ref: str | int,
@@ -539,17 +593,34 @@ class Service:
         session: str | None = None,
         session_title: str | None = None,
         author: str | None = None,
+        progress: str | None = None,
     ) -> tuple[Task, Report]:
+        """Append a report; `progress`, if given, replaces the task's progress summary in the
+        same transaction ('' clears it)."""
         body = (body or "").strip()
         if not body:
             raise ValidationError("Report body must not be empty.")
         state, size, summary = parse_report(body)
+        new_progress = _clean_field("progress", progress)
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
             sess = await self._session(tx, session, session_title)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
+            if progress is not None and new_progress != task.progress:
+                await repo.update_task(tx.conn, task.id, {"progress": new_progress}, tx.now)
+                await tx.event(
+                    "task.updated",
+                    actor,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    session_id=session_id,
+                    project=task.project_slug,
+                    key=task.key,
+                    stage=task.stage.value,
+                    changes={"progress": new_progress},
+                )
             report_id = await repo.insert_report(
                 tx.conn, task.id, session_id, actor, state, size, summary, body, tx.now
             )
@@ -568,6 +639,7 @@ class Service:
                 size=size,
             )
             report = (await repo.list_reports(tx.conn, task.id, 1))[0]
+            task = await self.get_task(task.id, tx.conn)
         return task, report
 
     async def add_decision(

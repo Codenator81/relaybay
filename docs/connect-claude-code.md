@@ -50,12 +50,14 @@ Add a short section like this to the project's `CLAUDE.md` or `AGENTS.md` (repla
 This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
 
 - At the start of a session, call `project_snapshot(project="acme-shop")`.
-- Before starting work, find the task with `task_list` or create it with `task_create`;
-  then call `task_bind_session` with your session name.
+- Before starting work, find the task with `task_list` or create it with `task_create` (with a
+  short `description`: what to do and why); then call `task_bind_session` with your session name.
 - When the work moves on, call `task_set_stage` (plan → dev → test → live → done).
 - Keep "waiting on" and "next step" current with `task_update`.
 - At the end of every stage, call `report_add` with your final report. Start it with a line
-  `state · size · gist`, e.g. `verified · M · checkout works`.
+  `state · size · gist`, e.g. `verified · M · checkout works`, and pass `progress`: the updated
+  summary of everything done on the task so far.
+- When you stop working on a task and nobody takes over, call `task_unbind_session`.
 - Record decisions the user makes with `decision_add`.
 - Pass `session` on every write: your own desktop session id (`local_…`) if you know it, with
   `session_title=<your session title>`; otherwise your session name.

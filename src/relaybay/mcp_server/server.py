@@ -41,6 +41,11 @@ SessionTitle = Annotated[
 TaskRef = Annotated[str, Field(description="Task key such as 'acme-shop-12', or its numeric id.")]
 ProjectSlug = Annotated[str, Field(description="Project slug such as 'acme-shop'.")]
 StageArg = Annotated[str, Field(description="One of: plan, dev, test, live, done.")]
+DESCRIPTION_HELP = "What to do and why, 1-5 sentences of markdown."
+PROGRESS_HELP = (
+    "Markdown summary of everything done so far on the task (not just the last step). Rewrite"
+    " it as the work goes on and keep it current with every report."
+)
 
 
 async def run[T](awaitable: Awaitable[T]) -> T:
@@ -88,8 +93,9 @@ def build_mcp(service: Service) -> MCPServer:
         include_done: Annotated[bool, Field(description="Also list done tasks.")] = False,
     ) -> str:
         """Compact markdown snapshot of a project: open tasks by stage with waiting-on, next step,
-        branch, last report, plus recent decisions. Call it at the start of a session to see the
-        state of the project before you pick or create a task."""
+        branch, the start of the description and progress, last report, plus recent decisions.
+        Call it at the start of a session to see the state of the project before you pick or
+        create a task."""
         return fmt.snapshot(await run(service.snapshot(project, include_done)))
 
     @mcp.tool(annotations=READ, structured_output=False)
@@ -120,8 +126,8 @@ def build_mcp(service: Service) -> MCPServer:
         task: TaskRef,
         reports: Annotated[int, Field(ge=1, le=50, description="How many reports.")] = 5,
     ) -> str:
-        """Full task: fields, current version, the latest reports and decisions. Call it before
-        task_update to get the version for expected_version."""
+        """Full task: fields, description, progress, current version, the latest reports and
+        decisions. Call it before task_update to get the version for expected_version."""
         return fmt.task_detail(await run(service.task_detail(task, reports)))
 
     @mcp.tool(annotations=WRITE, structured_output=False)
@@ -133,12 +139,14 @@ def build_mcp(service: Service) -> MCPServer:
         next_step: Annotated[str | None, Field(description="The next concrete step.")] = None,
         branch: Annotated[str | None, Field(description="Git branch.")] = None,
         doc_path: Annotated[str | None, Field(description="Path to a task document.")] = None,
+        description: Annotated[str | None, Field(description=DESCRIPTION_HELP)] = None,
+        progress: Annotated[str | None, Field(description=PROGRESS_HELP)] = None,
         session: Session = None,
         session_title: SessionTitle = None,
     ) -> str:
-        """Create a task when you start work that is not on the board yet. Returns its key (e.g.
-        'acme-shop-12'); use the key in later calls. If `session` is given, the task is bound to
-        that session."""
+        """Create a task when you start work that is not on the board yet. Give it a short
+        `description` (what to do and why). Returns its key (e.g. 'acme-shop-12'); use the key in
+        later calls. If `session` is given, the task is bound to that session."""
         created = await run(
             service.create_task(
                 project,
@@ -148,6 +156,8 @@ def build_mcp(service: Service) -> MCPServer:
                 next_step=next_step,
                 branch=branch,
                 doc_path=doc_path,
+                description=description,
+                progress=progress,
                 session=session,
                 session_title=session_title,
             )
@@ -163,6 +173,10 @@ def build_mcp(service: Service) -> MCPServer:
         branch: Annotated[str | None, Field(description="'' clears it.")] = None,
         doc_path: Annotated[str | None, Field(description="'' clears it.")] = None,
         stage_note: Annotated[str | None, Field(description="'' clears it.")] = None,
+        description: Annotated[
+            str | None, Field(description=DESCRIPTION_HELP + " '' clears it.")
+        ] = None,
+        progress: Annotated[str | None, Field(description=PROGRESS_HELP + " '' clears it.")] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -170,8 +184,9 @@ def build_mcp(service: Service) -> MCPServer:
         session: Session = None,
         session_title: SessionTitle = None,
     ) -> str:
-        """Change task fields (waiting on, next step, branch, ...). Omitted fields stay as they
-        are; an empty string clears a field. To move a task between stages use task_set_stage."""
+        """Change task fields (waiting on, next step, branch, description, progress, ...). Omitted
+        fields stay as they are; an empty string clears a field. Keep `progress` current with
+        every report. To move a task between stages use task_set_stage."""
         given = {
             "title": title,
             "waiting_on": waiting_on,
@@ -179,6 +194,8 @@ def build_mcp(service: Service) -> MCPServer:
             "branch": branch,
             "doc_path": doc_path,
             "stage_note": stage_note,
+            "description": description,
+            "progress": progress,
         }
         changes = {k: (v or None) for k, v in given.items() if v is not None}
         if not changes:
@@ -226,6 +243,26 @@ def build_mcp(service: Service) -> MCPServer:
         return fmt.task_saved(updated, f"Bound {fmt.session_label(updated)} to")
 
     @mcp.tool(annotations=WRITE, structured_output=False)
+    async def task_unbind_session(
+        task: TaskRef,
+        session: Annotated[
+            str | None,
+            Field(
+                description="The session you expect to be bound (desktop session id or name);"
+                " if another session is bound, nothing changes and an error says who. Optional."
+            ),
+        ] = None,
+    ) -> str:
+        """Remove the bound session from a task, e.g. when a session stops working on it without
+        a successor. The binding history is kept. To hand the task to another session, call
+        task_bind_session instead."""
+        updated, unbound = await run(service.unbind_session(task, session))
+        if unbound is None:
+            return f"No session is bound to **{updated.key}**; nothing changed."
+        who = fmt.who_label(unbound.name, unbound.external_id)
+        return fmt.task_saved(updated, f"Unbound {who} from")
+
+    @mcp.tool(annotations=WRITE, structured_output=False)
     async def report_add(
         task: TaskRef,
         body: Annotated[
@@ -236,13 +273,20 @@ def build_mcp(service: Service) -> MCPServer:
                 " (inspected, changed, verified, committed, pushed, blocked) and size (S, M, L)."
             ),
         ],
+        progress: Annotated[
+            str | None,
+            Field(description=PROGRESS_HELP + " Saved together with the report; omit to keep it."),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
     ) -> str:
         """Add a report to a task. Call it at the end of every stage with your final report: what
-        changed, how it was checked, what is left."""
+        changed, how it was checked, what is left. Pass `progress` too, so the task's summary of
+        what is done stays current with every report."""
         saved, report = await run(
-            service.add_report(task, body, session=session, session_title=session_title)
+            service.add_report(
+                task, body, session=session, session_title=session_title, progress=progress
+            )
         )
         parsed = " · ".join(x for x in (report.state, report.size) if x)
         extra = f" ({parsed})" if parsed else ""

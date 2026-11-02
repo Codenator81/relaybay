@@ -40,6 +40,8 @@ class Task:
     next_step: str | None
     branch: str | None
     doc_path: str | None
+    description: str | None
+    progress: str | None
     session_id: int | None
     priority: int
     version: int
