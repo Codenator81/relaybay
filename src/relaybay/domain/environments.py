@@ -3,7 +3,7 @@ level agents have there."""
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from relaybay.domain.errors import ValidationError
@@ -12,7 +12,7 @@ KINDS = ("local", "test", "live")
 LEVELS = ("none", "read", "ask", "full")  # in order: a later level allows more
 CAPABILITIES = ("sign_in", "ssh", "kubectl", "db", "deploy")
 DEFAULT_LEVELS = {"local": "full", "test": "full", "live": "read"}
-GUARD_MODES = ("off", "warn", "block")
+GUARD_MODES = ("off", "log", "warn", "block")  # in order: a later mode says more
 DEFAULT_GUARD_MODE = "warn"
 
 # Access entry kind -> its fields (None: any field names). Values are references only.
@@ -69,42 +69,65 @@ _REFERENCE_RES = (
     re.compile(r"^(pass|file|sops):(?=\S*[^/\s]/[^/\s])\S*[^/\s]$", re.IGNORECASE),
     re.compile(r"^[\w.-]+\.(pem|key|pub|ppk|json|env|kdbx|age|gpg|asc|crt|p12|pfx)$", re.I),
 )
-# Values that look like a secret wherever they appear (notes, any field).
-_SECRET_VALUE_RES = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\."),  # a JWT
+# Values that look like a secret wherever they appear (notes, any field), by detector id (the
+# ids are stable: a policy disables detectors by id).
+_SECRET_VALUE_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
+    ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}")),
+    ("gitlab-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}")),
+    ("openai-key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
+    ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.")),
 )
 # A value after a flag or `=`: quoted, or up to whitespace (backslash escapes included).
 _VALUE = r"(\"[^\"]*\"|'[^']*'|(?:\\.|[^\s\"'\\])+)"
 # Places where a secret value follows: (pattern with group 1 = what stays, group 2 = the value,
 # a command that must be in the text for the pattern to count). Validation refuses a value
 # that is not a reference; redaction masks it. One table for both, so they never disagree.
-_SECRET_SPOTS: tuple[tuple[re.Pattern[str], re.Pattern[str] | None], ...] = (
+_SECRET_SPOTS: tuple[tuple[str, re.Pattern[str], re.Pattern[str] | None], ...] = (
     # URL credentials, also with an empty user (redis://:pw@host)
-    (re.compile(r"((?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s/:@]*:)([^\s/@]+)(?=@)", re.I), None),
     (
+        "url-credentials",
+        re.compile(r"((?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s/:@]*:)([^\s/@]+)(?=@)", re.I),
+        None,
+    ),
+    (
+        "password-flag",
         re.compile(
             r"((?<![\w-])--?(?:password|passwd|pass|token|secret|api-key)(?:=|\s+))" + _VALUE,
             re.I,
         ),
         None,
     ),
-    (re.compile(r"((?<!\S)(?:-u|--user)(?:=|\s+)[^\s:/]*:)(?!//)(\S+)"), None),  # curl -u
-    (re.compile(r"(\b(?:bearer|basic|digest)\s+)([A-Za-z0-9._~+/=-]{6,})", re.I), None),
-    (re.compile(r"(\bauthorization:\s*token\s+)([A-Za-z0-9._~+/=-]{6,})", re.I), None),
-    (re.compile(r"(\bsshpass\s+-p\s*)" + _VALUE), None),
+    ("curl-user", re.compile(r"((?<!\S)(?:-u|--user)(?:=|\s+)[^\s:/]*:)(?!//)(\S+)"), None),
     (
+        "auth-header",
+        re.compile(r"(\b(?:bearer|basic|digest)\s+)([A-Za-z0-9._~+/=-]{6,})", re.I),
+        None,
+    ),
+    (
+        "token-header",
+        re.compile(r"(\bauthorization:\s*token\s+)([A-Za-z0-9._~+/=-]{6,})", re.I),
+        None,
+    ),
+    ("sshpass", re.compile(r"(\bsshpass\s+-p\s*)" + _VALUE), None),
+    (
+        "mysql-password",
         re.compile(r"((?<!\S)-p)(?=\S)" + _VALUE),
         re.compile(r"\b(mysql|mariadb|mysqldump|mysqladmin)\b", re.I),
     ),
-    (re.compile(r"((?<!\S)-p\s+)" + _VALUE), re.compile(r"\bdocker\s+login\b", re.I)),
-    (re.compile(r"((?<!\S)-a\s+)" + _VALUE), re.compile(r"\bredis-cli\b", re.I)),
+    (
+        "docker-login-password",
+        re.compile(r"((?<!\S)-p\s+)" + _VALUE),
+        re.compile(r"\bdocker\s+login\b", re.I),
+    ),
+    (
+        "redis-password",
+        re.compile(r"((?<!\S)-a\s+)" + _VALUE),
+        re.compile(r"\bredis-cli\b", re.I),
+    ),
 )
 # `name=value` / `name: value` where the name says secret: the value must be a reference.
 _ASSIGNMENT_RE = re.compile(
@@ -119,6 +142,34 @@ SECRET_HINT = (
 )
 
 
+DETECTOR_IDS = (
+    *(name for name, _ in _SECRET_VALUE_RES),
+    *(name for name, _, _ in _SECRET_SPOTS),
+    "secret-assignment",
+    "secret-field-name",
+    "user-password",
+)
+
+
+class FullMatcher(Protocol):
+    def fullmatch(self, string: str) -> Any: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SecretRules:
+    """What the policy says about secrets: detectors switched off (by id) and allow patterns (a
+    value, or a detected secret, that one of them matches whole is accepted)."""
+
+    disabled: frozenset[str] = frozenset()
+    allow: tuple[FullMatcher, ...] = ()  # time-limited policy patterns
+
+    def allows(self, value: str) -> bool:
+        return any(p.fullmatch(value) for p in self.allow)
+
+
+DEFAULT_SECRET_RULES = SecretRules()
+
+
 def is_reference(value: str) -> bool:
     return any(r.match(value) for r in _REFERENCE_RES)
 
@@ -127,37 +178,51 @@ def _unquoted(value: str) -> str:
     return value[1:-1] if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'" else value
 
 
-def _secret_spot(text: str) -> bool:
-    for pattern, command in _SECRET_SPOTS:
-        if command is not None and not command.search(text):
+def _passes(value: str, rules: SecretRules) -> bool:
+    return not value or is_reference(value) or rules.allows(value)
+
+
+def _secret_found(text: str, rules: SecretRules) -> str | None:
+    """The id of the first enabled detector that finds a secret in `text`."""
+    for name, pattern in _SECRET_VALUE_RES:
+        if name in rules.disabled:
+            continue
+        if any(not rules.allows(m.group(0)) for m in pattern.finditer(text)):
+            return name
+    for name, pattern, command in _SECRET_SPOTS:
+        if name in rules.disabled or (command is not None and not command.search(text)):
             continue
         for match in pattern.finditer(text):
-            value = _unquoted(match.group(2))
-            if value and not is_reference(value):
-                return True
-    for match in _ASSIGNMENT_RE.finditer(text):
-        value = _unquoted(match.group(3))
-        if not value or is_reference(value):
-            continue
-        if "=" in match.group(2):
-            return True
-        if len(value) >= 6 and _PROSE_SECRET_RE.search(match.group(1)):
-            return True
-    return False
+            if not _passes(_unquoted(match.group(2)), rules):
+                return name
+    if "secret-assignment" not in rules.disabled:
+        for match in _ASSIGNMENT_RE.finditer(text):
+            value = _unquoted(match.group(3))
+            if _passes(value, rules):
+                continue
+            if "=" in match.group(2):
+                return "secret-assignment"
+            if len(value) >= 6 and _PROSE_SECRET_RE.search(match.group(1)):
+                return "secret-assignment"
+    return None
 
 
-def check_secret(name: str, value: str) -> None:
-    """Refuse an obvious secret value in field `name`; references pass."""
-    if is_reference(value):
+def check_secret(name: str, value: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> None:
+    """Refuse an obvious secret value in field `name`; references and values the policy allows
+    pass. The refusal names the field and the detector, never the value."""
+    if is_reference(value) or rules.allows(value):
         return
-    if any(r.search(value) for r in _SECRET_VALUE_RES) or _secret_spot(value):
-        raise ValidationError(f"{name} looks like it contains a secret value. {SECRET_HINT}")
-    if _SECRET_NAME_RE.search(name):
+    found = _secret_found(value, rules)
+    if found:
+        raise ValidationError(
+            f"{name} looks like it contains a secret value ({found}). {SECRET_HINT}"
+        )
+    if _SECRET_NAME_RE.search(name) and "secret-field-name" not in rules.disabled:
         raise ValidationError(
             f"{name} must be a reference, not the secret itself (got a value that is not a path,"
             f" an environment variable name or a vault path). {SECRET_HINT}"
         )
-    if _USER_NAME_RE.search(name) and ":" in value:
+    if _USER_NAME_RE.search(name) and ":" in value and "user-password" not in rules.disabled:
         raise ValidationError(f"{name} holds a user only, not user:password. {SECRET_HINT}")
 
 
@@ -189,7 +254,7 @@ def redact(text: str) -> str:
     """`text` with obvious secret values masked (for the live-actions journal): everything
     `check_secret` refuses, plus `token <value>`."""
     text = _PRIVATE_KEY_RE.sub("***", text)
-    for pattern, command in _SECRET_SPOTS:
+    for _, pattern, command in _SECRET_SPOTS:
         if command is None or command.search(text):
             text = pattern.sub(_mask_spot, text)
     text = _ASSIGNMENT_RE.sub(_mask_assignment, text)
@@ -210,6 +275,9 @@ class AccessEntry:
     created_at: str
     updated_at: str
     updated_by: str
+    # Harmless test values a policy allows on local and test (`{"value": ..., "test": true}`
+    # in the stored fields): never checked as secrets, masked on the board.
+    test_secrets: dict[str, str] = field(default_factory=dict)
 
     @property
     def capability(self) -> str | None:
@@ -286,6 +354,24 @@ class Proposal:
         return str(self.change.get("environment", ""))
 
 
+@dataclass(slots=True)
+class PolicyProposal:
+    """An agent's proposed change to a policy layer: `scope` is `global`, `<project>` or
+    `<project>/<environment>`."""
+
+    id: int
+    scope: str
+    project_id: int | None
+    patch: dict[str, Any]
+    reason: str
+    proposed_by: str
+    session_id: int | None
+    status: str
+    created_at: str
+    decided_at: str | None
+    decided_by: str | None
+
+
 def repo_identifier(value: str) -> str:
     """`https://git.example.com/acme/deploy.git` -> `git.example.com/acme/deploy`."""
     text = value.strip()
@@ -307,7 +393,9 @@ def raises_live(env_kind: str, before: str, after: str) -> bool:
 # --- validation ------------------------------------------------------------------------------
 
 
-def _text(value: Any, name: str, limit: int) -> str | None:
+def _text(
+    value: Any, name: str, limit: int, secrets: SecretRules = DEFAULT_SECRET_RULES
+) -> str | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, str | int):
@@ -316,7 +404,7 @@ def _text(value: Any, name: str, limit: int) -> str | None:
     if len(text) > limit:
         raise ValidationError(f"{name} is longer than {limit} characters.")
     if text:
-        check_secret(name, text)
+        check_secret(name, text, secrets)
     return text or None
 
 
@@ -363,19 +451,19 @@ def clean_overrides(value: Any) -> dict[str, str | None]:
     return clean
 
 
-def clean_base_url(value: Any) -> str | None:
-    url = _text(value, "base_url", VALUE_MAX)
+def clean_base_url(value: Any, secrets: SecretRules = DEFAULT_SECRET_RULES) -> str | None:
+    url = _text(value, "base_url", VALUE_MAX, secrets)
     if url is not None and not _HTTP_RE.fullmatch(url):
         raise ValidationError(f"base_url must be an http:// or https:// link, got {url!r}.")
     return url
 
 
-def clean_notes(value: Any) -> str | None:
-    return _text(value, "notes", NOTES_MAX)
+def clean_notes(value: Any, secrets: SecretRules = DEFAULT_SECRET_RULES) -> str | None:
+    return _text(value, "notes", NOTES_MAX, secrets)
 
 
-def clean_path(value: Any, name: str) -> str | None:
-    return _text(value, name, VALUE_MAX)
+def clean_path(value: Any, name: str, secrets: SecretRules = DEFAULT_SECRET_RULES) -> str | None:
+    return _text(value, name, VALUE_MAX, secrets)
 
 
 def clean_bool(value: Any, name: str) -> bool:
@@ -384,8 +472,15 @@ def clean_bool(value: Any, name: str) -> bool:
     raise ValidationError(f"{name} must be true or false.")
 
 
-def clean_access(kind: Any, fields: Any) -> tuple[str, dict[str, str]]:
-    """An access entry: its kind and fields (string references, no secrets)."""
+def clean_access(
+    kind: Any,
+    fields: Any,
+    secrets: SecretRules = DEFAULT_SECRET_RULES,
+    *,
+    allow_empty: bool = False,
+) -> tuple[str, dict[str, str]]:
+    """An access entry: its kind and fields (string references, no secrets). `allow_empty`:
+    the entry has test secrets, so it may have no other fields."""
     kind = str(kind or "").strip().lower()
     if kind not in ACCESS_FIELDS:
         raise ValidationError(f"Access kind must be one of: {', '.join(ACCESS_KINDS)}.")
@@ -399,18 +494,75 @@ def clean_access(kind: Any, fields: Any) -> tuple[str, dict[str, str]]:
         name = str(name).strip().lower()
         if not _FIELD_NAME_RE.match(name):
             raise ValidationError(f"Invalid access field name {name!r}: use lowercase letters.")
+        if isinstance(value, dict):
+            raise ValidationError(
+                f"{kind}.{name}: test secrets are entered by a person on the board, on local and"
+                " test environments only, when the policy allows them."
+            )
         if allowed is not None and name not in allowed:
             raise ValidationError(
                 f"{kind} access has no field {name!r}; use: {', '.join(allowed)}."
             )
-        text = _text(value, f"{kind}.{name}", VALUE_MAX)
+        text = _text(value, f"{kind}.{name}", VALUE_MAX, secrets)
         if text is not None:
             clean[name] = text
-    if not clean:
+    if not clean and not allow_empty:
         raise ValidationError(f"The {kind} access entry has no values.")
     if "url" in clean and not _HTTP_RE.fullmatch(clean["url"]):
         raise ValidationError(f"{kind}.url must be an http:// or https:// link.")
     return kind, clean
+
+
+TEST_SECRET_KEEP = "***"  # what the board shows for a stored test secret; sent back, it keeps it
+
+
+def split_test_secrets(fields: Any) -> tuple[Any, dict[str, Any]]:
+    """`fields` without the values marked `{"value": ..., "test": true}`, and those values."""
+    if not isinstance(fields, dict):
+        return fields, {}
+    plain, tests = {}, {}
+    for name, value in fields.items():
+        if isinstance(value, dict) and set(value) == {"value", "test"} and value["test"] is True:
+            tests[name] = value["value"]
+        else:
+            plain[name] = value
+    return plain, tests
+
+
+def clean_test_secrets(
+    values: dict[str, Any], kind: str, allowed: bool, current: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Test secrets of an access entry on an environment of `kind`; `***` keeps the stored one.
+    Never on live, whatever the policy says."""
+    if not values:
+        return {}
+    if kind == "live":
+        raise ValidationError("Test secrets are never allowed on live environments.")
+    if not allowed:
+        raise ValidationError(
+            f"The policy does not allow test secrets on {kind} environments"
+            f" (secrets.test_secrets.{kind})."
+        )
+    if len(values) > FIELDS_MAX:
+        raise ValidationError(f"An access entry has at most {FIELDS_MAX} test secrets.")
+    clean: dict[str, str] = {}
+    for name, value in values.items():
+        name = str(name).strip().lower()
+        if not _FIELD_NAME_RE.match(name):
+            raise ValidationError(f"Invalid test secret name {name!r}: use lowercase letters.")
+        if not isinstance(value, str) or not value.strip():
+            raise ValidationError(f"Test secret {name} must be a non-empty string.")
+        value = value.strip()
+        if value == TEST_SECRET_KEEP:
+            if not current or name not in current:
+                raise ValidationError(
+                    f"Test secret {name}: type the value, not {TEST_SECRET_KEEP}."
+                )
+            value = current[name]
+        if len(value) > VALUE_MAX:
+            raise ValidationError(f"Test secret {name} is longer than {VALUE_MAX} characters.")
+        clean[name] = value
+    return clean
 
 
 def parse_fields_text(text: str) -> dict[str, str]:
@@ -444,7 +596,7 @@ CHANGE_KEYS = (
 )
 
 
-def clean_change(change: Any) -> dict[str, Any]:
+def clean_change(change: Any, secrets: SecretRules = DEFAULT_SECRET_RULES) -> dict[str, Any]:
     """An agent's proposed change: `environment` (name) plus any of the other CHANGE_KEYS;
     `access` is a list of `{kind, fields}` entries to add."""
     if not isinstance(change, dict):
@@ -458,13 +610,15 @@ def clean_change(change: Any) -> dict[str, Any]:
     if "kind" in change:
         clean["kind"] = clean_kind(change["kind"])
     if "base_url" in change:
-        clean["base_url"] = clean_base_url(change["base_url"])
+        clean["base_url"] = clean_base_url(change["base_url"], secrets)
     if "sign_in_allowed" in change:
         clean["sign_in_allowed"] = clean_bool(change["sign_in_allowed"], "sign_in_allowed")
     if "login_state_path" in change:
-        clean["login_state_path"] = clean_path(change["login_state_path"], "login_state_path")
+        clean["login_state_path"] = clean_path(
+            change["login_state_path"], "login_state_path", secrets
+        )
     if "notes" in change:
-        clean["notes"] = clean_notes(change["notes"])
+        clean["notes"] = clean_notes(change["notes"], secrets)
     if "level" in change:
         clean["level"] = clean_level(change["level"])
     if "overrides" in change:
@@ -479,7 +633,7 @@ def clean_change(change: Any) -> dict[str, Any]:
         for entry in entries:
             if not isinstance(entry, dict):
                 raise ValidationError("Each access entry must be an object {kind, fields}.")
-            kind, fields = clean_access(entry.get("kind"), entry.get("fields"))
+            kind, fields = clean_access(entry.get("kind"), entry.get("fields"), secrets)
             clean["access"].append({"kind": kind, "fields": fields})
     if len(clean) == 1:
         raise ValidationError("change names an environment but nothing to change.")

@@ -1,11 +1,18 @@
 """SQL for every table. Functions take an open connection; transactions belong to the service."""
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import aiosqlite
 
-from relaybay.domain.environments import AccessEntry, Environment, Proposal
+from relaybay.domain.environments import (
+    AccessEntry,
+    Environment,
+    PolicyProposal,
+    Proposal,
+    split_test_secrets,
+)
 from relaybay.domain.models import (
     Binding,
     Comment,
@@ -937,15 +944,23 @@ def _environment(row: aiosqlite.Row) -> Environment:
 
 
 def _access(row: aiosqlite.Row) -> AccessEntry:
+    fields, tests = split_test_secrets(json.loads(row["fields"] or "{}"))
     return AccessEntry(
         id=row["id"],
         environment_id=row["environment_id"],
         kind=row["kind"],
-        fields=json.loads(row["fields"] or "{}"),
+        fields=fields,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
+        test_secrets=tests,
     )
+
+
+def _access_json(fields: dict[str, str], test_secrets: dict[str, str] | None) -> str:
+    stored: dict[str, Any] = dict(fields)
+    stored.update({k: {"value": v, "test": True} for k, v in (test_secrets or {}).items()})
+    return json.dumps(stored, ensure_ascii=False)
 
 
 async def list_environments(
@@ -1057,11 +1072,12 @@ async def insert_access(
     fields: dict[str, str],
     actor: str,
     now: str,
+    test_secrets: dict[str, str] | None = None,
 ) -> int:
     cur = await conn.execute(
         "INSERT INTO environment_access (environment_id, kind, fields, created_at, updated_at,"
         " updated_by) VALUES (?, ?, ?, ?, ?, ?)",
-        (env_id, kind, json.dumps(fields, ensure_ascii=False), now, now, actor),
+        (env_id, kind, _access_json(fields, test_secrets), now, now, actor),
     )
     return int(cur.lastrowid or 0)
 
@@ -1073,11 +1089,12 @@ async def update_access(
     fields: dict[str, str],
     actor: str,
     now: str,
+    test_secrets: dict[str, str] | None = None,
 ) -> None:
     await conn.execute(
         "UPDATE environment_access SET kind = ?, fields = ?, updated_at = ?, updated_by = ?"
         " WHERE id = ?",
-        (kind, json.dumps(fields, ensure_ascii=False), now, actor, access_id),
+        (kind, _access_json(fields, test_secrets), now, actor, access_id),
     )
 
 
@@ -1154,6 +1171,147 @@ async def decide_proposal(
     await conn.execute(
         "UPDATE environment_proposal SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
         (status, now, actor, proposal_id),
+    )
+
+
+# --- policy layers and proposals --------------------------------------------
+
+
+@dataclass(slots=True)
+class PolicyRow:
+    project_id: int
+    project_slug: str
+    environment_id: int | None
+    environment_name: str | None
+    body: str
+    updated_at: str
+    updated_by: str
+
+
+async def list_policy_layers(
+    conn: aiosqlite.Connection, project_ids: list[int] | None = None
+) -> list[PolicyRow]:
+    """Project and environment policy layers (project layers first)."""
+    sql = (
+        "SELECT l.*, p.slug, e.name AS env_name FROM policy_layer l"
+        " JOIN project p ON p.id = l.project_id"
+        " LEFT JOIN environment e ON e.id = l.environment_id"
+    )
+    params: tuple[Any, ...] = ()
+    if project_ids is not None:
+        if not project_ids:
+            return []
+        sql += f" WHERE l.project_id IN ({', '.join('?' for _ in project_ids)})"
+        params = tuple(project_ids)
+    rows = await _all(conn, sql + " ORDER BY p.slug, l.environment_id IS NOT NULL, e.name", params)
+    return [
+        PolicyRow(
+            r["project_id"],
+            r["slug"],
+            r["environment_id"],
+            r["env_name"],
+            r["body"],
+            r["updated_at"],
+            r["updated_by"],
+        )
+        for r in rows
+    ]
+
+
+async def set_policy_layer(
+    conn: aiosqlite.Connection,
+    project_id: int,
+    environment_id: int | None,
+    body: str | None,
+    actor: str,
+    now: str,
+) -> None:
+    """Store a layer, or remove it (`body` None)."""
+    await conn.execute(
+        "DELETE FROM policy_layer WHERE project_id = ? AND COALESCE(environment_id, 0) = ?",
+        (project_id, environment_id or 0),
+    )
+    if body is not None:
+        await conn.execute(
+            "INSERT INTO policy_layer (project_id, environment_id, body, updated_at, updated_by)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (project_id, environment_id, body, now, actor),
+        )
+
+
+def _policy_proposal(row: aiosqlite.Row) -> PolicyProposal:
+    return PolicyProposal(
+        id=row["id"],
+        scope=row["scope"],
+        project_id=row["project_id"],
+        patch=json.loads(row["patch"]),
+        reason=row["reason"],
+        proposed_by=row["proposed_by"],
+        session_id=row["session_id"],
+        status=row["status"],
+        created_at=row["created_at"],
+        decided_at=row["decided_at"],
+        decided_by=row["decided_by"],
+    )
+
+
+async def insert_policy_proposal(
+    conn: aiosqlite.Connection,
+    scope: str,
+    project_id: int | None,
+    patch: dict[str, Any],
+    reason: str,
+    proposed_by: str,
+    session_id: int | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO policy_proposal (scope, project_id, patch, reason, proposed_by, session_id,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            scope,
+            project_id,
+            json.dumps(patch, ensure_ascii=False),
+            reason,
+            proposed_by,
+            session_id,
+            now,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_policy_proposal(
+    conn: aiosqlite.Connection, proposal_id: int
+) -> PolicyProposal | None:
+    row = await _one(conn, "SELECT * FROM policy_proposal WHERE id = ?", (proposal_id,))
+    return _policy_proposal(row) if row else None
+
+
+async def list_policy_proposals(
+    conn: aiosqlite.Connection, limit: int = 100
+) -> list[PolicyProposal]:
+    """Pending policy proposals, oldest first."""
+    rows = await _all(
+        conn, "SELECT * FROM policy_proposal WHERE status = 'pending' ORDER BY id LIMIT ?", (limit,)
+    )
+    return [_policy_proposal(r) for r in rows]
+
+
+async def decide_policy_proposal(
+    conn: aiosqlite.Connection, proposal_id: int, status: str, actor: str, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE policy_proposal SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
+        (status, now, actor, proposal_id),
+    )
+
+
+async def reopen_policy_proposal(conn: aiosqlite.Connection, proposal_id: int) -> None:
+    await conn.execute(
+        "UPDATE policy_proposal SET status = 'pending', decided_at = NULL, decided_by = NULL"
+        " WHERE id = ?",
+        (proposal_id,),
     )
 
 

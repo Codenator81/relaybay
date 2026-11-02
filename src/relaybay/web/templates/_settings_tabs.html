@@ -1,0 +1,5 @@
+{#- Settings sub-navigation. Expects: tab. -#}
+<nav class="settings-tabs" aria-label="Settings">
+  <a class="action{% if tab == 'integrations' %} is-active{% endif %}" href="/settings/integrations"{% if tab == 'integrations' %} aria-current="true"{% endif %}>Integrations</a>
+  <a class="action{% if tab == 'policy' %} is-active{% endif %}" href="/settings/policy"{% if tab == 'policy' %} aria-current="true"{% endif %}>Policy</a>
+</nav>

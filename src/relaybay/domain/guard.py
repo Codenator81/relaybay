@@ -4,18 +4,44 @@ recognises an environment only by the identifiers in its access map."""
 
 import functools
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from relaybay.domain.environments import Environment, level_rank
 
+if TYPE_CHECKING:
+    from relaybay.policy import EffectivePolicy
+
 _I = re.IGNORECASE
-# Heuristics for "this command changes something", in one table: (name, capability, command,
-# change). A rule applies when `change` follows `command` in the same command segment (split at
-# `|`, `;`, `&` and newlines outside quotes). They see text only: a script, an alias or an unknown
-# tool is not recognised. `command` None: the change pattern alone (MCP tool input).
-MUTATING_RULES: tuple[tuple[str, str | None, re.Pattern[str] | None, re.Pattern[str]], ...] = (
-    (
+
+
+class Matcher(Protocol):
+    """A compiled pattern: `re.Pattern` for the built-in rules, a time-limited one for a
+    policy's own patterns (`relaybay.policy.SafePattern`)."""
+
+    def search(self, string: str, pos: int = 0) -> Any: ...
+
+
+@dataclass(frozen=True, slots=True)
+class Rule:
+    """A heuristic for "this command changes something". `id` is stable (a policy disables a
+    built-in rule by id); `name` is what the guard's reason says ("this looks like a <name>")."""
+
+    id: str
+    name: str
+    capability: str | None
+    command: Matcher | None
+    change: Matcher
+
+
+# The built-in heuristics, in one table. A rule applies when `change` follows `command` in the
+# same command segment (split at `|`, `;`, `&` and newlines outside quotes). They see text only:
+# a script, an alias or an unknown tool is not recognised. `command` None: the change pattern
+# alone (MCP tool input).
+MUTATING_RULES: tuple[Rule, ...] = (
+    Rule(
+        "kubectl-change",
         "kubectl change",
         "kubectl",
         re.compile(r"\bkubectl\b", _I),
@@ -25,13 +51,15 @@ MUTATING_RULES: tuple[tuple[str, str | None, re.Pattern[str] | None, re.Pattern[
             _I,
         ),
     ),
-    (
+    Rule(
+        "helm-change",
         "helm change",
         "deploy",
         re.compile(r"\bhelm\b", _I),
         re.compile(r"\b(upgrade|install|uninstall|delete|rollback)\b", _I),
     ),
-    (
+    Rule(
+        "ssh-remote-change",
         "remote change over ssh",
         "ssh",
         re.compile(r"\bssh\b", _I),
@@ -43,15 +71,23 @@ MUTATING_RULES: tuple[tuple[str, str | None, re.Pattern[str] | None, re.Pattern[
             _I,
         ),
     ),
-    (
+    Rule(
+        "scp-to-host",
         "file copy to a host",
         "ssh",
         re.compile(r"\b(scp|rsync)\b", _I),
         # The last argument is remote (`host:path`): copying *to* the host. From it is a read.
         re.compile(r"\s(?![a-z]+://)[^\s:'\"]+:[^\s]*\s*$", _I),
     ),
-    ("file transfer session", "ssh", re.compile(r"\bsftp\b", _I), re.compile(r"\S", _I)),
-    (
+    Rule(
+        "sftp-session",
+        "file transfer session",
+        "ssh",
+        re.compile(r"\bsftp\b", _I),
+        re.compile(r"\S", _I),
+    ),
+    Rule(
+        "sql-change",
         "SQL change",
         "db",
         re.compile(
@@ -66,15 +102,19 @@ MUTATING_RULES: tuple[tuple[str, str | None, re.Pattern[str] | None, re.Pattern[
             _I,
         ),
     ),
-    ("git push", "deploy", re.compile(r"\bgit\b", _I), re.compile(r"\bpush\b", _I)),
-    (
+    Rule("git-push", "git push", "deploy", re.compile(r"\bgit\b", _I), re.compile(r"\bpush\b", _I)),
+    Rule(
+        "terraform-change",
         "terraform change",
         "deploy",
         re.compile(r"\bterraform\b", _I),
         re.compile(r"\b(apply|destroy|import)\b", _I),
     ),
 )
-# MCP tools whose name says they change something (their input is matched as text as well).
+# MCP tools whose name says they change something (their input is matched as text as well);
+# the policy switches this check off with the rule id `mcp-tool-name`.
+MCP_TOOL_RULE_ID = "mcp-tool-name"
+RULE_IDS = (*(r.id for r in MUTATING_RULES), MCP_TOOL_RULE_ID)
 MUTATING_TOOL_RE = re.compile(
     r"(^|_)(create|update|delete|remove|apply|deploy|write|exec|execute|run|restart|scale|patch"
     r"|set|put|post|insert|drop|upload|push|merge|rollback)(_|$)",
@@ -104,7 +144,7 @@ class Touch:
     identifier: str
     level: str
     mutating: str | None  # the name of the rule that matched, if any
-    decision: str  # "allow", "warn", "deny" or "ask"
+    decision: str  # "allow", "log", "warn", "ask" or "deny"
     reason: str
 
 
@@ -241,21 +281,24 @@ def _segments(text: str) -> list[str]:
     return _SEGMENT_RE.findall(text)[:SEGMENTS_MAX]
 
 
-def mutating_rules(call: ToolCall) -> list[tuple[str, str | None]]:
-    """(rule name, capability) of every mutating rule the call matches."""
+def mutating_rules(
+    call: ToolCall, rules: tuple[Rule, ...] = MUTATING_RULES, tool_names: bool = True
+) -> list[tuple[str, str | None]]:
+    """(rule name, capability) of every mutating rule the call matches; `tool_names`: also the
+    MCP tool name check."""
     found: list[tuple[str, str | None]] = []
     segments = _segments(call.text)
-    for name, capability, command, change in MUTATING_RULES:
+    for rule in rules:
         # An MCP database tool takes the SQL itself: no client command in front of it.
-        optional = command is None or (call.is_mcp and capability == "db")
+        optional = rule.command is None or (call.is_mcp and rule.capability == "db")
         for segment in segments:
-            start = command.search(segment) if command is not None else None
+            start = rule.command.search(segment) if rule.command is not None else None
             if start is None and not optional:
                 continue
-            if change.search(segment, start.end() if start else 0):
-                found.append((name, capability))
+            if rule.change.search(segment, start.end() if start else 0):
+                found.append((rule.name, rule.capability))
                 break
-    if call.is_mcp:
+    if call.is_mcp and tool_names:
         tool = call.tool.rsplit("__", 1)[-1]
         if MUTATING_TOOL_RE.search(tool):
             found.append((f"MCP tool {tool}", None))
@@ -270,6 +313,8 @@ def mutating_rule(call: ToolCall) -> tuple[str, str | None] | None:
 def _decision(level: str, mutating: str | None, mode: str) -> str:
     if level == "full" or (level == "read" and not mutating):
         return "allow"
+    if mode == "log":
+        return "log"
     if level == "ask":
         return "ask"
     return "deny" if mode == "block" else "warn"
@@ -289,19 +334,31 @@ def _reason(env: Environment, level: str, mutating: str | None, identifier: str)
     )
 
 
-DECISION_ORDER = ("allow", "warn", "ask", "deny")
+# `log` records the call in the journal and tells nobody.
+DECISION_ORDER = ("allow", "log", "warn", "ask", "deny")
 
 
 def check(
-    call: ToolCall, environments: list[Environment], defaults: dict[str, str], mode: str
+    call: ToolCall,
+    environments: list[Environment],
+    policy_of: Callable[[Environment], "EffectivePolicy"],
 ) -> list[Touch]:
-    """Every environment the call mentions, with the strongest decision its level gives. A
-    mutating rule counts for an identifier only when their capabilities agree (an identifier
-    without one, the base URL host, takes any rule)."""
+    """Every environment the call mentions, with the strongest decision its level gives under
+    the environment's effective policy (levels, guard mode, rules). A mutating rule counts for
+    an identifier only when their capabilities agree (an identifier without one, the base URL
+    host, takes any rule)."""
     touches = []
-    rules = mutating_rules(call)
+    matched: dict[tuple[tuple[Rule, ...], bool], list[tuple[str, str | None]]] = {}
     seen: dict[str, bool] = {}  # identifier -> mentioned; environments share names
     for env in environments:
+        policy = policy_of(env)
+        mode = policy.guard_mode
+        if mode == "off":
+            continue
+        rule_set = (policy.rules, policy.mcp_tool_names)
+        if rule_set not in matched:
+            matched[rule_set] = mutating_rules(call, *rule_set)
+        rules = matched[rule_set]
         best: Touch | None = None
         for identifier, capability in env.identifiers()[:IDENTIFIERS_MAX]:
             key = identifier.casefold()
@@ -317,9 +374,9 @@ def check(
             mutating = applicable[0][0] if applicable else None
             caps = {c for c in (capability, *(cap for _, cap in applicable)) if c}
             level = min(
-                (env.effective_level(defaults, cap) for cap in caps),
+                (policy.level_for(env, cap) for cap in caps),
                 key=level_rank,
-                default=env.effective_level(defaults),
+                default=policy.level_for(env),
             )
             decision = _decision(level, mutating, mode)
             reason = _reason(env, level, mutating, identifier) if decision != "allow" else ""

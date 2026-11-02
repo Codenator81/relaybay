@@ -100,7 +100,8 @@ Conventions:
 | `task_get` | `task`, `reports?` (default 5) | Ends with "Editable fields: …". All fields (a stale next step ends with `(stale)`), description and progress in full, current `version`, the bound session (name and desktop id, link), the tracker issue and work-log mark, session binding history, tracker history, latest reports with their bodies, decisions. |
 | `events_since` | `since_id?` (default 0), `project?`, `limit?` (default 50, max 500) | Events oldest first and the `since_id` for the next call. |
 | `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
-| `environments_get` | `project` | The project's environments (see *Environments and access* below): guard mode, per environment kind, base URL, agents' level (`(default)` when it comes from the configuration) and per-capability overrides, sign-in flag and login-state path, access entries (references only), notes, last change. |
+| `environments_get` | `project` | The project's environments (see *Environments and access* below): the preset and guard mode, per environment kind, base URL, agents' level (`(default)` when it comes from the default preset, `(policy: <layer>)` from another policy layer) and per-capability overrides, sign-in flag and login-state path, access entries (references only; test secrets by name only unless the policy exposes them), notes, last change. |
+| `policy_get` | `project?`, `environment?` | The effective policy (see *Policy* below) of the global scope, a project or one of its environments: the layer chain, then one line per value with the layer that set it, e.g. `- levels.live.default = "read"  (preset:default)`, and any ignored broken layer. |
 | `rules_get` | `project?` | The working rules as markdown: hash, scope, mode, report format, stage requirements, description template, guidance. Without `project`, the global rules; with it, the project's merged rules. |
 
 ## Writing
@@ -118,8 +119,8 @@ Conventions:
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `session?`, `session_title?`, `hook_session?` | Records a decision; it appears in the project snapshot. |
 | `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
 | `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
-
-| `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a proposal for the owner and changes nothing (`environment.proposed`); it shows in the owner's Inbox and on the Stands & access page, where the owner accepts or rejects it. `change`: `environment` (name) plus any of `kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`none` / `read` / `ask` / `full` / `default`), `overrides` (`{"ssh": "ask"}`; capabilities `sign_in`, `ssh`, `kubectl`, `db`, `deploy`), `access` (`[{"kind": "ssh", "fields": {"alias": "acme-live"}}]` to add). A new environment needs `kind`. Secret values are refused (a tool error naming the field). |
+| `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a proposal for the owner and changes nothing (`environment.proposed`); it shows in the owner's Inbox and on the Stands & access page, where the owner accepts or rejects it. `change`: `environment` (name) plus any of `kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`none` / `read` / `ask` / `full` / `default`), `overrides` (`{"ssh": "ask"}`; capabilities `sign_in`, `ssh`, `kubectl`, `db`, `deploy`), `access` (`[{"kind": "ssh", "fields": {"alias": "acme-live"}}]` to add). A new environment needs `kind`. Secret values are refused (a tool error naming the field); test secrets are never accepted from agents. |
+| `policy_propose` | `scope` (`global`, `<project>` or `<project>/<environment>`), `patch` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a policy proposal and changes nothing (`policy.proposed`); it shows in the owner's Inbox and in Settings → Policy. The patch is merged into the layer's JSON (objects key by key, other values replace, `null` removes a key) and the result must validate against the [policy schema](reference/policy.md); a tool error names the path otherwise. Accepting applies it (`policy.updated`, `policy.proposal_accepted`), with a confirmation when it widens agents' access on live. |
 
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
@@ -211,19 +212,30 @@ are refused.
 
 - **Levels** — `none` (do not touch), `read` (look only), `ask` (ask the owner before each action),
   `full` (act as needed), per environment and optionally per capability (`sign_in`, `ssh`, `kubectl`,
-  `db`, `deploy`). Defaults: local and test `full`, live `read` (config `permission_defaults`). Only
-  the owner changes them on the board; agents call `environment_propose`.
+  `db`, `deploy`). Where an environment sets none, the policy's level for its kind applies (default
+  preset: local and test `full`, live `read`). Only the owner changes them on the board; agents call
+  `environment_propose` or `policy_propose`.
 - **Guard** — the `PreToolUse` hook checks `Bash` commands and the input of MCP tools for the
-  environments' names (whole tokens; a single word such as `app` only as an ssh, `--context`, `-h` or URL host) and answers by level and `guard_mode` (`off` / `warn` /
-  `block`, default `warn`): `deny` (with the reason shown to you) for `none`, or for `read` when the
+  environments' names (whole tokens; a single word such as `app` only as an ssh, `--context`, `-h` or URL host) and answers by level and the policy's guard mode (`off` / `log` /
+  `warn` / `block`, default `warn`; `log` only journals): `deny` (with the reason shown to you) for `none`, or for `read` when the
   command looks like a change (kubectl apply / delete / rollout restart …, helm upgrade, ssh with
-  `systemctl restart` / `rm` …, SQL `insert` / `update` / `delete` / `drop` …, `git push`); `ask`
+  `systemctl restart` / `rm` …, SQL `insert` / `update` / `delete` / `drop` …, `git push`, and the
+  policy's own patterns); `ask`
   (the user confirms) for `ask`; a warning in `additionalContext` instead of `deny` in `warn` mode.
   It is a safety net against mistakes, not a sandbox: it knows only the names listed on the board.
   Details and the full rule table: [SPEC §7](SPEC.md#spec-guard).
 - **Journal** — every guarded tool call that touches a live environment is recorded as a
   `live.action` event (tool, a short redacted command, decision) on your bound task; the owner sees
   them under Activity → Actions on live and in the task dialog.
+
+## Policy
+
+What agents may do, what the guard counts as a change and what counts as a secret come from a
+policy: a built-in preset (`default`, `strict`, `trusted`), the global `policy.json`, and project
+and environment layers, a later one winning. `policy_get` shows the effective values and which
+layer set each; `policy_propose` asks the owner for a change. Test secrets (harmless test values
+on local and test stands, only when the policy allows them) are never sent to you unless the
+policy sets `expose_test_secrets_to_agents`. Keys and presets: [policy reference](reference/policy.md).
 
 ## Resources
 

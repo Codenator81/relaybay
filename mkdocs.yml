@@ -62,6 +62,7 @@ nav:
       - Coordinate many projects: how-to/coordinator.md
       - Phone and LAN access: how-to/lan-access.md
       - Troubleshooting: how-to/troubleshooting.md
+      - Full access on a trusted machine: how-to/trusted-machine.md
       - Remove the integration: how-to/uninstall.md
   - Reference:
       - Specification: SPEC.md
@@ -69,6 +70,7 @@ nav:
       - MCP reference: reference/mcp.md
       - CLI: reference/cli.md
       - Configuration: reference/configuration.md
+      - Policy: reference/policy.md
       - Roadmap: ROADMAP.md
       - Changelog: changelog.md
   - Explanation:
@@ -87,6 +89,7 @@ nav:
           - Map and Usage: design/0010-map-and-usage.md
           - Documents in the database: design/0011-docs-in-database.md
           - Runner and embedded terminal: design/0012-runner-and-embedded-terminal.md
+          - Policy as data: design/0013-policy-as-data.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
       - Former plan: PLAN.md

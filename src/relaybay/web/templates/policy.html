@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{#- Settings → Policy. Expects: scope, scopes, effective (EffectivePolicy of the scope),
+    global_policy, policy_file, layers (database rows), layer_text, presets, proposals, optional
+    error, preview (EffectivePolicy after a change), widened, confirm, message. Writes are plain
+    form posts from this page in a browser (cookie + CSRF). -#}
+{%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
+{%- macro values_table(pol) -%}
+<table class="policy-table">
+  <thead><tr><th>Value</th><th>Setting</th><th>Set by</th></tr></thead>
+  <tbody>
+    {% for path, value, source in pol.flat() %}
+    <tr><td><code>{{ path }}</code></td><td><code>{{ value|tojson_compact }}</code></td><td class="muted">{{ source }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{%- endmacro %}
+{% block title %}Policy · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/settings/integrations">Settings</a><span class="crumb-sep">/</span><span class="crumb">Policy</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Policy</h1>
+  {% with tab = "policy" %}{% include "_settings_tabs.html" %}{% endwith %}
+  <p class="muted env-intro">What agents may do on each kind of environment, what the guard counts as a change and what counts as a secret. Layers, a later one winning: preset → <code>config.toml</code> → global file → project → environment; an environment's own level on Stands &amp; access wins over all of them. The guard is a safety net, not a sandbox.</p>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+  {% if confirm %}
+  <section class="panel env-confirm" id="confirm" role="alertdialog" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Confirm</h2>
+    <p class="form-warning">{{ confirm.message }}</p>
+    <div class="form-actions">
+      <form method="post" action="{{ confirm.action }}">
+        {{ hidden_csrf() }}
+        {% for name, value in confirm.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+        <input type="hidden" name="confirm_live" value="1">
+        <button type="submit" class="btn danger">Confirm and save</button>
+      </form>
+      <a class="btn" href="/settings/policy?scope={{ scope }}">Cancel</a>
+    </div>
+  </section>
+  {% endif %}
+
+  {% include "_policy_proposals.html" %}
+
+  <section class="panel" id="policy-preset">
+    <h2>Preset</h2>
+    <form class="task-form" method="post" action="/settings/policy/preset">
+      {{ hidden_csrf() }}
+      <div class="field-row">
+        <label class="field"><span>Built-in starting point (saved in the global file)</span>
+          <select name="preset">
+            {% for p in presets %}<option value="{{ p }}"{% if p == global_policy.preset %} selected{% endif %}>{{ p }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <p class="muted">default: local and test full, live read, guard warn · strict: test ask, live none, guard block · trusted: full everywhere, guard log (journal only), test secrets on local and test.</p>
+      <div class="form-actions"><button type="submit" class="btn primary">Use preset</button></div>
+    </form>
+  </section>
+
+  <section class="panel" id="policy-effective">
+    <h2>Effective policy</h2>
+    <form class="field-inline" method="get" action="/settings/policy">
+      <label class="field-inline">Scope
+        <select name="scope" onchange="this.form.submit()">
+          {% for s in scopes %}<option value="{{ s }}"{% if s == scope %} selected{% endif %}>{{ s }}</option>{% endfor %}
+        </select>
+      </label>
+      <noscript><button type="submit" class="btn">Show</button></noscript>
+    </form>
+    <p class="muted">Layers: {% for layer in effective.layers %}<code>{{ layer.name }}</code>{% if layer.error %} <span class="form-error">ignored: {{ layer.error }}</span>{% endif %}{% if not loop.last %} → {% endif %}{% endfor %}</p>
+    {{ values_table(effective) }}
+  </section>
+
+  <section class="panel" id="policy-edit">
+    <h2>Edit the {{ scope }} layer</h2>
+    {% if scope == "global" %}
+    <p class="muted">The file <code>{{ policy_file.path }}</code>{% if not policy_file.text %} does not exist yet{% endif %}. Edits to the file are picked up without a restart.{% if policy_file.error %}</p><p class="form-error" role="alert">The file is broken, so the last valid version is in effect: {{ policy_file.error }}{% endif %}</p>
+    {% else %}
+    <p class="muted">Stored in the database. Empty removes the layer.</p>
+    {% endif %}
+    <form class="task-form" method="post" action="/settings/policy/layer">
+      {{ hidden_csrf() }}
+      <input type="hidden" name="scope" value="{{ scope }}">
+      <label class="field"><span>JSON (<a href="https://codenator81.github.io/relaybay/reference/policy/" target="_blank" rel="noopener noreferrer">reference</a>; lists may be written <code>key+</code> / <code>key-</code> to add or remove items)</span>
+        <textarea name="body" rows="14" spellcheck="false" class="policy-editor">{{ layer_text }}</textarea>
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="btn" name="action" value="preview">Validate and preview</button>
+        <button type="submit" class="btn primary" name="action" value="save">Save</button>
+      </div>
+    </form>
+    {% if preview %}
+    <h3>Preview: the effective policy after this change</h3>
+    {% if widened %}<p class="form-warning">Widens agents' access on live: {{ widened|join(", ") }}. Saving asks for a confirmation.</p>{% else %}<p class="muted">Valid. Does not widen agents' access on live.</p>{% endif %}
+    {{ values_table(preview) }}
+    {% endif %}
+  </section>
+
+  <section class="panel" id="policy-layers">
+    <h2>Project and environment layers</h2>
+    {% if layers %}
+    <ul class="access-list">
+      {% for row in layers %}
+      {%- set s = row.project_slug ~ ("/" ~ row.environment_name if row.environment_name else "") %}
+      <li class="access-row"><a href="/settings/policy?scope={{ s }}#policy-edit"><code>{{ s }}</code></a> <span class="muted">changed <time datetime="{{ row.updated_at }}" data-age>{{ row.updated_at|age }}</time> by {{ row.updated_by }}</span>
+        <pre class="policy-json">{{ row.body }}</pre></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">None yet. Pick a project or environment above to add one.</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

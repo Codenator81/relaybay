@@ -1,0 +1,15 @@
+{
+  "description": "A trusted machine: full access everywhere, the guard only journals, test secrets on local and test.",
+  "levels": {
+    "local": {"default": "full"},
+    "test": {"default": "full"},
+    "live": {"default": "full"}
+  },
+  "guard": {"mode": "log", "disable": [], "patterns": []},
+  "secrets": {
+    "disable": [],
+    "allow": [],
+    "test_secrets": {"local": true, "test": true},
+    "expose_test_secrets_to_agents": false
+  }
+}

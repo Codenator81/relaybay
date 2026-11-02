@@ -22,6 +22,7 @@ from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, valid
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
 from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
+from relaybay.policy import PolicyFile
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -146,8 +147,8 @@ class Settings:
     permission_defaults: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_LEVELS),
         metadata=_doc(
-            "Agents' permission level per environment kind when an environment sets none"
-            " (`none`, `read`, `ask`, `full`) ([SPEC §7](../SPEC.md#spec-environments)).",
+            "Legacy: agents' level per environment kind (`none`, `read`, `ask`, `full`); a"
+            " layer under `policy.json` ([policy reference](policy.md)).",
             key="[permission_defaults]",
             default='`local = "full"`, `test = "full"`, `live = "read"`',
         ),
@@ -155,10 +156,20 @@ class Settings:
     guard_mode: str = field(
         default=DEFAULT_GUARD_MODE,
         metadata=_doc(
-            "`off`, `warn` or `block`: what the PreToolUse guard does with a tool call the"
-            " environment's level forbids.",
+            "Legacy: `off`, `log`, `warn` or `block`, the guard mode; a layer under"
+            " `policy.json` ([policy reference](policy.md)).",
             key="guard_mode",
             env="RELAYBAY_GUARD_MODE",
+        ),
+    )
+    policy_file: Path | None = field(
+        default=None,  # None: policy.json in the data directory
+        metadata=_doc(
+            "The global policy layer (JSON, [policy reference](policy.md)); a relative path is"
+            " read from the data directory. A missing file means the `default` preset.",
+            key="policy_file",
+            env="RELAYBAY_POLICY_FILE",
+            default="`policy.json` in the data directory",
         ),
     )
     claude_home: Path | None = field(
@@ -172,6 +183,9 @@ class Settings:
             default="your home directory",
         ),
     )
+    # internal: the legacy guard_mode / [permission_defaults] as a policy layer, only the keys
+    # that config.toml or the environment set (so a preset is not overridden by defaults).
+    policy_config: dict[str, Any] = field(default_factory=dict)
     replay_limit: int = 5000  # internal: not configurable
     heartbeat_seconds: float = 15.0  # internal: not configurable
     wake_hold_seconds: float = WAKE_HOLD_SECONDS  # internal: wake-up hook long poll
@@ -188,6 +202,11 @@ class Settings:
     @property
     def config_path(self) -> Path:
         return self.home / "config.toml"
+
+    @property
+    def policy_path(self) -> Path:
+        path = self.policy_file or Path("policy.json")
+        return path if path.is_absolute() else self.home / path
 
     @property
     def base_url(self) -> str:
@@ -273,6 +292,7 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
                 f" got {data['guard_mode']!r}"
             )
         settings.guard_mode = value
+        settings.policy_config["guard_mode"] = value
     if "permission_defaults" in data:
         table = data["permission_defaults"]
         if not isinstance(table, dict):
@@ -284,6 +304,9 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
                     f" {', '.join(LEVELS)}, got {kind} = {level!r}"
                 )
             settings.permission_defaults[kind] = str(level).strip().lower()
+            settings.policy_config.setdefault("permission_defaults", {})[kind] = (
+                settings.permission_defaults[kind]
+            )
     if "desktop_link_template" in data:
         template = str(data["desktop_link_template"])
         if "{id}" not in template:
@@ -291,6 +314,8 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         settings.desktop_link_template = template
     if "claude_home" in data:
         settings.claude_home = Path(str(data["claude_home"])).expanduser()
+    if "policy_file" in data:
+        settings.policy_file = Path(str(data["policy_file"])).expanduser()
     if "allowed_hosts" in data:
         value = data["allowed_hosts"]
         settings.allowed_hosts = _split_list(value) if isinstance(value, str) else list(value)
@@ -363,4 +388,6 @@ def load_settings(
         settings.port = port
     if claude_home is not None:
         settings.claude_home = claude_home
+    # A broken global policy stops the start like a broken config.toml.
+    PolicyFile(settings.policy_path).load()
     return settings

@@ -160,6 +160,7 @@ exist yet are not shown.
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
+| Policy | `/settings/policy` | The effective policy per scope with the source of each value, preset, layer editors and agent proposals ([§7](#spec-policy-page)). |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
 
 <a id="spec-board-cards"></a>
@@ -212,11 +213,14 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
   reply's author and text.
 - **Proposed by agents:** pending environment proposals ([§7](#spec-proposals)), linking to the
   project's Stands & access page.
+- **Policy proposals:** pending policy proposals ([§7](#spec-policy-proposals)), linking to
+  Settings → Policy.
 
 Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?task=<key>`). The
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
-`comment.read`, `environment.proposed`, `environment.proposal_*`), at most once per 2 s. With
+`comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
+`policy.proposal_*`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -562,7 +566,56 @@ not checked on `report_add` in this release.
 
 ## 7. Environments and access
 
-Design: [Environments and access](design/0006-environments-and-access.md).
+Design: [Environments and access](design/0006-environments-and-access.md),
+[Policy as data](design/0013-policy-as-data.md).
+
+<a id="spec-policy"></a>
+
+**Policy.** What agents may do on each kind of environment, what the guard counts as a change and
+what counts as a secret are not fixed in the code: a policy (JSON, schema
+`src/relaybay/policy/schema.json`, [policy reference](reference/policy.md)) defines them. The
+effective policy of an environment is merged from these layers, a later one winning:
+
+1. the built-in **preset** the global layer names (`default` when it names none);
+2. `guard_mode` and `[permission_defaults]` from `config.toml` or `RELAYBAY_GUARD_MODE`, only
+   when set (legacy; layer `config`);
+3. the **global** layer, the file `policy.json` in the data directory (setting `policy_file`, a
+   relative path is read from the data directory);
+4. the **project** layer and 5. the **environment** layer, stored in the database
+   (`policy_layer`).
+
+Objects merge key by key; scalars and lists replace. The lists `guard.disable`, `guard.patterns`,
+`secrets.disable` and `secrets.allow` may also be written `key+` (add; a pattern with an existing
+`id` replaces it) and `key-` (remove by value or `id`), applied after `key`. `preset` counts only
+in the global layer; `$schema` and `description` are ignored. Every value knows the layer that set
+it (`preset:<name>`, `config`, `global`, `project:<slug>`, `environment:<slug>/<name>`). Without a
+policy file and without the legacy keys the behaviour is the `default` preset, which equals
+relaybay before policies.
+
+| Preset | Levels | Guard | Secrets |
+|---|---|---|---|
+| `default` | local and test `full`, live `read` | `warn`, all rules | all detectors, no test secrets |
+| `strict` | local `full`, test `ask`, live `none` | `block`, all rules | all detectors, no test secrets |
+| `trusted` | `full` everywhere | `log` | all detectors; test secrets on local and test, not shown to agents |
+
+Validation: JSON Schema 2020-12 plus checks the schema cannot express — `preset` only in the global
+layer, custom pattern ids unique and not a built-in id, custom regular expressions (`command`,
+`change`, `secrets.allow`) at most 200 characters, without back-references, without a quantified
+group that holds a quantifier (`(a+)+`) or an alternation (`(a|aa)*`), with at most two
+unbounded quantifiers (`*`, `+`, `{n,}`), and fast on hostile 4 KB inputs (all probes of one
+pattern together within 50 ms). They run case-insensitively on the `regex` engine with a hard time
+limit: when the guard or a secret check uses them they see at most 8 KB, and a call that takes
+over 20 ms fails closed — a guard pattern counts as matched (the tool call looks like a change
+for that pattern's capability), an allow pattern does not allow — logged at most once a minute
+per pattern; the pattern stays on for the next call. A pattern that does not compile (including
+conflicting flags such as `(?u)(?a)` or `(?V1)`) is refused on validation with its id, keeps the
+last valid global file when it appears in `policy.json`, and, in a stored layer that skipped
+validation, is skipped and logged, never an error in the guard. An error names the layer, the path and the problem, up to five at
+once (`policy.json: guard.mode: 'loud' is not one of ['off', 'log', 'warn', 'block']`). A broken
+global file stops `relaybay serve` (exit `2`) like a broken `config.toml`. The file is read again
+whenever its modification time or size changes (no restart, no command); a file that breaks later
+is logged once, shown on the Policy page, and the last valid version stays in effect. A broken
+project or environment layer is logged once and ignored, and listed with the effective policy.
 
 <a id="spec-environment"></a>
 
@@ -587,7 +640,9 @@ local and test, always off for live: the flag is forced off and the database ref
 | `other` | any lowercase field names |
 
 relaybay never stores a secret, only where it lives. Every text written to an environment, an
-access entry or a proposal is checked: a field whose name contains `pass`, `pwd`, `token`,
+access entry or a proposal is checked (by detectors with stable ids that the policy can switch
+off in `secrets.disable`, listed in the [policy reference](reference/policy.md)): a field whose
+name contains `pass`, `pwd`, `token`,
 `secret`, `key`, `credential` or `private` must be a reference — a path (`~/.ssh/acme_live`,
 `C:\keys\x.pem`, a `*.pem`/`*.key`/… file name), an environment variable name (`$DB_PASSWORD`,
 `${DB_PASSWORD}`, `%DB_PASSWORD%`, `env:DB_PASSWORD`, an upper-case name with `_` such as
@@ -604,27 +659,48 @@ key, a JWT, or a value that is not a reference in one of these places: URL crede
 (`PGPASSWORD=…`, `API_KEY='…'`, `--from-literal=password=…`); `name: value` written as prose only
 for the `pass` / `pwd` / `token` / `secret` / `api_key` family and values of 6 characters or more.
 Quoted values count whole. The journal masks exactly these places, from the same table
-(`_SECRET_SPOTS`). A value that is a reference as a whole always passes. The refusal names the
-field and never repeats the value. These are pattern checks: a secret in an unusual shape (e.g. in
-plain prose) can pass.
+(`_SECRET_SPOTS`), whatever the policy switches off. A value that is a reference as a whole
+always passes, and so does a value, or a detected secret, that one of the policy's `secrets.allow`
+patterns matches whole. The refusal names the field and the detector (`notes looks like it
+contains a secret value (jwt)`) and never repeats the value. The checks of a write use the
+effective policy of the environment (or, for a new environment and for proposals, of the
+project). These are pattern checks: a secret in an unusual shape (e.g. in plain prose) can pass.
+
+<a id="spec-test-secrets"></a>
+
+**Test secrets.** When the policy allows them for the environment's kind
+(`secrets.test_secrets.local` / `.test`; the schema has no `live` key and the service refuses them
+on live whatever the layers say), an access entry may hold harmless test values: stored in its
+fields JSON as `{"value": "...", "test": true}`, exempt from the secret checks, at most 20 per
+entry, names in lowercase like other fields. They are entered on the board only (a "Test secrets"
+box in the access form, shown when allowed or when the entry has some; `name: ***` keeps a stored
+value, a removed line removes it, a form without the box keeps them); a proposal that carries one
+is refused. The board shows them as `•••` with "(test secret)" and never renders the value.
+`environments_get` lists only their names, unless the policy sets
+`expose_test_secrets_to_agents: true`. An environment with test secrets cannot become live. The
+journal masks every stored test secret value, whatever its length, in the commands it records.
 
 <a id="spec-permissions"></a>
 
 **Permission levels.** Per environment, `none` (do not touch), `read` (look only), `ask` (the
 owner approves each action) or `full` (act as needed); optionally per capability `sign_in`, `ssh`,
-`kubectl`, `db`, `deploy`. An environment without its own level uses `permission_defaults` from the
-configuration (default: local and test `full`, live `read`); a capability without an override uses
-the environment's level. Only a person changes levels, on the board, and some writes need a
-second confirmation: on an environment that becomes or stays live, an explicit level or override
-above `read` that is higher than before (a level that comes from `permission_defaults` does not
-ask); on a live environment whose kind changes, any capability whose effective level, defaults
-included, rises above `read` (live → test with the defaults turns `read` into `full`). Accepting
-a proposal asks the same. Agents propose changes instead (below).
+`kubectl`, `db`, `deploy`. The level of a capability is, in order: the environment's override for
+it, the environment's own level, the policy's `levels.<kind>.<capability>`, the policy's
+`levels.<kind>.default`. Only a person changes levels, on the board, and some writes need a second
+confirmation: on an environment that stays live, a level or override above `read` that is
+higher than before; on an environment that becomes live (created or changed), a level above
+`read` that is higher than what the project's policy alone gives live, or an environment policy
+layer that weakens the guard compared with the project's (so a layer staged while it was a test
+environment is confirmed now); on a live
+environment whose kind changes, any capability whose effective level, the policy's included,
+rises above `read` (live → test with the default preset turns `read` into `full`). Accepting a
+proposal asks the same. Agents propose changes instead (below).
 
 <a id="spec-environments-page"></a>
 
 **Stands & access page** (`/p/<slug>/environments`, sidebar item under each project): one panel per
-environment with its kind, effective level ("(default)" when it comes from the configuration),
+environment with its kind, effective level and where it comes from ("(default)" from the default
+preset, "(policy: project:acme-shop)" from another layer, nothing when the environment sets it),
 base URL, per-capability levels, sign-in flag, notes, who changed it when, and its access entries
 (each with its own change time and author); forms to add, edit and delete environments and access
 entries (fields typed as `name: value` lines) and to set the level and overrides. Writes are plain
@@ -647,7 +723,9 @@ decided proposal cannot be decided again.
 
 <a id="spec-guard"></a>
 
-**Guard (PreToolUse).** `guard_mode` (`off` / `warn` / `block`, default `warn`). The existing
+**Guard (PreToolUse).** The guard mode, the levels and the mutating rules come from each
+environment's effective policy: `guard.mode` `off` (not checked, not journaled), `log` (journal
+only: no warning, no deny, no ask), `warn` (default) or `block`. The existing
 `PreToolUse` hook sends the tool call; relaybay reads the `command` of a `Bash` call, or every string
 in the input of an MCP tool (`mcp__<server>__<tool>`, except relaybay's own tools); only the first
 8 KB are read, in at most 200 command segments, with at most 50 identifiers per environment. The
@@ -668,25 +746,30 @@ only when their capabilities agree (ssh → `ssh`, kubectl → `kubectl`, db →
 levels of those capabilities, and of all identifiers matched in one environment the strongest
 decision counts.
 
-Mutating heuristics (one table, `domain/guard.py`; they see text only). A rule applies when its
+Mutating heuristics (one table, `domain/guard.py`, each with a stable id the policy switches off
+in `guard.disable`; they see text only). A rule applies when its
 change follows its command in the same command segment (the text split at `|`, `;`, `&` and
 newlines outside quotes), so `ssh app uptime; rm -rf build` is not a remote change:
 
-| Rule | Capability | Pattern (simplified) |
+| Rule (id) | Capability | Pattern (simplified) |
 |---|---|---|
-| kubectl change | `kubectl` | `kubectl … apply / create / delete / edit / patch / replace / scale / set / label / annotate / drain / cordon / uncordon / taint / exec / cp / rollout restart / undo / pause / resume` |
-| helm change | `deploy` | `helm … upgrade / install / uninstall / delete / rollback` |
-| remote change over ssh | `ssh` | `ssh …` with `rm`, `mv`, `cp`, `dd`, `tee`, `truncate`, `kill`, `reboot`, `shutdown`, `chmod`, `chown`, package managers, `sudo`, `crontab`, `systemctl start/stop/restart/reload/enable/disable/kill/mask`, `service … start/stop/restart/reload`, `docker rm/stop/restart/run/kill/exec/compose/pull`, `sed -i` |
-| file copy to a host | `ssh` | `scp` / `rsync` whose last argument is remote (`host:path`); copying from a host is a read |
-| file transfer session | `ssh` | `sftp` |
-| SQL change | `db` | after a database client (`psql`, `mysql`, `mariadb`, `sqlite3`, `sqlcmd`, `mongosh`, `redis-cli`, `clickhouse-client`, `cqlsh`, …; in MCP tool input also without one): `insert into`, `update … set`, `delete from`, `drop`, `alter`, `truncate`, `create table/database/index/user/role`, `grant`, `revoke`, `flushall`, `flushdb` |
-| git push | `deploy` | `git … push` |
-| terraform change | `deploy` | `terraform apply / destroy / import` |
-| MCP tool by name | — | an MCP tool whose name has a word such as `create`, `update`, `delete`, `apply`, `deploy`, `exec`, `run`, `restart`, `scale`, `push` |
+| kubectl change (`kubectl-change`) | `kubectl` | `kubectl … apply / create / delete / edit / patch / replace / scale / set / label / annotate / drain / cordon / uncordon / taint / exec / cp / rollout restart / undo / pause / resume` |
+| helm change (`helm-change`) | `deploy` | `helm … upgrade / install / uninstall / delete / rollback` |
+| remote change over ssh (`ssh-remote-change`) | `ssh` | `ssh …` with `rm`, `mv`, `cp`, `dd`, `tee`, `truncate`, `kill`, `reboot`, `shutdown`, `chmod`, `chown`, package managers, `sudo`, `crontab`, `systemctl start/stop/restart/reload/enable/disable/kill/mask`, `service … start/stop/restart/reload`, `docker rm/stop/restart/run/kill/exec/compose/pull`, `sed -i` |
+| file copy to a host (`scp-to-host`) | `ssh` | `scp` / `rsync` whose last argument is remote (`host:path`); copying from a host is a read |
+| file transfer session (`sftp-session`) | `ssh` | `sftp` |
+| SQL change (`sql-change`) | `db` | after a database client (`psql`, `mysql`, `mariadb`, `sqlite3`, `sqlcmd`, `mongosh`, `redis-cli`, `clickhouse-client`, `cqlsh`, …; in MCP tool input also without one): `insert into`, `update … set`, `delete from`, `drop`, `alter`, `truncate`, `create table/database/index/user/role`, `grant`, `revoke`, `flushall`, `flushdb` |
+| git push (`git-push`) | `deploy` | `git … push` |
+| terraform change (`terraform-change`) | `deploy` | `terraform apply / destroy / import` |
+| MCP tool by name (`mcp-tool-name`) | — | an MCP tool whose name has a word such as `create`, `update`, `delete`, `apply`, `deploy`, `exec`, `run`, `restart`, `scale`, `push` |
+
+The policy adds its own rules after the built-in ones (`guard.patterns`: `id`, optional
+`capability`, optional `command`, `change`, `description`; the reason says "this looks like a"
+and the description), with the same segment logic: without `command` the `change` pattern alone.
 
 Decisions per touched environment: `full` → nothing; `read` → nothing unless a rule matched;
-`ask` → ask; `none`, or `read` with a rule → deny in `block` mode, a warning in `warn` mode. The
-strongest decision wins (deny > ask > warn). The answer is
+`ask` → ask; `none`, or `read` with a rule → deny in `block` mode, a warning in `warn` mode; in
+`log` mode every one of these is `log`. The strongest decision wins (deny > ask > warn > log). The answer is
 `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny" | "ask",
 "permissionDecisionReason": …}}` — the reason (e.g. `relaybay guard: acme-shop live (live) is
 read-only for agents; this looks like a remote change over ssh (matched 'prod-alias'). Ask the
@@ -705,23 +788,64 @@ changes and flag harmless commands.
 <a id="spec-journal"></a>
 
 **Journal of actions on live.** Every guarded tool call that touches a `live` environment is
-recorded as a `live.action` event (any decision, including the calls that go on): project,
+recorded as a `live.action` event (any decision, including the calls that go on and `log`; not
+with the guard `off`): project,
 environment, the bound task of that project (the first, if several; none when the session has no
 task there), tool name, the command — whitespace collapsed, obvious secrets masked (private key
 blocks, known token shapes, `token <value>` and every place the secret check above refuses, quoted
 values whole: `PGPASSWORD='***'`, `mysql -p'***'`, `sshpass -p ***`, `curl -u admin:***`, …), cut
 at 200 characters — the decision (`allow`,
-`warn`, `ask`, `deny`), the level and the matched rule. Activity shows the newest 20 as **Actions on
+`log`, `warn`, `ask`, `deny`), the level and the matched rule. Activity shows the newest 20 as **Actions on
 live** above the feed (with the project filter, refreshed live, linking to `?kind=live.action` for
 all), and the task dialog and page show the task's own as **Actions on live**.
 
 <a id="spec-environments-mcp"></a>
 
 **MCP.** `environments_get(project)` and the resource `relaybay://project/{slug}/environments`
-return the full map (guard mode, each environment with base URL, level and overrides, sign-in flag
-and login-state path, access entries, notes, last change). `project_snapshot` adds one line per
-environment after the description: `- live — live · agents: read (default) · https://…`. There is
-no write tool besides `environment_propose`.
+return the full map (the project's preset and guard mode, each environment with base URL, level
+and its source, overrides, its own guard mode when it differs, sign-in flag and login-state path,
+access entries with test secrets by name only unless exposed, notes, last change).
+`project_snapshot` adds one line per environment after the description: `- live — live · agents:
+read (default) · https://…`. `policy_get(project?, environment?)` returns the effective policy of
+the global scope, a project or an environment: the layer chain and one line per value with the
+layer that set it (`- guard.mode = "warn"  (preset:default)`), plus ignored broken layers. There is
+no write tool besides `environment_propose` and `policy_propose`.
+
+<a id="spec-policy-proposals"></a>
+
+**Policy proposals.** `policy_propose(scope, patch, reason)` — scope `global`, `<project>` or
+`<project>/<environment>` — records a proposal and changes nothing (`policy.proposed`, table
+`policy_proposal`). The patch is merged into the layer's current JSON (objects key by key, any
+other value replaces, `null` removes a key) and the result is validated when proposed and again
+when accepted. Accepting stores the new layer (`policy.updated`, `policy.proposal_accepted`, with
+the confirmation below); when the global file cannot be written after that commit, the proposal
+goes back to pending (`policy.proposal_reopened`) and the error is shown. Rejecting records
+`policy.proposal_rejected`; a decided proposal cannot be decided again.
+
+<a id="spec-policy-page"></a>
+
+**Settings → Policy** (`/settings/policy`, a tab next to Integrations): pending policy proposals
+with Accept / Reject (refreshed live), the preset picker (writes `preset` into the global file,
+keeping the rest), the effective policy of a chosen scope (global, each project, each environment)
+as a table of value, setting and source layer, with the layer chain and ignored layers, a JSON
+editor for that scope's layer (the global file, or the project or environment layer; empty removes
+a database layer) with **Validate and preview** (the effective policy after the change and whether
+it widens access on live) and **Save**, and the list of project and environment layers with
+their raw JSON and who changed them when. Writes need the browser session cookie and the CSRF
+token; a Bearer request is refused (`403`), as on Stands & access. A change widens agents' access
+on live — and asks for a second confirmation, also when accepting a proposal — when a live level
+of its scope (`levels.live.default` or a capability) rises above `read`, its guard mode gets
+weaker (`block` → `warn` → `log` → `off`), it switches built-in guard rules off (`mcp-tool-name`
+included), or it removes a custom pattern or changes one (same id, any other field different);
+switching secret detectors off does not ask. An
+environment layer of a local or test environment does not ask when saved, but when that
+environment later becomes live, its layer is compared with the project's policy and the same
+confirmation is needed (below the environment's own levels, see Permission levels). The
+global file is written after the database transaction commits, atomically (a temporary file,
+then a rename); a failed write is an error naming the file, not a server error. The preset picker
+and accepted global proposals refuse to change a global file that is currently broken (the error
+is shown) instead of overwriting it; the editor replaces it. Every saved layer records
+`policy.updated` (scope, and what it widened).
 
 <a id="spec-memory"></a>
 
@@ -795,9 +919,11 @@ token file. The identity passed as `session` is for display, never for authorisa
 
 Settings come from defaults, then `config.toml` in the data directory, then `RELAYBAY_*` environment
 variables, then command-line flags. The data directory (per-user data dir via `platformdirs`, or
-`RELAYBAY_HOME` / `--home`) holds `relaybay.sqlite`, `token` and the optional `config.toml`. An
-invalid value stops the start with a message naming the key. Keys, variables and flags:
-[configuration reference](reference/configuration.md).
+`RELAYBAY_HOME` / `--home`) holds `relaybay.sqlite`, `token`, the optional `config.toml` and the
+optional global policy `policy.json` ([§7](#spec-policy)). An invalid value stops the start with a
+message naming the key (an invalid policy file: its path and the problem). Keys, variables and
+flags: [configuration reference](reference/configuration.md); policy keys:
+[policy reference](reference/policy.md).
 
 <a id="spec-distribution"></a>
 
@@ -827,6 +953,7 @@ existing databases upgrade in place.
 | `0007_hook_sessions` | `session.cc_session_id` (unique), `session.activity_at`, `session.unlinked_reason` |
 | `0008_comments` | `comment` (task, author kind and name, author session, body, `in_reply_to`, created / delivered / read times, `delivered_to_session_id`); `session.cc_exact` (0 for links made before it) |
 | `0009_environments` | `environment` (project, name, kind, base URL, sign-in flag — never on live, login state path, notes, level, overrides JSON, position, changed at / by), `environment_access` (environment, kind, fields JSON), `environment_proposal` (project, change JSON, reason, proposed by, session, status, decided at / by) |
+| `0010_policy` | `policy_layer` (project, environment or none for the project layer, body JSON, changed at / by; one per scope), `policy_proposal` (scope, project, patch JSON, reason, proposed by, session, status, decided at / by) |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

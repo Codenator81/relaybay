@@ -24,6 +24,7 @@ from relaybay.domain.environments import (
     repo_identifier,
 )
 from relaybay.domain.errors import ConfirmationNeeded, ConflictError, ValidationError
+from relaybay.policy import EffectivePolicy, Layer, preset
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, LiveServer, run_in_app
@@ -33,6 +34,13 @@ from tests.test_mcp import connect as mcp_connect
 from tests.test_migrations import LATEST, make_old_db
 
 FORM = {"Origin": BASE}
+# The default preset with the guard in block mode, as the pure guard tests use it.
+BLOCK = EffectivePolicy(
+    [
+        Layer("preset:default", "preset", preset("default")),
+        Layer("config", "config", {"guard": {"mode": "block"}}),
+    ]
+)
 SECRET = "hunter2-very-secret"
 TOKEN_LIKE = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2"
 
@@ -423,7 +431,7 @@ def _touches(command: str) -> list[tuple[str, str, str | None]]:
         {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
     )
     assert call is not None
-    found = guard.check(call, [_live_env()], dict(DEFAULT_LEVELS), "block")
+    found = guard.check(call, [_live_env()], lambda env: BLOCK)
     return [(t.identifier, t.decision, t.mutating) for t in found]
 
 
@@ -465,7 +473,7 @@ def test_guard_is_fast_on_long_input() -> None:
         )
         assert call is not None and len(call.text) <= guard.TEXT_MAX
         started = time.perf_counter()
-        guard.check(call, [_live_env()] * 50, dict(DEFAULT_LEVELS), "block")
+        guard.check(call, [_live_env()] * 50, lambda env: BLOCK)
         redact(call.text)
         assert time.perf_counter() - started < 0.05, text[:10]
 
@@ -857,7 +865,7 @@ def _probe(command: str) -> list[tuple[str, str, str | None]]:
         {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
     )
     assert call is not None
-    found = guard.check(call, [_probe_env()], dict(DEFAULT_LEVELS), "block")
+    found = guard.check(call, [_probe_env()], lambda env: BLOCK)
     return [(t.identifier, t.decision, t.mutating) for t in found]
 
 
@@ -1012,7 +1020,7 @@ def test_guard_redaction_and_validation_are_fast_on_adversarial_input(text: str)
         {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": text}}
     )
     assert call is not None
-    guard.check(call, [env] * 20, dict(DEFAULT_LEVELS), "block")
+    guard.check(call, [env] * 20, lambda env: BLOCK)
     redact(call.text)
     with contextlib.suppress(ValidationError):
         check_secret("notes", text[:4000])

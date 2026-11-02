@@ -93,12 +93,17 @@ tracker_entry id, task_id, tracker_name, tracker_ref, tracker_url, logged_at, un
 project_rules project_id PK, body (JSON), updated_at
 environment   id, project_id, name (UNIQUE per project), kind (local|test|live), base_url,
               sign_in_allowed (CHECK: 0 on live), login_state_path, notes,
-              level (none|read|ask|full, NULL = permission_defaults), overrides (JSON),
+              level (none|read|ask|full, NULL = the policy's level), overrides (JSON),
               position, created_at, updated_at, updated_by
 environment_access    id, environment_id, kind (ssh|kubectl|db|gitops|logs|monitoring|other),
-              fields (JSON, references only), created_at, updated_at, updated_by
+              fields (JSON, references only; {"value", "test": true} for a test secret),
+              created_at, updated_at, updated_by
 environment_proposal  id, project_id, change (JSON), reason, proposed_by, session_id,
               status (pending|accepted|rejected), created_at, decided_at, decided_by
+policy_layer  id, project_id, environment_id (NULL = the project layer), body (JSON),
+              updated_at, updated_by   -- UNIQUE (project_id, COALESCE(environment_id, 0))
+policy_proposal       id, scope (global|<project>|<project>/<environment>), project_id, patch
+              (JSON), reason, proposed_by, session_id, status, created_at, decided_at, decided_by
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
 ```
 

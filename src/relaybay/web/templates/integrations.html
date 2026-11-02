@@ -4,6 +4,7 @@
 {% block content %}
 <main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
   <h1>Integrations</h1>
+  {% with tab = "integrations" %}{% include "_settings_tabs.html" %}{% endwith %}
   {% include "_integrations.html" %}
 </main>
 {% endblock %}

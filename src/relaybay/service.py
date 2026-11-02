@@ -24,13 +24,14 @@ from relaybay.domain import environments as envs
 from relaybay.domain import guard
 from relaybay.domain.comments import COMMENT_MAX, STOP_BLOCK_CAP, STOP_COMMENT_CAP
 from relaybay.domain.environments import (
-    DEFAULT_GUARD_MODE,
     DEFAULT_LEVELS,
     GUARD_MODES,
     KINDS,
     LEVELS,
     Environment,
+    PolicyProposal,
     Proposal,
+    SecretRules,
 )
 from relaybay.domain.errors import ConfirmationNeeded, ConflictError, NotFoundError, ValidationError
 from relaybay.domain.hooks import (
@@ -69,6 +70,20 @@ from relaybay.domain.stages import OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.task_fields import BY_NAME, FIELD_NAMES, NAME_MAX, TEXT_MAX, TITLE_MAX
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
+from relaybay.policy import (
+    DEFAULT_PRESET,
+    EffectivePolicy,
+    Layer,
+    PolicyError,
+    PolicyFile,
+    apply_patch,
+    config_layer,
+    guard_weakened,
+    parse_layer,
+    preset,
+    validate_layer,
+    widened_on_live,
+)
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -166,6 +181,7 @@ class Inbox:
     unlinked: list[Session]
     replies: list[tuple[Task, list[Comment]]] = field(default_factory=list)
     proposals: list[Proposal] = field(default_factory=list)
+    policy_proposals: list[PolicyProposal] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -176,6 +192,7 @@ class Inbox:
             + len(self.unlinked)
             + len(self.replies)
             + len(self.proposals)
+            + len(self.policy_proposals)
         )
 
 
@@ -204,7 +221,7 @@ class Snapshot:
     decisions: list[Decision]
     rules: Rules
     environments: list[Environment] = field(default_factory=list)
-    permission_defaults: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEVELS))
+    policies: dict[int, EffectivePolicy] = field(default_factory=dict)  # by environment id
 
 
 def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
@@ -308,7 +325,7 @@ def _clean_comment(body: Any) -> str:
     return text
 
 
-def _clean_environment(values: dict[str, Any]) -> dict[str, Any]:
+def _clean_environment(values: dict[str, Any], secrets: SecretRules) -> dict[str, Any]:
     """The given environment fields, validated; secret values are refused."""
     unknown = sorted(set(values) - set(ENVIRONMENT_FIELDS))
     if unknown:
@@ -319,13 +336,15 @@ def _clean_environment(values: dict[str, Any]) -> dict[str, Any]:
     if "kind" in values:
         clean["kind"] = envs.clean_kind(values["kind"])
     if "base_url" in values:
-        clean["base_url"] = envs.clean_base_url(values["base_url"])
+        clean["base_url"] = envs.clean_base_url(values["base_url"], secrets)
     if "sign_in_allowed" in values:
         clean["sign_in_allowed"] = envs.clean_bool(values["sign_in_allowed"], "sign_in_allowed")
     if "login_state_path" in values:
-        clean["login_state_path"] = envs.clean_path(values["login_state_path"], "login_state_path")
+        clean["login_state_path"] = envs.clean_path(
+            values["login_state_path"], "login_state_path", secrets
+        )
     if "notes" in values:
-        clean["notes"] = envs.clean_notes(values["notes"])
+        clean["notes"] = envs.clean_notes(values["notes"], secrets)
     if "level" in values:
         clean["level"] = envs.clean_level(values["level"])
     if "overrides" in values:
@@ -345,12 +364,30 @@ ENVIRONMENT_FIELDS = (
 )
 
 
-def guard_command(call: guard.ToolCall) -> str:
-    """The journal's short, redacted summary of a tool call."""
-    text = " ".join(envs.redact(call.text).split())
+def guard_command(call: guard.ToolCall, test_secrets: list[str] | None = None) -> str:
+    """The journal's short, redacted summary of a tool call; known test secrets are masked
+    too."""
+    text = call.text
+    for value in sorted(test_secrets or [], key=len, reverse=True):
+        text = text.replace(value, "***")
+    text = " ".join(envs.redact(text).split())
     if len(text) > JOURNAL_COMMAND_MAX:
         text = text[: JOURNAL_COMMAND_MAX - 1].rstrip() + "…"
     return text
+
+
+POLICY_SCOPE_HINT = "scope is 'global', a project slug, or '<project>/<environment>'"
+
+
+def _patch_summary(patch: dict[str, Any], prefix: str = "") -> list[str]:
+    paths = []
+    for key, value in patch.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict) and value:
+            paths.extend(_patch_summary(value, f"{path}."))
+        else:
+            paths.append(path)
+    return paths
 
 
 def _clean_slug(value: str) -> str:
@@ -374,19 +411,23 @@ class Service:
         rules_mode: str = "warn",
         hook_activity_window: float = HOOK_ACTIVITY_WINDOW,
         permission_defaults: dict[str, str] | None = None,
-        guard_mode: str = DEFAULT_GUARD_MODE,
+        guard_mode: str | None = None,
+        policy_file: Path | None = None,
     ) -> None:
+        """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
+        layer between the preset and the global `policy_file` (only what was set)."""
         if "{id}" not in desktop_link_template:
             raise ValueError("desktop_link_template must contain '{id}'.")
-        if guard_mode not in GUARD_MODES:
+        if guard_mode is not None and guard_mode not in GUARD_MODES:
             raise ValueError(f"guard_mode must be one of: {', '.join(GUARD_MODES)}.")
         defaults = {**DEFAULT_LEVELS, **(permission_defaults or {})}
         if set(defaults) != set(KINDS) or not set(defaults.values()) <= set(LEVELS):
             raise ValueError(
                 f"permission_defaults maps {', '.join(KINDS)} to one of: {', '.join(LEVELS)}."
             )
-        self.permission_defaults = defaults
-        self.guard_mode = guard_mode
+        self._config_policy = config_layer(permission_defaults, guard_mode)
+        self.policy_file = PolicyFile(policy_file)
+        self._logged_policy_errors: set[str] = set()
         if rules_mode not in RULES_MODES:
             raise ValueError(f"rules_mode must be one of: {', '.join(RULES_MODES)}.")
         self.global_rules = Rules(rules if rules is not None else DEFAULT_RULES, mode=rules_mode)
@@ -417,6 +458,10 @@ class Service:
         # A broken project override is reported now; it never stops the server or the project.
         for slug, body in await repo.list_project_rules(self._read_conn):
             self._merged_rules(slug, body)
+        # A broken global policy stops the start; broken project layers are only logged.
+        self.policy_file.load()
+        for row in await repo.list_policy_layers(self._read_conn):
+            self._db_layer(row)
 
     async def close(self) -> None:
         for timer in self._activity_timers.values():
@@ -967,21 +1012,22 @@ class Service:
 
     async def _guard(self, payload: Any, hook: HookEvent) -> tuple[guard.Touch | None, list[str]]:
         """The strongest deny / ask decision for a PreToolUse call and the warnings of warn
-        mode. Calls that touch a live environment are written to the journal (`live.action`)."""
-        if self.guard_mode == "off":
-            return None, []
+        mode. Calls that touch a live environment are written to the journal (`live.action`),
+        in `log` mode too. Levels, mode and rules come from each environment's policy."""
         call = guard.tool_call(payload)
         if call is None or not await repo.has_environments(self._r):
             return None, []
         session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
         project_ids = await self._guard_projects(session, hook.cwd)
         environments = await repo.list_environments(self._r, project_ids)
-        touches = guard.check(call, environments, self.permission_defaults, self.guard_mode)
+        policies = await self._policies(self._r, environments)
+        touches = guard.check(call, environments, lambda env: policies[env.id])
         if not touches:
             return None, []
         live = [t for t in touches if t.environment.kind == "live"]
         if live:
-            await self._journal(session, call, live)
+            secrets = [v for e in environments for a in e.access for v in a.test_secrets.values()]
+            await self._journal(session, call, live, secrets)
         top = guard.strongest(touches)
         if top is not None and top.decision in ("deny", "ask"):
             return top, []
@@ -989,10 +1035,14 @@ class Service:
         return None, warnings
 
     async def _journal(
-        self, session: Session | None, call: guard.ToolCall, touches: list[guard.Touch]
+        self,
+        session: Session | None,
+        call: guard.ToolCall,
+        touches: list[guard.Touch],
+        test_secrets: list[str],
     ) -> None:
         actor = session.name if session else "hook"
-        command = guard_command(call)
+        command = guard_command(call, test_secrets)
         async with self._tx() as tx:
             bound = await repo.open_tasks_of_session(tx.conn, session.id) if session else []
             for touch in touches:
@@ -1125,6 +1175,7 @@ class Service:
             await self.unlinked_hook_sessions(),
             [(by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id],
             await repo.list_proposals(self._r),
+            await repo.list_policy_proposals(self._r),
         )
 
     async def list_sessions(self, project: str | None = None, limit: int = 200) -> list[SessionRow]:
@@ -1260,14 +1311,15 @@ class Service:
     async def snapshot(self, slug: str, include_done: bool = False) -> Snapshot:
         project = await self.get_project(slug)
         tasks = await self.list_tasks(project=project.slug, include_done=include_done)
+        environments = await repo.list_environments(self._r, [project.id])
         return Snapshot(
             project=project,
             tasks=tasks,
             last_reports=await self.last_reports(tasks),
             decisions=await repo.list_decisions(self._r, project_id=project.id, limit=10),
             rules=await self._rules(self._r, project),
-            environments=await repo.list_environments(self._r, [project.id]),
-            permission_defaults=self.permission_defaults,
+            environments=environments,
+            policies=await self._policies(self._r, environments),
         )
 
     async def events_since(
@@ -1995,12 +2047,17 @@ class Service:
         """The newest agent actions on live environments (`live.action` events)."""
         return await self.activity(project=project, kind=LIVE_ACTION, limit=limit)
 
+    @staticmethod
     def _level(
-        self, level: str | None, overrides: dict[str, str], kind: str, cap: str | None
+        policy: EffectivePolicy,
+        level: str | None,
+        overrides: dict[str, str],
+        kind: str,
+        cap: str | None,
     ) -> str:
         if cap is not None and cap in overrides:
             return overrides[cap]
-        return level or self.permission_defaults[kind]
+        return level or policy.level(kind, cap)
 
     async def _write_environment(
         self,
@@ -2012,12 +2069,18 @@ class Service:
         confirm_live: bool,
     ) -> Environment:
         """Create or change an environment from `values`. Raising live above read (explicitly,
-        not through the configured defaults) needs `confirm_live`."""
-        clean = _clean_environment(values)
+        not through the policy's levels) needs `confirm_live`."""
+        pol = await self._policy_of(tx.conn, project, current)
+        clean = _clean_environment(values, pol.secret_rules)
         name = clean.get("name", current.name if current else None)
         kind = clean.get("kind", current.kind if current else None)
         if name is None or kind is None:
             raise ValidationError("A new environment needs a name and a kind (local, test, live).")
+        if kind == "live" and current is not None and any(a.test_secrets for a in current.access):
+            raise ValidationError(
+                f"{current.name} holds test secrets, which are never allowed on live; remove"
+                " them from its access entries first."
+            )
         other = await repo.find_environment(tx.conn, project.id, name)
         if other is not None and (current is None or other.id != current.id):
             raise ValidationError(f"{project.slug} already has an environment named {name!r}.")
@@ -2032,22 +2095,26 @@ class Service:
             "sign_in_allowed", current.sign_in_allowed if current else kind != "live"
         )
         raised = []
+        was_live = current is not None and current.kind == "live"
+        # What live gets from the project's policy alone: the baseline for an environment that
+        # becomes live, so an environment layer staged while it was test cannot skip the
+        # confirmation (its levels and guard settings were never confirmed for live).
+        base = await self._policy_of(tx.conn, project, None)
         for cap in (None, *envs.CAPABILITIES):
-            after = self._level(level, overrides, kind, cap)
-            if current is not None and current.kind == "live" and kind != "live":
-                # Leaving live compares the effective levels, defaults included: a live
-                # environment (default read) turned into test (default full) is a raise.
-                before = self._level(current.level, current.overrides, current.kind, cap)
+            after = self._level(pol, level, overrides, kind, cap)
+            if was_live:
+                # Staying live, or leaving it: the effective levels, the policy's included (a
+                # live environment at read turned into test at full is a raise).
+                assert current is not None
+                before = self._level(pol, current.level, current.overrides, current.kind, cap)
             elif kind == "live":
-                if (cap is None and level is None) or (cap is not None and cap not in overrides):
-                    continue  # the configured default for live, not raised by this write
-                before = "read"
-                if current is not None and current.kind == "live":
-                    before = self._level(current.level, current.overrides, current.kind, cap)
+                before = self._level(base, None, {}, "live", cap)
             else:
                 break
             if envs.raises_live("live", before, after):
                 raised.append(f"{cap or 'level'} {after}")
+        if kind == "live" and not was_live:
+            raised += guard_weakened(base, pol)
         if raised and not confirm_live:
             raise ConfirmationNeeded(
                 f"Raising {project.slug} {name} (live) above read ({', '.join(raised)}) lets"
@@ -2145,23 +2212,44 @@ class Service:
         kind: str,
         fields: dict[str, Any],
         *,
+        test_secrets: dict[str, Any] | None = None,
         access_id: int | None = None,
         actor: str = "board",
     ) -> Environment:
-        """Add an access entry (`access_id` None) or replace one."""
-        kind, clean = envs.clean_access(kind, fields)
+        """Add an access entry (`access_id` None) or replace one. Test secrets (in `fields` as
+        `{"value": ..., "test": true}`, or in `test_secrets`; `***` keeps a stored one) only on
+        local and test environments whose policy allows them. With neither, a replaced entry
+        keeps its stored test secrets."""
+        plain, marked = envs.split_test_secrets(fields)
+        keep = test_secrets is None and not marked
+        values = {**marked, **(test_secrets or {})}
         async with self._tx() as tx:
             proj, env = await self._project_environment(tx.conn, project, env_id)
-            if access_id is None:
-                access_id = await repo.insert_access(tx.conn, env.id, kind, clean, actor, tx.now)
-                event = "environment.access_added"
-            else:
+            pol = await self._policy_of(tx.conn, proj, env)
+            entry = None
+            if access_id is not None:
                 entry = await repo.get_access(tx.conn, access_id)
                 if entry is None or entry.environment_id != env.id:
                     raise NotFoundError(f"Access entry #{access_id} not found in {env.name}.")
-                if (entry.kind, entry.fields) == (kind, clean):
+            if keep and entry is not None:
+                tests = entry.test_secrets
+            else:
+                tests = envs.clean_test_secrets(
+                    values,
+                    env.kind,
+                    pol.test_secrets_allowed(env.kind),
+                    entry.test_secrets if entry else None,
+                )
+            kind, clean = envs.clean_access(kind, plain, pol.secret_rules, allow_empty=bool(tests))
+            if entry is None:
+                access_id = await repo.insert_access(
+                    tx.conn, env.id, kind, clean, actor, tx.now, tests
+                )
+                event = "environment.access_added"
+            else:
+                if (entry.kind, entry.fields, entry.test_secrets) == (kind, clean, tests):
                     return env
-                await repo.update_access(tx.conn, access_id, kind, clean, actor, tx.now)
+                await repo.update_access(tx.conn, entry.id, kind, clean, actor, tx.now, tests)
                 event = "environment.access_updated"
             await self._access_event(
                 tx, event, actor, proj, env, access_kind=kind, access_id=access_id
@@ -2200,11 +2288,12 @@ class Service:
         hook_session: str | None = None,
     ) -> Proposal:
         """An agent's proposal: recorded for the owner, nothing else changes."""
-        clean = envs.clean_change(change)
+        secrets = (await self.effective_policy(project)).secret_rules
+        clean = envs.clean_change(change, secrets)
         text = _clean_text(reason, "reason", envs.REASON_MAX)
         if not text:
             raise ValidationError("reason must say why the change is needed.")
-        envs.check_secret("reason", text)
+        envs.check_secret("reason", text, secrets)
         async with self._tx() as tx:
             proj = await self.get_project(project, tx.conn)
             current = await repo.find_environment(tx.conn, proj.id, clean["environment"])
@@ -2287,3 +2376,364 @@ class Service:
             decided = await repo.get_proposal(tx.conn, proposal.id)
             assert decided is not None
             return decided
+
+    # --- policy ------------------------------------------------------------
+
+    def _log_policy_error(self, error: str) -> None:
+        if error not in self._logged_policy_errors:
+            self._logged_policy_errors.add(error)
+            logger.warning("%s The layer is ignored.", error)
+
+    def _db_layer(self, row: repo.PolicyRow) -> Layer:
+        """A project or environment layer from the database; a broken one is ignored."""
+        if row.environment_id is None:
+            name, scope = f"project:{row.project_slug}", "project"
+        else:
+            name, scope = f"environment:{row.project_slug}/{row.environment_name}", "environment"
+        try:
+            body = parse_layer(row.body, name, scope)
+        except PolicyError as exc:
+            self._log_policy_error(str(exc))
+            return Layer(name, scope, {}, error=str(exc))
+        return Layer(name, scope, body)
+
+    def _global_layers(self, global_body: dict[str, Any] | None = None) -> list[Layer]:
+        """Preset → config.toml → global file (`global_body` instead of the file: a preview)."""
+        self.policy_file.refresh()
+        body = self.policy_file.body if global_body is None else global_body
+        name = body.get("preset", DEFAULT_PRESET)
+        layers = [Layer(f"preset:{name}", "preset", preset(name))]
+        if self._config_policy:
+            layers.append(Layer("config", "config", self._config_policy))
+        layers.append(Layer("global", "global", body))
+        return layers
+
+    def global_policy(self) -> EffectivePolicy:
+        return EffectivePolicy(self._global_layers())
+
+    @property
+    def permission_defaults(self) -> dict[str, str]:
+        """The global policy's level per environment kind."""
+        pol = self.global_policy()
+        return {kind: pol.level(kind) for kind in KINDS}
+
+    @property
+    def guard_mode(self) -> str:
+        return self.global_policy().guard_mode
+
+    async def _layers_of(
+        self, conn: aiosqlite.Connection, project_ids: list[int]
+    ) -> tuple[dict[int, Layer], dict[int, Layer]]:
+        """Project layers by project id, environment layers by environment id."""
+        projects: dict[int, Layer] = {}
+        environments: dict[int, Layer] = {}
+        for row in await repo.list_policy_layers(conn, project_ids):
+            layer = self._db_layer(row)
+            if row.environment_id is None:
+                projects[row.project_id] = layer
+            else:
+                environments[row.environment_id] = layer
+        return projects, environments
+
+    async def _policies(
+        self, conn: aiosqlite.Connection, environments: list[Environment]
+    ) -> dict[int, EffectivePolicy]:
+        """The effective policy of each environment, by environment id."""
+        if not environments:
+            return {}
+        base = self._global_layers()
+        projects, layers = await self._layers_of(
+            conn, list(dict.fromkeys(e.project_id for e in environments))
+        )
+        out = {}
+        for env in environments:
+            extra = [projects.get(env.project_id), layers.get(env.id)]
+            out[env.id] = EffectivePolicy(base + [x for x in extra if x is not None])
+        return out
+
+    async def environment_policies(
+        self, environments: list[Environment]
+    ) -> dict[int, EffectivePolicy]:
+        return await self._policies(self._r, environments)
+
+    async def _policy_of(
+        self, conn: aiosqlite.Connection, project: Project, env: Environment | None
+    ) -> EffectivePolicy:
+        projects, layers = await self._layers_of(conn, [project.id])
+        extra = [projects.get(project.id), layers.get(env.id) if env else None]
+        return EffectivePolicy(self._global_layers() + [x for x in extra if x is not None])
+
+    async def _resolve_scope(
+        self, conn: aiosqlite.Connection, scope: str
+    ) -> tuple[str, Project | None, Environment | None]:
+        """`global`, `<project>` or `<project>/<environment>` → (canonical scope, project,
+        environment)."""
+        text = str(scope or "").strip()
+        if not text:
+            raise ValidationError(f"Missing scope: {POLICY_SCOPE_HINT}.")
+        if text.lower() == "global":
+            return "global", None, None
+        slug, _, env_name = text.partition("/")
+        project = await self.get_project(slug, conn)
+        if not env_name:
+            return project.slug, project, None
+        env = await repo.find_environment(conn, project.id, env_name.strip())
+        if env is None:
+            raise NotFoundError(f"{project.slug} has no environment {env_name.strip()!r}.")
+        return f"{project.slug}/{env.name}", project, env
+
+    async def effective_policy(
+        self, project: str | None = None, environment: str | None = None
+    ) -> EffectivePolicy:
+        """The effective policy of the global scope, a project or one of its environments."""
+        if project is None:
+            if environment:
+                raise ValidationError("environment needs a project.")
+            return self.global_policy()
+        scope = f"{project}/{environment}" if environment else project
+        _, proj, env = await self._resolve_scope(self._r, scope)
+        assert proj is not None
+        return await self._policy_of(self._r, proj, env)
+
+    async def policy_layer_text(self, scope: str) -> str:
+        """The raw JSON of one layer as stored (empty: no layer)."""
+        _, proj, env = await self._resolve_scope(self._r, scope)
+        if proj is None:
+            self.policy_file.refresh()
+            return self.policy_file.text
+        for row in await repo.list_policy_layers(self._r, [proj.id]):
+            if row.environment_id == (env.id if env else None):
+                return row.body
+        return ""
+
+    async def policy_layers(self) -> list[repo.PolicyRow]:
+        return await repo.list_policy_layers(self._r)
+
+    async def _policy_change(
+        self,
+        conn: aiosqlite.Connection,
+        scope: str,
+        body: dict[str, Any],
+    ) -> tuple[str, Project | None, Environment | None, EffectivePolicy, list[str]]:
+        """Validate a new layer for `scope`: the policy after it and what it widens on live."""
+        canonical, proj, env = await self._resolve_scope(conn, scope)
+        kind = "global" if proj is None else "environment" if env else "project"
+        validate_layer(body, f"{kind} policy {canonical}", kind)
+        if proj is None:
+            before = self.global_policy()
+            after = EffectivePolicy(self._global_layers(body))
+        else:
+            projects, layers = await self._layers_of(conn, [proj.id])
+            project_layer = projects.get(proj.id)
+            env_layer = layers.get(env.id) if env else None
+            base = self._global_layers()
+            old = [x for x in (project_layer, env_layer) if x is not None]
+            before = EffectivePolicy(base + old)
+            new = Layer(f"{kind}:{canonical}", kind, body)
+            below = [project_layer, new] if env else [new]
+            after = EffectivePolicy(base + [x for x in below if x is not None])
+        widened = [] if env is not None and env.kind != "live" else widened_on_live(before, after)
+        return canonical, proj, env, after, widened
+
+    async def preview_policy(self, scope: str, text: str) -> tuple[EffectivePolicy, list[str]]:
+        """The effective policy a layer's new text would give, and what it widens on live;
+        PolicyError when the text does not validate."""
+        canonical, proj, env = await self._resolve_scope(self._r, scope)
+        kind = "global" if proj is None else "environment" if env else "project"
+        body = parse_layer(text, f"{kind} policy {canonical}", kind)
+        _, _, _, after, widened = await self._policy_change(self._r, scope, body)
+        return after, widened
+
+    async def _store_policy(
+        self,
+        tx: _Tx,
+        scope: str,
+        body: dict[str, Any],
+        actor: str,
+        confirm_live: bool,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Store a validated layer in the transaction; for the global scope, the body the
+        caller writes to the file after the commit (no file I/O while the transaction is open).
+        """
+        canonical, proj, env, _, widened = await self._policy_change(tx.conn, scope, body)
+        if widened and not confirm_live:
+            raise ConfirmationNeeded(
+                f"This policy change widens agents' access on live ({', '.join(widened)}):"
+                " agents may change live without asking. Confirm to save."
+            )
+        if proj is None:
+            self._global_writable()
+        else:
+            text = json.dumps(body, indent=2, ensure_ascii=False) if body else None
+            await repo.set_policy_layer(
+                tx.conn, proj.id, env.id if env else None, text, actor, tx.now
+            )
+        await tx.event(
+            "policy.updated",
+            actor,
+            project_id=proj.id if proj else None,
+            scope=canonical,
+            **({"project": proj.slug} if proj else {}),
+            widened=widened,
+        )
+        return canonical, body if proj is None else None
+
+    def _global_writable(self) -> None:
+        """A change merged into the global file never overwrites the owner's broken edit."""
+        self.policy_file.refresh()
+        if self.policy_file.error:
+            raise PolicyError(
+                f"The global policy file is broken, so it was not changed: {self.policy_file.error}"
+                " Fix the file (or replace it in the editor) first."
+            )
+
+    def _write_global(self, body: dict[str, Any] | None) -> None:
+        if body is not None:
+            self.policy_file.write(body)
+
+    async def save_policy_layer(
+        self, scope: str, text: str, *, confirm_live: bool = False, actor: str = "board"
+    ) -> str:
+        """Replace one layer with `text` (JSON; empty removes a project or environment layer).
+        Board only: agents propose. A change that widens access on live needs `confirm_live`."""
+        canonical, proj, env = await self._resolve_scope(self._r, scope)
+        kind = "global" if proj is None else "environment" if env else "project"
+        body = parse_layer(text, f"{kind} policy {canonical}", kind)
+        if proj is None:
+            # The editor replaces the whole file, a broken one included.
+            _, _, _, _, widened = await self._policy_change(self._r, canonical, body)
+            if widened and not confirm_live:
+                raise ConfirmationNeeded(
+                    f"This policy change widens agents' access on live ({', '.join(widened)}):"
+                    " agents may change live without asking. Confirm to save."
+                )
+            self.policy_file.write(body)
+            async with self._tx() as tx:
+                await tx.event("policy.updated", actor, scope="global", widened=widened)
+            return canonical
+        async with self._tx() as tx:
+            canonical, _ = await self._store_policy(tx, canonical, body, actor, confirm_live)
+        return canonical
+
+    async def set_preset(
+        self, name: str, *, confirm_live: bool = False, actor: str = "board"
+    ) -> None:
+        """Name the preset in the global file, keeping the rest of it."""
+        preset(name)  # unknown names fail here
+        self._global_writable()
+        body = {**self.policy_file.body, "preset": name}
+        async with self._tx() as tx:
+            _, pending = await self._store_policy(tx, "global", body, actor, confirm_live)
+        self._write_global(pending)
+
+    async def policy_proposals(self) -> list[PolicyProposal]:
+        return await repo.list_policy_proposals(self._r)
+
+    async def propose_policy_change(
+        self,
+        scope: str,
+        patch: Any,
+        reason: str,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> PolicyProposal:
+        """An agent's proposed policy change: recorded for the owner, nothing else changes. The
+        patch is merged into the layer's JSON and the result validated now."""
+        if not isinstance(patch, dict) or not patch:
+            raise ValidationError(
+                "patch must be a non-empty object merged into the layer, e.g."
+                " {'guard': {'mode': 'block'}}."
+            )
+        text = _clean_text(reason, "reason", envs.REASON_MAX)
+        if not text:
+            raise ValidationError("reason must say why the change is needed.")
+        envs.check_secret("reason", text)
+        async with self._tx() as tx:
+            canonical, proj, _ = await self._resolve_scope(tx.conn, scope)
+            current = await self._layer_body(tx.conn, canonical)
+            await self._policy_change(tx.conn, canonical, apply_patch(current, patch))
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            proposal_id = await repo.insert_policy_proposal(
+                tx.conn,
+                canonical,
+                proj.id if proj else None,
+                patch,
+                text,
+                actor,
+                sess.id if sess else None,
+                tx.now,
+            )
+            await tx.event(
+                "policy.proposed",
+                actor,
+                project_id=proj.id if proj else None,
+                session_id=sess.id if sess else None,
+                scope=canonical,
+                **({"project": proj.slug} if proj else {}),
+                proposal_id=proposal_id,
+                change=", ".join(_patch_summary(patch)),
+            )
+            proposal = await repo.get_policy_proposal(tx.conn, proposal_id)
+            assert proposal is not None
+            return proposal
+
+    async def _layer_body(self, conn: aiosqlite.Connection, scope: str) -> dict[str, Any]:
+        """A layer's current JSON (a broken stored layer counts as empty)."""
+        _, proj, env = await self._resolve_scope(conn, scope)
+        if proj is None:
+            self.policy_file.refresh()
+            return dict(self.policy_file.body)
+        projects, layers = await self._layers_of(conn, [proj.id])
+        layer = layers.get(env.id) if env else projects.get(proj.id)
+        return dict(layer.body) if layer is not None else {}
+
+    async def decide_policy_proposal(
+        self,
+        proposal_id: int,
+        accept: bool,
+        *,
+        confirm_live: bool = False,
+        actor: str = "board",
+    ) -> PolicyProposal:
+        """Accept (merge the patch into the layer) or reject a policy proposal. Board only."""
+        pending = None
+        async with self._tx() as tx:
+            proposal = await repo.get_policy_proposal(tx.conn, proposal_id)
+            if proposal is None:
+                raise NotFoundError(f"Policy proposal #{proposal_id} not found.")
+            if proposal.status != "pending":
+                raise ConflictError(f"Policy proposal #{proposal_id} is already {proposal.status}.")
+            if accept:
+                current = await self._layer_body(tx.conn, proposal.scope)
+                body = apply_patch(current, proposal.patch)
+                _, pending = await self._store_policy(tx, proposal.scope, body, actor, confirm_live)
+            status = "accepted" if accept else "rejected"
+            await repo.decide_policy_proposal(tx.conn, proposal.id, status, actor, tx.now)
+            await tx.event(
+                f"policy.proposal_{status}",
+                actor,
+                project_id=proposal.project_id,
+                scope=proposal.scope,
+                proposal_id=proposal.id,
+                change=", ".join(_patch_summary(proposal.patch)),
+            )
+            decided = await repo.get_policy_proposal(tx.conn, proposal.id)
+            assert decided is not None
+        try:
+            self._write_global(pending)
+        except PolicyError:
+            # The file is the policy: without it the proposal is not accepted after all.
+            async with self._tx() as tx:
+                await repo.reopen_policy_proposal(tx.conn, proposal_id)
+                await tx.event(
+                    "policy.proposal_reopened",
+                    actor,
+                    scope=decided.scope,
+                    proposal_id=proposal_id,
+                    reason="the global policy file could not be written",
+                )
+            raise
+        return decided

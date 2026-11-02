@@ -995,3 +995,12 @@ body:has(.task-dialog[open]) { overflow: hidden; }
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+/* Settings tabs and the Policy page */
+.settings-tabs { display: flex; gap: 8px; margin: 0 0 14px; }
+.settings-tabs .action.is-active { border-color: var(--accent); font-weight: 600; }
+.policy-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.policy-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 8px 4px 0; }
+.policy-table td { padding: 3px 8px 3px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; vertical-align: top; }
+.policy-json { margin: 4px 0; padding: 6px 8px; border-radius: 6px; background: var(--chip-bg); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.field textarea.policy-editor { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }

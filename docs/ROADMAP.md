@@ -37,6 +37,7 @@ live board.
 | Comments from the board to agents, delivered through hooks, opt-in wake-up hook (11.4) | done | [0005](design/0005-comments-to-agents.md) |
 | Unread comment counter on the card; wake-up hook verified against a live Claude Code | later | [0005](design/0005-comments-to-agents.md) |
 | Project environments and access map, agent permission levels, guard, live-actions journal (11.4b) | done | [0006](design/0006-environments-and-access.md) |
+| Policy as data: presets, layered `policy.json` / project / environment policy, custom guard patterns, secret rules, test secrets, Settings → Policy, `policy_get` / `policy_propose` (11.4c) | done | [0013](design/0013-policy-as-data.md) |
 
 ## 0.3.0 — acceptance and memory
 
