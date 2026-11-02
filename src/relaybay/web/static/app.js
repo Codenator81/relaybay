@@ -7,7 +7,7 @@
     "project.created", "project.updated",
     "task.created", "task.updated", "task.stage_changed",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
-    "session.seen"
+    "task.tracker_unlogged", "session.seen"
   ];
   var live = null;
   var lastId = 0;
@@ -89,6 +89,7 @@
         queue(column(data.to));
         break;
       case "task.updated":
+      case "task.tracker_unlogged":
         // A done task can leave the done column (archived) when it is marked as logged.
         queue(data.stage === "done" ? column("done") : (card(data.key) || column(data.stage)));
         break;

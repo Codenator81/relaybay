@@ -117,14 +117,16 @@ def test_edit_conflict_returns_the_form_with_an_error(
 
 
 def test_stage_labels_from_config(tmp_path) -> None:
-    (tmp_path / "config.toml").write_text('[stages.labels]\ndev = "разработка"\n', encoding="utf-8")
+    (tmp_path / "config.toml").write_text(
+        '[stages.labels]\ndev = "in progress"\n', encoding="utf-8"
+    )
     settings = load_settings(home=tmp_path, environ={})
     with TestClient(create_app(settings), base_url=BASE) as client:
         token = settings.token_path.read_text(encoding="utf-8").strip()
         client.get(f"/login?token={token}")
         run_in_app(client, client.app.state.service.upsert_project, "acme-shop")
         page = client.get("/p/acme-shop")
-    assert "разработка" in page.text
+    assert "in progress" in page.text
 
 
 DESKTOP = "local_00000000-0000-0000-0000-000000000001"

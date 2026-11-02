@@ -5,7 +5,16 @@ from typing import Any
 
 import aiosqlite
 
-from relaybay.domain.models import Binding, Decision, Event, Project, Report, Session, Task
+from relaybay.domain.models import (
+    Binding,
+    Decision,
+    Event,
+    Project,
+    Report,
+    Session,
+    Task,
+    TrackerEntry,
+)
 from relaybay.domain.stages import Stage
 
 _TASK_SELECT = """
@@ -15,23 +24,6 @@ FROM task t
 JOIN project p ON p.id = t.project_id
 LEFT JOIN session s ON s.id = t.session_id
 """
-
-TASK_FIELDS = (
-    "title",
-    "stage",
-    "stage_note",
-    "waiting_on",
-    "next_step",
-    "branch",
-    "doc_path",
-    "description",
-    "progress",
-    "priority",
-    "tracker_ref",
-    "tracker_name",
-    "tracker_url",
-    "tracker_logged",
-)
 
 
 def _project(row: aiosqlite.Row) -> Project:
@@ -409,6 +401,71 @@ async def distinct_waiting_on(conn: aiosqlite.Connection, limit: int = 50) -> li
         (limit,),
     )
     return [r[0] for r in rows]
+
+
+# --- tracker history -------------------------------------------------------
+
+
+def _tracker_entry(row: aiosqlite.Row) -> TrackerEntry:
+    return TrackerEntry(
+        id=row["id"],
+        task_id=row["task_id"],
+        tracker_name=row["tracker_name"],
+        tracker_ref=row["tracker_ref"],
+        tracker_url=row["tracker_url"],
+        logged_at=row["logged_at"],
+        unlogged_at=row["unlogged_at"],
+        created_at=row["created_at"],
+    )
+
+
+async def insert_tracker_entry(
+    conn: aiosqlite.Connection,
+    task_id: int,
+    tracker_name: str | None,
+    tracker_ref: str,
+    tracker_url: str | None,
+    logged_at: str | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO tracker_entry (task_id, tracker_name, tracker_ref, tracker_url, logged_at,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (task_id, tracker_name, tracker_ref, tracker_url, logged_at, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def latest_tracker_entry(
+    conn: aiosqlite.Connection, task_id: int, tracker_ref: str
+) -> TrackerEntry | None:
+    row = await _one(
+        conn,
+        "SELECT * FROM tracker_entry WHERE task_id = ? AND tracker_ref = ?"
+        " ORDER BY id DESC LIMIT 1",
+        (task_id, tracker_ref),
+    )
+    return _tracker_entry(row) if row else None
+
+
+async def update_tracker_entry(
+    conn: aiosqlite.Connection, entry_id: int, changes: dict[str, Any]
+) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(
+        f"UPDATE tracker_entry SET {sets} WHERE id = ?", (*changes.values(), entry_id)
+    )
+
+
+async def list_tracker_entries(
+    conn: aiosqlite.Connection, task_id: int, limit: int = 50
+) -> list[TrackerEntry]:
+    rows = await _all(
+        conn,
+        "SELECT * FROM tracker_entry WHERE task_id = ? ORDER BY id DESC LIMIT ?",
+        (task_id, limit),
+    )
+    return [_tracker_entry(r) for r in rows]
 
 
 # --- report / decision -----------------------------------------------------

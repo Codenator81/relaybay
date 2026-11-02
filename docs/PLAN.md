@@ -106,12 +106,15 @@ task_session id PK, task_id FK, session_id FK, bound_at, unbound_at NULL, bound_
           -- binding history; at most one open row per task
 session_alias name PK, session_id FK, created_at
           -- plain names that resolve to a (desktop) session
+tracker_entry id PK, task_id FK, tracker_name NULL, tracker_ref, tracker_url NULL,
+          logged_at NULL, unlogged_at NULL, created_at
+          -- every issue key the task has had; the task's tracker_* columns are the current one
 event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id NULL,
           session_id NULL, actor TEXT, payload JSON
 ```
 
 - **Event kinds:** `project.created|updated`, `task.created|updated|stage_changed|closed`,
-  `task.session_bound|session_unbound`, `report.added`, `decision.added`,
+  `task.session_bound|session_unbound|tracker_unlogged`, `report.added`, `decision.added`,
   `session.seen|status_changed|ended|alias_added`, `import.completed`.
 - **Description and progress** (migration `0002`): changing either is a `task.updated` with a
   version bump like any field; `report_add` with `progress` writes both events in one transaction.
@@ -131,12 +134,22 @@ event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id N
   explicit write of the same text confirms it (and counts as a change) when it is stale or the same
   write changes the stage; otherwise an unchanged next step is a no-op as before. The board's edit
   form confirms it only when its text is edited; saving other fields (or the stage) leaves it as is.
+- **Tracker history and auto-unlog** (migration `0005`, backfills one entry per task with a key,
+  `logged_at = updated_at` when logged): a write that sets a different `tracker_ref` appends an
+  entry; name/URL edits update the current one; `tracker_logged` false→true sets `logged_at` (and
+  clears `unlogged_at`), true→false sets `unlogged_at`. When a logged task gets new work — a
+  report, a changed `progress`, or a stage move back out of `live`/`done` to an earlier stage —
+  the same transaction clears `tracker_logged` and emits `task.tracker_unlogged` with a `reason`.
+  Metadata edits keep the mark; an explicit `tracker_logged` in the write wins (the board form
+  sends it only when the checkbox changed). The mark belongs to the issue: a new `tracker_ref`
+  starts as not logged unless `tracker_logged` is passed in the same write (recorded in that
+  write's `task.updated`; the previous entry keeps its `logged_at`).
 - **Archive** is computed, not stored: a done task whose `closed_at` is older than
   `done_window_days` (config, default 7) is left out of the board's done column unless
   "Show archived" or a search is active. With `require_tracker_log = true` (config, default false)
   a done task without `tracker_logged` is never archived and shows "not logged".
-- **Stages** are a fixed enum in v1 with a display-label map in config (so a user can show "разработка"
-  instead of "dev"). Any transition is allowed (real work jumps back from `test` to `dev`); the event
+- **Stages** are a fixed enum in v1 with a display-label map in config (so a user can show "in progress"
+  instead of "dev", in any language). Any transition is allowed (real work jumps back from `test` to `dev`); the event
   log keeps history. Custom stage sets are a v0.2+ question.
 - **"Waiting on"** stays free text in v1 with autocomplete from previous values; structured
   assignees are not needed for one user.
@@ -239,9 +252,10 @@ trusted for authorization — the token is the only auth; identity is for displa
 | `project_upsert` | Create/rename a project, set repo path | `slug`, `name?`, `repo_path?` |
 | `project_snapshot` | Compact markdown snapshot of a project: open tasks by stage, waiting-on, last report per task, recent decisions | `project`, `include_done?` |
 | `task_list` | Filtered list | `project?`, `stage?`, `waiting_on?`, `session?` |
-| `task_get` | Full task with last N reports and decisions | `task` (key or id) |
+| `task_get` | Full task with last N reports, decisions and the tracker history | `task` (key or id) |
 | `task_create` | New task | `project`, `title`, `stage?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `session?` |
 | `task_update` | Patch fields (incl. `description`, `progress`, `tracker_*`); `"-"` or `""` clears a text field | `task`, fields…, `expected_version?` |
+| `task_patch` | Patch any editable fields given as one JSON object (for clients with a stale `task_update` schema); same validation; allowed names from `task_get` / `relaybay://schema/task`, generated from the one field list the service validates against | `task`, `fields`, `expected_version?` |
 | `task_set_stage` | Move stage with a note; optional `next_step` / `waiting_on` saved atomically | `task`, `stage`, `note?`, `next_step?`, `waiting_on?` |
 | `task_bind_session` | "Session X works on this task now"; a plain name never replaces a desktop binding, it becomes its alias | `task`, `session` |
 | `task_unbind_session` | "Nobody works on this task now"; history kept; `session` guards against unbinding a successor | `task`, `session?` |
@@ -250,7 +264,9 @@ trusted for authorization — the token is the only auth; identity is for displa
 | `events_since` | Event feed for catch-up by an agent | `since_id?`, `project?`, `limit?` |
 
 Plus MCP **resources** `relaybay://project/{slug}` (same text as `project_snapshot`) so a session can
-`@`-mention a project snapshot. Tool outputs are short, model-friendly markdown, not raw JSON dumps.
+`@`-mention a project snapshot, and `relaybay://schema/task` (the editable task fields). An MCP
+client keeps the parameter schema of a tool it already loaded across server restarts, so new task
+fields are reachable through `task_patch` without a schema refresh. Tool outputs are short, model-friendly markdown, not raw JSON dumps.
 Tool descriptions are written so that an agent knows *when* to call them ("call `report_add` at the
 end of every stage with your final report"). A copy-paste instruction snippet for a project's
 `CLAUDE.md` / `AGENTS.md` ships in `docs/connect-claude-code.md`.
@@ -285,8 +301,8 @@ MCP-reported status only.
 - **Registry import** — `relaybay import registry <file.md> [--project-column ...]`: parses the first
   GitHub-flavoured markdown table with columns *project, task, stage, waiting on, next step, doc*.
   Column headers are matched through a configurable alias map (any language). The stage cell is free
-  text; the importer takes the leading stage word through the same alias map (`план`, `разработка`,
-  `test`, `live`, `закрыта`, …) and keeps the rest as `stage_note`. Unknown → `plan` + a warning.
+  text; the importer takes the leading stage word through the same alias map (`plan`, `in progress`,
+  `test`, `live`, `shipped`, …; aliases in any language) and keeps the rest as `stage_note`. Unknown → `plan` + a warning.
   Idempotent: re-import matches by `(project, title)` or an explicit key column and updates, reporting
   a dry-run diff first (`--dry-run` default on the first run).
 - **Per-task document** — the doc cell is stored as `doc_path`; the board renders that markdown file
