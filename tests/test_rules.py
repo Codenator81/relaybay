@@ -315,6 +315,7 @@ def test_instructions_carry_the_contract() -> None:
         "task_patch",
         "relaybay://rules",
         "Warning (rules)",
+        "`hook_session`",
     ):
         assert phrase in instructions(Rules(DEFAULT_RULES)), phrase
 

@@ -30,8 +30,9 @@ def instructions(rules: Rules) -> str:
             " rules; read relaybay://rules/<project> (or call rules_get) for the details.",
             "2. Pick the task you work on, or create one with task_create. Pass `session` on"
             " writes: your own desktop session id (local_…) with `session_title` if you know it,"
-            " otherwise a human-readable name. If you don't know your local_ id, don't rebind a"
-            " task — the coordinator binds you.",
+            " otherwise a human-readable name; add `hook_session` if the session start gave you"
+            " one ('Your relaybay hook session: …'). If you don't know your local_ id, don't"
+            " rebind a task — the coordinator binds you.",
             "3. On every stage change and every report, also update next_step (what happens next),"
             " waiting_on (who acts next) and progress (everything done so far).",
             "4. Add a report at the end of every stage. Its first line is"
@@ -58,6 +59,13 @@ Session = Annotated[str | None, Field(description=SESSION_HELP + " Optional.")]
 SessionTitle = Annotated[
     str | None,
     Field(description="Display name of your session (its title), used with a desktop session id."),
+]
+HookSession = Annotated[
+    str | None,
+    Field(
+        description="Your Claude Code hook session id, if the session start told you one ('Your"
+        " relaybay hook session: …'). Links the board's live status to your session. Optional."
+    ),
 ]
 TaskRef = Annotated[str, Field(description="Task key such as 'acme-shop-12', or its numeric id.")]
 ProjectSlug = Annotated[str, Field(description="Project slug such as 'acme-shop'.")]
@@ -116,6 +124,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         description: Annotated[str | None, Field(description="One-line description.")] = None,
         session: Session = None,
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Create a project, or rename it / set its repository path. Call it once before creating
         the first task of a project that is not on the board yet (see project_list)."""
@@ -127,6 +136,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 description=description,
                 session=session,
                 session_title=session_title,
+                hook_session=hook_session,
             )
         )
         return fmt.project(project, created)
@@ -198,6 +208,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         tracker_logged: Annotated[bool, Field(description=TRACKER_LOGGED_HELP)] = False,
         session: Session = None,
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Create a task when you start work that is not on the board yet. Give it a short
         `description` (what to do and why). Returns its key (e.g. 'acme-shop-12'); use the key in
@@ -219,6 +230,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 tracker_logged=tracker_logged,
                 session=session,
                 session_title=session_title,
+                hook_session=hook_session,
             )
         )
         return fmt.task_saved(created, "Created")
@@ -252,6 +264,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Change task fields (waiting on, next step, branch, description, progress, the tracker
         issue and its work-log mark, ...). Omitted fields stay as they are; '-' or an empty
@@ -285,6 +298,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 expected_version=expected_version,
                 session=session,
                 session_title=session_title,
+                hook_session=hook_session,
             )
         )
         return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
@@ -306,6 +320,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Change any task fields given as one JSON object, with the same rules as task_update
         and task_set_stage (a `stage` value moves the task). Use it for a field your client's
@@ -321,6 +336,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 expected_version=expected_version,
                 session=session,
                 session_title=session_title,
+                hook_session=hook_session,
             )
         )
         return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
@@ -336,6 +352,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         waiting_on: Annotated[str | None, Field(description=WAITING_ON_HELP + CLEARS)] = None,
         session: Session = None,
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Move a task to another stage (plan, dev, test, live, done) when its work moves on, e.g.
         to dev when you start coding, to test when it is ready for review, to done when finished.
@@ -351,6 +368,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 waiting_on=cleared(waiting_on),
                 session=session,
                 session_title=session_title,
+                hook_session=hook_session,
             )
         )
         return fmt.with_warnings(fmt.task_saved(saved.task, "Moved"), saved.warnings)
@@ -360,6 +378,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         task: TaskRef,
         session: Annotated[str, Field(description=SESSION_HELP)],
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Mark that this session works on the task now; the board shows it with a link that
         opens the Claude desktop app session. Call it when you pick up an existing task.
@@ -369,7 +388,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         as that session's alias. Binding a session ends the previous session's binding; the
         history is kept."""
         updated, kept, alias_recorded = await run(
-            service.bind_session(task, session, session_title=session_title)
+            service.bind_session(
+                task, session, session_title=session_title, hook_session=hook_session
+            )
         )
         if kept is not None:
             who = fmt.who_label(kept.name, kept.external_id)
@@ -428,6 +449,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         waiting_on: Annotated[str | None, Field(description=WAITING_ON_HELP + CLEARS)] = None,
         session: Session = None,
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Add a report to a task. Call it at the end of every stage with your final report: what
         changed, how it was checked, what is left. Pass `progress` too, so the task's summary of
@@ -439,6 +461,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 body,
                 session=session,
                 session_title=session_title,
+                hook_session=hook_session,
                 progress=cleared(progress),
                 next_step=cleared(next_step),
                 waiting_on=cleared(waiting_on),
@@ -456,6 +479,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         decided_by: Annotated[str | None, Field(description="Who decided.")] = None,
         session: Session = None,
         session_title: SessionTitle = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Record a decision the user or the team made (scope, approach, trade-off), so later
         sessions find it in the project snapshot."""
@@ -467,6 +491,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 decided_by=decided_by,
                 session=session,
                 session_title=session_title,
+                hook_session=hook_session,
             )
         )
         return f"Decision #{decision.id} recorded for {project}."

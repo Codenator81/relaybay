@@ -26,6 +26,12 @@ class Session:
     status: str | None
     last_seen_at: str
     created_at: str
+    project_id: int | None = None
+    cwd: str | None = None
+    activity: str | None = None
+    activity_at: str | None = None
+    cc_session_id: str | None = None
+    unlinked_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -59,6 +65,8 @@ class Task:
     session_external_id: str | None = None
     session_status: str | None = None
     session_link: str | None = None
+    session_activity: str | None = None
+    session_activity_at: str | None = None
 
     @property
     def next_step_stale(self) -> bool:

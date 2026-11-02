@@ -9,8 +9,8 @@ with a message that says what to do.
 
 The server's MCP `instructions` (sent once when a session connects) are a short working contract:
 read `project_snapshot` on start (its first line names the rules); pick or create a task and pass
-`session` (your `local_` id with `session_title` if you know it; if not, don't rebind — the
-coordinator binds you); update `next_step`, `waiting_on` and `progress` on every stage change and
+`session` (your `local_` id with `session_title` if you know it, plus `hook_session` if the
+session start gave you one; if not, don't rebind — the coordinator binds you); update `next_step`, `waiting_on` and `progress` on every stage change and
 report; start a report with the configured first line, states and sizes (taken from the
 effective global rules, so they match `rules_get`); set `waiting_on` to who
 decides when the work needs a decision; use `task_patch` for fields your tool schema lacks; treat a
@@ -25,6 +25,13 @@ Conventions:
   (`local_<uuid>`) if the session knows it, together with `session_title` (its display name);
   otherwise a human-readable name. relaybay creates the session on first use and records it as the
   actor of the event. It is for display only; the token is the only authorization.
+- **`hook_session`** — optional on every write tool (and `task_bind_session`): the Claude Code
+  session id that relaybay's hooks report. With hooks set up (`relaybay setup`), the session start
+  adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the
+  agent's context. Passed together with `session`, it links that hook id to the calling session
+  exactly, so the board's live status (working / waiting / idle / ended) follows the right card.
+  A row the hooks had created for the id by guess hands over its status and is removed. Without an
+  exact link relaybay guesses from the working directory (see *Session status from hooks*).
 - **Session aliases** — if you don't know your `local_` id, don't rebind a task: the coordinator
   binds you; pass your session name only as `session` on writes. When `task_bind_session` gets a
   plain name for a task bound to a desktop session, the desktop binding (and its "Open in desktop"
@@ -91,15 +98,15 @@ Conventions:
 
 | Tool | Arguments | Effect |
 |---|---|---|
-| `project_upsert` | `slug`, `name?`, `repo_path?`, `description?`, `session?`, `session_title?` | Creates the project, or updates the given fields. Slugs: lowercase letters, digits, dashes. |
-| `task_create` | `project`, `title`, `stage?` (default `plan`), `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?` (default false), `session?`, `session_title?` | Creates a task with the next key of the project (`acme-shop-1`, `acme-shop-2`, …). With `session`, the task is bound to it. |
-| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage_note?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `expected_version?`, `session?`, `session_title?` | Patches fields; `"-"` or `""` clears a text field. With `expected_version`, fails instead of overwriting when the task changed meanwhile. |
-| `task_patch` | `task`, `fields` (JSON object), `expected_version?`, `session?`, `session_title?` | Changes any editable task fields with the same validation as `task_update` / `task_set_stage` (a `stage` value moves the task, auto-unlog applies). Unknown names fail with the list of allowed ones; `"-"`, `""` or `null` clears an optional text field. The allowed fields: the end of `task_get` or `relaybay://schema/task`. |
-| `task_set_stage` | `task`, `stage`, `note?`, `next_step?`, `waiting_on?`, `session?`, `session_title?` | Moves the task; `note` is shown next to the stage. Moving to `done` sets the closed time. `next_step` and `waiting_on` are saved in the same transaction (`task.stage_changed` + `task.updated`, one version bump); `"-"` clears them. |
-| `task_bind_session` | `task`, `session`, `session_title?` | Shows the session in the task dialog as the one working on the task (a desktop session also gets an "open in desktop" icon on the card). The previous binding is closed and kept in the task's history (event `task.session_bound`). A plain name on a task bound to a desktop session keeps that binding and becomes its alias (see *Session aliases*). |
+| `project_upsert` | `slug`, `name?`, `repo_path?`, `description?`, `session?`, `session_title?`, `hook_session?` | Creates the project, or updates the given fields. Slugs: lowercase letters, digits, dashes. |
+| `task_create` | `project`, `title`, `stage?` (default `plan`), `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?` (default false), `session?`, `session_title?`, `hook_session?` | Creates a task with the next key of the project (`acme-shop-1`, `acme-shop-2`, …). With `session`, the task is bound to it. |
+| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage_note?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `expected_version?`, `session?`, `session_title?`, `hook_session?` | Patches fields; `"-"` or `""` clears a text field. With `expected_version`, fails instead of overwriting when the task changed meanwhile. |
+| `task_patch` | `task`, `fields` (JSON object), `expected_version?`, `session?`, `session_title?`, `hook_session?` | Changes any editable task fields with the same validation as `task_update` / `task_set_stage` (a `stage` value moves the task, auto-unlog applies). Unknown names fail with the list of allowed ones; `"-"`, `""` or `null` clears an optional text field. The allowed fields: the end of `task_get` or `relaybay://schema/task`. |
+| `task_set_stage` | `task`, `stage`, `note?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Moves the task; `note` is shown next to the stage. Moving to `done` sets the closed time. `next_step` and `waiting_on` are saved in the same transaction (`task.stage_changed` + `task.updated`, one version bump); `"-"` clears them. |
+| `task_bind_session` | `task`, `session`, `session_title?`, `hook_session?` | Shows the session in the task dialog as the one working on the task (a desktop session also gets an "open in desktop" icon on the card). The previous binding is closed and kept in the task's history (event `task.session_bound`). A plain name on a task bound to a desktop session keeps that binding and becomes its alias (see *Session aliases*). |
 | `task_unbind_session` | `task`, `session?` | Removes the bound session from the task; the binding is closed and kept in the history (event `task.session_unbound`). With `session` (desktop id or name), fails without changes if another session is bound. Nothing bound: says so, changes nothing. |
-| `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`). `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
-| `decision_add` | `project`, `text`, `task?`, `decided_by?`, `session?`, `session_title?` | Records a decision; it appears in the project snapshot. |
+| `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`). `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
+| `decision_add` | `project`, `text`, `task?`, `decided_by?`, `session?`, `session_title?`, `hook_session?` | Records a decision; it appears in the project snapshot. |
 
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
@@ -109,6 +116,33 @@ checked against the project's rules. In `warn` mode the write succeeds and the r
 line per unmet requirement, e.g. `Warning (rules): moving to test usually needs a report since the
 last stage change.`; the `task.stage_changed` event carries the same lines as `warnings`. In
 `strict` mode the write fails with `Rules: moving to test requires … Nothing changed.`
+
+## Session status from hooks
+
+Not an MCP tool: Claude Code's hooks call `POST /hooks/claude-code` (same Bearer token as `/mcp`)
+with the hook's input JSON. `relaybay setup` writes the hook entries (see
+[connect-claude-code.md](connect-claude-code.md#3-live-session-status-hooks)).
+
+| Hook event | Session status | Activity shown |
+|---|---|---|
+| `SessionStart` | working | `started (<source>)`; the answer adds the agent's `hook_session` id to its context |
+| `UserPromptSubmit` | working | `prompt` (the prompt text is not stored) |
+| `PreToolUse` | working | the tool name (the tool input is not stored) |
+| `Notification` | waiting | the notification message |
+| `Stop` | idle | `turn finished` |
+| `SessionEnd` | ended | the session is unbound from its tasks (history kept, `task.session_unbound` with `reason: "session_end"`) |
+
+Other events are ignored (`204`). Activity of a working session is written at most once per 5 s per
+session (the latest one wins); status changes are written at once. Each change is a
+`session.status_changed` event per task the session is bound to.
+
+A hook session is matched to a relaybay session in this order: the exact link from a write with
+`hook_session`; otherwise, on first sight, the one desktop session bound to a task in the project
+whose `repo_path` contains the hook's `cwd`. When more than one could match (or the folder belongs
+to several projects, or the bound desktop sessions are linked to other live hook sessions), nothing
+is guessed: the hook session stays unlinked and is listed on the board under Integrations until the
+agent passes its `hook_session`. With no desktop session in the project (or no project), it becomes
+a plain session named after the folder.
 
 ## Resources
 

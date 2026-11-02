@@ -1,0 +1,63 @@
+{
+  "SessionStart": {
+    "session_id": "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11",
+    "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-shop/8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11.jsonl",
+    "cwd": "/home/dev/acme-shop",
+    "permission_mode": "default",
+    "hook_event_name": "SessionStart",
+    "source": "startup",
+    "model": "claude-sonnet-4-5"
+  },
+  "UserPromptSubmit": {
+    "session_id": "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11",
+    "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-shop/8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11.jsonl",
+    "cwd": "/home/dev/acme-shop",
+    "permission_mode": "default",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "Fix the checkout total rounding"
+  },
+  "PreToolUse": {
+    "session_id": "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11",
+    "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-shop/8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11.jsonl",
+    "cwd": "/home/dev/acme-shop",
+    "permission_mode": "default",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "npm test", "description": "Run the tests" },
+    "tool_use_id": "toolu_01ABC123"
+  },
+  "Notification": {
+    "session_id": "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11",
+    "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-shop/8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11.jsonl",
+    "cwd": "/home/dev/acme-shop",
+    "permission_mode": "default",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "title": "Permission needed",
+    "notification_type": "permission_prompt"
+  },
+  "Stop": {
+    "session_id": "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11",
+    "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-shop/8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11.jsonl",
+    "cwd": "/home/dev/acme-shop",
+    "permission_mode": "default",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "The rounding is fixed and the tests pass."
+  },
+  "SessionEnd": {
+    "session_id": "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11",
+    "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-shop/8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11.jsonl",
+    "cwd": "/home/dev/acme-shop",
+    "hook_event_name": "SessionEnd",
+    "reason": "prompt_input_exit"
+  },
+  "PostToolUse": {
+    "session_id": "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11",
+    "cwd": "/home/dev/acme-shop",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "npm test" },
+    "tool_response": { "stdout": "ok" }
+  }
+}

@@ -5,8 +5,9 @@
     <a class="card-key" href="/t/{{ t.key }}" title="Task page">{{ t.key }}</a>
     {% if t.tracker_ref or t.tracker_logged or (require_tracker_log and t.stage.value == "done") %}<span class="card-tracker">{% include "_tracker.html" %}</span>{% endif %}
     {% if t.session_link %}
-    <a class="open-desktop icon" href="{{ t.session_link }}" title="Open in desktop: {{ t.session_name }}"
-       aria-label="Open {{ t.session_name }} in the Claude desktop app"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"/></svg></a>
+    {%- set status_text = (" (" ~ t.session_status ~ ")") if t.session_status else "" %}
+    <a class="open-desktop icon" href="{{ t.session_link }}" title="Open in desktop: {{ t.session_name }}{{ status_text }}"
+       aria-label="Open {{ t.session_name }} in the Claude desktop app{{ status_text }}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"/></svg>{% if t.session_status %}<span class="status-dot dot-{{ t.session_status }}"></span>{% endif %}</a>
     {% endif %}
   </div>
   <h3 class="card-title">

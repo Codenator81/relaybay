@@ -13,6 +13,7 @@ from relaybay.domain.errors import DomainError, NotFoundError
 from relaybay.mcp_server.server import build_mcp, mcp_routes
 from relaybay.security import SecurityMiddleware, load_or_create_token
 from relaybay.service import Service
+from relaybay.web.hooks import build_hooks_router
 from relaybay.web.routes import STATIC_DIR, build_router
 
 
@@ -49,6 +50,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     allowed = settings.host_allow_list()
     app.router.routes.extend(mcp_routes(mcp, allowed))
+    app.include_router(build_hooks_router(service))
     app.include_router(build_router(service, settings, token))
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.add_middleware(SecurityMiddleware, token=token, allowed_hosts=allowed)

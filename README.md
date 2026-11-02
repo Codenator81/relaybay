@@ -76,6 +76,20 @@ claude mcp add --transport http --scope user relaybay http://127.0.0.1:8765/mcp 
 [docs/connect-claude-code.md](docs/connect-claude-code.md) for `.mcp.json` and a short instruction
 snippet for your project's `CLAUDE.md` / `AGENTS.md` that tells the agent when to call the tools.
 
+### Live session status (hooks)
+
+```bash
+uv run relaybay setup                         # what it found, the exact diff and its hash
+uv run relaybay setup --apply --expect <hash> # adds relaybay's hooks to ~/.claude/settings.json
+uv run relaybay setup --check                 # end-to-end check, one ok/FAIL line per item
+```
+
+The hooks let the board show whether each session is working, waiting for you, idle or gone, and
+unbind a session from its task when it ends. Setup adds only its own entries (other hooks stay as
+they are), never writes the token into the file, and `--remove` takes them out again. The same plan
+and buttons are on the board under **Integrations**. Hooks stay silent when relaybay is not
+running. Details: [docs/connect-claude-code.md](docs/connect-claude-code.md#3-live-session-status-hooks).
+
 ### Schema changes and long-running sessions
 
 A Claude Code session keeps the parameter schema of a tool it already loaded, even after relaybay
@@ -101,6 +115,7 @@ variables, then command-line flags.
 | days a done task stays in the done column | `7` | `RELAYBAY_DONE_WINDOW_DAYS` | — |
 | keep done tasks without the tracker work log on the board | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — |
 | what a stage move that misses a rule does: `warn` or `strict` | `warn` | `RELAYBAY_RULES_MODE` | — |
+| folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
 
 The data directory holds `relaybay.sqlite`, the `token` file and the optional `config.toml`:
 
@@ -153,8 +168,8 @@ a restart). After `relaybay token --rotate`, restart the server.
 
 1. **Stage 1 (0.1.0)** — server, data model and event log, token security, MCP tools, minimal live
    board with editing and a phone layout. *(in progress)*
-2. **Stage 2** — import of existing markdown task registries, Claude Code hooks for live session
-   status, full task view and event feed, packaging (`uvx`, Docker).
+2. **Stage 2** — Claude Code hooks for live session status and `relaybay setup` *(done)*; import
+   of existing markdown task registries, full task view and event feed, packaging (`uvx`, Docker).
 3. **Stage 3** — starting and steering agents from relaybay.
 
 The architecture is described in [docs/PLAN.md](docs/PLAN.md); decisions are recorded in

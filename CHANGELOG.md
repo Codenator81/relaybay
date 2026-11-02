@@ -9,6 +9,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Live session status from Claude Code hooks: `POST /hooks/claude-code` (Bearer token, same
+  Host/Origin rules as `/mcp`) maps `SessionStart` / `UserPromptSubmit` / `PreToolUse` to working
+  (with the tool name as activity), `Notification` to waiting, `Stop` to idle and `SessionEnd` to
+  ended, which also unbinds the session from its tasks (`task.session_unbound`, reason
+  `session_end`). Activity is coalesced to one `session.status_changed` event per session per 5 s.
+  Cards show a status dot on the "open in desktop" icon; the task dialog shows the status and the
+  last activity. Prompt text and tool input are never stored.
+- Exact linking of hook sessions: the `SessionStart` answer tells the agent its hook session id,
+  and every write tool (and `task_bind_session`) accepts `hook_session`; the MCP instructions say
+  so. Without it, a hook session is linked by its working directory to the one desktop session bound
+  in that project; ambiguous cases stay unlinked and are listed on the Integrations page. Migration
+  `0007` adds `session.cc_session_id`, `activity_at` and `unlinked_reason`.
+- `relaybay setup` (`--dry-run` default, `--apply`, `--remove`, `--check [--json]`, `--expect
+  <plan hash>`, `--mode command|http` with `command` as the default, `--claude-home`): detects
+  `claude` and its version and the desktop app, prints the exact diff of `~/.claude/settings.json`
+  and its plan hash, backs the file up before any write (through a symlink to its target), adds or
+  removes only relaybay's own hook entries (a command hook running `relaybay.hook_client` with
+  `--url …/hooks/claude-code`, or an http hook posting exactly to `/hooks/claude-code` on a
+  loopback or the configured host), never writes the token, refuses files that are not UTF-8 or
+  valid JSON, and prints the `claude mcp add` command instead of editing `~/.claude.json`.
+  `--check` also runs the hook's interpreter once. `relaybay hook` and
+  `python -m relaybay.hook_client`: a standard-library command hook that gives up after 0.3 s and
+  always exits 0.
+- Board: **Integrations** page (header link) with detection, the plan, Apply / Remove / Run check
+  buttons (Apply and Remove write only the plan shown) and the unlinked hook sessions. Hook input
+  over 256 KB is dropped quietly (`204`). `relaybay serve --claude-home` / `RELAYBAY_CLAUDE_HOME`.
 - Working rules: the MCP server instructions are a short working contract (snapshot first, pick or
   create a task, keep next step / waiting on / progress current, `state · size · gist` reports,
   `waiting_on` for decisions, `task_patch` for missing fields). Rules as structured data (report

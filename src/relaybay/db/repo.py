@@ -19,7 +19,8 @@ from relaybay.domain.stages import Stage
 
 _TASK_SELECT = """
 SELECT t.*, p.slug AS project_slug, s.name AS session_name, s.external_id AS session_external_id,
-       s.status AS session_status, s.desktop_link AS session_link
+       s.status AS session_status, s.desktop_link AS session_link,
+       s.activity AS session_activity, s.activity_at AS session_activity_at
 FROM task t
 JOIN project p ON p.id = t.project_id
 LEFT JOIN session s ON s.id = t.session_id
@@ -70,6 +71,8 @@ def _task(row: aiosqlite.Row) -> Task:
         session_external_id=row["session_external_id"],
         session_status=row["session_status"],
         session_link=row["session_link"],
+        session_activity=row["session_activity"],
+        session_activity_at=row["session_activity_at"],
     )
 
 
@@ -178,6 +181,12 @@ def _session(row: aiosqlite.Row) -> Session:
         status=row["status"],
         last_seen_at=row["last_seen_at"],
         created_at=row["created_at"],
+        project_id=row["project_id"],
+        cwd=row["cwd"],
+        activity=row["activity"],
+        activity_at=row["activity_at"],
+        cc_session_id=row["cc_session_id"],
+        unlinked_reason=row["unlinked_reason"],
     )
 
 
@@ -257,6 +266,61 @@ async def touch_session(
         f"UPDATE session SET last_seen_at = ?{sets} WHERE id = ?",
         (now, *changes.values(), session_id),
     )
+
+
+async def get_session_by_cc(conn: aiosqlite.Connection, cc_session_id: str) -> Session | None:
+    row = await _one(conn, "SELECT * FROM session WHERE cc_session_id = ?", (cc_session_id,))
+    return _session(row) if row else None
+
+
+async def projects_with_repo_path(conn: aiosqlite.Connection) -> list[Project]:
+    rows = await _all(
+        conn, "SELECT * FROM project WHERE archived_at IS NULL AND repo_path IS NOT NULL"
+    )
+    return [_project(r) for r in rows]
+
+
+async def bound_desktop_sessions(conn: aiosqlite.Connection, project_id: int) -> list[Session]:
+    """Desktop sessions with an open binding to a task of the project, most recent first."""
+    rows = await _all(
+        conn,
+        "SELECT s.* FROM session s JOIN task_session b ON b.session_id = s.id"
+        " JOIN task t ON t.id = b.task_id"
+        " WHERE t.project_id = ? AND b.unbound_at IS NULL AND s.external_id IS NOT NULL"
+        " GROUP BY s.id ORDER BY MAX(b.bound_at) DESC, s.id DESC",
+        (project_id,),
+    )
+    return [_session(r) for r in rows]
+
+
+async def open_tasks_of_session(conn: aiosqlite.Connection, session_id: int) -> list[Task]:
+    """Tasks the session is bound to now."""
+    rows = await _all(
+        conn,
+        _TASK_SELECT + " WHERE t.id IN (SELECT task_id FROM task_session"
+        " WHERE session_id = ? AND unbound_at IS NULL) ORDER BY t.id",
+        (session_id,),
+    )
+    return [_task(r) for r in rows]
+
+
+async def has_bindings(conn: aiosqlite.Connection, session_id: int) -> bool:
+    row = await _one(conn, "SELECT 1 FROM task_session WHERE session_id = ? LIMIT 1", (session_id,))
+    return row is not None
+
+
+async def delete_session(conn: aiosqlite.Connection, session_id: int) -> None:
+    await conn.execute("DELETE FROM session WHERE id = ?", (session_id,))
+
+
+async def list_unlinked_hook_sessions(conn: aiosqlite.Connection, limit: int) -> list[Session]:
+    rows = await _all(
+        conn,
+        "SELECT * FROM session WHERE unlinked_reason IS NOT NULL"
+        " ORDER BY last_seen_at DESC, id DESC LIMIT ?",
+        (limit,),
+    )
+    return [_session(r) for r in rows]
 
 
 async def open_binding(conn: aiosqlite.Connection, task_id: int) -> int | None:

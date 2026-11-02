@@ -62,10 +62,85 @@ This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
 - When you stop working on a task and nobody takes over, call `task_unbind_session`.
 - Record decisions the user makes with `decision_add`.
 - Pass `session` on every write: your own desktop session id (`local_…`) if you know it, with
-  `session_title=<your session title>`; otherwise your session name.
+  `session_title=<your session title>`; otherwise your session name. If the session start told
+  you "Your relaybay hook session: <id>", also pass `hook_session=<id>`.
 ```
 
-## 3. Watch the board
+## 3. Live session status (hooks)
+
+With Claude Code hooks the board shows whether a session is working, waiting for you, idle or
+gone, without the agent's help: a dot on the card's "open in desktop" icon and a "last activity"
+line in the task dialog. `relaybay setup` writes the hooks into your user settings
+(`~/.claude/settings.json`, which the CLI and the desktop app's local sessions both read). It only
+writes when you ask:
+
+```bash
+uv run relaybay setup                          # dry run: what it found, the exact diff, its hash
+uv run relaybay setup --apply --expect <hash>  # write exactly that plan (a backup of the file first)
+uv run relaybay setup --check [--json]         # server, MCP, hook endpoint, settings: ok / FAIL
+uv run relaybay setup --remove --dry-run       # preview taking relaybay's hooks out again
+uv run relaybay setup --remove --expect <hash> # do it (with a backup)
+```
+
+`--expect` makes the write refuse when the file (or the plan) changed after you looked at the dry
+run. Without it, `--apply` and `--remove` still refuse a file that changes while they run, but not
+one that changed between your dry run and the write. `--check --json` prints the results as JSON
+and exits non-zero when an item fails.
+
+The same plan, buttons (Apply, Remove, Run check) and check results are on the board under
+**Integrations** (link in the header). Apply and Remove ask for confirmation and write only the
+plan shown on the page: if the file changed meanwhile, they refuse and show the new plan.
+
+What it writes, and what it never touches:
+
+- One hook entry for each of `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Notification`,
+  `Stop` and `SessionEnd`, appended after the hooks you already have. An entry is relaybay's only
+  when it is a command hook that runs `-m relaybay.hook_client` (or `relaybay hook`) with
+  `--url <scheme>://<host>:<port>/hooks/claude-code`, or an http hook whose URL path is exactly
+  `/hooks/claude-code` on a loopback address or relaybay's configured host. Your own hooks with a
+  similar name or path are never claimed. Nothing else in the file is changed, reordered or
+  removed, and the file keeps its indentation and line endings; a symlinked settings file is
+  written through to its target. Running `--apply`
+  again changes nothing; a new port or data folder updates only relaybay's entries.
+- Every changed file is copied first to `settings.json.relaybay-backup-<timestamp>`. A file that
+  is not UTF-8, not valid JSON, or whose `hooks` are not in the documented shape, is left
+  alone.
+- The token is never written into the settings. **http hooks** (Claude Code calls relaybay
+  directly) send `Authorization: Bearer ${RELAYBAY_TOKEN}` with `allowedEnvVars`, so
+  `RELAYBAY_TOKEN` must be set in the environment Claude Code starts with (for the desktop app: a
+  user environment variable). The **command hook** runs a small forwarder with the Python that runs
+  relaybay (`<python> -I -m relaybay.hook_client --url … --token-file …`), which reads the token
+  file itself; nothing has to be on `PATH`.
+- The command hook is the default: it needs no environment variable and is silent when
+  relaybay is down. `--mode http` (or the Hook type select on the board) writes http hooks instead;
+  the plan then lists what they need.
+- Shell quoting: on macOS and Linux, paths with spaces, `$` or backticks are single-quoted. On
+  Windows Claude Code runs the command through Git Bash or PowerShell; paths with spaces are
+  double-quoted (a Python path with `$` or a backtick is not supported there), and PowerShell
+  needs the interpreter path without spaces. `--check` runs the hook's interpreter once
+  (`-I -c "import relaybay.hook_client"`) to prove it still works.
+- The MCP server is not written: `~/.claude.json` belongs to Claude Code. Setup checks whether a
+  user-scope `relaybay` server is registered there and otherwise prints the `claude mcp add`
+  command from step 1.
+
+Hooks never get in the way when relaybay is not running. The command hook gives up after 0.3 s per
+network step, prints nothing and always exits 0, so the session sees nothing. http hook entries use a
+2 s timeout and failures do not block the session, but Claude Code shows a non-blocking "hook
+error" notice while relaybay is down. Hook input over 256 KB (for example a large file write) is
+dropped quietly with `204`.
+
+The hooks report Claude Code's own session id, not the desktop `local_…` id. On `SessionStart`
+relaybay tells the agent that id ("Your relaybay hook session: <id>"); an agent that passes it as
+`hook_session` on its writes links its status exactly. Until then relaybay links a hook session to
+the one desktop session bound in the project whose `repo_path` contains the working directory;
+when several could match it does not guess and lists the session under Integrations →
+"Unlinked hook sessions". `SessionEnd` unbinds the session from its tasks (the history is kept).
+
+For tests or a second machine profile, `--claude-home <folder>` (and `relaybay serve
+--claude-home <folder>` for the board page) points setup at another folder holding
+`.claude/settings.json` and `.claude.json`.
+
+## 4. Watch the board
 
 Open the login link printed by `relaybay serve` (or by `relaybay token`). Cards appear and move as
 sessions call the tools; no reload needed. For a session bound by its desktop session id, the card's

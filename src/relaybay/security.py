@@ -29,7 +29,7 @@ SECURITY_HEADERS = [
     (b"referrer-policy", b"same-origin"),
 ]
 
-TOKEN_PREFIXES = ("/mcp", "/api")
+TOKEN_PREFIXES = ("/mcp", "/api", "/hooks")
 PUBLIC_PATHS = ("/healthz", "/login", "/favicon.ico")
 PUBLIC_PREFIXES = ("/static/",)
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")

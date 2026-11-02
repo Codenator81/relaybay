@@ -410,3 +410,38 @@ async def test_task_patch_and_schema(live_server: Callable[[], LiveServer]) -> N
         assert "| `tracker_logged` | boolean |" in schema
         assert "| `stage` | string |" in schema and "cannot be cleared" in schema
         assert schema.count("\n| `") == len(last.split(":", 1)[1].split(","))
+
+
+async def test_hook_session_links_the_live_status(live_server: Callable[[], LiveServer]) -> None:
+    live = live_server()
+    desktop = "local_00000000-0000-0000-0000-00000000000c"
+    hook_id = "5e1d0c2b-1111-4222-8333-944455556666"
+    async with connect(live) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        for name in (
+            "project_upsert",
+            "task_create",
+            "task_update",
+            "task_patch",
+            "task_set_stage",
+            "task_bind_session",
+            "report_add",
+            "decision_add",
+        ):
+            assert "hook_session" in tools[name].input_schema["properties"], name
+
+        await call(client, "project_upsert", slug="acme-shop")
+        await call(
+            client,
+            "task_create",
+            project="acme-shop",
+            title="Checkout",
+            session=desktop,
+            hook_session=hook_id,
+        )
+    async with httpx2.AsyncClient(headers=live.auth) as http:
+        payload = {"hook_event_name": "Notification", "session_id": hook_id, "message": "Hi"}
+        response = await http.post(f"{live.url}/hooks/claude-code", json=payload)
+        assert response.status_code == 204
+    async with connect(live) as client:
+        assert "waiting" in await call(client, "task_get", task="acme-shop-1")

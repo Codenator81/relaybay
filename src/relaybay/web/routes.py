@@ -1,5 +1,6 @@
-"""Board: server-rendered pages and HTMX fragments, login, SSE endpoint."""
+"""Board: server-rendered pages and HTMX fragments, login, SSE endpoint, Integrations."""
 
+import asyncio
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from starlette.responses import StreamingResponse
 
-from relaybay import __version__
+from relaybay import __version__, machine_setup
 from relaybay.config import Settings
 from relaybay.domain.errors import ConflictError, DomainError, NotFoundError
 from relaybay.domain.models import Task
@@ -410,6 +411,88 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    def integrations_plan(mode: str, detection: machine_setup.Detection, remove: bool = False):
+        return machine_setup.make_plan(
+            base_url=settings.base_url,
+            token=token,
+            token_path=settings.token_path,
+            paths=machine_setup.claude_paths(settings.claude_home),
+            detection=detection,
+            mode=mode,
+            remove=remove,
+        )
+
+    async def integrations_page(
+        request: Request,
+        mode: str,
+        *,
+        message: str | None = None,
+        error: str | None = None,
+        checks: list[machine_setup.Check] | None = None,
+    ) -> HTMLResponse:
+        if mode not in machine_setup.MODES:
+            mode = machine_setup.DEFAULT_MODE
+        # `claude --version` may take a moment: keep the event loop free meanwhile.
+        detection = await asyncio.to_thread(machine_setup.detect)
+        context = {
+            "plan": integrations_plan(mode, detection),
+            "remove_plan": integrations_plan(mode, detection, remove=True),
+            "mode": mode,
+            "modes": machine_setup.MODES,
+            "message": message,
+            "error": error,
+            "checks": checks,
+            "unlinked": await service.unlinked_hook_sessions(),
+        }
+        if "hx-request" in request.headers:
+            return render(request, "_integrations.html", **context)
+        return render(request, "integrations.html", **context)
+
+    def check_csrf(value: str) -> None:
+        if not same_secret(value, csrf_token(token)):
+            raise HTTPException(status_code=403, detail="Missing CSRF token")
+
+    @router.get("/settings/integrations", response_class=HTMLResponse)
+    async def integrations(request: Request, mode: str = machine_setup.DEFAULT_MODE):
+        return await integrations_page(request, mode)
+
+    @router.post("/settings/integrations/{action}", response_class=HTMLResponse)
+    async def integrations_action(
+        request: Request,
+        action: str,
+        mode: Annotated[str, Form()] = machine_setup.DEFAULT_MODE,
+        expect: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        check_csrf(csrf)
+        if mode not in machine_setup.MODES:
+            mode = machine_setup.DEFAULT_MODE
+        if action == "check":
+            checks = await asyncio.to_thread(
+                machine_setup.run_check,
+                base_url=settings.base_url,
+                token=token,
+                paths=machine_setup.claude_paths(settings.claude_home),
+            )
+            return await integrations_page(request, mode, checks=checks)
+        if action not in ("apply", "remove"):
+            raise HTTPException(status_code=404)
+        detection = await asyncio.to_thread(machine_setup.detect)
+        plan = integrations_plan(mode, detection, remove=action == "remove")
+        if plan.error or plan.hooks is None:
+            return await integrations_page(request, mode, error=plan.error)
+        try:
+            # `expect` is the hash of the plan shown on the page: write only what was approved.
+            backup = machine_setup.write_change(plan.hooks, expect=expect)
+        except (machine_setup.SetupError, OSError) as exc:
+            return await integrations_page(request, mode, error=str(exc))
+        if not plan.hooks.changed:
+            message = "Nothing to change."
+        else:
+            done = "Removed relaybay's hooks from" if action == "remove" else "Wrote"
+            message = f"{done} {plan.hooks.path}" + (f" (backup: {backup.name})" if backup else "")
+        return await integrations_page(request, mode, message=message)
 
     @router.get("/favicon.ico")
     async def favicon() -> Response:
