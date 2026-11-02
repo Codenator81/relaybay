@@ -1,4 +1,4 @@
-{#- Edit form of the task dialog. Expects: t, values, waiting_values, optional error / saved. The box
+{#- Edit form of the task dialog. Expects: t, values, waiting_values, optional error / saved / warnings. The box
     is refetched on live events only while the form is untouched (see app.js). -#}
 <div class="task-form-box" id="form-{{ t.key }}"
      hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/form" hx-trigger="rb:refresh" hx-swap="outerHTML">
@@ -10,6 +10,7 @@
     {% if error %}<p class="form-error" role="alert">{{ error }}
       {%- if conflict %} <button type="button" class="action form-reload">Discard my edits and reload</button>{% endif %}</p>
     {% elif saved %}<p class="form-ok" role="status">Saved.</p>{% endif %}
+    {% for warning in warnings %}<p class="form-warning" role="status">{{ warning }}</p>{% endfor %}
     <p class="form-stale" role="status" hidden>This task changed while you were editing.
       <button type="button" class="action form-reload">Discard my edits and reload</button></p>
     <label class="field"><span>Title</span>

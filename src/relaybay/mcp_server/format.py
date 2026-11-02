@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 from relaybay.domain.models import Decision, Event, Project, Report, Task, TrackerEntry
+from relaybay.domain.rules import Rules, requirement_label, requirement_short
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
 from relaybay.service import ProjectSummary, Snapshot, TaskDetail
@@ -118,9 +119,68 @@ def project(p: Project, created: bool) -> str:
     return f"{verb} project **{p.slug}** ({p.name}){repo}."
 
 
+def rules_line(rules: Rules) -> str:
+    """`Rules 1a2b3c4d: report before test, progress before done (read relaybay://rules/x)`."""
+    needs = [
+        f"{requirement_short(req)} before {stage}"
+        for stage in STAGES
+        for req in rules.requirements(stage)
+    ]
+    line = f"Rules {rules.hash}: {', '.join(needs) or 'no stage requirements'} (read {rules.uri})"
+    if rules.override_error:
+        line += f"; project override ignored: {rules.override_error}"
+    return line
+
+
+MODE_HELP = {
+    "warn": "a stage move that misses a requirement succeeds and the response carries a warning",
+    "strict": "a stage move that misses a requirement is refused with the reason",
+}
+
+
+def rules_text(rules: Rules) -> str:
+    """The merged rules as markdown (resource `relaybay://rules[/{project}]`, `rules_get`)."""
+    body = rules.body
+    if rules.project is None:
+        scope = "global"
+    elif rules.override_error:
+        scope = f"project {rules.project} (global rules only)"
+    else:
+        scope = f"project {rules.project} (global + project override)"
+    report_format = body["report_format"]
+    lines = [
+        f"# Rules (hash {rules.hash})",
+        f"- scope: {scope}",
+        f"- mode: {rules.mode} — {MODE_HELP[rules.mode]}",
+        *([f"- project override ignored: {rules.override_error}"] if rules.override_error else []),
+        "",
+        "## Report format",
+        f"- first line: `{report_format['first_line']}`",
+        f"- states: {', '.join(report_format['states'])}",
+        f"- sizes: {', '.join(report_format['sizes'])}",
+        "",
+        "## Stage requirements",
+    ]
+    reqs = [(stage, rules.requirements(stage)) for stage in STAGES]
+    reqs = [(stage, items) for stage, items in reqs if items]
+    if not reqs:
+        lines.append("- none")
+    for stage, items in reqs:
+        lines.append(f"- moving to {stage} needs {' and '.join(map(requirement_label, items))}")
+    if body.get("description_template"):
+        lines += ["", "## Description template", body["description_template"]]
+    if body.get("guidance"):
+        lines += ["", "## Guidance", body["guidance"]]
+    return "\n".join(lines)
+
+
+def with_warnings(text: str, warnings: list[str]) -> str:
+    return "\n".join([text, *warnings])
+
+
 def snapshot(snap: Snapshot, require_log: bool = False) -> str:
     p = snap.project
-    lines = [f"# {p.slug} — {p.name}"]
+    lines = [rules_line(snap.rules), f"# {p.slug} — {p.name}"]
     if p.description:
         lines.append(p.description)
     by_stage: dict[str, list[Task]] = {}

@@ -34,6 +34,14 @@ in the browser, on the desktop or on your phone.
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
   task's desktop session binding: it becomes that session's alias. `task_patch` takes any task
   fields as one JSON object, so clients with an older tool schema can still set new fields.
+- **Working rules** — the server tells every connected session how to work with the board (MCP
+  instructions: read the snapshot, pick a task, keep next step / waiting on / progress current,
+  report as `state · size · gist`) and serves the rules as data: report format, what a stage move
+  needs (by default a report before `test`, `progress` before `done`), a description template and
+  free-text guidance. Global rules come from `config.toml`, a project can override them; agents read
+  them through `rules_get` or `relaybay://rules/<project>`, and `project_snapshot` starts with the
+  rules hash. A stage move that misses a rule succeeds with a warning (or is refused with
+  `rules_mode = "strict"`), in MCP responses and on the board.
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
   no outbound calls, no CDN.
 
@@ -92,6 +100,7 @@ variables, then command-line flags.
 | desktop session link | `claude://claude.ai/epitaxy/{id}` | `RELAYBAY_DESKTOP_LINK_TEMPLATE` | — |
 | days a done task stays in the done column | `7` | `RELAYBAY_DONE_WINDOW_DAYS` | — |
 | keep done tasks without the tracker work log on the board | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — |
+| what a stage move that misses a rule does: `warn` or `strict` | `warn` | `RELAYBAY_RULES_MODE` | — |
 
 The data directory holds `relaybay.sqlite`, the `token` file and the optional `config.toml`:
 
@@ -101,6 +110,7 @@ allowed_hosts = ["my-laptop.lan"]   # needed only when you bind to a LAN address
 desktop_link_template = "claude://claude.ai/epitaxy/{id}"  # {id} = desktop session id (local_…)
 done_window_days = 7                # older done tasks are archived
 require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
+rules_mode = "warn"                 # "strict": a stage move that misses a rule is refused
 
 [stages.labels]                     # display names; the stage keys stay plan/dev/test/live/done
 dev = "in progress"
@@ -111,7 +121,24 @@ verified = "checked"
 
 [reports.hints]                     # badge tooltips
 M = "medium change"
+
+[rules]                             # global working rules, merged over the built-in defaults
+guidance = "Ask the owner before anything goes live."
+description_template = "Goal:\nWhy:\nDone when:"
+
+[rules.report_format]               # states/sizes: a subset of the built-in ones
+sizes = ["S", "M", "L"]
+
+[rules.stage_requirements]          # per target stage; a list replaces the default, [] drops it
+test = [{ kind = "report_since_stage_change" }]
+done = [{ kind = "field_present", field = "progress" }]
 ```
+
+A rules error in `config.toml` (unknown key, stage, rule kind or field) stops `relaybay serve`
+with a message that names the key. A broken project override never stops the server: it is
+logged, the project falls back to the global rules, and `rules_get` and `project_snapshot` say
+"project override ignored: <error>". Project overrides and the merge rules are described in
+[docs/mcp-tools.md](docs/mcp-tools.md#working-rules).
 
 `relaybay token --rotate` creates a new token; restart the server and update the Claude Code entry.
 

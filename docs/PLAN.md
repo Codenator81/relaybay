@@ -109,6 +109,8 @@ session_alias name PK, session_id FK, created_at
 tracker_entry id PK, task_id FK, tracker_name NULL, tracker_ref, tracker_url NULL,
           logged_at NULL, unlogged_at NULL, created_at
           -- every issue key the task has had; the task's tracker_* columns are the current one
+project_rules project_id PK FK, body JSON, updated_at
+          -- a project's override of the working rules (§11.2), merged over the global rules
 event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id NULL,
           session_id NULL, actor TEXT, payload JSON
 ```
@@ -144,6 +146,10 @@ event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id N
   sends it only when the checkbox changed). The mark belongs to the issue: a new `tracker_ref`
   starts as not logged unless `tracker_logged` is passed in the same write (recorded in that
   write's `task.updated`; the previous entry keeps its `logged_at`).
+- **Project rules** (migration `0006`): one optional row per project holding a partial rules
+  document (§11.2); read on every use. A broken row is logged and ignored (the project falls
+  back to the global rules and the rules text says why); it never stops the server. No write path
+  yet (1.5b).
 - **Archive** is computed, not stored: a done task whose `closed_at` is older than
   `done_window_days` (config, default 7) is left out of the board's done column unless
   "Show archived" or a search is active. With `require_tracker_log = true` (config, default false)
@@ -262,9 +268,11 @@ trusted for authorization — the token is the only auth; identity is for displa
 | `report_add` | Append a report; first line becomes the card summary; optional `state`/`size` parsed from a leading `state · size · gist` line; optional `progress`, `next_step` and `waiting_on` update the task atomically | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?` |
 | `decision_add` | Record a decision | `project`, `task?`, `text`, `decided_by?` |
 | `events_since` | Event feed for catch-up by an agent | `since_id?`, `project?`, `limit?` |
+| `rules_get` | The working rules as markdown, global or merged for a project (§11.2) | `project?` |
 
 Plus MCP **resources** `relaybay://project/{slug}` (same text as `project_snapshot`) so a session can
-`@`-mention a project snapshot, and `relaybay://schema/task` (the editable task fields). An MCP
+`@`-mention a project snapshot, `relaybay://schema/task` (the editable task fields), and
+`relaybay://rules` / `relaybay://rules/{project}` (the working rules, §11.2). An MCP
 client keeps the parameter schema of a tool it already loaded across server restarts, so new task
 fields are reachable through `task_patch` without a schema refresh. Tool outputs are short, model-friendly markdown, not raw JSON dumps.
 Tool descriptions are written so that an agent knows *when* to call them ("call `report_add` at the
@@ -272,6 +280,8 @@ end of every stage with your final report"). A copy-paste instruction snippet fo
 `CLAUDE.md` / `AGENTS.md` ships in `docs/connect-claude-code.md`.
 
 ## 6. Session activity without the agent's help (hooks)
+
+The delivery plan, machine setup (`relaybay setup`) and later uses of hooks are in §11.3–§11.5b.
 
 The board must show "which session is doing what now" even when the agent forgets to call a tool.
 Claude Code hooks fire on session start/end, user prompt, tool use, stop and notification events and
@@ -503,15 +513,241 @@ the current rules plus a checklist. Claude Code lists MCP prompts as slash comma
 **Order and size.**
 1. 1.5a — contract in `instructions` + read-only rules (global + project) from config/DB, resource
    `relaybay://rules`, `rules_get`, rules line in `project_snapshot`, `warn` checks for two rules
-   (report before `test`, `progress` before `done`). ~1–1.5 agent-days. *Proposed as the next
-   branch.*
-2. 1.5b — versioning, `rules_update` / `rules_propose`, coordinator config, "rules updated" hint,
-   `strict` mode. ~1.5 agent-days.
+   (report before `test`, `progress` before `done`). ~1–1.5 agent-days. *Delivered* (branch
+   `feat/rules-1-5a`), final shape:
+   - rules document keys `report_format`, `stage_requirements` (kinds `report_since_stage_change`,
+     `field_present`), `description_template`, `guidance`; global layer = defaults ⊕ the
+     `[rules]` table of `config.toml` (chosen over a separate `rules.json`: one config file);
+     project layer = table `project_rules` (migration `0006`), set by hand in 1.5a;
+   - merge: `report_format` per key, `stage_requirements` per stage, template replaces, project
+     guidance is appended to the global one; a config error stops the start, a broken project
+     override is logged and ignored ("project override ignored: <error>" in the rules text and the
+     snapshot line); the hash covers the merged document plus `rules_mode`; the MCP instructions
+     take the report format from the effective global rules;
+   - no version numbers yet: a content hash (8 hex digits of SHA-256 over canonical JSON) stands
+     in; `project_snapshot` starts with "Rules <hash>: report before test, progress before done
+     (read relaybay://rules/<project>)";
+   - checks run on stage moves only (`task_set_stage`, `task_update` / `task_patch` with a stage,
+     the board form); `report_add` format checks and the `require_tracker_log` → `done` rule wait
+     for 1.5b;
+   - `strict` mode is implemented already (the write is refused with the reason and nothing
+     changes): it is the same check raising instead of returning a warning.
+2. 1.5b — versioning, `rules_update` / `rules_propose`, coordinator config, "rules updated" hint
+   (`strict` mode landed in 1.5a). ~1.5 agent-days.
 3. 1.5c — Settings → Rules UI (history, diff, accept/reject, roll back) and MCP prompts.
    ~1.5–2 agent-days.
 
 Decisions: default mode `warn`; with no coordinator configured every rule change is a proposal;
 rules are structured JSON with a fixed set of rule kinds, plus free-text guidance.
+
+### 11.3 Hooks and machine setup (accepted 2026-11-02)
+
+Goal: relaybay knows which session is working, waiting or gone without the agent's help, and sets
+up its own integration on the machine — safely, only on an explicit command or button.
+
+**A. Hook receiver (extends §6).**
+- `POST /hooks/claude-code` (Bearer token, same Host/Origin rules as `/mcp`), body = Claude Code
+  hook JSON (`session_id`, `cwd`, `hook_event_name`, `transcript_path`, …). Never blocks the client:
+  answers 204 fast, unknown events are ignored.
+- Mapping: `SessionStart` → working; `UserPromptSubmit` / `PreToolUse` → working + activity (tool
+  name); `Notification` → waiting (needs the user); `Stop` → idle; `SessionEnd` → ended and the
+  session is unbound from its task (binding history kept, event `task.session_unbound`, reason
+  `session_end`).
+- Join to relaybay sessions: by Claude Code `session_id` → `session.cc_session_id` (new column);
+  first sight links it to the desktop session bound for that `cwd` / project (`project.repo_path`),
+  else creates a plain session named after the folder. Desktop `local_…` ids are not in hook input,
+  so linking uses cwd + recent binding; ambiguous cases stay unlinked and are listed in Settings.
+- Card: the open-in-desktop icon gets a status dot (working / waiting / idle / ended); the dialog
+  shows status, last activity and time. Throttling: activity updates coalesced to one event per
+  session per 5 s.
+
+**B. `relaybay setup` (CLI) and Settings → Integrations (board).**
+- Detect: `claude` on PATH (`shutil.which`) and `claude --version`; the desktop app (Windows:
+  `%LOCALAPPDATA%\Packages\Claude_*`, macOS `/Applications/Claude.app`, Linux: not applicable);
+  whether the installed version supports `http` hooks (version threshold from the docs, otherwise
+  fall back to `command` hooks calling `relaybay hook`).
+- Plan, shown before any write: what will be added where — MCP registration (user scope:
+  `claude mcp add --transport http --scope user relaybay …` or the equivalent entry in
+  `~/.claude.json`) and hook entries in `~/.claude/settings.json`.
+- Apply (only with `relaybay setup --apply` or the board button "Apply"):
+  - backup of every file it changes (`settings.json.relaybay-backup-<timestamp>`);
+  - JSON merge that adds only relaybay's own entries, each marked (e.g. a `"relaybay": true`
+    property or a fixed URL prefix `…/hooks/claude-code` used as the marker); entries it did not
+    create are never modified, reordered or removed (other hooks such as git policy stay as they
+    are);
+  - idempotent: running it again changes nothing when already set up; a changed token or port
+    updates only relaybay's entries;
+  - the token is referenced through an environment variable where the client supports it
+    (`${RELAYBAY_TOKEN}` in MCP headers, `allowedEnvVars` for http hooks); where it must be written
+    literally the plan says so.
+- `--dry-run` prints the exact diff; `--remove` deletes only relaybay's marked entries (with a
+  backup); `relaybay setup --check` verifies end to end: MCP reachable with the token, a synthetic
+  hook POST accepted, Claude Code sees the server (`claude mcp list` output), and reports each item
+  green/red. The board page shows the same checks and a "Run check" button.
+- Other agents (Codex, Gemini CLI, …) come later as adapters (stage 3), behind the same Integrations
+  page.
+
+**Hooks must never get in the way when relaybay is down** (required for 1.6): if the server is
+unreachable the hook gives up within a fraction of a second (short connect/read timeout, e.g. 0.3 s)
+and lets the event pass silently — no error in the session; the Stop hook blocks at most twice per
+turn (its own counter on top of `stop_hook_active`); a test runs the hooks against a stopped server.
+
+**Order and size.**
+1. 1.6a — hook receiver, session status on card/dialog, SessionEnd auto-unbind, `relaybay hook`
+   fallback command, tests with recorded hook payloads. ~1.5 agent-days.
+2. 1.6b — `relaybay setup` (detect, plan, `--dry-run`, `--apply`, `--remove`, `--check`) with
+   backups and marked merge; tests on temp home dirs with existing foreign hooks. ~1.5 agent-days.
+3. 1.6c — Settings → Integrations page (same operations, buttons, check results). ~1 agent-day.
+
+To verify in the docs first: hook input fields per event, `http` hook type and minimal version,
+`allowedEnvVars`, user settings paths per OS, `~/.claude.json` MCP entry shape, whether the desktop
+app's Code tab reads the same user settings (docs say yes).
+
+Open questions (defaults in brackets): mark relaybay entries by a property or by URL prefix [URL
+prefix plus a `relaybay` comment-free property only where the schema allows unknown keys]; write
+the token literally if env-var expansion is unavailable [no — fall back to `command` hooks that read
+the token file]; auto-unbind on SessionEnd also for plain-name sessions [yes].
+
+### 11.4 Comments from the board to the agent (accepted 2026-11-02, after 11.3)
+
+Goal: a comment written on a card reaches the agent of the bound session; the card shows whether it
+was delivered and read.
+
+- **Data:** `comment` table (task, author, body, created_at, delivered_at, read_at, delivered_to
+  session); board: comment box in the task dialog, list with "sent / delivered / read" marks, live
+  over SSE. MCP: `comments_list(task, unread_only)`, `comment_ack(id)` (read), `comment_add` (agents
+  can reply).
+- **Working session (documented hook behaviour):** the hook receiver answers `PostToolUse` /
+  `PostToolBatch` / `UserPromptSubmit` with `hookSpecificOutput.additionalContext` containing unread
+  comments for that session's task ("Owner comment on acme-shop-12: …; ack with comment_ack") →
+  delivered. A `Stop` hook answers `decision: "block"` with the comments as `reason` when unread
+  ones exist, so the agent handles them before ending the turn; guarded by `stop_hook_active` and the
+  client's 8-continuation cap. Marked read when the agent calls `comment_ack` (or replies).
+- **Idle session:** by default the comment waits for the next `UserPromptSubmit` (delivered with
+  that prompt); the coordinator also sees `comment.added` in `events_since` and can forward it.
+  Options to verify before building, because they would wake an idle session: an `asyncRewake`
+  hook started at `SessionStart` that long-polls relaybay and exits with code 2 when a comment
+  arrives ("wakes Claude immediately even when the session is idle"); Claude Code channels;
+  posting to the session's cross-session inbox (needs the session's socket and token, which only
+  processes started by that session have — so again via a hook process).
+- **Always instant:** sessions started by relaybay itself (stage 3 embedded terminal / runner)
+  receive comments directly.
+- Size: ~1.5–2 agent-days after 11.3 (1.6a hooks are a prerequisite); +0.5–1 day if the
+  `asyncRewake` wake-up works and is adopted.
+
+### 11.5 Review tab: acceptance checklist with screenshots (accepted 2026-11-02, after 11.4)
+
+Goal: the owner accepts a task step by step inside relaybay; the agent prepares the steps and the
+evidence, and gets told as each step is accepted.
+
+**Data model.**
+- `review_step`: id, task_id, position, title, details_md (what, how and why to check), status
+  (`open` / `accepted` / `rejected`), decided_at, decided_by, created_by (session), created_at,
+  updated_at.
+- `attachment`: id, task_id, step_id (nullable), kind (`image`), stored_name (random id + extension),
+  original_name, mime, size, sha256, caption_md (agent's comment), created_by, created_at.
+- `comment` (from 11.4) gains optional `step_id` / `attachment_id` so the owner can comment on a step
+  or a screenshot.
+- Events: `review.step_added|updated|accepted|rejected`, `attachment.added|removed`.
+
+**File storage and safety.**
+- Files live under `<data dir>/attachments/<project>/<task key>/<random-id>.<ext>`; the database
+  keeps only the stored name. Served by `GET /files/<attachment id>` behind the board cookie, with
+  `Content-Type` from the stored mime, `X-Content-Type-Options: nosniff`,
+  `Content-Disposition: inline`, and CSP unchanged (images only, `img-src 'self'`).
+- Allowed types: PNG, JPEG, WebP, GIF — checked by magic bytes, not by extension; SVG and anything
+  else refused (scripting risk). Limits: 10 MB per file, 200 MB per task, configurable
+  (`attachments_max_mb`, `attachments_task_max_mb`).
+- Agents send a local path (`attach_file(task, path, step?, caption)`); the server only reads paths
+  inside allowed roots (`attachment_roots` in config — default: the project's `repo_path`, the user's
+  temp dir and a configured screenshots folder), resolves symlinks and `..` before the check, refuses
+  device files and anything outside the roots, copies the file (never moves or links), and hashes it
+  to avoid duplicates. Optional `content_base64` for agents that run elsewhere (same type/size rules).
+- Deleting a task (or archiving with the purge option) deletes its attachment folder; removing an
+  attachment deletes the file. A startup sweep removes orphaned files.
+
+**MCP tools.** `review_steps_set(task, steps[])` (replace the checklist: title, details),
+`review_step_update(task, step, …)`, `attach_file(task, path | content_base64, step?, caption)`,
+`attachment_caption(id, caption)`, `review_get(task)` (steps, statuses, attachments with captions,
+owner comments). The owner's decisions reach the bound session through the 11.4 delivery path:
+"Step 2 'Login with 2FA' accepted — continue with step 3" / "rejected: <owner comment>".
+
+**UI.** Task dialog gets tabs: Overview | Review | History. Review shows the steps as an ordered list;
+each row: status checkbox (Accept), title, an expandable "What, how and why" block (markdown), the
+step's thumbnails with captions, and a comment box. Clicking a thumbnail opens a full-screen viewer
+over the dialog: image fit to screen, caption under it, left/right arrows and keyboard ←/→, Esc to
+close, counter "3 / 7", swipe on phones. Card: a small "Review 2/5" counter when a checklist exists.
+
+**Board: a `review` stage and paged columns (with 11.5).**
+- New stage `review` between dev and test: plan → dev → review → test → live → done. Existing
+  tasks keep their stage (no data change; the stage check constraint is widened by a migration).
+  MCP `task_set_stage`, `task_patch` and the rules accept `review`; moving a task to `review`
+  returns a hint to fill in the Review checklist (`review_steps_set`) if it is empty.
+- Six columns do not fit one screen, so the board is paged: page 1 = plan, dev, review, test (test
+  stays in view), page 2 = live, done. On-screen arrows and keyboard ←/→ switch pages; the page is in
+  the URL (`?page=2`) and survives live updates. ←/→ are not captured in inputs, text areas or an
+  open dialog/viewer. On phones the stage tab bar stays as it is (one column at a time, now six tabs).
+
+**Top-level tabs and the Review queue.** A tab bar at the top of relaybay: Board | Review | Settings.
+Review is a queue of everything waiting for the owner's acceptance across all projects: tasks in
+`review` or `test` that have a checklist, oldest first, with the "Review 2/5" counter. Clicking an
+item opens that task's dialog on its Review tab.
+
+**Owner check lives in the checklist.** What the owner should check by eye is written by the agent
+into the Review checklist through MCP (`review_steps_set`), not only into the report. Moving a task
+to `review` or `test` with an empty checklist returns a hint to fill it in.
+
+**Browser notification.** "Waiting for your acceptance: <task>" when a task moves to `review` or
+`test`; permission is requested only from a button in Settings (Notification API, shown while the
+board tab is open).
+
+**First step of 11.5 — how agents produce screenshot files.** The desktop app's built-in browser
+returns a screenshot to the model only, not as a file. Evaluate: headless Chrome/Edge
+`--headless --screenshot=<file> --window-size=… <url>` (no extra dependency, no login state),
+Playwright in the project (`page.screenshot(path=…)`, can reuse a storage state for logged-in pages),
+and OS tools. Write the result and a recommendation for agents into `docs/` (with `attach_file`
+examples) before building the upload path.
+
+**Size.** ~4–4.5 agent-days after 11.4 (data + storage + safety tests ~1, MCP ~0.5, Review tab and
+viewer ~1–1.5, review stage and paged board ~0.5, top tabs + Review queue + notification ~0.5–1,
+screenshot-file investigation ~0.25).
+
+### 11.5b Annotating screenshots (accepted 2026-11-02, after 11.5)
+
+Goal: in the full-screen viewer the owner draws on a screenshot and drops numbered pins with
+comments; the agent gets the pins with coordinates plus a flattened PNG it can look at.
+
+**Data model.**
+- `annotation`: id, attachment_id, kind (`rect` / `arrow` / `freehand` / `pin`), color, stroke
+  width, geometry as JSON in **fractions of the image size** (rect `x,y,w,h`; arrow `x1,y1,x2,y2`;
+  freehand list of points, simplified on save; pin `x,y`), pin number (per attachment), body_md
+  (pin comment), created_by, created_at, deleted_at.
+- `annotation_reply`: id, annotation_id, author (owner or session), body_md, created_at — the agent
+  answers a pin here.
+- `attachment.annotated_name`: the latest flattened PNG (original file never changes).
+- Events `annotation.added|updated|removed`, `annotation.replied`.
+
+**Where the flattened PNG is drawn.** In the browser: the viewer already has the image and the
+vector layer on a `<canvas>`; on "Send to agent" it renders image + layer at the original
+resolution (`canvas.toBlob('image/png')`) and uploads it (`POST /files/<id>/annotated`, same CSRF,
+type and size checks as uploads). No server-side imaging dependency. The vector data stays the
+source of truth; the PNG is regenerated on the next send. (Server-side rendering with Pillow is the
+fallback if a headless client ever needs it — not planned.)
+
+**Delivery to the agent.** "Send to agent" posts one comment through the 11.4 path: "Screenshot 3
+of step 2 — 2 pins: #1 (x 0.42, y 0.18) 'Button text is cut off'; #2 (x 0.70, y 0.65) 'Wrong
+currency'. Annotated image: relaybay://attachments/<id>/annotated" — plus `review_get` /
+`attachment_get(id, annotated=true)` return the PNG as MCP image content so the agent can see it.
+Agent replies with `annotation_reply(annotation, body)`.
+
+**UI.** Viewer toolbar: Select, Rectangle, Arrow, Pen, Pin, colour swatches (4–5 fixed colours),
+Undo, Delete, "Hide markup" toggle, "Send to agent". Vector layer as SVG over the image (scales with
+it, keyboard ←/→ still pages between screenshots, Esc closes). Pins show their number; clicking a
+pin opens its comment thread (owner comment + agent replies). Works with touch on phones (pen and
+pin; rectangles by drag).
+
+**Size.** ~2 agent-days on top of 11.5 (data + APIs ~0.5, viewer drawing tools and SVG layer ~1,
+flatten-and-send + MCP image output ~0.5). Kept as a separate sub-step 11.5b.
 
 ### v0.2 — markdown export, richer filters, hook installer, custom stage labels.
 

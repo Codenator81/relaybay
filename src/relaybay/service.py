@@ -3,6 +3,8 @@ then the committed events are published on the in-process bus."""
 
 import asyncio
 import contextlib
+import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -26,11 +28,23 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.reports import parse_report
+from relaybay.domain.rules import (
+    DEFAULT_RULES,
+    REPORT_SINCE_STAGE_CHANGE,
+    RULES_MODES,
+    Rules,
+    merge_project_rules,
+    refusal_text,
+    unmet,
+    validate_rules,
+    warning_text,
+)
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.task_fields import BY_NAME, FIELD_NAMES, NAME_MAX, TEXT_MAX, TITLE_MAX
 from relaybay.events import EventBus
 
+logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
 
@@ -88,6 +102,11 @@ class TaskDetail:
     tracker_history: list[TrackerEntry]
 
 
+class Saved(NamedTuple):
+    task: Task
+    warnings: list[str]  # rules the write did not meet (warn mode)
+
+
 class BindResult(NamedTuple):
     task: Task
     kept: Session | None  # the desktop session a plain name did not replace
@@ -100,6 +119,7 @@ class Snapshot:
     tasks: list[Task]
     last_reports: dict[int, Report]
     decisions: list[Decision]
+    rules: Rules
 
 
 def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
@@ -182,6 +202,16 @@ def _unlog_reason(task: Task, diff: dict[str, Any]) -> str | None:
     return ", ".join(reasons) or None
 
 
+def _project_override(slug: str, body: str) -> dict[str, Any]:
+    """The project's partial rules document; ValueError says what is wrong with it."""
+    source = f"project_rules for {slug!r}"
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{source}: not valid JSON ({exc}).") from None
+    return validate_rules(data, source)
+
+
 def _clean_slug(value: str) -> str:
     slug = value.strip().lower()
     if not SLUG_RE.match(slug):
@@ -199,9 +229,16 @@ class Service:
         bus: EventBus | None = None,
         *,
         desktop_link_template: str = DEFAULT_DESKTOP_LINK_TEMPLATE,
+        rules: dict[str, Any] | None = None,
+        rules_mode: str = "warn",
     ) -> None:
         if "{id}" not in desktop_link_template:
             raise ValueError("desktop_link_template must contain '{id}'.")
+        if rules_mode not in RULES_MODES:
+            raise ValueError(f"rules_mode must be one of: {', '.join(RULES_MODES)}.")
+        self.global_rules = Rules(rules if rules is not None else DEFAULT_RULES, mode=rules_mode)
+        self.rules_mode = rules_mode
+        self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
         self.bus = bus or EventBus()
         self.desktop_link_template = desktop_link_template
@@ -214,6 +251,9 @@ class Service:
         self._write_conn = await connect(self.db_path)
         await migrate(self._write_conn)
         self._read_conn = await connect(self.db_path)
+        # A broken project override is reported now; it never stops the server or the project.
+        for slug, body in await repo.list_project_rules(self._read_conn):
+            self._merged_rules(slug, body)
 
     async def close(self) -> None:
         for conn in (self._read_conn, self._write_conn):
@@ -443,6 +483,31 @@ class Service:
             tracker_history=await repo.list_tracker_entries(self._r, task.id),
         )
 
+    def _merged_rules(self, slug: str, body: str | None) -> Rules:
+        """The global rules with the project's override on top; a broken override is logged
+        (once) and ignored, so the global rules apply and the reason is shown with them."""
+        base = self.global_rules.body
+        if body is None:
+            return Rules(base, slug, self.rules_mode)
+        try:
+            override = _project_override(slug, body)
+        except ValueError as exc:
+            error = str(exc)
+            if error not in self._logged_rule_errors:
+                self._logged_rule_errors.add(error)
+                logger.warning("%s The global rules apply to %s instead.", error, slug)
+            return Rules(base, slug, self.rules_mode, override_error=error)
+        return Rules(merge_project_rules(base, override), slug, self.rules_mode)
+
+    async def _rules(self, conn: aiosqlite.Connection, project: Project) -> Rules:
+        return self._merged_rules(project.slug, await repo.get_project_rules(conn, project.id))
+
+    async def rules(self, project: str | None = None) -> Rules:
+        """The global rules, or a project's rules merged on top of them."""
+        if project is None:
+            return self.global_rules
+        return await self._rules(self._r, await self.get_project(project))
+
     async def last_reports(self, tasks: list[Task]) -> dict[int, Report]:
         return await repo.last_reports(self._r, [t.id for t in tasks])
 
@@ -454,6 +519,7 @@ class Service:
             tasks=tasks,
             last_reports=await self.last_reports(tasks),
             decisions=await repo.list_decisions(self._r, project_id=project.id, limit=10),
+            rules=await self._rules(self._r, project),
         )
 
     async def events_since(
@@ -611,6 +677,46 @@ class Service:
         actor: str = "mcp",
     ) -> Task:
         """Patch fields; a value of None clears the field. Unchanged values are ignored."""
+        saved = await self.update_task_checked(
+            ref,
+            changes,
+            expected_version=expected_version,
+            session=session,
+            session_title=session_title,
+            actor=actor,
+        )
+        return saved.task
+
+    async def _stage_warnings(self, tx: _Tx, task: Task, diff: dict[str, Any]) -> list[str]:
+        """Rule warnings for the stage move in `diff`; in strict mode an unmet rule refuses the
+        write instead."""
+        if "stage" not in diff:
+            return []
+        stage = diff["stage"]
+        rules = await self._rules(tx.conn, await self.get_project(task.project_slug, tx.conn))
+        requirements = rules.requirements(stage)
+        if not requirements:
+            return []
+        reported = any(r["kind"] == REPORT_SINCE_STAGE_CHANGE for r in requirements) and (
+            await repo.has_report_since(tx.conn, task.id, task.stage_changed_at)
+        )
+        values = {name: getattr(task, name) for name in FIELD_NAMES} | diff
+        missing = unmet(rules, stage, report_since_stage_change=reported, values=values)
+        if missing and self.rules_mode == "strict":
+            raise ValidationError(refusal_text(stage, missing))
+        return [warning_text(stage, req) for req in missing]
+
+    async def update_task_checked(
+        self,
+        ref: str | int,
+        changes: dict[str, Any],
+        *,
+        expected_version: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        actor: str = "mcp",
+    ) -> Saved:
+        """`update_task` that also returns the rule warnings of a stage move."""
         unknown = set(changes) - set(FIELD_NAMES)
         if unknown:
             raise ValidationError(
@@ -628,7 +734,8 @@ class Service:
                 )
             diff = _task_diff(task, clean)
             if not diff:
-                return task
+                return Saved(task, [])
+            warnings = await self._stage_warnings(tx, task, diff)
             # An explicit tracker_logged in the same write wins over the automatic unlog.
             unlog = (
                 _unlog_reason(task, diff)
@@ -656,6 +763,7 @@ class Service:
                     stage=diff["stage"],
                     **{"from": task.stage.value, "to": diff["stage"]},
                     note=diff.get("stage_note"),
+                    **({"warnings": warnings} if warnings else {}),
                 )
             # An automatic unlog has its own event; a new issue's reset is an ordinary change.
             others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
@@ -673,7 +781,7 @@ class Service:
                 stage = diff.get("stage", task.stage.value)
                 ref = writes.get("tracker_ref", task.tracker_ref)
                 await self._unlogged(tx, task, actor, session_id, stage, ref, unlog)
-            return await self.get_task(task.id, tx.conn)
+            return Saved(await self.get_task(task.id, tx.conn), warnings)
 
     async def set_stage(
         self,
@@ -687,8 +795,32 @@ class Service:
         session_title: str | None = None,
         actor: str = "mcp",
     ) -> Task:
+        saved = await self.set_stage_checked(
+            ref,
+            stage,
+            note=note,
+            next_step=next_step,
+            waiting_on=waiting_on,
+            session=session,
+            session_title=session_title,
+            actor=actor,
+        )
+        return saved.task
+
+    async def set_stage_checked(
+        self,
+        ref: str | int,
+        stage: str,
+        *,
+        note: str | None = None,
+        next_step: str | None = None,
+        waiting_on: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        actor: str = "mcp",
+    ) -> Saved:
         """Move the task; `next_step` / `waiting_on`, if given, are saved in the same
-        transaction ('' clears them)."""
+        transaction ('' clears them). Returns the task and the rule warnings of the move."""
         changes: dict[str, Any] = {"stage": stage}
         for name, value in (
             ("stage_note", note),
@@ -697,7 +829,7 @@ class Service:
         ):
             if value is not None:
                 changes[name] = value
-        return await self.update_task(
+        return await self.update_task_checked(
             ref, changes, session=session, session_title=session_title, actor=actor
         )
 

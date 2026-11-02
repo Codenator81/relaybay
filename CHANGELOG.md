@@ -9,6 +9,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Working rules: the MCP server instructions are a short working contract (snapshot first, pick or
+  create a task, keep next step / waiting on / progress current, `state · size · gist` reports,
+  `waiting_on` for decisions, `task_patch` for missing fields). Rules as structured data (report
+  format, stage requirements `report_since_stage_change` / `field_present`, description template,
+  guidance) with built-in defaults (a report before `test`, `progress` before `done`), a global
+  `[rules]` table in `config.toml` and per-project overrides in the new `project_rules` table
+  (migration `0006`); a config error stops the start, a broken project override is logged and
+  ignored (global rules apply, "project override ignored: …" is shown). Read through the tool `rules_get(project?)` and the
+  resources `relaybay://rules` and `relaybay://rules/{project}`; `project_snapshot` starts with
+  the rules hash. Stage moves that miss a rule succeed with a `Warning (rules)` line in the MCP
+  response, the board form and the event's `warnings` (`rules_mode = "warn"`, default), or are
+  refused (`rules_mode = "strict"`).
 - `relaybay serve` (FastAPI + uvicorn, default `127.0.0.1:8765`) and `relaybay token [--rotate]`;
   `python -m relaybay`; settings from `config.toml`, `RELAYBAY_*` environment variables and flags.
 - SQLite storage (WAL, numbered migrations) for projects, tasks, reports, decisions, sessions and an

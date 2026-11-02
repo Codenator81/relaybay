@@ -12,20 +12,40 @@ from starlette.routing import BaseRoute
 
 from relaybay import __version__
 from relaybay.domain.errors import DomainError, NotFoundError
+from relaybay.domain.rules import Rules
 from relaybay.mcp_server import format as fmt
 from relaybay.service import Service
 
-INSTRUCTIONS = " ".join(
-    [
-        "relaybay is the shared task board for this user's coding sessions.",
-        "Projects contain tasks; a task moves through the stages plan → dev → test → live → done.",
-        "Keep the board true: read the project snapshot when you start, create or pick a task for",
-        "your work, move its stage as you progress, and add a report at the end of every stage.",
-        "Pass `session` on writes so the board shows who did what: your own desktop session id",
-        "(local_…) if you know it, with `session_title`, otherwise a human-readable name.",
-        "If you don't know your local_ id, don't rebind a task — the coordinator binds you.",
-    ]
-)
+
+def instructions(rules: Rules) -> str:
+    """The working contract sent on connect; the report format comes from the effective global
+    rules, so it never contradicts rules_get."""
+    report = rules.body["report_format"]
+    return "\n".join(
+        [
+            "relaybay is the shared task board for this user's coding sessions. Projects contain"
+            " tasks; a task moves through the stages plan → dev → test → live → done. Working"
+            " contract:",
+            "1. On start, read project_snapshot for your project. Its first line names the current"
+            " rules; read relaybay://rules/<project> (or call rules_get) for the details.",
+            "2. Pick the task you work on, or create one with task_create. Pass `session` on"
+            " writes: your own desktop session id (local_…) with `session_title` if you know it,"
+            " otherwise a human-readable name. If you don't know your local_ id, don't rebind a"
+            " task — the coordinator binds you.",
+            "3. On every stage change and every report, also update next_step (what happens next),"
+            " waiting_on (who acts next) and progress (everything done so far).",
+            "4. Add a report at the end of every stage. Its first line is"
+            f" `{report['first_line']}`; state is one of {', '.join(report['states'])}; size is one"
+            f" of {', '.join(report['sizes'])}.",
+            "5. When the work needs a decision, set waiting_on to who decides and say in the report"
+            " what is to be decided.",
+            "6. If your tool's parameters lack a field, use task_patch (allowed fields:"
+            " relaybay://schema/task).",
+            "7. A response line starting with 'Warning (rules)' names a rule the write did not"
+            " meet: fix it (e.g. add the missing report) rather than ignore it.",
+        ]
+    )
+
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
@@ -79,7 +99,9 @@ async def run[T](awaitable: Awaitable[T]) -> T:
 
 
 def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServer:
-    mcp = MCPServer(name="relaybay", version=__version__, instructions=INSTRUCTIONS)
+    mcp = MCPServer(
+        name="relaybay", version=__version__, instructions=instructions(service.global_rules)
+    )
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def project_list() -> str:
@@ -256,8 +278,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             changes["tracker_logged"] = tracker_logged
         if not changes:
             raise ToolError("Nothing to update: pass at least one field.")
-        updated = await run(
-            service.update_task(
+        saved = await run(
+            service.update_task_checked(
                 task,
                 changes,
                 expected_version=expected_version,
@@ -265,7 +287,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 session_title=session_title,
             )
         )
-        return fmt.task_saved(updated, "Updated")
+        return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
 
     @mcp.tool(annotations=WRITE, structured_output=False)
     async def task_patch(
@@ -292,8 +314,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         changes = {k: cleared(v) if isinstance(v, str) else v for k, v in fields.items()}
         if not changes:
             raise ToolError("Nothing to update: pass at least one field in `fields`.")
-        updated = await run(
-            service.update_task(
+        saved = await run(
+            service.update_task_checked(
                 task,
                 changes,
                 expected_version=expected_version,
@@ -301,7 +323,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 session_title=session_title,
             )
         )
-        return fmt.task_saved(updated, "Updated")
+        return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
 
     @mcp.tool(annotations=WRITE, structured_output=False)
     async def task_set_stage(
@@ -317,10 +339,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     ) -> str:
         """Move a task to another stage (plan, dev, test, live, done) when its work moves on, e.g.
         to dev when you start coding, to test when it is ready for review, to done when finished.
-        Any transition is allowed. Also update next_step (what happens next) and waiting_on (who
+        Any transition is allowed; a move that misses a working rule (see rules_get) adds a
+        'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who
         acts next) whenever the stage changes or you report."""
-        updated = await run(
-            service.set_stage(
+        saved = await run(
+            service.set_stage_checked(
                 task,
                 stage,
                 note=note,
@@ -330,7 +353,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 session_title=session_title,
             )
         )
-        return fmt.task_saved(updated, "Moved")
+        return fmt.with_warnings(fmt.task_saved(saved.task, "Moved"), saved.warnings)
 
     @mcp.tool(annotations=WRITE, structured_output=False)
     async def task_bind_session(
@@ -449,6 +472,19 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         return f"Decision #{decision.id} recorded for {project}."
 
     @mcp.tool(annotations=READ, structured_output=False)
+    async def rules_get(
+        project: Annotated[
+            str | None,
+            Field(description="Project slug for its merged rules; omit for the global rules."),
+        ] = None,
+    ) -> str:
+        """The working rules: report format (first line, states, sizes), what a stage move
+        needs (e.g. a report before test, progress before done), the description template and
+        guidance, with the rules hash. Call it at the start of a session, or when the hash in
+        project_snapshot changed since you last read them."""
+        return fmt.rules_text(await run(service.rules(project or None)))
+
+    @mcp.tool(annotations=READ, structured_output=False)
     async def events_since(
         since_id: Annotated[int, Field(ge=0, description="Last event id you have seen.")] = 0,
         project: Annotated[str | None, Field(description="Project slug filter.")] = None,
@@ -468,6 +504,27 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     async def project_resource(slug: str) -> str:
         try:
             return fmt.snapshot(await service.snapshot(slug), require_tracker_log)
+        except NotFoundError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+
+    @mcp.resource(
+        "relaybay://rules",
+        name="rules",
+        description="The global working rules (same as rules_get without a project).",
+        mime_type="text/markdown",
+    )
+    async def rules_resource() -> str:
+        return fmt.rules_text(await service.rules())
+
+    @mcp.resource(
+        "relaybay://rules/{project}",
+        name="project-rules",
+        description="A project's working rules: global rules merged with the project override.",
+        mime_type="text/markdown",
+    )
+    async def project_rules_resource(project: str) -> str:
+        try:
+            return fmt.rules_text(await service.rules(project))
         except NotFoundError as exc:
             raise ResourceNotFoundError(str(exc)) from exc
 

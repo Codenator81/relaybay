@@ -295,6 +295,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         values: dict[str, str] | None = None,
         saved: bool = False,
         conflict: bool = False,
+        warnings: list[str] | None = None,
     ) -> HTMLResponse:
         # Errors come back as 200: htmx does not swap 4xx bodies by default.
         return render(
@@ -304,6 +305,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             error=error,
             conflict=conflict,
             saved=saved,
+            warnings=warnings or [],
             values=values or {},
             waiting_values=await service.waiting_on_values(),
         )
@@ -338,7 +340,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             # The form always resends the next step; only an edited one confirms it as current.
             del changes["next_step"]
         try:
-            await service.update_task(task.key, changes, expected_version=version, actor="board")
+            result = await service.update_task_checked(
+                task.key, changes, expected_version=version, actor="board"
+            )
         except ConflictError:
             fresh = await find_task(slug, key)
             return await edit_form(
@@ -347,7 +351,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         except DomainError as exc:
             fresh = await find_task(slug, key)
             return await edit_form(request, fresh, error=str(exc), values=values)
-        return await edit_form(request, await find_task(slug, key), saved=True)
+        return await edit_form(request, result.task, saved=True, warnings=result.warnings)
 
     @router.post("/p/{slug}/t/{key}/unbind")
     async def unbind_task_session(

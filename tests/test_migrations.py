@@ -12,8 +12,9 @@ MIGRATIONS = (
     "0002_task_description_progress.sql",
     "0003_tracker_and_session_alias.sql",
     "0004_next_step_freshness.sql",
+    "0005_tracker_history.sql",
 )
-LATEST = 5
+LATEST = 6
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -171,3 +172,35 @@ async def test_upgrade_from_0004_backfills_tracker_history(tmp_path: Path) -> No
             assert (await cur.fetchone())[0] == 2
     finally:
         await conn.close()
+
+
+async def test_upgrade_from_0005_adds_project_rules(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    await make_old_db(db, version=5)
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        assert (await svc.rules("acme-shop")).hash == svc.global_rules.hash
+        task = await svc.get_task("acme-shop-1")
+        moved = await svc.set_stage_checked(task.key, "test")
+        assert moved.task.stage == "test" and len(moved.warnings) == 1
+    finally:
+        await svc.close()
+
+    conn = await connect(db)
+    try:
+        assert await migrate(conn) == LATEST
+        await conn.execute(
+            "INSERT INTO project_rules (project_id, body, updated_at) VALUES (1, ?, ?)",
+            ('{"stage_requirements": {"test": []}}', NOW),
+        )
+    finally:
+        await conn.close()
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        assert (await svc.rules("acme-shop")).requirements("test") == []
+    finally:
+        await svc.close()
