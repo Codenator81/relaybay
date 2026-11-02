@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Codenator81/relaybay/discussions
+    about: Ask a question, share an idea or show how you use relaybay.
+  - name: Report a security vulnerability
+    url: https://github.com/Codenator81/relaybay/security/advisories/new
+    about: Report it privately, not as a public issue.

@@ -8,7 +8,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 |---|---|---|---|
 | 0001 | [Hooks and machine setup](0001-hooks-and-setup.md) | Implemented in v0.1.0 | 0.1.0 |
 | 0002 | [Working rules](0002-working-rules.md) | 1.5a Implemented in v0.1.0; 1.5b–c Accepted | 0.1.0 / 0.4.0 |
-| 0003 | [Packaging and release](0003-packaging-and-release.md) | Accepted | 0.1.0 |
+| 0003 | [Packaging and release](0003-packaging-and-release.md) | Implemented in v0.1.0 (GIF, repository settings pending) | 0.1.0 |
 | 0004 | [Navigation: sidebar, Inbox, Map, Usage, Ctrl+K](0004-navigation.md) | Accepted | 0.2.0 / 0.4.0 |
 | 0005 | [Comments to agents](0005-comments-to-agents.md) | Accepted | 0.2.0 |
 | 0006 | [Environments, access and agent permissions](0006-environments-and-access.md) | Accepted | 0.2.0 |

@@ -12,6 +12,8 @@ site/
 
 # Local data
 .dev-data/
+.demo-data/
+gif-data/
 *.sqlite
 *.sqlite3
 *.db

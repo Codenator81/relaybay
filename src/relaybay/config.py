@@ -3,7 +3,7 @@
 import copy
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -20,23 +20,123 @@ DEFAULT_PORT = 8765
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 
+def _doc(
+    meaning: str,
+    *,
+    key: str | None = None,
+    env: str | None = None,
+    flag: str | None = None,
+    default: str | None = None,
+) -> dict[str, str | None]:
+    """Field metadata for the configuration reference (`scripts/gen_reference.py`); `key` is
+    the `config.toml` key or table, `env` the environment variable."""
+    return {"meaning": meaning, "key": key, "env": env, "flag": flag, "default": default}
+
+
 @dataclass(slots=True)
 class Settings:
-    home: Path
-    host: str = DEFAULT_HOST
-    port: int = DEFAULT_PORT
-    allowed_hosts: list[str] = field(default_factory=list)
-    stage_labels: dict[str, str] = field(default_factory=dict)
-    report_labels: dict[str, str] = field(default_factory=dict)
-    report_hints: dict[str, str] = field(default_factory=dict)
-    desktop_link_template: str = DEFAULT_DESKTOP_LINK_TEMPLATE
-    done_window_days: int = DEFAULT_DONE_WINDOW_DAYS
-    require_tracker_log: bool = False
-    rules: dict[str, Any] = field(default_factory=lambda: copy.deepcopy(DEFAULT_RULES))
-    rules_mode: str = "warn"
-    claude_home: Path | None = None  # where setup looks for Claude Code's files; None: real home
-    replay_limit: int = 5000
-    heartbeat_seconds: float = 15.0
+    home: Path = field(
+        metadata=_doc(
+            "Data directory: `relaybay.sqlite`, `token`, `config.toml`.",
+            env="RELAYBAY_HOME",
+            flag="--home",
+            default="per-user data dir (`platformdirs`)",
+        )
+    )
+    host: str = field(
+        default=DEFAULT_HOST,
+        metadata=_doc(
+            "Bind address. Anything but loopback prints a warning.",
+            key="host",
+            env="RELAYBAY_HOST",
+            flag="--host",
+        ),
+    )
+    port: int = field(
+        default=DEFAULT_PORT,
+        metadata=_doc("Port.", key="port", env="RELAYBAY_PORT", flag="--port"),
+    )
+    allowed_hosts: list[str] = field(
+        default_factory=list,
+        metadata=_doc(
+            "Extra names accepted in the `Host` header (LAN names); the environment variable is"
+            " comma-separated.",
+            key="allowed_hosts",
+            env="RELAYBAY_ALLOWED_HOSTS",
+            default="`[]`",
+        ),
+    )
+    stage_labels: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_doc(
+            "Display names per stage (`plan`, `dev`, `test`, `live`, `done`).",
+            key="[stages.labels]",
+            default="the stage keys",
+        ),
+    )
+    report_labels: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_doc(
+            "Display names of report states and sizes.", key="[reports.labels]", default="built-in"
+        ),
+    )
+    report_hints: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_doc("Tooltips of report badges.", key="[reports.hints]", default="built-in"),
+    )
+    desktop_link_template: str = field(
+        default=DEFAULT_DESKTOP_LINK_TEMPLATE,
+        metadata=_doc(
+            "Link for a desktop session id; must contain `{id}`.",
+            key="desktop_link_template",
+            env="RELAYBAY_DESKTOP_LINK_TEMPLATE",
+        ),
+    )
+    done_window_days: int = field(
+        default=DEFAULT_DONE_WINDOW_DAYS,
+        metadata=_doc(
+            "Days a done task stays in the done column (whole number >= 1).",
+            key="done_window_days",
+            env="RELAYBAY_DONE_WINDOW_DAYS",
+        ),
+    )
+    require_tracker_log: bool = field(
+        default=False,
+        metadata=_doc(
+            'Done tasks without the tracker mark show "not logged" and are never archived.',
+            key="require_tracker_log",
+            env="RELAYBAY_REQUIRE_TRACKER_LOG",
+        ),
+    )
+    rules: dict[str, Any] = field(
+        default_factory=lambda: copy.deepcopy(DEFAULT_RULES),
+        metadata=_doc(
+            "Global working rules merged over the defaults ([SPEC §6](../SPEC.md#spec-rules)).",
+            key="[rules]",
+            default="built-in rules",
+        ),
+    )
+    rules_mode: str = field(
+        default="warn",
+        metadata=_doc(
+            "`warn` or `strict`: what a stage move that misses a rule does.",
+            key="rules_mode",
+            env="RELAYBAY_RULES_MODE",
+        ),
+    )
+    claude_home: Path | None = field(
+        default=None,  # None: the real home directory
+        metadata=_doc(
+            "Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor,"
+            " Integrations).",
+            key="claude_home",
+            env="RELAYBAY_CLAUDE_HOME",
+            flag="--claude-home",
+            default="your home directory",
+        ),
+    )
+    replay_limit: int = 5000  # internal: not configurable
+    heartbeat_seconds: float = 15.0  # internal: not configurable
 
     @property
     def db_path(self) -> Path:
@@ -76,6 +176,10 @@ class Settings:
         if self.host not in ("0.0.0.0", "::", ""):
             names.append(f"[{self.host}]" if ":" in self.host else self.host)
         return list(dict.fromkeys(n.lower() for n in names))
+
+
+# Settings read from `RELAYBAY_<NAME>`; RELAYBAY_HOME is read first, before config.toml.
+ENV_KEYS = tuple(f.name for f in fields(Settings) if f.metadata.get("env") and f.name != "home")
 
 
 def default_home() -> Path:
@@ -178,16 +282,7 @@ def load_settings(
         settings,
         {
             key: env[f"RELAYBAY_{key.upper()}"]
-            for key in (
-                "host",
-                "port",
-                "allowed_hosts",
-                "desktop_link_template",
-                "done_window_days",
-                "require_tracker_log",
-                "rules_mode",
-                "claude_home",
-            )
+            for key in ENV_KEYS
             if env.get(f"RELAYBAY_{key.upper()}")
         },
         "environment",

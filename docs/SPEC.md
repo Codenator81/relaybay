@@ -4,7 +4,7 @@ How relaybay behaves **now**: the concepts and every shipped feature. This page 
 plans; upcoming work lives in the [roadmap](ROADMAP.md) and the [design documents](design/index.md).
 When a feature ships, its final behaviour moves here in the same pull request.
 
-Version covered: `0.1.0.dev0` (unreleased `main`). Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.1.0`. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:
@@ -225,8 +225,9 @@ change.` In `strict` mode the tool fails with `Rules: … Nothing changed.`
 across server restarts. Therefore existing tools never gain required parameters; new behaviour comes
 as new optional parameters or new tools, and `task_patch(task, fields={…})` reaches any editable
 field with a stale schema. Removing a tool or parameter is announced with a deprecation warning for
-one minor version first. MCP protocol: what the pinned SDK (`mcp>=2,<3`) negotiates; the minimum
-Claude Code version for http hooks is taken as 2.1.63 (unverified, see [§4](#spec-hooks)).
+one minor version first. MCP protocol: what the pinned SDK (`mcp>=2,<3`) negotiates. Minimum
+supported Claude Code version: 2.0.0, checked by `relaybay doctor` (older releases are not tested;
+unverified); http hooks need 2.1.63 (unverified, see [§4](#spec-hooks)).
 
 <a id="spec-hooks"></a>
 
@@ -333,6 +334,32 @@ the user settings for this base URL; in command mode, the hook's interpreter imp
 `relaybay.hook_client`; in http mode, `RELAYBAY_TOKEN` set to the token in this environment; the MCP
 server registered for Claude Code.
 
+<a id="spec-doctor"></a>
+
+**`relaybay doctor [--json]`** (`--home`, `--port`, `--claude-home`) reads and never writes; unlike
+`setup --check` it never creates the token and it reports Claude Code's files even when the server
+is down. Items, in order: `relaybay` (version and interpreter), `Python` (at least 3.12), `OS`,
+`data folder` (exists, writable, whether `config.toml` is there), `token file` (present, not empty,
+on POSIX not readable by others), `Claude Code` (on `PATH`, version at least the minimum supported),
+`desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
+token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
+(the hash of the global rules from the settings; fails when the running server reports another one
+in `/healthz`, i.e. it needs a restart), then the Claude Code items of the check (`hooks in user
+settings`, `command hook runs` or `RELAYBAY_TOKEN for http hooks`, `MCP registered for Claude
+Code`). Output: one `[ok]` / `[FAIL]` line per item, or with `--json` a list of
+`{ok, name, detail}` (the shape of `setup --check --json`); exit code `1` when an item fails. Invalid
+settings come out as one failed `settings` item.
+
+<a id="spec-demo"></a>
+
+**`relaybay demo --home <dir> [--force]`** seeds a made-up workspace into the data folder: projects
+`acme-shop` (with a repository path) and `demo-api`, eight tasks across all five stages with
+descriptions, progress and reports, tracker badges (one logged done task), a stale next step, a
+decision and a desktop session bound to a dev task and shown as working (one synthetic hook event).
+`--home` is required. A database that already has a project or an event is refused (exit `1`);
+with `--force` it is renamed to `relaybay.sqlite.before-demo-<YYYYMMDD-HHMMSS>` (with its WAL files)
+and a new one is seeded. The token is not created; `relaybay serve --home <dir>` does that.
+
 <a id="spec-setup-board"></a>
 
 **Integrations page** (`/settings/integrations`): the same detection, plan (with a Hook type
@@ -401,7 +428,9 @@ relaybay is a single-user local server. The security layers, in request order:
 <a id="spec-security-bind"></a>
 
 1. **Bind address.** `127.0.0.1` by default. Any other address (`--host`, LAN or phone access)
-   prints a warning; the names used must be added to `allowed_hosts`. No built-in TLS.
+   prints a warning; the names used must be added to `allowed_hosts`. No built-in TLS. The Docker
+   image binds `0.0.0.0` inside the container (`RELAYBAY_HOST`); its port is meant to be published
+   on the host's loopback only (`-p 127.0.0.1:8765:8765`), where requests carry `Host: 127.0.0.1`.
 2. **Host allow-list** (DNS rebinding): every request's `Host` must be `127.0.0.1`, `localhost`,
    `[::1]`, the bound host or a configured `allowed_hosts` name, otherwise `403`.
 3. **Origin check:** a foreign `Origin` is refused (`403`) on every non-GET request and on every
@@ -411,8 +440,9 @@ relaybay is a single-user local server. The security layers, in request order:
    atomically with mode `0600` (on Windows the user profile ACL protects it; a POSIX file readable by
    others logs a warning). Required as `Authorization: Bearer` on `/mcp`, `/hooks` and the reserved
    `/api` prefix. `relaybay token --rotate` replaces it (restart the server).
-   `/healthz` is public and returns `status`, `version` and `token_id`, a 12-hex-digit HMAC
-   fingerprint that reveals nothing about the token.
+   `/healthz` is public and returns `status`, `version`, `token_id` (a 12-hex-digit HMAC
+   fingerprint that reveals nothing about the token) and `rules_hash` (the global rules the server
+   started with, [§6](#spec-rules-hash)).
 5. **Browser session.** `/login?token=…` (or the sign-in form) sets an `HttpOnly`, `SameSite=Strict`
    cookie (`Secure` over https, one year) derived from the token and redirects, so the token leaves
    the address bar; the access log redacts the `/login` query. Unauthenticated page visits redirect
@@ -453,6 +483,15 @@ variables, then command-line flags. The data directory (per-user data dir via `p
 `RELAYBAY_HOME` / `--home`) holds `relaybay.sqlite`, `token` and the optional `config.toml`. An
 invalid value stops the start with a message naming the key. Keys, variables and flags:
 [configuration reference](reference/configuration.md).
+
+<a id="spec-distribution"></a>
+
+**Distribution.** The version lives only in `pyproject.toml`; `relaybay --version`, `/healthz` and
+the MCP server info read it from the installed package. The wheel and sdist carry the templates,
+static assets and migrations; `python -m relaybay` is the same as `relaybay`. The Docker image
+(`ghcr.io/codenator81/relaybay`, `linux/amd64` and `linux/arm64`) runs `relaybay serve` as a
+non-root user with `RELAYBAY_HOME=/data` (a volume), `RELAYBAY_HOST=0.0.0.0`, port 8765 and a
+`/healthz` health check.
 
 <a id="spec-data"></a>
 

@@ -9,11 +9,13 @@ outbound calls.
 
 ## Where to start
 
-- **Getting started** — [install and run](getting-started/install.md), then
-  [connect Claude Code](connect-claude-code.md).
+- **Getting started** — [install and run](getting-started/install.md) (`uv tool install
+  relaybay`), then [connect Claude Code](connect-claude-code.md), or let your agent do both:
+  [install with your coding agent](getting-started/agent-install.md).
 - **How-to guides** — [troubleshooting](how-to/troubleshooting.md),
   [phone and LAN access](how-to/lan-access.md), [remove the integration](how-to/uninstall.md).
-- **Reference** — [specification](SPEC.md), [MCP tools](mcp-tools.md), [CLI](reference/cli.md),
+- **Reference** — [specification](SPEC.md), [MCP tools guide](mcp-tools.md),
+  [MCP reference](reference/mcp.md), [CLI](reference/cli.md),
   [configuration](reference/configuration.md).
 - **Explanation** — [architecture](architecture.md), [design documents](design/index.md),
   [roadmap](ROADMAP.md).

@@ -11,6 +11,7 @@ uv run relaybay serve --reload --home ./.dev-data
 ```
 
 `--home` keeps development data out of your real data directory (`.dev-data` is yours to delete).
+`uv run relaybay demo --home ./.demo-data` fills a separate folder with the demo workspace.
 
 ## Checks
 
@@ -65,3 +66,20 @@ The docs site is built with MkDocs Material:
 uv sync --group docs
 uv run --no-sync mkdocs build --strict   # or: mkdocs serve
 ```
+
+The CLI, configuration and MCP reference pages in `docs/reference/` are generated from the code.
+After changing a command, a setting or an MCP tool, regenerate them; CI fails when they drift:
+
+```bash
+uv run python scripts/gen_reference.py           # rewrite docs/reference/*.md
+uv run python scripts/gen_reference.py --check   # what CI runs
+```
+
+## Releases
+
+Maintainers only. Set the version in `pyproject.toml` (the only place), run `uv lock`, move
+`[Unreleased]` in `CHANGELOG.md` to `## [x.y.z] - YYYY-MM-DD`, merge, then tag `vx.y.z` on `main`
+and push the tag. `.github/workflows/release.yml` checks that the tag matches the version, builds
+and checks the wheel and sdist (`scripts/check_dist.py`), publishes to PyPI by trusted publishing,
+pushes `ghcr.io/codenator81/relaybay:<version>` and `:latest`, creates the GitHub Release with the
+notes from `CHANGELOG.md` (`scripts/changelog_notes.py`) and deploys the docs.

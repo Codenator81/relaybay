@@ -34,7 +34,7 @@ jobs:
       - run: uv run pytest
 
   build:
-    name: Build wheel
+    name: Build and check the packages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,4 +43,38 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - run: uv build --wheel
+      - run: uv build
+      - run: uv run --no-project python scripts/check_dist.py
+      - name: The wheel runs in a clean environment
+        run: |
+          uvx --isolated --from dist/*.whl relaybay --version
+          uvx --isolated --from dist/*.whl relaybay demo --home "$RUNNER_TEMP/demo"
+      - name: Smoke-start the server from the wheel
+        run: |
+          uvx --isolated --from dist/*.whl relaybay serve --home "$RUNNER_TEMP/smoke" --port 8799 &
+          server=$!
+          # Stop the server when the step ends, so it does not hold the uv cache lock.
+          trap 'kill "$server" 2>/dev/null; wait "$server" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:8799/healthz && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8799/healthz
+          curl -sf -o /dev/null -X POST http://127.0.0.1:8799/mcp \
+            -H "Authorization: Bearer $(cat "$RUNNER_TEMP/smoke/token")" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+
+  reference:
+    name: Generated reference is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run python scripts/gen_reference.py --check

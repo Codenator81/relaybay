@@ -1,9 +1,10 @@
 # Connect Claude Code
 
-relaybay runs one MCP server for all your sessions. Start it first:
+relaybay runs one MCP server for all your sessions. [Install it](getting-started/install.md) and
+start it first:
 
 ```bash
-uv run relaybay serve
+relaybay serve
 ```
 
 ## 1. Add the server
@@ -75,11 +76,11 @@ line in the task dialog. `relaybay setup` writes the hooks into your user settin
 writes when you ask:
 
 ```bash
-uv run relaybay setup                          # dry run: what it found, the exact diff, its hash
-uv run relaybay setup --apply --expect <hash>  # write exactly that plan (a backup of the file first)
-uv run relaybay setup --check [--json]         # server, MCP, hook endpoint, settings: ok / FAIL
-uv run relaybay setup --remove --dry-run       # preview taking relaybay's hooks out again
-uv run relaybay setup --remove --expect <hash> # do it (with a backup)
+relaybay setup                          # dry run: what it found, the exact diff, its hash
+relaybay setup --apply --expect <hash>  # write exactly that plan (a backup of the file first)
+relaybay setup --check [--json]         # server, MCP, hook endpoint, settings: ok / FAIL
+relaybay setup --remove --dry-run       # preview taking relaybay's hooks out again
+relaybay setup --remove --expect <hash> # do it (with a backup)
 ```
 
 `--expect` makes the write refuse when the file (or the plan) changed after you looked at the dry
