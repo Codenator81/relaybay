@@ -1,0 +1,19 @@
+{#- Activity rows, newest first. Expects: events, more_qs. -#}
+{% for e in events %}
+{%- set subject = e|event_subject %}
+{%- set project = e.payload.get("project") %}
+<li class="activity-row" data-id="{{ e.id }}">
+  <time class="activity-time muted" datetime="{{ e.ts }}" data-age title="{{ e.ts[:19] }}Z">{{ e.ts|age }}</time>
+  <span class="activity-kind kind-{{ e.kind.split('.')[0] }}">{{ e.kind }}</span>
+  {% if e.payload.get("key") and project %}<a class="card-key" href="/p/{{ project }}?task={{ e.payload.key }}">{{ subject }}</a>
+  {%- elif project %}<a class="card-key" href="/p/{{ project }}">{{ subject }}</a>
+  {%- elif subject %}<span class="card-key">{{ subject }}</span>{% endif %}
+  <span class="activity-detail">{{ e|event_detail }}</span>
+  <span class="activity-actor muted">{{ e.actor }}</span>
+</li>
+{% endfor %}
+{% if more_qs %}
+<li class="activity-more">
+  <a class="action" href="/activity?{{ more_qs }}" hx-get="/fragments/activity?{{ more_qs }}" hx-target="closest li" hx-swap="outerHTML">Load more</a>
+</li>
+{% endif %}

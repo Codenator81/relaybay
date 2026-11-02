@@ -278,29 +278,45 @@ def task_saved(task: Task, verb: str) -> str:
     return f"{verb} **{task.key}** “{task.title}” · stage {task.stage} · version {task.version}."
 
 
+def event_subject(e: Event) -> str:
+    """The task key of an event, or its project."""
+    return str(e.payload.get("key") or e.payload.get("project") or "")
+
+
+def event_detail(e: Event) -> str:
+    """What changed, in a few words: `dev → test`, a report's summary, the changed fields."""
+    p = e.payload
+    if e.kind == "task.stage_changed":
+        return f"{p.get('from')} → {p.get('to')}"
+    if e.kind in ("report.added", "task.created"):
+        return str(p.get("summary") or p.get("title") or "")
+    if e.kind == "task.updated":
+        return ", ".join(sorted(p.get("changes", {})))
+    if e.kind == "task.session_bound":
+        return f"→ {p.get('session')}"
+    if e.kind == "task.session_unbound":
+        return f"✕ {p.get('session')}"
+    if e.kind == "session.alias_added":
+        return f"'{p.get('alias')}' = {p.get('session')}"
+    if e.kind == "task.tracker_unlogged":
+        return f"{p.get('tracker_ref') or ''} ({p.get('reason')})".strip()
+    if e.kind == "decision.added":
+        return str(p.get("text", ""))
+    if e.kind == "session.status_changed":
+        change = f"{p['previous']} → {p.get('status')}" if p.get("previous") else p.get("status")
+        return f"{p.get('session')}: {change}"
+    if e.kind == "session.seen":
+        reason = p.get("unlinked_reason")
+        return f"{p.get('session')}" + (f" (unlinked: {reason})" if reason else "")
+    return ""
+
+
 def events(items: list[Event], since_id: int) -> str:
     if not items:
         return f"No events after #{since_id}."
     lines = []
     for e in items:
-        key = e.payload.get("key") or e.payload.get("project") or ""
-        detail = ""
-        if e.kind == "task.stage_changed":
-            detail = f"{e.payload.get('from')} → {e.payload.get('to')}"
-        elif e.kind in ("report.added", "task.created"):
-            detail = str(e.payload.get("summary") or e.payload.get("title") or "")
-        elif e.kind == "task.updated":
-            detail = ", ".join(sorted(e.payload.get("changes", {})))
-        elif e.kind == "task.session_bound":
-            detail = f"→ {e.payload.get('session')}"
-        elif e.kind == "task.session_unbound":
-            detail = f"✕ {e.payload.get('session')}"
-        elif e.kind == "session.alias_added":
-            detail = f"'{e.payload.get('alias')}' = {e.payload.get('session')}"
-        elif e.kind == "task.tracker_unlogged":
-            detail = f"{e.payload.get('tracker_ref') or ''} ({e.payload.get('reason')})".strip()
-        elif e.kind == "decision.added":
-            detail = str(e.payload.get("text", ""))
+        key, detail = event_subject(e), event_detail(e)
         lines.append(f"- #{e.id} {e.ts[:19]}Z {e.kind} {key} {detail} ({e.actor})".rstrip())
     lines.append(f"\nNext call: events_since(since_id={items[-1].id})")
     return "\n".join(lines)

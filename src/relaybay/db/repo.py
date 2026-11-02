@@ -323,6 +323,27 @@ async def list_unlinked_hook_sessions(conn: aiosqlite.Connection, limit: int) ->
     return [_session(r) for r in rows]
 
 
+async def list_sessions(
+    conn: aiosqlite.Connection, project_id: int | None, limit: int
+) -> list[Session]:
+    """Sessions, most recently seen first. With `project_id`: those its hooks placed in the
+    project and those bound to one of its tasks now."""
+    if project_id is None:
+        rows = await _all(
+            conn, "SELECT * FROM session ORDER BY last_seen_at DESC, id DESC LIMIT ?", (limit,)
+        )
+    else:
+        rows = await _all(
+            conn,
+            "SELECT * FROM session WHERE project_id = ? OR id IN (SELECT b.session_id"
+            " FROM task_session b JOIN task t ON t.id = b.task_id"
+            " WHERE t.project_id = ? AND b.unbound_at IS NULL)"
+            " ORDER BY last_seen_at DESC, id DESC LIMIT ?",
+            (project_id, project_id, limit),
+        )
+    return [_session(r) for r in rows]
+
+
 async def open_binding(conn: aiosqlite.Connection, task_id: int) -> int | None:
     row = await _one(
         conn,
@@ -679,6 +700,51 @@ async def events_after(
             (after_id, project_id, limit),
         )
     return [_event(r) for r in rows]
+
+
+async def events_page(
+    conn: aiosqlite.Connection,
+    *,
+    before_id: int | None,
+    after_id: int | None,
+    project_id: int | None,
+    kind: str | None,
+    exclude_kinds: tuple[str, ...],
+    limit: int,
+) -> list[Event]:
+    """Events newest first, below `before_id` and above `after_id`; `kind` selects one kind,
+    otherwise `exclude_kinds` are left out."""
+    where, params = [], []
+    if before_id is not None:
+        where.append("id < ?")
+        params.append(before_id)
+    if after_id is not None:
+        where.append("id > ?")
+        params.append(after_id)
+    if project_id is not None:
+        where.append("project_id = ?")
+        params.append(project_id)
+    if kind is not None:
+        where.append("kind = ?")
+        params.append(kind)
+    elif exclude_kinds:
+        where.append(f"kind NOT IN ({', '.join('?' for _ in exclude_kinds)})")
+        params.extend(exclude_kinds)
+    sql = "SELECT * FROM event"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    return [_event(r) for r in await _all(conn, sql, (*params, limit))]
+
+
+async def latest_stage_changes(conn: aiosqlite.Connection) -> dict[int, Event]:
+    """The newest `task.stage_changed` event of every task, by task id."""
+    rows = await _all(
+        conn,
+        "SELECT * FROM event WHERE id IN (SELECT MAX(id) FROM event"
+        " WHERE kind = 'task.stage_changed' AND task_id IS NOT NULL GROUP BY task_id)",
+    )
+    return {r["task_id"]: _event(r) for r in rows}
 
 
 async def last_event_id(conn: aiosqlite.Connection) -> int:

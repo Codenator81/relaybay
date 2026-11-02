@@ -18,7 +18,7 @@ from relaybay.domain.errors import ConflictError, DomainError, NotFoundError
 from relaybay.domain.models import Task
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.tasks import is_archived
-from relaybay.mcp_server.format import age
+from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.security import (
     COOKIE_NAME,
     CSRF_FIELD,
@@ -30,7 +30,7 @@ from relaybay.security import (
     session_cookie_value,
     token_id,
 )
-from relaybay.service import HTTP_URL_RE, Service
+from relaybay.service import HTTP_URL_RE, Inbox, Service
 from relaybay.web.markdown import render_markdown
 from relaybay.web.sse import event_stream
 
@@ -64,6 +64,25 @@ SAVE_CONFLICT = (
     " again to overwrite their change, or reload to discard your edits."
 )
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+ACTIVITY_PAGE = 50
+EVENT_KINDS = (
+    "project.created",
+    "project.updated",
+    "task.created",
+    "task.updated",
+    "task.stage_changed",
+    "task.session_bound",
+    "task.session_unbound",
+    "task.tracker_unlogged",
+    "report.added",
+    "decision.added",
+    "session.seen",
+    "session.status_changed",
+    "session.alias_added",
+)
+# Hook status changes arrive every few seconds per working session: the Activity feed shows
+# them only when the kind filter asks for them.
+QUIET_KINDS = ("session.status_changed",)
 
 
 def utcnow() -> datetime:
@@ -92,9 +111,35 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["age"] = age
     env.filters["markdown"] = render_markdown
     env.filters["http_url"] = http_url
+    env.filters["event_detail"] = event_detail
+    env.filters["event_subject"] = event_subject
 
     def render(request: Request, name: str, status: int = 200, **context: Any) -> HTMLResponse:
         return templates.TemplateResponse(request, name, context, status_code=status)
+
+    async def inbox() -> Inbox:
+        return await service.inbox(
+            settings.owner_names,
+            require_tracker_log=settings.require_tracker_log,
+            done_window_days=settings.done_window_days,
+        )
+
+    async def page(
+        request: Request,
+        name: str,
+        active: str,
+        nav_project: str | None = None,
+        **context: Any,
+    ) -> HTMLResponse:
+        """A full page with the sidebar: `active` names the highlighted item (`inbox`,
+        `boards`, `activity`, `settings`, `sessions`; `board` or `sessions` with `project`)."""
+        nav = {
+            "active": active,
+            "project": nav_project,
+            "projects": [item.project for item in await service.list_projects()],
+            "inbox_count": (await inbox()).count,
+        }
+        return render(request, name, nav=nav, **context)
 
     async def board_context(slug: str, archived: bool = False, q: str = "") -> dict[str, Any]:
         """Columns of the board. Archived done tasks are left out unless `archived` is set or a
@@ -219,9 +264,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         # Read the event id before the data: an event committed in between is then replayed
         # by the SSE stream instead of being skipped.
         last_event_id = await service.last_event_id()
-        return render(
+        return await page(
             request,
             "projects.html",
+            "boards",
             projects=await service.list_projects(),
             last_event_id=last_event_id,
         )
@@ -239,9 +285,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         first_busy = next((s for s in STAGES if context["columns"][s]), Stage.PLAN)
         # `?task=<key>` is the URL of the open task dialog: render it so the page opens with it.
         dialog = await dialog_context(slug, task) if task else {}
-        return render(
+        return await page(
             request,
             "board.html",
+            "board",
+            context["project"].slug,
             **context,
             **dialog,
             active_stage=first_busy,
@@ -251,12 +299,121 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/t/{key}", response_class=HTMLResponse)
     async def task_page(request: Request, key: str):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
-        return render(
+        detail = await service.task_detail(key, reports=TASK_PAGE_REPORTS)
+        return await page(
             request,
             "task.html",
-            detail=await service.task_detail(key, reports=TASK_PAGE_REPORTS),
+            "board",
+            detail.task.project_slug,
+            detail=detail,
             last_event_id=last_event_id,
         )
+
+    @router.get("/inbox", response_class=HTMLResponse)
+    async def inbox_page(request: Request):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        return await page(
+            request, "inbox.html", "inbox", inbox=await inbox(), last_event_id=last_event_id
+        )
+
+    @router.get("/fragments/inbox", response_class=HTMLResponse)
+    async def inbox_fragment(request: Request):
+        return render(request, "_inbox.html", inbox=await inbox())
+
+    @router.get("/fragments/inbox-badge", response_class=HTMLResponse)
+    async def inbox_badge(request: Request):
+        return render(request, "_inbox_badge.html", count=(await inbox()).count)
+
+    @router.get("/sessions", response_class=HTMLResponse)
+    async def all_sessions_page(request: Request):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        return await page(
+            request,
+            "sessions.html",
+            "sessions",
+            sessions_project=None,
+            rows=await service.list_sessions(),
+            last_event_id=last_event_id,
+        )
+
+    @router.get("/p/{slug}/sessions", response_class=HTMLResponse)
+    async def sessions_page(request: Request, slug: str):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        project = await service.get_project(slug)
+        return await page(
+            request,
+            "sessions.html",
+            "sessions",
+            project.slug,
+            sessions_project=project,
+            rows=await service.list_sessions(project.slug),
+            last_event_id=last_event_id,
+        )
+
+    @router.get("/fragments/sessions", response_class=HTMLResponse)
+    async def sessions_fragment(request: Request, project: str = ""):
+        sessions_project = await service.get_project(project) if project else None
+        rows = await service.list_sessions(sessions_project.slug if sessions_project else None)
+        return render(request, "_sessions.html", sessions_project=sessions_project, rows=rows)
+
+    async def activity_context(
+        project: str, kind: str, before: int | None, after: int | None
+    ) -> dict[str, Any]:
+        if kind and kind not in EVENT_KINDS:
+            raise HTTPException(status_code=400, detail=f"Unknown event kind {kind!r}.")
+        filters = {"project": project, "kind": kind}
+        # A live refetch (`after`) takes everything new at once; a page stops at ACTIVITY_PAGE.
+        limit = ACTIVITY_PAGE * 4 if after is not None else ACTIVITY_PAGE
+        items = await service.activity(
+            project=project or None,
+            kind=kind or None,
+            before_id=before,
+            after_id=after,
+            exclude_kinds=() if kind else QUIET_KINDS,
+            limit=limit + 1,
+        )
+        more = after is None and len(items) > limit
+        items = items[:limit]
+        more_qs = ""
+        if more:
+            more_qs = urlencode({k: v for k, v in {**filters, "before": items[-1].id}.items() if v})
+        return {
+            "events": items,
+            "more_qs": more_qs,
+            "filters_qs": urlencode({k: v for k, v in filters.items() if v}),
+        }
+
+    @router.get("/activity", response_class=HTMLResponse)
+    async def activity_page(
+        request: Request, project: str = "", kind: str = "", before: int | None = None
+    ):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        project = project.strip().lower()
+        if project:
+            await service.get_project(project)  # an unknown project is a 404
+        context = await activity_context(project, kind, before, None)
+        return await page(
+            request,
+            "activity.html",
+            "activity",
+            **context,
+            project_filter=project,
+            kind_filter=kind,
+            kinds=EVENT_KINDS,
+            paged=before is not None,
+            last_event_id=last_event_id,
+        )
+
+    @router.get("/fragments/activity", response_class=HTMLResponse)
+    async def activity_fragment(
+        request: Request,
+        project: str = "",
+        kind: str = "",
+        before: int | None = None,
+        after: int | None = None,
+    ):
+        context = await activity_context(project.strip().lower(), kind, before, after)
+        return render(request, "_activity_rows.html", **context)
 
     @router.get("/p/{slug}/col/{stage}", response_class=HTMLResponse)
     async def column_fragment(
@@ -438,6 +595,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     ) -> HTMLResponse:
         if mode not in machine_setup.MODES:
             mode = machine_setup.DEFAULT_MODE
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
         # `claude --version` may take a moment: keep the event loop free meanwhile.
         detection = await asyncio.to_thread(machine_setup.detect)
         context = {
@@ -452,11 +610,21 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         }
         if "hx-request" in request.headers:
             return render(request, "_integrations.html", **context)
-        return render(request, "integrations.html", **context)
+        return await page(
+            request,
+            "integrations.html",
+            "settings",
+            **context,
+            last_event_id=last_event_id,
+        )
 
     def check_csrf(value: str) -> None:
         if not same_secret(value, csrf_token(token)):
             raise HTTPException(status_code=403, detail="Missing CSRF token")
+
+    @router.get("/settings")
+    async def settings_index() -> Response:
+        return RedirectResponse("/settings/integrations", status_code=303)
 
     @router.get("/settings/integrations", response_class=HTMLResponse)
     async def integrations(request: Request, mode: str = machine_setup.DEFAULT_MODE):

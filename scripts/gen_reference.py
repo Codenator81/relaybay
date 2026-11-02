@@ -99,6 +99,7 @@ desktop_link_template = "claude://claude.ai/epitaxy/{id}"
 done_window_days = 7
 require_tracker_log = false
 rules_mode = "warn"
+owner_names = ["owner", "me", "alex"]   # waiting_on values listed in the Inbox
 
 [stages.labels]
 dev = "in progress"

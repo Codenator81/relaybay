@@ -521,7 +521,7 @@ def test_integrations_page_writes_only_on_button(board: TestClient, claude_home:
     assert "Integrations" in page.text and "/usr/local/bin/claude" in page.text
     assert "hooks/claude-code" in page.text  # the diff
     assert path.read_bytes() == original
-    assert 'href="/settings/integrations"' in board.get("/").text  # header link
+    assert 'href="/settings/integrations"' in board.get("/").text  # sidebar link
 
     token = board.app.state.settings.token_path.read_text(encoding="utf-8").strip()
     form = {"csrf_token": csrf_token(token), "mode": "command"}

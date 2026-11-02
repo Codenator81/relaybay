@@ -116,8 +116,19 @@ to agents, the review checklist, memory notes and documents (see the [roadmap](R
 ## 2. Board
 
 Server-rendered HTML (Jinja2 + htmx, [ADR-0001](adr/0001-htmx-sse.md)), light and dark theme from
-the system setting, usable on a phone. A header bar holds the brand link, breadcrumbs, the
-**Integrations** link and a live-status indicator (`connecting` / `live` / `offline`).
+the system setting, usable on a phone. A header bar holds the navigation button, the brand link,
+breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`).
+
+<a id="spec-board-nav"></a>
+
+**Navigation.** Every signed-in page has a left sidebar ([design 0004](design/0004-navigation.md)):
+**Inbox** with a live count badge, **All boards**, **Activity**, **Settings** (the Integrations
+page), then **Projects**, each expandable (the current one is open) with **Board** and
+**Sessions**. The current item is highlighted (`aria-current="page"`). The header button hides or
+shows the sidebar on wide screens; the choice is remembered in the browser (`localStorage`, the
+sidebar is shown when storage is unavailable). Below 760 px the sidebar is a drawer opened by the
+same button and closed by Esc, a click outside or following a link. Items whose feature does not
+exist yet are not shown.
 
 <a id="spec-board-pages"></a>
 
@@ -127,7 +138,10 @@ the system setting, usable on a phone. A header bar holds the brand link, breadc
 | Project board | `/p/<slug>` | One column per stage; on narrow screens a stage tab bar shows one column at a time. |
 | Task dialog | `/p/<slug>?task=<key>` | The task over the live board (full screen on a phone); closes with Back, Esc or a click outside. |
 | Task page | `/t/<key>` | The same details as the dialog on a page of its own. |
-| Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)). |
+| Inbox | `/inbox` | Everything that needs the owner, across projects ([below](#spec-board-inbox)). |
+| Sessions | `/p/<slug>/sessions`, `/sessions` | The sessions of a project, or all sessions ([below](#spec-board-sessions)). |
+| Activity | `/activity` | The event feed ([below](#spec-board-activity)). |
+| Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
 
 <a id="spec-board-cards"></a>
@@ -154,10 +168,47 @@ shows the warning in the form (or the refusal in `strict` mode).
 (`?archived=1`) and the search box (`?q=`, key or title, also searches the archive) bring them back.
 With `require_tracker_log = true` a done task without the tracker mark is never archived.
 
+<a id="spec-board-inbox"></a>
+
+**Inbox** ("Needs you") lists, grouped, with a count per group:
+
+- **Waiting on you:** open tasks whose `waiting_on` is one of `owner_names` (config, default
+  `owner`, `me`, `you`; compared case-insensitively after trimming).
+- **Rule warnings:** tasks whose last stage move missed a working rule (the warnings in its
+  `task.stage_changed` event), until the task moves again.
+- **Not logged in the tracker:** done tasks without the work-log mark, only with
+  `require_tracker_log = true`.
+- **Unlinked hook sessions** ([§4](#spec-hooks-linking)), linking to the Integrations page.
+
+Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?task=<key>`). The
+sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
+can change them (`task.*`, `session.seen`, `session.status_changed`), at most once per 2 s. With
+nothing to show the page says "Nothing needs you right now."
+
+<a id="spec-board-sessions"></a>
+
+**Sessions** of a project are those its hooks placed in the project (by working directory) and
+those bound to one of its tasks now; `/sessions` lists all sessions. Newest activity first, up to
+200. Each row: status dot and hook status (working, waiting, idle, ended, or "no hook status"),
+name, kind (desktop, hook or named), last hook activity and its age, working directory, "Open in
+desktop" for a desktop session, the unlinked reason, and the bound tasks (each opens its task
+dialog). The list refetches on session and binding events, at most once per 2 s.
+
+<a id="spec-board-activity"></a>
+
+**Activity** is the event log, newest first, 50 per page; "Load more" appends the next page
+(`?before=<event id>`, also a plain link). Filters: project (`?project=<slug>`) and one event kind
+(`?kind=<kind>`; an unknown kind is a 400). Hook status changes (`session.status_changed`) are
+shown only when that kind is selected. Each row has the age, the kind, the task key or project as a
+link, a short description (the same as `events_since`: `dev → test`, a report's summary, the
+changed fields, a session's status change) and the actor. On the first page new events are
+prepended live.
+
 <a id="spec-board-live"></a>
 
-**Live updates.** The page subscribes to `GET /events?project=<slug>` (`text/event-stream`). Each
-message has `id: <event id>`, `event: <kind>` and a small JSON `data` (kind, project, key, stage,
+**Live updates.** Every page subscribes to `GET /events` (`text/event-stream`; `?project=<slug>`
+narrows the stream to one project). The board and the task page act only on their own project's
+events; every page refreshes the Inbox badge. Each message has `id: <event id>`, `event: <kind>` and a small JSON `data` (kind, project, key, stage,
 from, to, session, summary); the page refetches the affected fragment, so HTML is rendered only by
 templates. A heartbeat comment is sent every 15 s. On reconnect the browser sends `Last-Event-ID`
 and the server replays newer events (up to 5000); a client further behind, or ahead of the newest

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Inbox · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">Inbox</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Needs you</h1>
+  {% include "_inbox.html" %}
+</main>
+{% endblock %}

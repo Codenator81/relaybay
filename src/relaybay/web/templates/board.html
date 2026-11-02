@@ -2,7 +2,7 @@
 {% block title %}{{ project.name }} · relaybay{% endblock %}
 {% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">{{ project.name }}</span>{% endblock %}
 {% block content %}
-<main class="board-page" id="live" hx-ext="sse" sse-connect="/events?project={{ project.slug }}"
+<main class="board-page" id="live" hx-ext="sse" sse-connect="/events"
       data-last-event-id="{{ last_event_id }}" data-project="{{ project.slug }}">
   <form class="board-tools" method="get" action="/p/{{ project.slug }}" role="search">
     <input class="board-search" type="search" name="q" value="{{ q }}" maxlength="200"

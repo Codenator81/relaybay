@@ -61,7 +61,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
 | `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
-| `web/` | `routes.py` (pages, fragments, forms, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code`), `markdown.py`, templates, vendored static assets |
+| `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity, fragments, forms, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code`), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
 | `doctor.py` | `relaybay doctor`: read-only diagnosis built from the setup checks plus versions, data folder, token and rules hash |
 | `demo.py` | `relaybay demo`: seeds the demo workspace through the service layer |
@@ -103,11 +103,15 @@ event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor
 Server-rendered Jinja2 + htmx, no build step and no Node toolchain
 ([ADR-0001](adr/0001-htmx-sse.md)).
 
-- `GET /events?project=<slug>` streams `id`, `event`, small JSON `data`; heartbeat every 15 s;
+- `GET /events` (optionally `?project=<slug>`) streams `id`, `event`, small JSON `data`; every
+  page uses the unfiltered stream so the sidebar's Inbox count stays live; heartbeat every 15 s;
   `retry: 3000`. The stream subscribes to the bus *before* reading the backlog, so nothing committed
   in between is lost; duplicates are skipped by id.
 - The page never receives HTML over SSE: `app.js` maps an event to the fragment it affects
-  (column, card, dialog view) and asks htmx to refetch it, so replay is idempotent.
+  (column, card, dialog view, Inbox badge and list, sessions list) and asks htmx to refetch it, so
+  replay is idempotent; the Activity page asks for the rows newer than its newest one.
+- `nav.js` (loaded before the body, not deferred) applies the remembered collapsed sidebar before
+  the first paint and runs the phone drawer.
 - `visibilitychange` and `online` force a reconnect (phones kill `EventSource` in the background);
   `resync` reloads the page.
 - The phone layout switches columns with radio buttons and CSS, without JavaScript.

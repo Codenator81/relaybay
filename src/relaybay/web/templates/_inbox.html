@@ -1,0 +1,72 @@
+{#- Inbox groups. Expects: inbox. Each row links to where the item is resolved. -#}
+{%- macro task_row(t) -%}
+<a class="inbox-link" href="/p/{{ t.project_slug }}?task={{ t.key }}">
+  <span class="card-key">{{ t.key }}</span>
+  <span class="inbox-title">{{ t.title }}</span>
+</a>
+<span class="inbox-meta muted"><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span> {{ t.project_slug }} · updated <time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time></span>
+{%- endmacro %}
+<div id="inbox" class="inbox" hx-get="/fragments/inbox" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if not inbox.count %}
+  <div class="empty">
+    <p>Nothing needs you right now.</p>
+    <p>Tasks whose <em>waiting on</em> names you, rule warnings and unlinked hook sessions show up here.</p>
+  </div>
+  {% endif %}
+
+  {% if inbox.waiting %}
+  <section class="panel inbox-group" id="inbox-waiting">
+    <h2>Waiting on you <span class="col-count">{{ inbox.waiting|length }}</span></h2>
+    <ul class="inbox-list">
+      {% for t in inbox.waiting %}
+      <li class="inbox-row">
+        {{ task_row(t) }}
+        {% if t.next_step %}<p class="inbox-note clamp clamp-2{% if t.next_step_stale %} stale{% endif %}"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.rule_warnings %}
+  <section class="panel inbox-group" id="inbox-rules">
+    <h2>Rule warnings <span class="col-count">{{ inbox.rule_warnings|length }}</span></h2>
+    <p class="muted inbox-hint">The last stage move of these tasks missed a working rule.</p>
+    <ul class="inbox-list">
+      {% for t, warnings in inbox.rule_warnings %}
+      <li class="inbox-row">
+        {{ task_row(t) }}
+        {% for w in warnings %}<p class="form-warning inbox-note">{{ w }}</p>{% endfor %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.not_logged %}
+  <section class="panel inbox-group" id="inbox-not-logged">
+    <h2>Not logged in the tracker <span class="col-count">{{ inbox.not_logged|length }}</span></h2>
+    <p class="muted inbox-hint">Done tasks without the work-log mark.</p>
+    <ul class="inbox-list">
+      {% for t in inbox.not_logged %}
+      <li class="inbox-row">{{ task_row(t) }}{% if t.tracker_ref %} <span class="badge tracker not-logged">{{ t.tracker_name or "" }} {{ t.tracker_ref }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.unlinked %}
+  <section class="panel inbox-group" id="inbox-unlinked">
+    <h2>Unlinked hook sessions <span class="col-count">{{ inbox.unlinked|length }}</span></h2>
+    <p class="muted inbox-hint">Hook events that could not be matched to one session. They link once the agent passes its <code>hook_session</code> on a write. <a href="/settings/integrations">Integrations</a></p>
+    <ul class="inbox-list">
+      {% for s in inbox.unlinked %}
+      <li class="inbox-row">
+        <a class="inbox-link" href="/settings/integrations"><span class="inbox-title">{{ s.name }}</span></a>
+        <span class="inbox-meta muted">{{ s.unlinked_reason }} · seen <time datetime="{{ s.last_seen_at }}" data-age>{{ s.last_seen_at|age }}</time></span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>

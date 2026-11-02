@@ -8,21 +8,30 @@
   <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false}'>
   <title>{% block title %}relaybay{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
+  {#- Not deferred: it applies the remembered collapsed sidebar before the first paint. #}
+  <script src="/static/nav.js"></script>
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/sse.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
-<body>
-  <header class="topbar">
-    <a class="brand" href="/">relaybay</a>
-    {% block crumbs %}{% endblock %}
-    <a class="nav-link" href="/settings/integrations">Integrations</a>
-    {% block live %}
-    <span class="live-status" id="live-status" data-state="connecting" title="Live updates">
-      <span class="dot"></span><span class="live-label">connecting</span>
-    </span>
-    {% endblock %}
-  </header>
-  {% block content %}{% endblock %}
+<body{% if nav %} class="has-nav"{% endif %}>
+  {% if nav %}{% include "_sidebar.html" %}{% endif %}
+  <div class="shell-main">
+    <header class="topbar">
+      {% if nav %}
+      <button type="button" class="nav-toggle" aria-controls="sidebar" aria-expanded="true" aria-label="Navigation" title="Show or hide the navigation">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+      </button>
+      {% endif %}
+      <a class="brand" href="/">relaybay</a>
+      {% block crumbs %}{% endblock %}
+      {% block live %}
+      <span class="live-status" id="live-status" data-state="connecting" title="Live updates">
+        <span class="dot"></span><span class="live-label">connecting</span>
+      </span>
+      {% endblock %}
+    </header>
+    {% block content %}{% endblock %}
+  </div>
 </body>
 </html>
