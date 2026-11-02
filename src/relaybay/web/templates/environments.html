@@ -1,9 +1,11 @@
 {% extends "base.html" %}
-{#- Project → Stands & access. Expects: project, environments, proposals, defaults, guard_mode,
-    optional error + error_target (the form it belongs to), confirm (action, message, fields).
+{#- Project → Stands & access. Expects: project, environments, proposals, policies (by
+    environment id), project_policy, optional error + error_target (the form it belongs to),
+    confirm (action, message, fields).
     Plain form posts: every write comes from this page in a browser (cookie + CSRF). -#}
 {%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
 {%- macro error_for(target) -%}{% if target and error and error_target == target %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}{%- endmacro %}
+{%- macro origin_label(origin) -%}{{ "default" if origin == "preset:default" else "policy: " ~ origin }}{%- endmacro %}
 {%- macro level_options(selected, default_level) -%}
 <option value="default"{% if not selected %} selected{% endif %}>{{ "default (" ~ default_level ~ ")" if default_level else "default for the kind" }}</option>
 {%- for lvl in ["none", "read", "ask", "full"] %}
@@ -30,7 +32,7 @@
   </label>
   <div class="field-row">
     <label class="field"><span>Agents' level</span>
-      <select name="level">{{ level_options(e.level if e else None, defaults[e.kind] if e else None) }}</select>
+      <select name="level">{{ level_options(e.level if e else None, policies[e.id].level(e.kind) if e else None) }}</select>
     </label>
     <label class="field field-check">
       <input type="hidden" name="sign_in_allowed" value="0">
@@ -60,7 +62,7 @@
   <div class="form-actions"><button type="submit" class="btn primary">{{ "Save" if e else "Add environment" }}</button></div>
 </form>
 {%- endmacro %}
-{%- macro access_form(action, target, entry=None) -%}
+{%- macro access_form(action, target, entry=None, tests_allowed=False) -%}
 <form class="task-form access-form" method="post" action="{{ action }}">
   {{ hidden_csrf() }}
   {{ error_for(target) }}
@@ -72,6 +74,12 @@
   <label class="field"><span>Fields, one <code>name: value</code> per line</span>
     <textarea name="fields" rows="3" spellcheck="false" placeholder="alias: acme-live&#10;user: deploy&#10;key_path_ref: ~/.ssh/acme_live">{{ fields_text(entry.fields) if entry else '' }}</textarea>
   </label>
+  {% if tests_allowed or (entry and entry.test_secrets) %}
+  <label class="field"><span>Test secrets, one <code>name: value</code> per line (harmless test values only; <code>***</code> keeps a stored one)</span>
+    <textarea name="test_secrets" rows="2" spellcheck="false" autocomplete="off" placeholder="password: demo-pass">{% if entry %}{% for k in entry.test_secrets %}{{ k }}: ***
+{% endfor %}{% endif %}</textarea>
+  </label>
+  {% endif %}
   <p class="muted access-hint">ssh: alias, host, port, user, key_path_ref · kubectl: context, namespace · db: type, host, port, port_forward, database, user, password_ref · gitops: repo, path, branch · logs, monitoring: url. References only: a key file path, an environment variable name ($DB_PASSWORD) or a vault path, never the secret.</p>
   <div class="form-actions"><button type="submit" class="btn">{{ "Save" if entry else "Add access" }}</button></div>
 </form>
@@ -84,7 +92,7 @@
     <h1>Stands &amp; access · {{ project.name }}</h1>
     <a class="action" href="/activity?project={{ project.slug }}&amp;kind=live.action">Actions on live</a>
   </div>
-  <p class="muted env-intro">Where this project runs, how agents reach it and what they may do there unasked. relaybay stores <strong>references only</strong>, never passwords, keys or tokens. The guard (<code>{{ guard_mode }}</code>) is a safety net against mistakes, not a sandbox: it only recognises the names listed here.</p>
+  <p class="muted env-intro">Where this project runs, how agents reach it and what they may do there unasked. relaybay stores <strong>references only</strong>, never passwords, keys or tokens. The guard (<code>{{ project_policy.guard_mode }}</code>, preset <a href="/settings/policy?scope={{ project.slug }}">{{ project_policy.preset }}</a>) is a safety net against mistakes, not a sandbox: it only recognises the names listed here.</p>
   {% if error and not error_target %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
 
   {% if confirm %}
@@ -106,12 +114,15 @@
   {% include "_proposals.html" %}
 
   {% for e in environments %}
-  {%- set level = e.effective_level(defaults) %}
+  {%- set pol = policies[e.id] %}
+  {%- set level = pol.level_for(e) %}
+  {%- set origin = pol.level_origin(e) %}
+  {%- set tests_allowed = pol.test_secrets_allowed(e.kind) %}
   <section class="panel env" id="env-{{ e.id }}">
     <header class="env-head">
       <h2>{{ e.name }}</h2>
       <span class="env-kind kind-{{ e.kind }}">{{ e.kind }}</span>
-      <span class="env-level level-{{ level }}" title="What agents may do here unasked">agents: {{ level }}{% if not e.level %} (default){% endif %}</span>
+      <span class="env-level level-{{ level }}" title="What agents may do here unasked; set by {{ origin }}">agents: {{ level }}{% if origin != "environment" %} ({{ origin_label(origin) }}){% endif %}</span>
       {% set href = e.base_url|http_url %}{% if href %}<a class="env-url" href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ e.base_url }}</a>{% endif %}
     </header>
     {{ error_for("env-" ~ e.id) }}
@@ -127,12 +138,12 @@
       {% for a in e.access %}
       <li class="access-row" id="access-{{ a.id }}">
         <span class="access-kind">{{ a.kind }}</span>
-        <span class="access-fields">{% for k, v in a.fields.items() %}<span class="access-field"><span class="muted">{{ k }}</span> <code>{{ v }}</code></span>{% endfor %}</span>
+        <span class="access-fields">{% for k, v in a.fields.items() %}<span class="access-field"><span class="muted">{{ k }}</span> <code>{{ v }}</code></span>{% endfor %}{% for k in a.test_secrets %}<span class="access-field test-secret" title="Test secret: {{ 'shown to agents' if pol.expose_test_secrets else 'not sent to agents' }}"><span class="muted">{{ k }}</span> <code>•••</code> <span class="muted">(test secret)</span></span>{% endfor %}</span>
         <span class="muted access-meta"><time datetime="{{ a.updated_at }}" data-age title="{{ a.updated_at[:19] }}Z">{{ a.updated_at|age }}</time> by {{ a.updated_by }}</span>
         {{ error_for("access-" ~ a.id) }}
         <details class="access-edit"{% if error and error_target == "access-" ~ a.id %} open{% endif %}>
           <summary>Edit</summary>
-          {{ access_form("/p/" ~ project.slug ~ "/environments/" ~ e.id ~ "/access/" ~ a.id, "", a) }}
+          {{ access_form("/p/" ~ project.slug ~ "/environments/" ~ e.id ~ "/access/" ~ a.id, "", a, tests_allowed) }}
           <form method="post" action="/p/{{ project.slug }}/environments/{{ e.id }}/access/{{ a.id }}/delete" data-confirm="Remove this {{ a.kind }} access entry from {{ e.name }}?">
             {{ hidden_csrf() }}
             <button type="submit" class="btn danger">Remove</button>
@@ -146,7 +157,7 @@
     {% endif %}
     <details class="env-add-access"{% if error and error_target == "access-new-" ~ e.id %} open{% endif %}>
       <summary>Add access</summary>
-      {{ access_form("/p/" ~ project.slug ~ "/environments/" ~ e.id ~ "/access", "access-new-" ~ e.id) }}
+      {{ access_form("/p/" ~ project.slug ~ "/environments/" ~ e.id ~ "/access", "access-new-" ~ e.id, None, tests_allowed) }}
     </details>
     <details class="env-edit"{% if error and error_target == "env-" ~ e.id %} open{% endif %}>
       <summary>Edit environment and level</summary>
@@ -163,7 +174,7 @@
 
   <section class="panel" id="env-new">
     <h2>Add an environment</h2>
-    <p class="muted">Default levels: local {{ defaults.local }}, test {{ defaults.test }}, live {{ defaults.live }} (config <code>permission_defaults</code>). Raising live above read asks for a confirmation.</p>
+    <p class="muted">Levels from the policy: local {{ project_policy.level("local") }}, test {{ project_policy.level("test") }}, live {{ project_policy.level("live") }} (<a href="/settings/policy?scope={{ project.slug }}">Settings → Policy</a>). Raising live above read asks for a confirmation.</p>
     {{ environment_form(None, "/p/" ~ project.slug ~ "/environments", "new") }}
   </section>
 </main>

@@ -1,0 +1,15 @@
+{
+  "description": "relaybay's behaviour without a policy file.",
+  "levels": {
+    "local": {"default": "full"},
+    "test": {"default": "full"},
+    "live": {"default": "read"}
+  },
+  "guard": {"mode": "warn", "disable": [], "patterns": []},
+  "secrets": {
+    "disable": [],
+    "allow": [],
+    "test_secrets": {"local": false, "test": false},
+    "expose_test_secrets_to_agents": false
+  }
+}

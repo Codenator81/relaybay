@@ -12,13 +12,17 @@
     "environment.created", "environment.updated", "environment.deleted",
     "environment.access_added", "environment.access_updated", "environment.access_removed",
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
+    "policy.updated", "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
+    "policy.proposal_reopened",
     "live.action"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
     "session.seen", "session.status_changed", "comment.added", "comment.read",
-    "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected"
+    "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
+    "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
+    "policy.proposal_reopened"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -146,6 +150,12 @@
     }
     var journal = document.getElementById("journal");
     if (journal && data.kind === "live.action") queueThrottled(journal);
+    // Settings → Policy: only the proposals list is live, like Stands & access below.
+    var policyProposals = document.getElementById("policy-proposals");
+    if (policyProposals) {
+      if (data.kind.indexOf("policy.propos") === 0) queue(policyProposals);
+      return;
+    }
     // Stands & access: only the proposals list is live; the forms stay as the user left them.
     var proposals = document.getElementById("proposals");
     if (proposals) {

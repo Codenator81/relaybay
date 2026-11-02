@@ -1,6 +1,7 @@
 """Board: server-rendered pages and HTMX fragments, login, SSE endpoint, Integrations."""
 
 import asyncio
+import json
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from relaybay.domain.models import Task
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.tasks import is_archived
 from relaybay.mcp_server.format import age, event_detail, event_subject
+from relaybay.policy import PRESETS
 from relaybay.security import (
     COOKIE_NAME,
     CSRF_FIELD,
@@ -94,11 +96,16 @@ EVENT_KINDS = (
     "environment.proposed",
     "environment.proposal_accepted",
     "environment.proposal_rejected",
+    "policy.updated",
+    "policy.proposed",
+    "policy.proposal_accepted",
+    "policy.proposal_rejected",
+    "policy.proposal_reopened",
     "live.action",
 )
 BOARD_ONLY = (
-    "Environments and permission levels change only from the board in a browser; agents propose"
-    " changes with environment_propose."
+    "Environments, permission levels and the policy change only from the board in a browser;"
+    " agents propose changes with environment_propose or policy_propose."
 )
 ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "level")
 JOURNAL_LIMIT = 20
@@ -138,6 +145,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["event_subject"] = event_subject
     env.filters["change_summary"] = env_domain.change_summary
     env.globals["fields_text"] = env_domain.fields_text
+    env.filters["tojson_compact"] = lambda value: json.dumps(value, ensure_ascii=False)
 
     def render(request: Request, name: str, status: int = 200, **context: Any) -> HTMLResponse:
         return templates.TemplateResponse(request, name, context, status_code=status)
@@ -664,8 +672,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             project=project,
             environments=items,
             proposals=await service.proposals(project.slug),
-            defaults=service.permission_defaults,
-            guard_mode=service.guard_mode,
+            policies=await service.environment_policies(items),
+            project_policy=await service.effective_policy(project.slug),
             error=error,
             error_target=error_target,
             confirm=confirm,
@@ -731,6 +739,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     def confirmed(form: Any) -> bool:
         return form.get("confirm_live") == "1"
+
+    def test_secrets_of(form: Any) -> dict[str, str] | None:
+        """The test secrets textarea (`name: value` lines, `***` keeps a stored value); None
+        when the form has none, so stored ones stay."""
+        if "test_secrets" not in form:
+            return None
+        return env_domain.parse_fields_text(str(form.get("test_secrets") or ""))
 
     @router.get("/p/{slug}/environments", response_class=HTMLResponse)
     async def environments(request: Request, slug: str):
@@ -799,7 +814,12 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         async def write(form: Any) -> None:
             fields = env_domain.parse_fields_text(str(form.get("fields") or ""))
             await service.save_access(
-                slug, env_id, str(form.get("kind") or ""), fields, actor="owner"
+                slug,
+                env_id,
+                str(form.get("kind") or ""),
+                fields,
+                test_secrets=test_secrets_of(form),
+                actor="owner",
             )
 
         return await environment_write(
@@ -821,6 +841,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 env_id,
                 str(form.get("kind") or ""),
                 fields,
+                test_secrets=test_secrets_of(form),
                 access_id=access_id,
                 actor="owner",
             )
@@ -982,6 +1003,148 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             done = "Removed relaybay's hooks from" if action == "remove" else "Wrote"
             message = f"{done} {plan.hooks.path}" + (f" (backup: {backup.name})" if backup else "")
         return await integrations_page(request, mode, message=message)
+
+    # --- Settings → Policy -------------------------------------------------------------
+
+    async def policy_scopes() -> list[str]:
+        scopes = ["global"]
+        for item in await service.list_projects():
+            scopes.append(item.project.slug)
+            _, items = await service.environments(item.project.slug)
+            scopes.extend(f"{item.project.slug}/{e.name}" for e in items)
+        return scopes
+
+    async def policy_page(
+        request: Request,
+        scope: str = "global",
+        *,
+        text: str | None = None,
+        error: str | None = None,
+        preview: Any = None,
+        widened: list[str] | None = None,
+        confirm: dict[str, Any] | None = None,
+        message: str | None = None,
+        status: int = 200,
+    ) -> HTMLResponse:
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        scopes = await policy_scopes()
+        if scope not in scopes:
+            scope = "global"
+        project, _, environment = scope.partition("/")
+        effective = (
+            service.global_policy()
+            if scope == "global"
+            else await service.effective_policy(project, environment or None)
+        )
+        return await page(
+            request,
+            "policy.html",
+            "settings",
+            status=status,
+            scope=scope,
+            scopes=scopes,
+            effective=effective,
+            global_policy=service.global_policy(),
+            policy_file=service.policy_file,
+            layers=await service.policy_layers(),
+            layer_text=await service.policy_layer_text(scope) if text is None else text,
+            presets=PRESETS,
+            proposals=await service.policy_proposals(),
+            error=error,
+            preview=preview,
+            widened=widened,
+            confirm=confirm,
+            message=message,
+            last_event_id=last_event_id,
+        )
+
+    async def policy_write(
+        request: Request, csrf: str, scope: str, write: Callable[[Any], Awaitable[str]]
+    ) -> Response:
+        """A Settings → Policy write: back to the page, or the page with the reason, or a
+        confirmation when the change widens agents' access on live."""
+        board_only(request, csrf)
+        form = await request.form()
+        try:
+            message = await write(form)
+        except ConfirmationNeeded as exc:
+            confirm = {
+                "action": str(request.url.path),
+                "message": str(exc),
+                "fields": confirm_fields(form),
+            }
+            return await policy_page(request, scope, text=form.get("body"), confirm=confirm)
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return await policy_page(
+                request, scope, text=form.get("body"), error=str(exc), status=400
+            )
+        return await policy_page(request, scope, message=message)
+
+    @router.get("/settings/policy", response_class=HTMLResponse)
+    async def policy_settings(request: Request, scope: str = "global"):
+        return await policy_page(request, scope)
+
+    @router.get("/settings/policy/proposals", response_class=HTMLResponse)
+    async def policy_proposals_fragment(request: Request):
+        return render(request, "_policy_proposals.html", proposals=await service.policy_proposals())
+
+    @router.post("/settings/policy/layer", response_class=HTMLResponse)
+    async def policy_layer(
+        request: Request,
+        scope: Annotated[str, Form()] = "global",
+        body: Annotated[str, Form()] = "",
+        action: Annotated[str, Form()] = "save",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if action == "preview":
+            board_only(request, csrf)
+            try:
+                after, widened = await service.preview_policy(scope, body)
+            except NotFoundError:
+                raise
+            except DomainError as exc:
+                return await policy_page(request, scope, text=body, error=str(exc), status=400)
+            return await policy_page(request, scope, text=body, preview=after, widened=widened)
+
+        async def write(form: Any) -> str:
+            saved = await service.save_policy_layer(
+                scope, body, confirm_live=confirmed(form), actor="owner"
+            )
+            return f"Saved the {saved} policy."
+
+        return await policy_write(request, csrf, scope, write)
+
+    @router.post("/settings/policy/preset", response_class=HTMLResponse)
+    async def policy_preset(
+        request: Request,
+        preset: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> str:
+            await service.set_preset(preset, confirm_live=confirmed(form), actor="owner")
+            return f"Preset set to {preset}."
+
+        return await policy_write(request, csrf, "global", write)
+
+    @router.post("/settings/policy/proposals/{proposal_id}/{decision}", response_class=HTMLResponse)
+    async def decide_policy_proposal(
+        request: Request,
+        proposal_id: int,
+        decision: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if decision not in ("accept", "reject"):
+            raise HTTPException(status_code=404)
+
+        async def write(form: Any) -> str:
+            decided = await service.decide_policy_proposal(
+                proposal_id, decision == "accept", confirm_live=confirmed(form), actor="owner"
+            )
+            return f"Policy proposal #{decided.id} {decided.status}."
+
+        return await policy_write(request, csrf, "global", write)
 
     @router.get("/favicon.ico")
     async def favicon() -> Response:

@@ -29,6 +29,8 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`events_since`](#events_since) | read |
 | [`environments_get`](#environments_get) | read |
 | [`environment_propose`](#environment_propose) | write |
+| [`policy_get`](#policy_get) | read |
+| [`policy_propose`](#policy_propose) | write |
 
 ### `project_list`
 
@@ -272,6 +274,28 @@ Propose a change to a project's environments or your permission level there. Not
 |---|---|---|---|
 | `project` | string | yes | Project slug such as 'acme-shop'. |
 | `change` | object | yes | What to change: {'environment': <name>, then any of kind (local, test, live), base_url, notes, sign_in_allowed, login_state_path, level (none, read, ask, full or default), overrides ({capability: level} for sign_in, ssh, kubectl, db, deploy), access ([{kind: ssh\|kubectl\|db\|gitops\|logs\|monitoring\|other, fields: {...}}] to add)}. References only: a key path, a variable name or a vault path, never a secret value. |
+| `reason` | string | yes | Why the change is needed, for the owner. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `policy_get`
+
+The effective policy (levels per environment kind and capability, guard mode and rules, secret rules, test secrets) with, for every value, the layer that set it: preset, config, global file, project, environment. Read it to know why the guard or a secret check answered as it did.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string or null | no | Project slug; omit for the global policy. |
+| `environment` | string or null | no | Environment name in the project, for its own policy. |
+
+### `policy_propose`
+
+Propose a change to the policy. Nothing changes until the owner accepts it on the board (Settings → Policy); it shows in the owner's Inbox.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `scope` | string | yes | 'global', a project slug, or '<project>/<environment>'. |
+| `patch` | object | yes | Merged into that layer's JSON: objects key by key, other values (lists included) replace, null removes a key. Keys: levels ({kind: {default\|capability: level}}), guard ({mode, disable, patterns}), secrets ({disable, allow, test_secrets, expose_test_secrets_to_agents}). The result must validate against the policy schema (policy_get shows the current values). |
 | `reason` | string | yes | Why the change is needed, for the owner. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |

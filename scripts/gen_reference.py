@@ -4,7 +4,8 @@
     uv run --no-sync python scripts/gen_reference.py --check   # exit 1 when a page is out of date
 
 Sources: the argument parser (`relaybay.cli.build_parser`), the `Settings` field metadata
-(`relaybay.config`) and the live MCP registry (`relaybay.mcp_server.server.build_mcp`).
+(`relaybay.config`), the live MCP registry (`relaybay.mcp_server.server.build_mcp`) and the
+policy schema and presets (`relaybay.policy`).
 """
 
 import argparse
@@ -237,7 +238,150 @@ def mcp_page() -> str:
     return "\n".join(lines) + "\n"
 
 
-PAGES = {"cli.md": cli_page, "configuration.md": config_page, "mcp.md": mcp_page}
+# --- policy ----------------------------------------------------------------
+
+
+def _schema_type(node: dict[str, Any], defs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """A readable type of a schema node and the node behind its `$ref`."""
+    if "$ref" in node:
+        target = defs[node["$ref"].rsplit("/", 1)[-1]]
+        merged = {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+        return _schema_type(merged, defs)
+    if "enum" in node:
+        values = ", ".join("`null`" if v is None else f"`{v}`" for v in node["enum"])
+        return f"one of {values}", node
+    kind = node.get("type", "any")
+    if kind == "array":
+        item, _ = _schema_type(node.get("items", {}), defs)
+        limit = f", at most {node['maxItems']}" if "maxItems" in node else ""
+        return f"list of {item}{limit}", node
+    if kind == "string" and "maxLength" in node:
+        return f"string (at most {node['maxLength']} characters)", node
+    return str(kind), node
+
+
+def _schema_rows(node: dict[str, Any], defs: dict[str, Any], prefix: str) -> list[str]:
+    rows = []
+    for name, prop in node.get("properties", {}).items():
+        path = f"{prefix}{name}"
+        kind, resolved = _schema_type(prop, defs)
+        description = prop.get("description") or resolved.get("description", "")
+        if resolved.get("type") == "object" and "properties" in resolved:
+            rows.append(f"| `{path}` | object | {_cell(description)} |")
+            rows += _schema_rows(resolved, defs, f"{path}.")
+        else:
+            rows.append(f"| `{path}` | {_cell(kind)} | {_cell(description)} |")
+    return rows
+
+
+POLICY_INTRO = """\
+The policy decides what agents may do on each kind of environment, what the PreToolUse guard
+counts as a change and what counts as a secret. Behaviour: [SPEC §7](../SPEC.md#spec-policy);
+design: [0013](../design/0013-policy-as-data.md); a worked example:
+[Full access on a trusted local machine](../how-to/trusted-machine.md).
+
+## Layers
+
+A later layer wins: the built-in **preset** named by the global layer → `[permission_defaults]`
+and `guard_mode` from `config.toml` (legacy, only when set) → the **global** file
+(`policy.json` in the data directory, setting `policy_file`) → the **project** layer → the
+**environment** layer (both stored in the database, edited in Settings → Policy). The
+environment's own level and per-capability overrides on Stands & access win over every layer.
+
+Objects merge key by key; scalars and lists replace. A list key may also be written `key+` (add
+items; a pattern with an existing `id` replaces it) or `key-` (remove items by value or `id`);
+`key` is applied first, then `key+`, then `key-`. `$schema` and `description` are ignored;
+`preset` is read from the global layer only.
+
+The global file is read on start (a broken file stops `relaybay serve` with the path and the
+problem) and again whenever it changes; a file that breaks later is logged, shown on the Policy
+page, and the last valid version stays in effect. A broken project or environment layer is
+logged and ignored.
+
+Custom regular expressions (`guard.patterns[].command` / `change`, `secrets.allow`): at most 200
+characters, no back-references, no quantified group holding a quantifier (`(a+)+`) or an
+alternation (`(a|aa)*`), at most two unbounded quantifiers (`*`, `+`, `{n,}`), and fast on long
+hostile input when the layer is loaded. They run case-insensitively with a hard time limit on at
+most 8 KB of text; a call that times out fails closed (a guard pattern counts as matched, an
+allow pattern does not allow) and is logged at most once a minute per pattern.
+
+JSON Schema: [`policy.schema.json`](policy.schema.json) (the same file as
+`src/relaybay/policy/schema.json`)."""
+
+
+def policy_page() -> str:
+    from relaybay import policy
+    from relaybay.domain import guard
+    from relaybay.domain.environments import DETECTOR_IDS
+
+    spec = policy.schema()
+    defs = spec["$defs"]
+    lines = [
+        GENERATED.format(source="src/relaybay/policy/schema.json and the presets"),
+        "",
+        "# Policy reference",
+        "",
+        POLICY_INTRO,
+        "",
+        "## Keys",
+        "",
+        "| Key | Type | Meaning |",
+        "|---|---|---|",
+        *_schema_rows(spec, defs, ""),
+        "",
+        "A custom pattern (`guard.patterns`, `guard.patterns+`):",
+        "",
+        "| Key | Type | Meaning |",
+        "|---|---|---|",
+        *_schema_rows(defs["patterns"]["items"], defs, ""),
+        "",
+        "## Built-in guard rules",
+        "",
+        "| Id | Capability | Reason says |",
+        "|---|---|---|",
+    ]
+    lines += [f"| `{r.id}` | `{r.capability}` | {r.name} |" for r in guard.MUTATING_RULES]
+    lines += [
+        f"| `{guard.MCP_TOOL_RULE_ID}` | any | MCP tool whose name says it changes something |",
+        "",
+        "## Built-in secret detectors",
+        "",
+        ", ".join(f"`{d}`" for d in DETECTOR_IDS) + ".",
+        "",
+        "Switching a detector off affects only the check on write; the live-actions journal",
+        "still masks every shape it knows.",
+        "",
+        "## Presets",
+        "",
+    ]
+    for name in policy.PRESETS:
+        body = policy.preset(name)
+        lines += [
+            f"### `{name}`",
+            "",
+            body.get("description", ""),
+            "",
+            "```json",
+            policy.dump(body).rstrip("\n"),
+            "```",
+            "",
+        ]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def policy_schema() -> str:
+    from relaybay import policy
+
+    return policy.dump(policy.schema())
+
+
+PAGES = {
+    "cli.md": cli_page,
+    "configuration.md": config_page,
+    "mcp.md": mcp_page,
+    "policy.md": policy_page,
+    "policy.schema.json": policy_schema,
+}
 
 
 def render() -> dict[Path, str]:

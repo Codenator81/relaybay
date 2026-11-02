@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codenator81.github.io/relaybay/reference/policy.schema.json",
+  "title": "relaybay policy layer",
+  "description": "One layer of the relaybay policy: the global file, a project layer or an environment layer. Every key is optional; a lower layer overrides the upper one.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor hint; ignored."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "A note for people; ignored."
+    },
+    "preset": {
+      "enum": [
+        "default",
+        "strict",
+        "trusted"
+      ],
+      "description": "Built-in starting point under every other layer. Global layer only."
+    },
+    "levels": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Agents' permission level per environment kind, used where an environment sets none itself.",
+      "properties": {
+        "local": {
+          "$ref": "#/$defs/kindLevels"
+        },
+        "test": {
+          "$ref": "#/$defs/kindLevels"
+        },
+        "live": {
+          "$ref": "#/$defs/kindLevels"
+        }
+      }
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The PreToolUse guard.",
+      "properties": {
+        "mode": {
+          "enum": [
+            "off",
+            "log",
+            "warn",
+            "block"
+          ],
+          "description": "off: no checks; log: live journal only, no messages; warn: a warning to the agent; block: deny (ask stays ask in every mode but log)."
+        },
+        "disable": {
+          "$ref": "#/$defs/ruleIds",
+          "description": "Built-in mutating rules to switch off, by id (replaces the list)."
+        },
+        "disable+": {
+          "$ref": "#/$defs/ruleIds",
+          "description": "Rule ids to add to the inherited list."
+        },
+        "disable-": {
+          "$ref": "#/$defs/ruleIds",
+          "description": "Rule ids to remove from the inherited list."
+        },
+        "patterns": {
+          "$ref": "#/$defs/patterns",
+          "description": "Custom mutating patterns (replaces the list)."
+        },
+        "patterns+": {
+          "$ref": "#/$defs/patterns",
+          "description": "Patterns to add; one with an inherited id replaces it."
+        },
+        "patterns-": {
+          "$ref": "#/$defs/patternIds",
+          "description": "Ids of inherited patterns to remove."
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What counts as a secret in environment fields, access entries and proposals.",
+      "properties": {
+        "disable": {
+          "$ref": "#/$defs/detectorIds",
+          "description": "Built-in secret detectors to switch off, by id (replaces the list). The journal still masks them."
+        },
+        "disable+": {
+          "$ref": "#/$defs/detectorIds",
+          "description": "Detector ids to add to the inherited list."
+        },
+        "disable-": {
+          "$ref": "#/$defs/detectorIds",
+          "description": "Detector ids to remove from the inherited list."
+        },
+        "allow": {
+          "$ref": "#/$defs/allowPatterns",
+          "description": "Regular expressions: a value (or a detected secret) that matches one whole is accepted (replaces the list)."
+        },
+        "allow+": {
+          "$ref": "#/$defs/allowPatterns",
+          "description": "Allow patterns to add."
+        },
+        "allow-": {
+          "$ref": "#/$defs/allowPatterns",
+          "description": "Allow patterns to remove."
+        },
+        "test_secrets": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Whether access fields may hold harmless test values marked {\"value\": \"...\", \"test\": true}. There is no live key: never on live.",
+          "properties": {
+            "local": {
+              "type": "boolean",
+              "description": "Allowed on local environments."
+            },
+            "test": {
+              "type": "boolean",
+              "description": "Allowed on test environments."
+            }
+          }
+        },
+        "expose_test_secrets_to_agents": {
+          "type": "boolean",
+          "description": "Show test secret values to agents in environments_get (otherwise only their names)."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "level": {
+      "enum": [
+        "none",
+        "read",
+        "ask",
+        "full"
+      ]
+    },
+    "kindLevels": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "default: the level of the kind; a capability key: the level for that capability.",
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/level",
+          "description": "Level of the kind."
+        },
+        "sign_in": {
+          "$ref": "#/$defs/level",
+          "description": "Signing in and remembering the login."
+        },
+        "ssh": {
+          "$ref": "#/$defs/level",
+          "description": "ssh, scp, rsync, sftp."
+        },
+        "kubectl": {
+          "$ref": "#/$defs/level",
+          "description": "kubectl."
+        },
+        "db": {
+          "$ref": "#/$defs/level",
+          "description": "Database clients."
+        },
+        "deploy": {
+          "$ref": "#/$defs/level",
+          "description": "git push, helm, terraform, GitOps."
+        }
+      }
+    },
+    "ruleIds": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "kubectl-change",
+          "helm-change",
+          "ssh-remote-change",
+          "scp-to-host",
+          "sftp-session",
+          "sql-change",
+          "git-push",
+          "terraform-change",
+          "mcp-tool-name"
+        ]
+      }
+    },
+    "detectorIds": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "private-key",
+          "github-token",
+          "github-pat",
+          "gitlab-token",
+          "openai-key",
+          "aws-access-key",
+          "slack-token",
+          "jwt",
+          "url-credentials",
+          "password-flag",
+          "curl-user",
+          "auth-header",
+          "token-header",
+          "sshpass",
+          "mysql-password",
+          "docker-login-password",
+          "redis-password",
+          "secret-assignment",
+          "secret-field-name",
+          "user-password"
+        ]
+      }
+    },
+    "regex": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "allowPatterns": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/regex"
+      }
+    },
+    "patternId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,39}$"
+    },
+    "patternIds": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/patternId"
+      }
+    },
+    "patterns": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "change",
+          "description"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/patternId",
+            "description": "Stable id, not one of the built-in rule ids."
+          },
+          "capability": {
+            "enum": [
+              "sign_in",
+              "ssh",
+              "kubectl",
+              "db",
+              "deploy",
+              null
+            ],
+            "description": "Capability whose level applies; null or absent: any identifier."
+          },
+          "command": {
+            "$ref": "#/$defs/regex",
+            "description": "Optional: the command the change must follow in the same command segment."
+          },
+          "change": {
+            "$ref": "#/$defs/regex",
+            "description": "What makes the call a change (case-insensitive)."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Shown in the guard's reason, after \"this looks like a\"."
+          }
+        }
+      }
+    }
+  }
+}

@@ -18,5 +18,6 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0010 | [Map and Usage](0010-map-and-usage.md) | Accepted | 0.4.0 |
 | 0011 | [Project documents in the database](0011-docs-in-database.md) | Accepted (scope) | 0.4.0 |
 | 0012 | [Runner and embedded terminal](0012-runner-and-embedded-terminal.md) | Accepted (direction) | 0.6+ |
+| 0013 | [Policy as data](0013-policy-as-data.md) | Implemented (unreleased) | 0.2.0 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md).

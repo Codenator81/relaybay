@@ -14,6 +14,7 @@ Stages are plan, dev, test, live, done. Every session should read `project_snaps
 - [Install and run](https://codenator81.github.io/relaybay/getting-started/install/): `uv tool install relaybay`, `uvx`, `pipx` or Docker on Windows, macOS and Linux; first run and the token
 - [CLI reference](https://codenator81.github.io/relaybay/reference/cli/): `serve`, `token`, `setup`, `doctor`, `demo`, `hook`
 - [Configuration reference](https://codenator81.github.io/relaybay/reference/configuration/): `config.toml` keys, environment variables, flags
+- [Policy reference](https://codenator81.github.io/relaybay/reference/policy/): the policy layers, keys, built-in guard rules and secret detectors, presets; JSON Schema
 
 ## Optional
 

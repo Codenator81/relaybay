@@ -49,8 +49,9 @@ def instructions(rules: Rules) -> str:
             " message from the user and call comment_ack (or answer with comment_add).",
             "9. Before you touch a server, cluster or database, read environments_get for the"
             " project: your level there (none, read, ask, full) says what you may do unasked;"
-            " live is read-only unless the owner set otherwise. Never paste secrets into"
-            " relaybay; propose changes with environment_propose.",
+            " live is read-only unless the owner's policy says otherwise (policy_get). Never"
+            " paste secrets into relaybay; propose changes with environment_propose or"
+            " policy_propose.",
         ]
     )
 
@@ -629,7 +630,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     async def environments_map(project: str) -> str:
         proj, items = await service.environments(project)
         return fmt.environments_text(
-            proj.slug, items, service.permission_defaults, service.guard_mode
+            proj.slug,
+            items,
+            await service.environment_policies(items),
+            await service.effective_policy(proj.slug),
         )
 
     @mcp.tool(annotations=READ, structured_output=False)
@@ -672,6 +676,61 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             )
         )
         return fmt.proposal_saved(proposal)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def policy_get(
+        project: Annotated[
+            str | None,
+            Field(description="Project slug; omit for the global policy."),
+        ] = None,
+        environment: Annotated[
+            str | None,
+            Field(description="Environment name in the project, for its own policy."),
+        ] = None,
+    ) -> str:
+        """The effective policy (levels per environment kind and capability, guard mode and
+        rules, secret rules, test secrets) with, for every value, the layer that set it:
+        preset, config, global file, project, environment. Read it to know why the guard or a
+        secret check answered as it did."""
+        pol = await run(service.effective_policy(project or None, environment or None))
+        scope = "/".join(x for x in (project, environment) if x) or "global"
+        return fmt.policy_text(pol, scope)
+
+    @write
+    async def policy_propose(
+        scope: Annotated[
+            str,
+            Field(description="'global', a project slug, or '<project>/<environment>'."),
+        ],
+        patch: Annotated[
+            dict[str, Any],
+            Field(
+                description="Merged into that layer's JSON: objects key by key, other values"
+                " (lists included) replace, null removes a key. Keys: levels"
+                " ({kind: {default|capability: level}}), guard ({mode, disable, patterns}),"
+                " secrets ({disable, allow, test_secrets, expose_test_secrets_to_agents}). The"
+                " result must validate against the policy schema (policy_get shows the current"
+                " values)."
+            ),
+        ],
+        reason: Annotated[str, Field(description="Why the change is needed, for the owner.")],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Propose a change to the policy. Nothing changes until the owner accepts it on the
+        board (Settings → Policy); it shows in the owner's Inbox."""
+        proposal = await run(
+            service.propose_policy_change(
+                scope,
+                patch,
+                reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.policy_proposal_saved(proposal)
 
     @mcp.resource(
         "relaybay://project/{slug}/environments",

@@ -6,6 +6,8 @@
   tool, only `environment_propose` (no `project_environments_set` or `project_upsert(environments=…)`);
   `full` and allowed calls get no `permissionDecision` at all, because `allow` would skip Claude
   Code's own permission prompt; `ask` stays `ask` in `warn` mode (the owner chose to be asked).
+  Levels, guard mode, rules and secret detectors now come from the policy
+  ([0013](0013-policy-as-data.md)); `permission_defaults` and `guard_mode` remain as a legacy layer.
 - Size: ~1.5 agent-days for environments and the access map; +~1 for permission levels, the guard
   and the journal.
 

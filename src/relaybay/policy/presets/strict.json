@@ -1,0 +1,15 @@
+{
+  "description": "Agents ask on test and stay off live; the guard blocks.",
+  "levels": {
+    "local": {"default": "full"},
+    "test": {"default": "ask"},
+    "live": {"default": "none"}
+  },
+  "guard": {"mode": "block", "disable": [], "patterns": []},
+  "secrets": {
+    "disable": [],
+    "allow": [],
+    "test_secrets": {"local": false, "test": false},
+    "expose_test_secrets_to_agents": false
+  }
+}

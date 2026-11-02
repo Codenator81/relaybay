@@ -70,6 +70,12 @@ Something off? `relaybay doctor`.
   propose with `environment_propose`). The `PreToolUse` hook warns about or blocks a command aimed
   at an environment its level forbids — a safety net against mistakes, not a sandbox — and every
   agent tool call that touches live lands in a journal (Activity → Actions on live).
+- **Policy as data** — the levels, the guard and the secret checks come from a policy, not from
+  the code: a preset (`default`, `strict`, `trusted`), an optional `policy.json` in the data
+  directory and project or environment layers, each value showing which layer set it (Settings →
+  Policy, `policy_get`). A trusted machine can give agents full access with the guard only
+  journaling and keep harmless test passwords on local and test stands (masked, not sent to agents
+  unless you say so, never on live). Agents propose changes with `policy_propose`.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
@@ -145,11 +151,15 @@ variables, then command-line flags.
 | keep done tasks without the tracker work log on the board | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — |
 | what a stage move that misses a rule does: `warn` or `strict` | `warn` | `RELAYBAY_RULES_MODE` | — |
 | `waiting_on` names that mean you (listed in the Inbox) | `owner`, `me`, `you` | `RELAYBAY_OWNER_NAMES` (comma-separated) | — |
-| what the PreToolUse guard does with a forbidden call: `off`, `warn` or `block` | `warn` | `RELAYBAY_GUARD_MODE` | — |
-| agents' default level per environment kind (`[permission_defaults]`) | local `full`, test `full`, live `read` | — | — |
+| the global policy file ([policy reference](https://codenator81.github.io/relaybay/reference/policy/)) | `policy.json` in the data directory | `RELAYBAY_POLICY_FILE` | — |
+| legacy: the guard mode (`off`, `log`, `warn`, `block`), a layer under the policy file | from the policy (`warn`) | `RELAYBAY_GUARD_MODE` | — |
+| legacy: agents' level per environment kind (`[permission_defaults]`), a layer under the policy file | from the policy (local `full`, test `full`, live `read`) | — | — |
 | folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
 
-The data directory holds `relaybay.sqlite`, the `token` file and the optional `config.toml`:
+The data directory holds `relaybay.sqlite`, the `token` file, the optional `config.toml` and
+the optional `policy.json` (what agents may do; see
+[Full access on a trusted local machine](https://codenator81.github.io/relaybay/how-to/trusted-machine/)
+for an example):
 
 ```toml
 port = 8765
@@ -159,12 +169,6 @@ done_window_days = 7                # older done tasks are archived
 require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
 owner_names = ["owner", "me"]       # waiting_on values listed in the Inbox
 rules_mode = "warn"                 # "strict": a stage move that misses a rule is refused
-guard_mode = "warn"                 # PreToolUse guard: "off", "warn" or "block"
-
-[permission_defaults]               # agents' level where an environment sets none: none/read/ask/full
-local = "full"
-test = "full"
-live = "read"
 
 [stages.labels]                     # display names; the stage keys stay plan/dev/test/live/done
 dev = "in progress"
@@ -208,7 +212,8 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 
 - **0.1.0** — board, MCP tools, working rules, hooks and `relaybay setup`, packaging
   (`uv tool install`, `uvx`, `pipx`, Docker), `relaybay doctor`, docs site, demo workspace.
-- **0.2.0** — sidebar navigation and Inbox, comments to agents, project environments and access.
+- **0.2.0** — sidebar navigation and Inbox, comments to agents, project environments and access,
+  policy as data.
 - **0.3.0** — review checklist with screenshots, memory and documents.
 - **Later** — annotations, map and usage, rules versioning, intake, agents started from relaybay.
 

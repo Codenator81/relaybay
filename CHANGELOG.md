@@ -51,8 +51,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Journal of actions on live: guarded tool calls that touch a live environment are recorded as
   `live.action` events (tool, redacted command, decision) on the bound task, shown in Activity
   ("Actions on live") and in the task dialog.
+- Policy as data: the levels, the guard and the secret checks come from a policy instead of the
+  code. Built-in presets `default` (the behaviour so far), `strict` and `trusted`; a global
+  `policy.json` in the data directory (setting `policy_file`, `RELAYBAY_POLICY_FILE`, validated
+  against a published JSON Schema; a broken file stops the start, later edits are picked up
+  without a restart); project and environment layers in the database (migration `0010_policy`).
+  Lower layers win; lists replace or use `key+` / `key-`. Every value shows the layer that set it.
+- Policy keys: levels per environment kind and capability; guard mode `off` / `log` / `warn` /
+  `block` (`log`: live journal only); built-in guard rules and secret detectors with stable ids to
+  switch off; custom guard patterns (validated regular expressions); allow patterns for secret
+  checks; test secrets on local and test environments (`{"value": "...", "test": true}` in access
+  fields, masked on the board, not sent to agents unless `expose_test_secrets_to_agents`, masked
+  in the journal, never on live).
+- Settings → Policy (`/settings/policy`): effective policy per scope with sources, preset picker,
+  JSON editor per layer with validation preview, confirmation when a change widens access on
+  live, agent proposals. Stands & access shows where each level comes from and a "Test secrets"
+  box when the policy allows them.
+- MCP tools `policy_get` (effective policy with the source of every value) and `policy_propose`
+  (a proposal in the Inbox and on Settings → Policy).
+- Docs: [policy reference](docs/reference/policy.md) generated from the schema, how-to "Full
+  access on a trusted local machine", design 0013.
+- Dependencies: `jsonschema` (already installed through `mcp`) validates policy layers; `regex`
+  runs the policy's custom patterns with a hard time limit, which Python's `re` cannot do.
 
 ### Changed
+
+- `permission_defaults` and `guard_mode` in `config.toml` are now a legacy policy layer under
+  `policy.json` (they still work); `guard_mode` also accepts `log`.
+- Secret refusals name the detector that matched, e.g. `notes looks like it contains a secret
+  value (jwt)`.
 
 - Board and task pages subscribe to the unfiltered `/events` stream (for the Inbox count) and keep
   only their own project's events.
