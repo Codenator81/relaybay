@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from relaybay.domain.models import Decision, Event, Project, Report, Task
-from relaybay.domain.stages import STAGES
+from relaybay.domain.stages import STAGES, Stage
 from relaybay.service import ProjectSummary, Snapshot, TaskDetail
 
 
@@ -38,13 +38,28 @@ def short(text: str, limit: int = SHORT_MAX) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
+def tracker_label(task: Task, require_log: bool = False) -> str:
+    """`Linear ENG-12 <url> · work log ✓`. With `require_log`, a done task without the work log
+    is marked `not logged`."""
+    issue = " ".join(x for x in (task.tracker_name, task.tracker_ref, task.tracker_url) if x)
+    if task.tracker_logged:
+        mark = "work log ✓"
+    elif require_log and task.stage == Stage.DONE:
+        mark = "not logged"
+    else:
+        mark = "work log not entered" if issue else ""
+    return " · ".join(x for x in (issue, mark) if x)
+
+
 def report_line(report: Report) -> str:
     head = " · ".join(x for x in (report.state, report.size) if x)
     prefix = f"{head} · " if head else ""
     return f"{prefix}{report.summary} ({report.author}, {age(report.created_at)})"
 
 
-def task_line(task: Task, last: Report | None = None, *, texts: bool = False) -> str:
+def task_line(
+    task: Task, last: Report | None = None, *, texts: bool = False, require_log: bool = False
+) -> str:
     parts = [f"**{task.key}** {task.title}"]
     extras = []
     if task.waiting_on:
@@ -55,6 +70,8 @@ def task_line(task: Task, last: Report | None = None, *, texts: bool = False) ->
         extras.append(f"branch `{task.branch}`")
     if task.session_name:
         extras.append(f"session: {session_label(task)}")
+    if tracker := tracker_label(task, require_log):
+        extras.append(f"tracker: {tracker}")
     extras.append(f"v{task.version}")
     line = f"- {parts[0]} — " + " · ".join(extras)
     if task.stage_note:
@@ -84,7 +101,7 @@ def project(p: Project, created: bool) -> str:
     return f"{verb} project **{p.slug}** ({p.name}){repo}."
 
 
-def snapshot(snap: Snapshot) -> str:
+def snapshot(snap: Snapshot, require_log: bool = False) -> str:
     p = snap.project
     lines = [f"# {p.slug} — {p.name}"]
     if p.description:
@@ -99,7 +116,10 @@ def snapshot(snap: Snapshot) -> str:
         if not tasks:
             continue
         lines.append(f"\n## {stage}")
-        lines.extend(task_line(t, snap.last_reports.get(t.id), texts=True) for t in tasks)
+        lines.extend(
+            task_line(t, snap.last_reports.get(t.id), texts=True, require_log=require_log)
+            for t in tasks
+        )
     if snap.decisions:
         lines.append("\n## Recent decisions")
         lines.extend(decision_line(d) for d in snap.decisions)
@@ -112,13 +132,13 @@ def decision_line(d: Decision) -> str:
     return f"- {d.created_at[:10]}{task}: {d.text}{who}"
 
 
-def task_list(tasks: list[Task]) -> str:
+def task_list(tasks: list[Task], require_log: bool = False) -> str:
     if not tasks:
         return "No matching tasks."
-    return "\n".join(f"{task_line(t)} · stage {t.stage}" for t in tasks)
+    return "\n".join(f"{task_line(t, require_log=require_log)} · stage {t.stage}" for t in tasks)
 
 
-def task_detail(detail: TaskDetail) -> str:
+def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
     t = detail.task
     lines = [
         f"# {t.key} — {t.title}",
@@ -133,6 +153,7 @@ def task_detail(detail: TaskDetail) -> str:
         ("doc", t.doc_path),
         ("session", session_label(t)),
         ("open in desktop", t.session_link),
+        ("tracker", tracker_label(t, require_log)),
     ):
         if value:
             lines.append(f"- {label}: {value}")
@@ -178,6 +199,8 @@ def events(items: list[Event], since_id: int) -> str:
             detail = f"→ {e.payload.get('session')}"
         elif e.kind == "task.session_unbound":
             detail = f"✕ {e.payload.get('session')}"
+        elif e.kind == "session.alias_added":
+            detail = f"'{e.payload.get('alias')}' = {e.payload.get('session')}"
         elif e.kind == "decision.added":
             detail = str(e.payload.get("text", ""))
         lines.append(f"- #{e.id} {e.ts[:19]}Z {e.kind} {key} {detail} ({e.actor})".rstrip())

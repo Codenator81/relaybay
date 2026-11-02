@@ -36,6 +36,27 @@
     <label class="field"><span>Branch</span>
       <input name="branch" value="{{ values.get('branch', t.branch or '') }}" spellcheck="false">
     </label>
+    <div class="field-row">
+      <label class="field"><span>Tracker</span>
+        <input name="tracker_name" maxlength="100" value="{{ values.get('tracker_name', t.tracker_name or '') }}"
+               placeholder="Name of the tracker">
+      </label>
+      <label class="field"><span>Issue key</span>
+        <input name="tracker_ref" maxlength="100" value="{{ values.get('tracker_ref', t.tracker_ref or '') }}"
+               placeholder="e.g. ABC-12" spellcheck="false">
+      </label>
+    </div>
+    <div class="field-row">
+      <label class="field"><span>Issue link <span class="muted">· http(s)</span></span>
+        <input name="tracker_url" type="url" maxlength="2000" value="{{ values.get('tracker_url', t.tracker_url or '') }}"
+               placeholder="https://…" spellcheck="false">
+      </label>
+      <label class="field field-check">
+        <input type="hidden" name="tracker_logged" value="0">
+        <input type="checkbox" name="tracker_logged" value="1"{% if values.get('tracker_logged', '1' if t.tracker_logged else '0') == '1' %} checked{% endif %}>
+        <span>Work log entered in the tracker</span>
+      </label>
+    </div>
     <label class="field"><span>Description <span class="muted">· markdown</span></span>
       <textarea name="description" rows="5">{{ values.get('description', t.description or '') }}</textarea>
     </label>

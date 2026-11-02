@@ -69,3 +69,32 @@ def test_report_labels_and_hints(tmp_path: Path) -> None:
     (tmp_path / "config.toml").write_text('[reports.labels]\nshipped = "x"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="shipped"):
         load_settings(home=tmp_path, environ={})
+
+
+def test_done_window_days(tmp_path: Path) -> None:
+    assert load_settings(home=tmp_path, environ={}).done_window_days == 7
+    config = tmp_path / "config.toml"
+    config.write_text("done_window_days = 14\n", encoding="utf-8")
+    assert load_settings(home=tmp_path, environ={}).done_window_days == 14
+    env = {"RELAYBAY_DONE_WINDOW_DAYS": "3"}
+    assert load_settings(home=tmp_path, environ=env).done_window_days == 3
+    for bad in ("0", "2.5", "true", '"week"'):
+        config.write_text(f"done_window_days = {bad}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="done_window_days"):
+            load_settings(home=tmp_path, environ={})
+
+
+def test_require_tracker_log(tmp_path: Path) -> None:
+    assert load_settings(home=tmp_path, environ={}).require_tracker_log is False
+    config = tmp_path / "config.toml"
+    config.write_text("require_tracker_log = true\n", encoding="utf-8")
+    assert load_settings(home=tmp_path, environ={}).require_tracker_log is True
+    env = {"RELAYBAY_REQUIRE_TRACKER_LOG": "false"}
+    assert load_settings(home=tmp_path, environ=env).require_tracker_log is False
+    env = {"RELAYBAY_REQUIRE_TRACKER_LOG": "1"}
+    config.unlink()
+    assert load_settings(home=tmp_path, environ=env).require_tracker_log is True
+    for bad in ("1", '"maybe"'):
+        config.write_text(f"require_tracker_log = {bad}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="require_tracker_log"):
+            load_settings(home=tmp_path, environ={})

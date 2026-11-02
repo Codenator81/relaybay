@@ -213,3 +213,78 @@ async def test_description_progress_and_unbind(live_server: Callable[[], LiveSer
 
         events = await call(client, "events_since", since_id=0, project="acme-shop")
         assert "task.session_unbound acme-shop-1 ✕ checkout-dev (mcp)" in events
+
+
+async def test_alias_tracker_and_dash_clears(live_server: Callable[[], LiveServer]) -> None:
+    live = live_server()
+    desktop = "local_00000000-0000-0000-0000-00000000000b"
+    async with connect(live) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        bind_help = tools["task_bind_session"].description or ""
+        assert "If you don't know your local_" in bind_help and "coordinator binds you" in bind_help
+        update_props = tools["task_update"].input_schema["properties"]
+        for name in ("waiting_on", "description", "progress", "tracker_ref", "tracker_url"):
+            assert "'-' or '' clears it" in update_props[name]["description"], name
+        assert {"tracker_name", "tracker_logged"} <= set(update_props)
+        assert {"tracker_ref", "tracker_name", "tracker_url", "tracker_logged"} <= set(
+            tools["task_create"].input_schema["properties"]
+        )
+        assert (
+            "'-' or '' clears it"
+            in (tools["report_add"].input_schema["properties"]["progress"]["description"])
+        )
+
+        await call(client, "project_upsert", slug="acme-shop")
+        await call(
+            client,
+            "task_create",
+            project="acme-shop",
+            title="Checkout",
+            waiting_on="-",
+            tracker_name="Linear",
+            tracker_ref="ENG-12",
+            session=desktop,
+            session_title="Checkout work",
+        )
+        kept = await call(client, "task_bind_session", task="acme-shop-1", session="checkout-dev")
+        assert kept == (
+            f"Kept the desktop session Checkout work ({desktop}) on **acme-shop-1**;"
+            " recorded 'checkout-dev' as its alias. Pass your local_ id to rebind."
+        )
+        await call(client, "task_create", project="acme-shop", title="Other", session="planner")
+        refused = await call(client, "task_bind_session", task="acme-shop-1", session="planner")
+        assert refused.startswith(
+            f"**acme-shop-1** is already bound to Checkout work ({desktop}); pass your local id"
+        )
+        mine = await call(client, "task_list", project="acme-shop", session="checkout-dev")
+        assert "**acme-shop-1**" in mine
+        events = await call(client, "events_since", since_id=0, project="acme-shop")
+        assert "session.alias_added acme-shop-1 'checkout-dev' = Checkout work" in events
+
+        await call(
+            client,
+            "task_update",
+            task="acme-shop-1",
+            next_step="Ship",
+            tracker_url="https://tracker.example/ENG-12",
+            tracker_logged=True,
+        )
+        detail = await call(client, "task_get", task="acme-shop-1")
+        assert "- waiting on:" not in detail and "- next step: Ship" in detail
+        assert "- tracker: Linear ENG-12 https://tracker.example/ENG-12 · work log ✓" in detail
+        snapshot = await call(client, "project_snapshot", project="acme-shop")
+        assert "tracker: Linear ENG-12 https://tracker.example/ENG-12 · work log ✓" in snapshot
+
+        bad = await client.call_tool(
+            "task_update", {"task": "acme-shop-1", "tracker_url": "file:///etc/passwd"}
+        )
+        assert bad.is_error and "http" in bad.content[0].text
+
+        await call(client, "task_update", task="acme-shop-1", next_step="-", tracker_url=" - ")
+        await call(client, "report_add", task="acme-shop-1", body="note", progress="Cart")
+        await call(client, "report_add", task="acme-shop-1", body="note", progress="-")
+        await call(client, "task_set_stage", task="acme-shop-1", stage="done")
+        await call(client, "task_update", task="acme-shop-1", tracker_logged=False)
+        detail = await call(client, "task_get", task="acme-shop-1")
+        assert "- next step:" not in detail and "## Progress" not in detail
+        assert "- tracker: Linear ENG-12 · work log not entered" in detail

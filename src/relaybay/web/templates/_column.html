@@ -1,5 +1,5 @@
 <section class="col col-{{ stage }}" id="col-{{ stage }}" data-stage="{{ stage }}"
-         hx-get="/p/{{ project.slug }}/col/{{ stage }}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+         hx-get="/p/{{ project.slug }}/col/{{ stage }}{% if view_qs %}?{{ view_qs }}{% endif %}" hx-trigger="rb:refresh" hx-swap="outerHTML">
   <h2 class="col-head"><span class="col-title">{{ label(stage) }}</span><span class="col-count">{{ tasks|length }}</span></h2>
   <div class="cards">
     {% for t in tasks %}
@@ -8,4 +8,9 @@
     <p class="col-empty">Nothing here</p>
     {% endfor %}
   </div>
+  {% if stage == "done" %}
+  {% if done_more %}<p class="col-note muted">{{ done_more }} more not shown; search to find them.</p>{% endif %}
+  {% if hidden_archived %}<p class="col-note muted">{{ hidden_archived }} closed more than {{ done_window_days }} days ago ·
+    <a href="/p/{{ project.slug }}?{{ archived_qs }}">Show archived</a></p>{% endif %}
+  {% endif %}
 </section>

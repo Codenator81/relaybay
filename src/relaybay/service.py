@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import aiosqlite
 
@@ -26,6 +26,8 @@ TITLE_MAX = 200
 TEXT_MAX = 2000
 NAME_MAX = 100
 MARKDOWN_MAX = 20000
+TRACKER_REF_MAX = 100
+HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
 
 TEXT_FIELDS = ("stage_note", "waiting_on", "next_step", "branch", "doc_path")
 MARKDOWN_FIELDS = ("description", "progress")
@@ -83,6 +85,12 @@ class TaskDetail:
     bindings: list[Binding]
 
 
+class BindResult(NamedTuple):
+    task: Task
+    kept: Session | None  # the desktop session a plain name did not replace
+    alias_recorded: bool  # the name now resolves to `kept`
+
+
 @dataclass(slots=True)
 class Snapshot:
     project: Project
@@ -103,6 +111,31 @@ def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
 
 def _clean_field(name: str, value: Any) -> str | None:
     return _clean_text(value, name, MARKDOWN_MAX if name in MARKDOWN_FIELDS else TEXT_MAX)
+
+
+def _clean_bool(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    raise ValidationError(f"{name} must be true or false.")
+
+
+def _clean_url(value: Any, name: str) -> str | None:
+    url = _clean_text(value, name)
+    if url is not None and not HTTP_URL_RE.fullmatch(url):
+        raise ValidationError(f"{name} must be an http:// or https:// link, got {url!r}.")
+    return url
+
+
+def _clean_tracker_field(name: str, value: Any) -> Any:
+    if name == "tracker_ref":
+        return _clean_text(value, name, TRACKER_REF_MAX)
+    if name == "tracker_name":
+        return _clean_text(value, name, NAME_MAX)
+    if name == "tracker_url":
+        return _clean_url(value, name)
+    return _clean_bool(value, name)
 
 
 def _clean_title(value: Any) -> str:
@@ -189,6 +222,10 @@ class Service:
         title = _clean_text(title, "session_title", NAME_MAX)
         external_id = parse_session_id(value)
         if external_id is None:
+            aliased = await repo.get_session_by_alias(tx.conn, value)
+            if aliased is not None:
+                await repo.touch_session(tx.conn, aliased.id, tx.now)
+                return aliased
             existing = await repo.get_session_by_name(tx.conn, value)
             if existing is None:
                 new_id = await repo.insert_session(tx.conn, value, tx.now)
@@ -409,6 +446,10 @@ class Service:
         description: str | None = None,
         progress: str | None = None,
         priority: int = 0,
+        tracker_ref: str | None = None,
+        tracker_name: str | None = None,
+        tracker_url: str | None = None,
+        tracker_logged: bool = False,
         session: str | None = None,
         session_title: str | None = None,
         actor: str = "mcp",
@@ -424,6 +465,10 @@ class Service:
             "description": _clean_field("description", description),
             "progress": _clean_field("progress", progress),
             "priority": int(priority),
+            "tracker_ref": _clean_tracker_field("tracker_ref", tracker_ref),
+            "tracker_name": _clean_tracker_field("tracker_name", tracker_name),
+            "tracker_url": _clean_tracker_field("tracker_url", tracker_url),
+            "tracker_logged": _clean_tracker_field("tracker_logged", tracker_logged),
         }
         fields["stage"] = fields["stage"].value
         default_actor = actor
@@ -472,6 +517,8 @@ class Service:
                 clean[name] = parse_stage(str(value)).value
             elif name == "priority":
                 clean[name] = int(value or 0)
+            elif name.startswith("tracker_"):
+                clean[name] = _clean_tracker_field(name, value)
             else:
                 clean[name] = _clean_field(name, value)
         default_actor = actor
@@ -533,14 +580,53 @@ class Service:
 
     async def bind_session(
         self, ref: str | int, session: str, *, session_title: str | None = None
-    ) -> Task:
+    ) -> BindResult:
+        """Bind a session to the task. A plain name never replaces a desktop session bound to
+        the task (and its "Open in desktop" link): the binding is kept and the name becomes that
+        session's alias, unless a plain session of that name already exists (aliases are global
+        and would hijack it); then nothing is written."""
+        name = _clean_text(session, "session", NAME_MAX)
+        if name is None:
+            raise ValidationError("session must not be empty.")
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
-            sess = await self._session(tx, session, session_title)
+            if parse_session_id(name) is None:
+                current_id = await repo.open_binding(tx.conn, task.id)
+                current = await repo.get_session_by_id(tx.conn, current_id) if current_id else None
+                if current is not None and current.external_id is not None:
+                    taken = await repo.get_session_by_alias(tx.conn, name) is None and (
+                        await repo.get_session_by_name(tx.conn, name) is not None
+                    )
+                    if taken:
+                        return BindResult(task, current, alias_recorded=False)
+                    await self._add_alias(tx, task, current, name)
+                    return BindResult(task, current, alias_recorded=True)
+            sess = await self._session(tx, name, session_title)
             if sess is None:
                 raise ValidationError("session must not be empty.")
             await self._bind(tx, task, sess, sess.name)
-            return await self.get_task(task.id, tx.conn)
+            return BindResult(await self.get_task(task.id, tx.conn), None, alias_recorded=False)
+
+    async def _add_alias(self, tx: _Tx, task: Task, session: Session, name: str) -> None:
+        previous = await repo.get_session_by_alias(tx.conn, name)
+        await repo.touch_session(tx.conn, session.id, tx.now)
+        if previous is not None and previous.id == session.id:
+            return
+        await repo.set_session_alias(tx.conn, name, session.id, tx.now)
+        await tx.event(
+            "session.alias_added",
+            session.name,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=session.id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            alias=name,
+            session=session.name,
+            session_external_id=session.external_id,
+            previous=previous.name if previous is not None else None,
+        )
 
     async def unbind_session(
         self, ref: str | int, session: str | None = None, *, actor: str = "mcp"
@@ -563,7 +649,12 @@ class Service:
             current = await repo.get_session_by_id(tx.conn, current_id)
             if current is None:
                 raise NotFoundError(f"Session #{current_id} bound to {task.key} not found.")
-            if needle is not None and needle not in (current.external_id, current.name):
+            aliased = await repo.get_session_by_alias(tx.conn, needle) if needle else None
+            if (
+                needle is not None
+                and needle not in (current.external_id, current.name)
+                and (aliased is None or aliased.id != current.id)
+            ):
                 raise ConflictError(
                     f"{task.key} is bound to {current.name}, not {expected}; nothing changed."
                     " Re-read the task with task_get."

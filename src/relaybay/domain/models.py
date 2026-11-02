@@ -48,6 +48,10 @@ class Task:
     created_at: str
     updated_at: str
     closed_at: str | None
+    tracker_ref: str | None = None
+    tracker_name: str | None = None
+    tracker_url: str | None = None
+    tracker_logged: bool = False
     project_slug: str = ""
     session_name: str | None = None
     session_external_id: str | None = None

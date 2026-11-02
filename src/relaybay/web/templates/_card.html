@@ -1,5 +1,6 @@
 <article class="card" id="card-{{ t.key }}" data-key="{{ t.key }}"
          hx-get="/p/{{ slug }}/t/{{ t.key }}/card" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if t.tracker_ref or t.tracker_logged or (require_tracker_log and t.stage.value == "done") %}<div class="card-tracker">{% include "_tracker.html" %}</div>{% endif %}
   <div class="card-top">
     <a class="card-key" href="/t/{{ t.key }}" title="Task page">{{ t.key }}</a>
     {% if not t.session_name %}<span class="chip no-session" title="No session is bound to this task">no session</span>{% endif %}
@@ -8,9 +9,11 @@
     <a class="card-open" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}">{{ t.title }}</a>
   </h3>
   {% if t.description %}<div class="card-desc clamp clamp-3 markdown">{{ t.description|markdown }}</div>{% endif %}
-  {% if t.waiting_on or t.branch %}
+  {#- A done task waits on nobody: its "waiting on" and "next step" are history, not shown here. #}
+  {%- set is_open = t.stage.value != "done" %}
+  {% if (t.waiting_on and is_open) or t.branch %}
   <div class="card-meta">
-    {% if t.waiting_on %}<span class="chip waiting" title="Waiting on">waiting on {{ t.waiting_on }}</span>{% endif %}
+    {% if t.waiting_on and is_open %}<span class="chip waiting" title="Waiting on">waiting on {{ t.waiting_on }}</span>{% endif %}
     {% if t.branch %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
   </div>
   {% endif %}
@@ -19,7 +22,7 @@
     {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
   </div>
   {% endif %}
-  {% if t.next_step %}<p class="card-next"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
+  {% if t.next_step and is_open %}<p class="card-next"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
   {% if t.progress %}
   <div class="card-progress">
     <span class="card-label">Done:</span>

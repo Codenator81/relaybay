@@ -105,7 +105,7 @@ async def test_failed_write_rolls_back(service: Service) -> None:
 async def test_reports_sessions_and_decisions(service: Service) -> None:
     await service.upsert_project("acme-shop")
     task = await service.create_task("acme-shop", "Checkout")
-    bound = await service.bind_session(task.key, "checkout-session")
+    bound, _, _ = await service.bind_session(task.key, "checkout-session")
     assert bound.session_name == "checkout-session"
 
     _, report = await service.add_report(

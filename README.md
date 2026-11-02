@@ -15,9 +15,18 @@ in the browser, on the desktop or on your phone.
   session history, "Open in desktop", unbinding the session and editing the task. Each task also has
   a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a
   dropped connection, a stage tab bar on narrow screens.
+- **Done column and archive** — the `done` column shows tasks closed in the last
+  `done_window_days` (default 7); older ones are archived and come back with "Show archived" or a
+  search by key or title (`/p/<project>?archived=1`, `?q=…`). Done cards hide "waiting on" and the
+  next step.
+- **External tracker mark** — a task can carry its issue in any tracker (tracker name, issue key,
+  optional link) and a "work log entered" mark. The card shows the issue as a badge at the top (a
+  link when a URL is set, ✓ once logged). With `require_tracker_log = true` a done task without
+  the mark shows "not logged" and stays out of the archive until it is marked.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
-  and unbind sessions, get a markdown snapshot of a project.
+  and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
+  task's desktop session binding: it becomes that session's alias.
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
   no outbound calls, no CDN.
 
@@ -65,6 +74,8 @@ variables, then command-line flags.
 | port | `8765` | `RELAYBAY_PORT` | `--port` |
 | extra allowed Host names | none | `RELAYBAY_ALLOWED_HOSTS` (comma-separated) | — |
 | desktop session link | `claude://claude.ai/epitaxy/{id}` | `RELAYBAY_DESKTOP_LINK_TEMPLATE` | — |
+| days a done task stays in the done column | `7` | `RELAYBAY_DONE_WINDOW_DAYS` | — |
+| keep done tasks without the tracker work log on the board | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — |
 
 The data directory holds `relaybay.sqlite`, the `token` file and the optional `config.toml`:
 
@@ -72,6 +83,8 @@ The data directory holds `relaybay.sqlite`, the `token` file and the optional `c
 port = 8765
 allowed_hosts = ["my-laptop.lan"]   # needed only when you bind to a LAN address
 desktop_link_template = "claude://claude.ai/epitaxy/{id}"  # {id} = desktop session id (local_…)
+done_window_days = 7                # older done tasks are archived
+require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
 
 [stages.labels]                     # display names; the stage keys stay plan/dev/test/live/done
 dev = "in progress"

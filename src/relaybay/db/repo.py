@@ -27,6 +27,10 @@ TASK_FIELDS = (
     "description",
     "progress",
     "priority",
+    "tracker_ref",
+    "tracker_name",
+    "tracker_url",
+    "tracker_logged",
 )
 
 
@@ -59,6 +63,10 @@ def _task(row: aiosqlite.Row) -> Task:
         progress=row["progress"],
         session_id=row["session_id"],
         priority=row["priority"],
+        tracker_ref=row["tracker_ref"],
+        tracker_name=row["tracker_name"],
+        tracker_url=row["tracker_url"],
+        tracker_logged=bool(row["tracker_logged"]),
         version=row["version"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -198,11 +206,35 @@ async def get_session_by_external_id(
 
 
 async def find_sessions(conn: aiosqlite.Connection, ref: str) -> list[Session]:
-    """Sessions matching an external id or a name (desktop titles may repeat)."""
+    """Sessions matching an external id, a name (desktop titles may repeat) or an alias."""
     rows = await _all(
-        conn, "SELECT * FROM session WHERE external_id = ? OR name = ? ORDER BY id", (ref, ref)
+        conn,
+        "SELECT * FROM session WHERE external_id = ? OR name = ?"
+        " OR id IN (SELECT session_id FROM session_alias WHERE name = ?) ORDER BY id",
+        (ref, ref, ref),
     )
     return [_session(r) for r in rows]
+
+
+async def get_session_by_alias(conn: aiosqlite.Connection, name: str) -> Session | None:
+    row = await _one(
+        conn,
+        "SELECT s.* FROM session_alias a JOIN session s ON s.id = a.session_id WHERE a.name = ?",
+        (name,),
+    )
+    return _session(row) if row else None
+
+
+async def set_session_alias(
+    conn: aiosqlite.Connection, name: str, session_id: int, now: str
+) -> None:
+    """Point `name` at `session_id`, replacing an alias of another session."""
+    await conn.execute(
+        "INSERT INTO session_alias (name, session_id, created_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(name) DO UPDATE SET session_id = excluded.session_id,"
+        " created_at = excluded.created_at",
+        (name, session_id, now),
+    )
 
 
 async def insert_session(
