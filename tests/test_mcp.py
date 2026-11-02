@@ -23,6 +23,7 @@ EXPECTED_TOOLS = {
     "report_add",
     "decision_add",
     "events_since",
+    "rules_get",
 }
 
 

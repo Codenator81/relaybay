@@ -1,5 +1,6 @@
 """Settings: defaults → `config.toml` in the home directory → `RELAYBAY_*` env → CLI flags."""
 
+import copy
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from typing import Any
 import platformdirs
 
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
+from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
 from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
@@ -30,6 +32,8 @@ class Settings:
     desktop_link_template: str = DEFAULT_DESKTOP_LINK_TEMPLATE
     done_window_days: int = DEFAULT_DONE_WINDOW_DAYS
     require_tracker_log: bool = False
+    rules: dict[str, Any] = field(default_factory=lambda: copy.deepcopy(DEFAULT_RULES))
+    rules_mode: str = "warn"
     replay_limit: int = 5000
     heartbeat_seconds: float = 15.0
 
@@ -109,6 +113,14 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         if not isinstance(value, bool):
             raise ValueError(f"{source}: require_tracker_log must be true or false, got {value!r}")
         settings.require_tracker_log = value
+    if "rules_mode" in data:
+        value = str(data["rules_mode"]).strip().lower()
+        if value not in RULES_MODES:
+            raise ValueError(
+                f"{source}: rules_mode must be one of {', '.join(RULES_MODES)},"
+                f" got {data['rules_mode']!r}"
+            )
+        settings.rules_mode = value
     if "desktop_link_template" in data:
         template = str(data["desktop_link_template"])
         if "{id}" not in template:
@@ -154,6 +166,9 @@ def load_settings(
                 )
         settings.report_labels = {str(k): str(v) for k, v in reports.get("labels", {}).items()}
         settings.report_hints = {str(k): str(v) for k, v in reports.get("hints", {}).items()}
+        if "rules" in data:
+            override = validate_rules(data["rules"], f"{settings.config_path} [rules]")
+            settings.rules = merge_rules(DEFAULT_RULES, override)
 
     _apply(
         settings,
@@ -166,6 +181,7 @@ def load_settings(
                 "desktop_link_template",
                 "done_window_days",
                 "require_tracker_log",
+                "rules_mode",
             )
             if env.get(f"RELAYBAY_{key.upper()}")
         },

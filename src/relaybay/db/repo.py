@@ -497,6 +497,16 @@ async def list_reports(conn: aiosqlite.Connection, task_id: int, limit: int) -> 
     return [_report(r) for r in rows]
 
 
+async def has_report_since(conn: aiosqlite.Connection, task_id: int, since: str | None) -> bool:
+    """Any report of the task created at or after `since` (any report at all when None)."""
+    row = await _one(
+        conn,
+        "SELECT 1 FROM report WHERE task_id = ? AND (? IS NULL OR created_at >= ?) LIMIT 1",
+        (task_id, since, since),
+    )
+    return row is not None
+
+
 async def last_reports(conn: aiosqlite.Connection, task_ids: list[int]) -> dict[int, Report]:
     if not task_ids:
         return {}
@@ -610,3 +620,21 @@ async def events_after(
 async def last_event_id(conn: aiosqlite.Connection) -> int:
     row = await _one(conn, "SELECT COALESCE(MAX(id), 0) FROM event", ())
     return int(row[0])
+
+
+# --- project rules ---------------------------------------------------------
+
+
+async def get_project_rules(conn: aiosqlite.Connection, project_id: int) -> str | None:
+    row = await _one(conn, "SELECT body FROM project_rules WHERE project_id = ?", (project_id,))
+    return row["body"] if row else None
+
+
+async def list_project_rules(conn: aiosqlite.Connection) -> list[tuple[str, str]]:
+    """(project slug, rules body JSON) for every project with its own rules."""
+    rows = await _all(
+        conn,
+        "SELECT p.slug, r.body FROM project_rules r JOIN project p ON p.id = r.project_id"
+        " ORDER BY p.slug",
+    )
+    return [(r["slug"], r["body"]) for r in rows]

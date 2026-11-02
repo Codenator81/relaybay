@@ -5,6 +5,17 @@ relaybay serves MCP over Streamable HTTP at `http://127.0.0.1:8765/mcp`. Every r
 read by the model; failures (unknown task, version conflict, invalid stage) come back as tool errors
 with a message that says what to do.
 
+## Server instructions
+
+The server's MCP `instructions` (sent once when a session connects) are a short working contract:
+read `project_snapshot` on start (its first line names the rules); pick or create a task and pass
+`session` (your `local_` id with `session_title` if you know it; if not, don't rebind — the
+coordinator binds you); update `next_step`, `waiting_on` and `progress` on every stage change and
+report; start a report with the configured first line, states and sizes (taken from the
+effective global rules, so they match `rules_get`); set `waiting_on` to who
+decides when the work needs a decision; use `task_patch` for fields your tool schema lacks; treat a
+`Warning (rules)` line as something to fix. The details live in the rules below.
+
 Conventions:
 
 - **Task reference** — the key (`acme-shop-12`) or the numeric id.
@@ -74,6 +85,7 @@ Conventions:
 | `task_list` | `project?`, `stage?`, `waiting_on?`, `session?` (id or name), `include_done?` | One line per task. Done tasks are left out unless `stage` or `include_done` is given. |
 | `task_get` | `task`, `reports?` (default 5) | Ends with "Editable fields: …". All fields (a stale next step ends with `(stale)`), description and progress in full, current `version`, the bound session (name and desktop id, link), the tracker issue and work-log mark, session binding history, tracker history, latest reports with their bodies, decisions. |
 | `events_since` | `since_id?` (default 0), `project?`, `limit?` (default 50, max 500) | Events oldest first and the `since_id` for the next call. |
+| `rules_get` | `project?` | The working rules as markdown: hash, scope, mode, report format, stage requirements, description template, guidance. Without `project`, the global rules; with it, the project's merged rules. |
 
 ## Writing
 
@@ -92,13 +104,61 @@ Conventions:
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
 
+A stage move (`task_set_stage`, `task_patch` / `task_update` with a stage, the board form) is
+checked against the project's rules. In `warn` mode the write succeeds and the response gets one
+line per unmet requirement, e.g. `Warning (rules): moving to test usually needs a report since the
+last stage change.`; the `task.stage_changed` event carries the same lines as `warnings`. In
+`strict` mode the write fails with `Rules: moving to test requires … Nothing changed.`
+
 ## Resources
 
 `relaybay://project/{slug}` — the same markdown as `project_snapshot`, so a session can attach a
 project snapshot as context.
 
+`relaybay://rules` — the global working rules (same as `rules_get()`).
+
+`relaybay://rules/{project}` — a project's working rules, merged (same as
+`rules_get(project=…)`).
+
 `relaybay://schema/task` — the editable task fields as a markdown table (field, type, description,
 how to clear it), generated from the same list the server validates writes against.
+
+## Working rules
+
+One structured document with a fixed set of rule kinds:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `report_format` | `first_line` (the pattern shown to agents), `states`, `sizes` (subsets of the built-in states and sizes) | `state · size · gist`, all states, `S`/`M`/`L` |
+| `stage_requirements` | per target stage, a list of requirements: `{kind = "report_since_stage_change"}` (a report added since the task's last stage change) or `{kind = "field_present", field = "<task field>"}` | `test`: a report since the last stage change; `done`: `progress` |
+| `description_template` | markdown template for new task descriptions (shown in the rules) | none |
+| `guidance` | free-text markdown shown to agents | one short paragraph |
+
+Layers, merged in this order:
+
+1. built-in defaults;
+2. the global `[rules]` table in `config.toml` (see the README);
+3. a project override: a row in the table `project_rules` (`project_id`, `body` = the same document
+   as JSON, `updated_at`). There is no write tool yet; insert the row with any SQLite client, e.g.
+   `INSERT INTO project_rules (project_id, body, updated_at) SELECT id,
+   '{"stage_requirements": {"test": []}}', datetime('now') FROM project WHERE slug = 'acme-shop';`
+
+Each layer may be partial. `report_format` merges per key, `stage_requirements` per stage (a stage's
+list replaces the earlier list; `[]` drops the stage's requirements), `description_template`
+replaces; the config `guidance` replaces the built-in text, a project's `guidance` is appended after
+the global one. Every layer is validated (unknown keys, stages, rule kinds or fields are errors
+naming the key). An error in `config.toml` stops the server at startup. A broken project override
+(invalid JSON or rules) never stops the server or the project: it is logged once as a warning,
+the project uses the global rules, and `rules_get` / `relaybay://rules/{project}` and the first
+line of `project_snapshot` add "project override ignored: <error>".
+
+The rules hash is the first 8 hex digits of the SHA-256 of the merged document plus `rules_mode`
+(canonical JSON), so it changes exactly when the rules an agent reads change, including a switch
+between `warn` and `strict`. `project_snapshot` starts with
+`Rules <hash>: report before test, progress before done (read relaybay://rules/<project>)`.
+
+`rules_mode` (config, default `warn`) decides what an unmet stage requirement does: `warn` lets the
+write through with a warning, `strict` refuses it.
 
 ## Schema changes and long-running sessions
 

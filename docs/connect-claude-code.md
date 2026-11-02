@@ -49,7 +49,8 @@ Add a short section like this to the project's `CLAUDE.md` or `AGENTS.md` (repla
 
 This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
 
-- At the start of a session, call `project_snapshot(project="acme-shop")`.
+- At the start of a session, call `project_snapshot(project="acme-shop")`; its first line names
+  the working rules (read them with `rules_get(project="acme-shop")`).
 - Before starting work, find the task with `task_list` or create it with `task_create` (with a
   short `description`: what to do and why); then call `task_bind_session` with your session name.
 - When the work moves on, call `task_set_stage` (plan → dev → test → live → done).

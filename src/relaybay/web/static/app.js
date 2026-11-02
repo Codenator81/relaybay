@@ -189,8 +189,30 @@
       var note = form.querySelector(".form-stale");
       if (note) note.hidden = false;
     } else {
-      queue(form.closest(".task-form-box"));
+      refreshForm(form.closest(".task-form-box"));
     }
+  }
+
+  // The save's own events arrive right after it: a refetch would wipe its rule warnings at once.
+  // While they are shown (5 s), a refresh is deferred to the end of that time, not dropped.
+  var WARNING_HOLD_MS = 5000;
+  function refreshForm(box) {
+    if (!box.querySelector(".form-warning")) { queue(box); return; }
+    if (!box.dataset.warnedAt) box.dataset.warnedAt = String(Date.now());
+    var left = WARNING_HOLD_MS - (Date.now() - Number(box.dataset.warnedAt));
+    if (left <= 0) { queue(box); return; }
+    if (box.dataset.refreshDeferred) return;
+    box.dataset.refreshDeferred = "1";
+    window.setTimeout(function () {
+      var form = box.querySelector("form.task-form");
+      if (!document.body.contains(box) || !form) return;
+      if (form.dataset.dirty) {
+        var note = form.querySelector(".form-stale");
+        if (note) note.hidden = false;
+      } else {
+        queue(box);
+      }
+    }, left);
   }
 
   // Every way of closing the dialog asks before throwing away unsaved edits.
