@@ -1,39 +1,24 @@
 <article class="card" id="card-{{ t.key }}" data-key="{{ t.key }}"
          hx-get="/p/{{ slug }}/t/{{ t.key }}/card" hx-trigger="rb:refresh" hx-swap="outerHTML">
-  {% if t.tracker_ref or t.tracker_logged or (require_tracker_log and t.stage.value == "done") %}<div class="card-tracker">{% include "_tracker.html" %}</div>{% endif %}
+  {#- The card shows only what is needed at a glance; the task dialog has everything else. -#}
   <div class="card-top">
     <a class="card-key" href="/t/{{ t.key }}" title="Task page">{{ t.key }}</a>
-    {% if not t.session_name %}<span class="chip no-session" title="No session is bound to this task">no session</span>{% endif %}
+    {% if t.tracker_ref or t.tracker_logged or (require_tracker_log and t.stage.value == "done") %}<span class="card-tracker">{% include "_tracker.html" %}</span>{% endif %}
+    {% if t.session_link %}
+    <a class="open-desktop icon" href="{{ t.session_link }}" title="Open in desktop: {{ t.session_name }}"
+       aria-label="Open {{ t.session_name }} in the Claude desktop app"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"/></svg></a>
+    {% endif %}
   </div>
   <h3 class="card-title">
     <a class="card-open" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}">{{ t.title }}</a>
   </h3>
-  {% if t.description %}<div class="card-desc clamp clamp-3 markdown">{{ t.description|markdown }}</div>{% endif %}
   {#- A done task waits on nobody: its "waiting on" and "next step" are history, not shown here. #}
   {%- set is_open = t.stage.value != "done" %}
   {% if (t.waiting_on and is_open) or t.branch %}
   <div class="card-meta">
-    {% if t.waiting_on and is_open %}<span class="chip waiting" title="Waiting on">waiting on {{ t.waiting_on }}</span>{% endif %}
+    {% if t.waiting_on and is_open %}<span class="chip waiting" title="Waiting on {{ t.waiting_on }}">waiting on {{ t.waiting_on }}</span>{% endif %}
     {% if t.branch %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
   </div>
   {% endif %}
-  {% if t.session_name %}
-  <div class="card-session">
-    {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
-  </div>
-  {% endif %}
-  {% if t.next_step and is_open %}<p class="card-next"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
-  {% if t.progress %}
-  <div class="card-progress">
-    <span class="card-label">Done:</span>
-    <div class="clamp clamp-3 markdown">{{ t.progress|markdown }}</div>
-  </div>
-  {% endif %}
-  {% if last %}
-  <div class="card-report">
-    {% with state = last.state, size = last.size %}{% include "_report_badges.html" %}{% endwith %}
-    <p class="summary">{{ last.summary }}
-      <time datetime="{{ last.created_at }}" data-age>{{ last.created_at|age }}</time></p>
-  </div>
-  {% endif %}
+  {% if t.next_step and is_open %}<p class="card-next clamp clamp-2{% if t.next_step_stale %} stale{% endif %}"><span class="muted">Next:</span> {{ t.next_step }}{% if t.next_step_stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</p>{% endif %}
 </article>

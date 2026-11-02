@@ -52,11 +52,24 @@ class Task:
     tracker_name: str | None = None
     tracker_url: str | None = None
     tracker_logged: bool = False
+    next_step_at: str | None = None
+    stage_changed_at: str | None = None
     project_slug: str = ""
     session_name: str | None = None
     session_external_id: str | None = None
     session_status: str | None = None
     session_link: str | None = None
+
+    @property
+    def next_step_stale(self) -> bool:
+        """The next step was written before the last stage change (ISO UTC strings compare in
+        time order)."""
+        return bool(
+            self.next_step
+            and self.next_step_at
+            and self.stage_changed_at
+            and self.next_step_at < self.stage_changed_at
+        )
 
 
 @dataclass(slots=True)

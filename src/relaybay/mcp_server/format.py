@@ -51,6 +51,11 @@ def tracker_label(task: Task, require_log: bool = False) -> str:
     return " · ".join(x for x in (issue, mark) if x)
 
 
+def next_step_label(task: Task) -> str:
+    """The next step, marked `(stale)` when it was set before the last stage change."""
+    return f"{task.next_step} (stale)" if task.next_step_stale else task.next_step or ""
+
+
 def report_line(report: Report) -> str:
     head = " · ".join(x for x in (report.state, report.size) if x)
     prefix = f"{head} · " if head else ""
@@ -65,7 +70,7 @@ def task_line(
     if task.waiting_on:
         extras.append(f"waiting on: {task.waiting_on}")
     if task.next_step:
-        extras.append(f"next: {task.next_step}")
+        extras.append(f"next: {next_step_label(task)}")
     if task.branch:
         extras.append(f"branch `{task.branch}`")
     if task.session_name:
@@ -148,7 +153,7 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
     ]
     for label, value in (
         ("waiting on", t.waiting_on),
-        ("next step", t.next_step),
+        ("next step", next_step_label(t)),
         ("branch", t.branch),
         ("doc", t.doc_path),
         ("session", session_label(t)),

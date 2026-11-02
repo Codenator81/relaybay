@@ -26,7 +26,7 @@ def test_board_page_renders_columns_and_cards(board: TestClient, seeded: str) ->
         assert f'id="tab-{stage}"' in page.text
     assert f'id="card-{seeded}"' in page.text
     assert "Checkout page" in page.text and "feat/x" in page.text
-    assert "first pass" in page.text
+    assert "first pass" not in page.text  # the last report lives in the task dialog
     # Agent text is escaped, never rendered as HTML.
     assert "<b>bold</b>" not in page.text
     assert 'sse-connect="/events?project=acme-shop"' in page.text
@@ -137,17 +137,19 @@ def test_card_and_task_page_show_the_desktop_session(board: TestClient, seeded: 
 
     card = board.get(f"/p/acme-shop/t/{seeded}/card").text
     link = f"claude://claude.ai/epitaxy/{DESKTOP}"
-    assert "Checkout work" in card
-    assert f'href="{link}"' in card and "Open in desktop" in card
-    assert f'data-link="{link}"' in card and "copy-link" in card
-    assert "paste the link into the Claude desktop app" in card
+    # The card has only an icon link; the session name is in its tooltip.
+    assert f'<a class="open-desktop icon" href="{link}"' in card
+    assert 'title="Open in desktop: Checkout work"' in card
+    assert 'aria-label="Open Checkout work in the Claude desktop app"' in card
+    assert card.index("open-desktop") < card.index("</div>")  # in the top row
+    assert "copy-link" not in card and "badge session" not in card
     assert f'href="/t/{seeded}"' in card
-    assert "session-status" not in card  # status unknown: no status shown
 
     page = board.get(f"/t/{seeded}")
     assert page.status_code == 200
     text = page.text
     assert "Checkout work" in text and DESKTOP in text and f'href="{link}"' in text
+    assert f'data-link="{link}"' in text and "copy-link" in text  # Copy link stays here
     assert text.index("Checkout work", text.index("History")) < text.index("first-session")
     assert "· current" in text and "· until" in text
     # Report bodies are markdown with raw HTML escaped.
@@ -159,7 +161,8 @@ def test_plain_session_has_no_desktop_link(board: TestClient, seeded: str) -> No
     service: Service = board.app.state.service
     run_in_app(board, service.bind_session, seeded, "checkout-dev")
     card = board.get(f"/p/acme-shop/t/{seeded}/card").text
-    assert "checkout-dev" in card and "Open in desktop" not in card
+    assert "checkout-dev" not in card and "open-desktop" not in card
+    assert "checkout-dev" in board.get(f"/t/{seeded}").text
 
 
 def test_pages_read_the_event_id_before_the_data(
@@ -193,37 +196,42 @@ def test_pages_read_the_event_id_before_the_data(
 
 def test_report_state_and_size_are_badges(board: TestClient, seeded: str) -> None:
     card = board.get(f"/p/acme-shop/t/{seeded}/card").text
-    assert 'class="badge-state state-changed" title="Changed locally, not verified yet"' in card
-    assert ">Changed</span>" in card
-    assert 'class="badge-size" title="Medium"' not in card
-    assert 'class="badge-size" title="Small">S</span>' in card
-    # The gist sits on its own line, without the "state · size" prefix.
-    assert '<p class="summary">first pass' in card
+    assert "badge-state" not in card and "card-report" not in card  # not on the card
     task = board.get(f"/t/{seeded}").text
-    assert "badge-state state-changed" in task
+    assert 'class="badge-state state-changed" title="Changed locally, not verified yet"' in task
+    assert ">Changed</span>" in task
+    assert 'class="badge-size" title="Medium"' not in task
+    assert 'class="badge-size" title="Small">S</span>' in task
+    dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
+    assert "badge-state state-changed" in dialog
 
 
-def test_card_shows_description_progress_and_no_session(board: TestClient, seeded: str) -> None:
+def test_card_shows_only_essentials(board: TestClient, seeded: str) -> None:
     service: Service = board.app.state.service
-    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
-    assert 'class="chip no-session"' in card
-    assert "card-desc" not in card and "card-progress" not in card  # empty fields: no blocks
-
     run_in_app(
         board,
         service.update_task,
         seeded,
-        {"description": "Build the page <script>x</script>", "progress": "- **cart** done"},
+        {
+            "description": "Build the page <script>x</script>",
+            "progress": "- **cart** done",
+            "waiting_on": "owner",
+            "next_step": "Write the cart",
+        },
     )
     card = board.get(f"/p/acme-shop/t/{seeded}/card").text
-    assert 'class="card-desc clamp clamp-3 markdown"' in card
-    assert "&lt;script&gt;" in card and "<script>" not in card
-    assert '<span class="card-label">Done:</span>' in card
-    assert '<div class="clamp clamp-3 markdown"><ul>\n<li><strong>cart</strong> done' in card
+    assert "no-session" not in card  # no session at all: nothing about sessions
+    assert "card-desc" not in card and "Build the page" not in card
+    assert "card-progress" not in card and "Done:" not in card
+    assert "card-report" not in card and "first pass" not in card
+    assert 'class="chip waiting" title="Waiting on owner">waiting on owner</span>' in card
+    assert '<code class="branch" title="Branch">feat/x</code>' in card
+    assert '<p class="card-next clamp clamp-2"><span class="muted">Next:</span>' in card
 
-    run_in_app(board, service.bind_session, seeded, "checkout-dev")
-    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
-    assert "no-session" not in card and "checkout-dev" in card
+    dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
+    assert "&lt;script&gt;" in dialog and "<script>x" not in dialog
+    assert "<strong>cart</strong> done" in dialog and "first pass" in dialog
+    assert "No session is bound to this task." in dialog
 
 
 def test_task_query_renders_the_dialog_open(board: TestClient, seeded: str) -> None:
@@ -292,3 +300,60 @@ def test_unbind_needs_same_origin(board: TestClient, seeded: str, token: str) ->
     foreign = {"HX-Request": "true", "Origin": "http://evil.example"}
     response = board.post(f"/p/acme-shop/t/{seeded}/unbind", data=form, headers=foreign)
     assert response.status_code == 403
+
+
+def test_stale_next_step_is_marked(board: TestClient, seeded: str, monkeypatch) -> None:
+    service: Service = board.app.state.service
+    # Later than the seeded task's real creation time, and one tick per write.
+    ticks = iter(range(1, 100))
+    monkeypatch.setattr(
+        "relaybay.service.now_iso", lambda: f"2999-01-01T00:00:{next(ticks):02d}.000+00:00"
+    )
+    run_in_app(board, service.update_task, seeded, {"next_step": "Write tests"})
+    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
+    assert '<p class="card-next clamp clamp-2">' in card and "stale-mark" not in card
+
+    run_in_app(board, service.set_stage, seeded, "test")
+    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
+    assert '<p class="card-next clamp clamp-2 stale">' in card
+    assert 'title="Set before the last stage change">stale</span>' in card
+    view = board.get(f"/t/{seeded}").text
+    assert '<dd class="muted">Write tests <span class="stale-mark"' in view
+
+    run_in_app(board, service.set_stage, seeded, "done")
+    assert "card-next" not in board.get(f"/p/acme-shop/t/{seeded}/card").text  # done hides it
+    view = board.get(f"/t/{seeded}").text
+    assert '<dd class="muted">Write tests</dd>' in view  # history: muted, no marker
+
+
+def test_board_save_confirms_next_step_only_when_edited(
+    board: TestClient, seeded: str, token: str, monkeypatch
+) -> None:
+    service: Service = board.app.state.service
+    ticks = iter(range(1, 100))
+    monkeypatch.setattr(
+        "relaybay.service.now_iso", lambda: f"2999-01-01T00:00:{next(ticks):02d}.000+00:00"
+    )
+    run_in_app(board, service.update_task, seeded, {"next_step": "Write tests"})
+
+    def save(**fields: str) -> None:
+        task = run_in_app(board, service.get_task, seeded)
+        form = {
+            "title": task.title,
+            "stage": task.stage,
+            "next_step": task.next_step or "",
+            "version": str(task.version),
+            "csrf_token": csrf_token(token),
+            **fields,
+        }
+        assert board.post(f"/p/acme-shop/t/{seeded}", data=form, headers=HTMX).status_code == 200
+
+    # A stage change from the board with the next step left as it is marks it stale.
+    save(stage="test")
+    assert run_in_app(board, service.get_task, seeded).next_step_stale
+    # Editing another field keeps it stale.
+    save(title="Checkout page, renamed")
+    assert run_in_app(board, service.get_task, seeded).next_step_stale
+    # Editing the next step itself confirms it.
+    save(next_step="Review the tests")
+    assert not run_in_app(board, service.get_task, seeded).next_step_stale

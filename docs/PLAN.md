@@ -87,11 +87,13 @@ task      id PK, project_id FK, key UNIQUE (e.g. "acme-shop-12"), title,
           tracker_ref NULL, tracker_name NULL,          -- issue key / tracker in an external tracker
           tracker_url NULL,         -- http(s) link to the issue, validated on write
           tracker_logged INT DEFAULT 0,                 -- the work log is entered in the tracker
+          next_step_at NULL,        -- when next_step was last written
+          stage_changed_at NULL,    -- when the stage last changed
           created_at, updated_at, closed_at NULL
 report    id PK, task_id FK, session_id FK NULL, author TEXT,
           state TEXT NULL,          -- inspected / changed / verified / committed / pushed / blocked
           size TEXT NULL,           -- S / M / L
-          summary TEXT,             -- first line, shown on the card
+          summary TEXT,             -- first line, shown in snapshots and the task dialog
           body_md TEXT, created_at
 decision  id PK, task_id FK NULL, project_id FK, text, decided_by, created_at
 session   id PK, external_id UNIQUE NULL,   -- desktop session id (local_<uuid>) or hook session_id
@@ -122,6 +124,13 @@ event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id N
   from then on resolves to that session. Aliases are global (one name, one session) and win over
   plain sessions, so no alias is created for a name that a plain session already has; the call then
   only warns.
+- **Next-step freshness** (migration `0004`): `next_step_at` is set whenever `next_step` is
+  written, `stage_changed_at` on every real stage change (both backfilled from `updated_at`, so an
+  upgrade marks nothing stale). A next step with `next_step_at < stage_changed_at` is stale: shown
+  muted with a "stale" marker on open cards and in the task dialog, `(stale)` in MCP output. An
+  explicit write of the same text confirms it (and counts as a change) when it is stale or the same
+  write changes the stage; otherwise an unchanged next step is a no-op as before. The board's edit
+  form confirms it only when its text is edited; saving other fields (or the stage) leaves it as is.
 - **Archive** is computed, not stored: a done task whose `closed_at` is older than
   `done_window_days` (config, default 7) is left out of the board's done column unless
   "Show archived" or a search is active. With `require_tracker_log = true` (config, default false)
@@ -233,10 +242,10 @@ trusted for authorization — the token is the only auth; identity is for displa
 | `task_get` | Full task with last N reports and decisions | `task` (key or id) |
 | `task_create` | New task | `project`, `title`, `stage?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `session?` |
 | `task_update` | Patch fields (incl. `description`, `progress`, `tracker_*`); `"-"` or `""` clears a text field | `task`, fields…, `expected_version?` |
-| `task_set_stage` | Move stage with a note | `task`, `stage`, `note?` |
+| `task_set_stage` | Move stage with a note; optional `next_step` / `waiting_on` saved atomically | `task`, `stage`, `note?`, `next_step?`, `waiting_on?` |
 | `task_bind_session` | "Session X works on this task now"; a plain name never replaces a desktop binding, it becomes its alias | `task`, `session` |
 | `task_unbind_session` | "Nobody works on this task now"; history kept; `session` guards against unbinding a successor | `task`, `session?` |
-| `report_add` | Append a report; first line becomes the card summary; optional `state`/`size` parsed from a leading `state · size · gist` line; optional `progress` updates the task's summary atomically | `task`, `body`, `progress?`, `session?` |
+| `report_add` | Append a report; first line becomes the card summary; optional `state`/`size` parsed from a leading `state · size · gist` line; optional `progress`, `next_step` and `waiting_on` update the task atomically | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?` |
 | `decision_add` | Record a decision | `project`, `task?`, `text`, `decided_by?` |
 | `events_since` | Event feed for catch-up by an agent | `since_id?`, `project?`, `limit?` |
 

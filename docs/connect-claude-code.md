@@ -53,7 +53,8 @@ This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
 - Before starting work, find the task with `task_list` or create it with `task_create` (with a
   short `description`: what to do and why); then call `task_bind_session` with your session name.
 - When the work moves on, call `task_set_stage` (plan → dev → test → live → done).
-- Keep "waiting on" and "next step" current with `task_update`.
+- Keep "waiting on" and "next step" current: pass `next_step` and `waiting_on` with every
+  `task_set_stage` and `report_add` (or use `task_update`).
 - At the end of every stage, call `report_add` with your final report. Start it with a line
   `state · size · gist`, e.g. `verified · M · checkout works`, and pass `progress`: the updated
   summary of everything done on the task so far.
