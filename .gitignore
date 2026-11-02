@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Local data
+*.sqlite
+*.sqlite3
+*.db
+.env
+.env.*
+!.env.example
+
+# Personal AI assistant settings (keep out of the public repo)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.mcp.json
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
