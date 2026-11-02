@@ -5,7 +5,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,6 +19,12 @@ import aiosqlite
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain.errors import ConflictError, NotFoundError, ValidationError
+from relaybay.domain.hooks import (
+    CC_ID_MAX,
+    HookEvent,
+    folder_name,
+    parse_hook,
+)
 from relaybay.domain.models import (
     Binding,
     Decision,
@@ -46,6 +54,7 @@ from relaybay.events import EventBus
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity event per session
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
 
 
@@ -231,6 +240,7 @@ class Service:
         desktop_link_template: str = DEFAULT_DESKTOP_LINK_TEMPLATE,
         rules: dict[str, Any] | None = None,
         rules_mode: str = "warn",
+        hook_activity_window: float = HOOK_ACTIVITY_WINDOW,
     ) -> None:
         if "{id}" not in desktop_link_template:
             raise ValueError("desktop_link_template must contain '{id}'.")
@@ -245,6 +255,12 @@ class Service:
         self._write_conn: aiosqlite.Connection | None = None
         self._read_conn: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
+        self.hook_activity_window = hook_activity_window
+        # Per session: when activity was last written, the newest one held back, its timer.
+        self._activity_written: dict[int, float] = {}
+        self._activity_pending: dict[int, HookEvent] = {}
+        self._activity_timers: dict[int, asyncio.TimerHandle] = {}
+        self._flushes: set[asyncio.Task[Any]] = set()
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +272,12 @@ class Service:
             self._merged_rules(slug, body)
 
     async def close(self) -> None:
+        for timer in self._activity_timers.values():
+            timer.cancel()
+        self._activity_timers.clear()
+        self._activity_pending.clear()
+        for task in list(self._flushes):
+            task.cancel()
         for conn in (self._read_conn, self._write_conn):
             if conn is not None:
                 await conn.close()
@@ -291,11 +313,21 @@ class Service:
     def desktop_link(self, external_id: str) -> str:
         return self.desktop_link_template.replace("{id}", external_id)
 
-    async def _session(self, tx: _Tx, value: str | None, title: str | None) -> Session | None:
-        """Upsert the calling session: a desktop id (`local_<uuid>`) or a plain name."""
+    async def _session(
+        self, tx: _Tx, value: str | None, title: str | None, hook_session: str | None = None
+    ) -> Session | None:
+        """Upsert the calling session: a desktop id (`local_<uuid>`) or a plain name. With
+        `hook_session` (the Claude Code session id its hooks report), that id is linked to it."""
+        cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
         value = _clean_text(value, "session", NAME_MAX)
         if value is None:
             return None
+        found = await self._resolve_session(tx, value, title)
+        if found is not None and cc_id is not None:
+            found = await self._link_hook_session(tx, found, cc_id)
+        return found
+
+    async def _resolve_session(self, tx: _Tx, value: str, title: str | None) -> Session | None:
         title = _clean_text(title, "session_title", NAME_MAX)
         external_id = parse_session_id(value)
         if external_id is None:
@@ -419,6 +451,258 @@ class Service:
             tracker_ref=tracker_ref,
             reason=reason,
         )
+
+    # --- hook sessions -----------------------------------------------------
+
+    async def _session_events(self, tx: _Tx, session: Session, actor: str, **payload: Any) -> None:
+        """One `session.status_changed` per task the session is bound to (cards refresh by
+        key), or one for the session alone."""
+        tasks = await repo.open_tasks_of_session(tx.conn, session.id)
+        common = {
+            "session": session.name,
+            "session_external_id": session.external_id,
+            "status": session.status,
+            "activity": session.activity,
+            **payload,
+        }
+        if not tasks:
+            await tx.event(
+                "session.status_changed",
+                actor,
+                project_id=session.project_id,
+                session_id=session.id,
+                **common,
+            )
+        for task in tasks:
+            await tx.event(
+                "session.status_changed",
+                actor,
+                project_id=task.project_id,
+                task_id=task.id,
+                session_id=session.id,
+                project=task.project_slug,
+                key=task.key,
+                stage=task.stage.value,
+                **common,
+            )
+
+    async def _link_hook_session(self, tx: _Tx, session: Session, cc_id: str) -> Session:
+        """Exact link from an agent's write: `cc_id` now belongs to `session`. A row the hooks
+        created for it by guess hands over its status and is removed when nothing refers to it."""
+        if session.cc_session_id == cc_id:
+            return session
+        changes: dict[str, Any] = {"cc_session_id": cc_id, "unlinked_reason": None}
+        other = await repo.get_session_by_cc(tx.conn, cc_id)
+        if other is not None and other.id != session.id:
+            changes.update(
+                status=other.status,
+                activity=other.activity,
+                activity_at=other.activity_at,
+                cwd=other.cwd,
+            )
+            if other.kind == "hook" and not await repo.has_bindings(tx.conn, other.id):
+                await repo.delete_session(tx.conn, other.id)
+            else:
+                await repo.touch_session(
+                    tx.conn,
+                    other.id,
+                    tx.now,
+                    {"cc_session_id": None, "unlinked_reason": None, "status": None},
+                )
+        if session.project_id is None and other is not None and other.project_id is not None:
+            changes["project_id"] = other.project_id
+        await repo.touch_session(tx.conn, session.id, tx.now, changes)
+        linked = await repo.get_session_by_id(tx.conn, session.id)
+        assert linked is not None
+        self._activity_written.pop(session.id, None)
+        await self._session_events(tx, linked, linked.name, hook_session=cc_id, linked=True)
+        return linked
+
+    def _project_for_cwd(
+        self, projects: list[Project], cwd: str | None
+    ) -> tuple[Project | None, str | None]:
+        """The project whose repo_path is `cwd` or its closest parent; a tie is ambiguous and
+        returns the reason instead."""
+        if not cwd:
+            return None, None
+        target = os.path.normcase(os.path.normpath(cwd))
+        best: list[Project] = []
+        best_len = -1
+        for project in projects:
+            root = os.path.normcase(os.path.normpath(project.repo_path or ""))
+            if not root or not (target == root or target.startswith(root.rstrip(os.sep) + os.sep)):
+                continue
+            if len(root) > best_len:
+                best, best_len = [project], len(root)
+            elif len(root) == best_len:
+                best.append(project)
+        if len(best) > 1:
+            names = ", ".join(sorted(p.slug for p in best))
+            return None, f"the folder belongs to several projects ({names})"
+        return (best[0] if best else None), None
+
+    async def _new_hook_session(
+        self, tx: _Tx, hook: HookEvent, project_id: int | None, reason: str | None
+    ) -> Session:
+        """A plain session named after the folder; an unlinked one (with `reason`) or a second
+        live session in the same folder also gets a short id, so names stay unique."""
+        folder = folder_name(hook.cwd)
+        name = folder
+        if reason is None:
+            existing = await repo.get_session_by_name(tx.conn, folder)
+            if existing is not None and (
+                existing.cc_session_id is None or existing.status == "ended"
+            ):
+                await repo.touch_session(
+                    tx.conn,
+                    existing.id,
+                    tx.now,
+                    {"cc_session_id": hook.cc_session_id, "cwd": hook.cwd},
+                )
+                found = await repo.get_session_by_id(tx.conn, existing.id)
+                assert found is not None
+                return found
+        if reason is not None or await repo.get_session_by_name(tx.conn, folder) is not None:
+            name = f"{folder} · {hook.cc_session_id[:8]}"
+            if await repo.get_session_by_name(tx.conn, name) is not None:
+                name = f"{folder} · {hook.cc_session_id}"
+        new_id = await repo.insert_session(tx.conn, name, tx.now, kind="hook")
+        await repo.touch_session(
+            tx.conn,
+            new_id,
+            tx.now,
+            {
+                "cc_session_id": hook.cc_session_id,
+                "cwd": hook.cwd,
+                "project_id": project_id,
+                "unlinked_reason": reason,
+            },
+        )
+        await tx.event(
+            "session.seen",
+            name,
+            project_id=project_id,
+            session_id=new_id,
+            session=name,
+            hook_session=hook.cc_session_id,
+            **({"unlinked_reason": reason} if reason else {}),
+        )
+        found = await repo.get_session_by_id(tx.conn, new_id)
+        assert found is not None
+        return found
+
+    async def _hook_session(self, tx: _Tx, hook: HookEvent) -> Session:
+        """The relaybay session of a hook event. First sight without an exact link: the one
+        desktop session bound in the project of `cwd`; several possible ones (or a folder of
+        several projects) stay unlinked; none, a plain session named after the folder."""
+        found = await repo.get_session_by_cc(tx.conn, hook.cc_session_id)
+        if found is not None:
+            return found
+        projects = await repo.projects_with_repo_path(tx.conn)
+        project, reason = self._project_for_cwd(projects, hook.cwd)
+        if project is not None:
+            bound = await repo.bound_desktop_sessions(tx.conn, project.id)
+            free = [s for s in bound if s.cc_session_id is None or s.status == "ended"]
+            if len(free) == 1:
+                session = free[0]
+                changes = {"cc_session_id": hook.cc_session_id, "cwd": hook.cwd}
+                if session.project_id is None:
+                    changes["project_id"] = project.id
+                await repo.touch_session(tx.conn, session.id, tx.now, changes)
+                linked = await repo.get_session_by_id(tx.conn, session.id)
+                assert linked is not None
+                return linked
+            if len(free) > 1:
+                reason = f"{len(free)} desktop sessions in {project.slug} could match"
+            elif bound:
+                reason = f"the desktop sessions in {project.slug} are linked to other hooks"
+        return await self._new_hook_session(tx, hook, project.id if project else None, reason)
+
+    async def record_hook(self, payload: Any) -> Session | None:
+        """Apply one Claude Code hook event to its session's status. Unknown events return None.
+        Activity of a working session is written at most once per window; the latest one in
+        the window is written when it ends."""
+        hook = parse_hook(payload)
+        if hook is None:
+            return None
+        if hook.activity_only:
+            current = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            if current is not None and current.status == "working":
+                last = self._activity_written.get(current.id)
+                elapsed = time.monotonic() - last if last is not None else None
+                if elapsed is not None and elapsed < self.hook_activity_window:
+                    self._activity_pending[current.id] = hook
+                    if current.id not in self._activity_timers:
+                        self._activity_timers[current.id] = asyncio.get_running_loop().call_later(
+                            self.hook_activity_window - elapsed, self._flush_activity, current.id
+                        )
+                    return current
+        return await self._apply_hook(hook)
+
+    def _flush_activity(self, session_id: int) -> None:
+        self._activity_timers.pop(session_id, None)
+        hook = self._activity_pending.pop(session_id, None)
+        if hook is None:
+            return
+        task = asyncio.get_running_loop().create_task(self._apply_hook(hook))
+        self._flushes.add(task)
+        task.add_done_callback(self._flush_done)
+
+    def _flush_done(self, task: asyncio.Task[Any]) -> None:
+        self._flushes.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("Writing hook activity failed", exc_info=task.exception())
+
+    async def _apply_hook(self, hook: HookEvent) -> Session:
+        async with self._tx() as tx:
+            session = await self._hook_session(tx, hook)
+            timer = self._activity_timers.pop(session.id, None)
+            if timer is not None:
+                timer.cancel()
+            self._activity_pending.pop(session.id, None)  # this write is newer
+            changes: dict[str, Any] = {"status": hook.status, "activity": hook.activity}
+            if hook.cwd and hook.cwd != session.cwd:
+                changes["cwd"] = hook.cwd
+            if changes["status"] != session.status or changes["activity"] != session.activity:
+                changes["activity_at"] = tx.now
+            await repo.touch_session(tx.conn, session.id, tx.now, changes)
+            updated = await repo.get_session_by_id(tx.conn, session.id)
+            assert updated is not None
+            if "activity_at" in changes or hook.activity_only:
+                # Also for an unchanged activity: the next ones in the window are held back.
+                self._activity_written[session.id] = time.monotonic()
+            if "activity_at" in changes:
+                await self._session_events(
+                    tx,
+                    updated,
+                    updated.name,
+                    hook_event=hook.event,
+                    **({"previous": session.status} if session.status != hook.status else {}),
+                )
+            if hook.event == "SessionEnd":
+                self._activity_written.pop(session.id, None)
+                for task in await repo.open_tasks_of_session(tx.conn, session.id):
+                    await repo.unbind(tx.conn, task.id, tx.now)
+                    await repo.update_task(tx.conn, task.id, {"session_id": None}, tx.now)
+                    await tx.event(
+                        "task.session_unbound",
+                        updated.name,
+                        project_id=task.project_id,
+                        task_id=task.id,
+                        session_id=updated.id,
+                        project=task.project_slug,
+                        key=task.key,
+                        stage=task.stage.value,
+                        session=updated.name,
+                        session_external_id=updated.external_id,
+                        reason="session_end",
+                        end_reason=hook.end_reason,
+                    )
+            return updated
+
+    async def unlinked_hook_sessions(self, limit: int = 50) -> list[Session]:
+        """Hook sessions that could not be linked to one relaybay session (Settings page)."""
+        return await repo.list_unlinked_hook_sessions(self._r, limit)
 
     # --- reads -------------------------------------------------------------
 
@@ -548,6 +832,7 @@ class Service:
         description: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
     ) -> tuple[Project, bool]:
         slug = _clean_slug(slug)
         name = _clean_text(name, "name", NAME_MAX)
@@ -558,7 +843,7 @@ class Service:
         }
         default_actor = "mcp"
         async with self._tx() as tx:
-            sess = await self._session(tx, session, session_title)
+            sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
             existing = await repo.get_project(tx.conn, slug)
@@ -613,6 +898,7 @@ class Service:
         tracker_logged: bool = False,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Task:
         fields: dict[str, Any] = {
@@ -635,7 +921,7 @@ class Service:
         default_actor = actor
         async with self._tx() as tx:
             proj = await self.get_project(project, tx.conn)
-            sess = await self._session(tx, session, session_title)
+            sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
             key = f"{proj.slug}-{await repo.next_task_number(tx.conn, proj.id)}"
@@ -674,6 +960,7 @@ class Service:
         expected_version: int | None = None,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Task:
         """Patch fields; a value of None clears the field. Unchanged values are ignored."""
@@ -683,6 +970,7 @@ class Service:
             expected_version=expected_version,
             session=session,
             session_title=session_title,
+            hook_session=hook_session,
             actor=actor,
         )
         return saved.task
@@ -714,6 +1002,7 @@ class Service:
         expected_version: int | None = None,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Saved:
         """`update_task` that also returns the rule warnings of a stage move."""
@@ -742,7 +1031,7 @@ class Service:
                 if task.tracker_logged and "tracker_logged" not in clean
                 else None
             )
-            sess = await self._session(tx, session, session_title)
+            sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
             # The mark belongs to the issue: a new key starts not logged unless the write says so.
@@ -793,6 +1082,7 @@ class Service:
         waiting_on: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Task:
         saved = await self.set_stage_checked(
@@ -803,6 +1093,7 @@ class Service:
             waiting_on=waiting_on,
             session=session,
             session_title=session_title,
+            hook_session=hook_session,
             actor=actor,
         )
         return saved.task
@@ -817,6 +1108,7 @@ class Service:
         waiting_on: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Saved:
         """Move the task; `next_step` / `waiting_on`, if given, are saved in the same
@@ -830,11 +1122,21 @@ class Service:
             if value is not None:
                 changes[name] = value
         return await self.update_task_checked(
-            ref, changes, session=session, session_title=session_title, actor=actor
+            ref,
+            changes,
+            session=session,
+            session_title=session_title,
+            hook_session=hook_session,
+            actor=actor,
         )
 
     async def bind_session(
-        self, ref: str | int, session: str, *, session_title: str | None = None
+        self,
+        ref: str | int,
+        session: str,
+        *,
+        session_title: str | None = None,
+        hook_session: str | None = None,
     ) -> BindResult:
         """Bind a session to the task. A plain name never replaces a desktop session bound to
         the task (and its "Open in desktop" link): the binding is kept and the name becomes that
@@ -855,8 +1157,11 @@ class Service:
                     if taken:
                         return BindResult(task, current, alias_recorded=False)
                     await self._add_alias(tx, task, current, name)
+                    cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
+                    if cc_id is not None:
+                        current = await self._link_hook_session(tx, current, cc_id)
                     return BindResult(task, current, alias_recorded=True)
-            sess = await self._session(tx, name, session_title)
+            sess = await self._session(tx, name, session_title, hook_session)
             if sess is None:
                 raise ValidationError("session must not be empty.")
             await self._bind(tx, task, sess, sess.name)
@@ -938,6 +1243,7 @@ class Service:
         *,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
         author: str | None = None,
         progress: str | None = None,
         next_step: str | None = None,
@@ -954,7 +1260,7 @@ class Service:
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
-            sess = await self._session(tx, session, session_title)
+            sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
             diff = _task_diff(task, clean)
@@ -1011,6 +1317,7 @@ class Service:
         decided_by: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
+        hook_session: str | None = None,
     ) -> Decision:
         clean = _clean_text(text, "text")
         if not clean:
@@ -1022,7 +1329,7 @@ class Service:
             task_row = await self.get_task(task, tx.conn) if task is not None else None
             if task_row is not None and task_row.project_id != proj.id:
                 raise ValidationError(f"Task {task_row.key} does not belong to {proj.slug}.")
-            sess = await self._session(tx, session, session_title)
+            sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
             decision_id = await repo.insert_decision(

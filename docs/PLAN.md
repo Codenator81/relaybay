@@ -58,14 +58,15 @@ Key decisions:
 
 | Module | Responsibility |
 |---|---|
-| `__main__.py`, `cli.py` | `relaybay [serve]`, `relaybay import`, `relaybay token`, `relaybay hook`, `relaybay mcp-stdio`; argparse/typer-free stdlib CLI |
+| `__main__.py`, `cli.py` | `relaybay [serve]`, `relaybay import`, `relaybay token`, `relaybay setup`, `relaybay hook`, `relaybay mcp-stdio`; argparse/typer-free stdlib CLI |
+| `machine_setup.py`, `hook_client.py` | `relaybay setup` (detect, plan, marked JSON merge with backups, check); the stdlib-only command hook |
 | `config.py` | Settings from defaults → `config.toml` → `RELAYBAY_*` env → CLI flags; data/config dirs via `platformdirs` |
 | `db/` | Connection (aiosqlite, WAL, `foreign_keys=ON`), numbered SQL migrations, repositories |
 | `domain/` | Dataclasses / pydantic models, stage enum and allowed transitions, validation |
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, …); transaction + event append + publish |
 | `events.py` | Event bus: per-subscriber `asyncio.Queue`, bounded; slow subscriber is dropped and resyncs |
 | `web/` | Routes, Jinja2 templates, HTMX fragments, SSE endpoint, vendored static assets |
-| `api/` | Small JSON REST API (same service layer) for scripts and the hook endpoint |
+| `api/` | Small JSON REST API (same service layer) for scripts (the hook endpoint lives in `web/hooks.py`) |
 | `mcp_server/` | MCP server (`mcp` 2.x `MCPServer`), tool definitions, mounted at `/mcp` |
 | `importers/` | Markdown registry importer, per-task markdown reader |
 | `security.py` | Token, cookie session, Host/Origin checks, CSRF |
@@ -101,6 +102,8 @@ session   id PK, external_id UNIQUE NULL,   -- desktop session id (local_<uuid>)
           project_id FK NULL, cwd NULL, kind TEXT ('desktop','cli','headless'),
           desktop_link NULL,        -- built from external_id via config desktop_link_template
           status TEXT NULL ('working','idle','waiting','ended'), activity NULL,
+          cc_session_id NULL UNIQUE,   -- Claude Code session id reported by hooks (migration 0007)
+          activity_at NULL, unlinked_reason NULL,  -- hook session matched to nobody: why
           last_seen_at, created_at
 task_session id PK, task_id FK, session_id FK, bound_at, unbound_at NULL, bound_by
           -- binding history; at most one open row per task
@@ -117,7 +120,8 @@ event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id N
 
 - **Event kinds:** `project.created|updated`, `task.created|updated|stage_changed|closed`,
   `task.session_bound|session_unbound|tracker_unlogged`, `report.added`, `decision.added`,
-  `session.seen|status_changed|ended|alias_added`, `import.completed`.
+  `session.seen|status_changed|alias_added`, `import.completed` (`ended` is a status in
+  `session.status_changed`; `task.session_unbound` carries `reason: "session_end"` when a hook ended it).
 - **Description and progress** (migration `0002`): changing either is a `task.updated` with a
   version bump like any field; `report_add` with `progress` writes both events in one transaction.
   Unbinding closes the open `task_session` row and clears `task.session_id`; history is kept.
@@ -150,6 +154,11 @@ event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id N
   document (§11.2); read on every use. A broken row is logged and ignored (the project falls
   back to the global rules and the rules text says why); it never stops the server. No write path
   yet (1.5b).
+- **Hook sessions** (migration `0007`, §6, §11.3): `cc_session_id` links the Claude Code session
+  id of the hooks to a session row, exactly when a write passes `hook_session`, otherwise by `cwd`
+  and the one desktop session bound in that project. Rows the hooks create themselves have
+  `kind = 'hook'`; an ambiguous one keeps `unlinked_reason` and is listed on the Integrations page.
+  `activity_at` is when the status or activity last changed.
 - **Archive** is computed, not stored: a done task whose `closed_at` is older than
   `done_window_days` (config, default 7) is left out of the board's done column unless
   "Show archived" or a search is active. With `require_tracker_log = true` (config, default false)
@@ -290,21 +299,22 @@ Besides `command` hooks Claude Code has a native `http` hook type that POSTs the
 (headers may reference env vars listed in `allowedEnvVars`; failures do not block the session unless
 `onFailure: "block"`).
 
-- relaybay exposes `POST /hooks/claude-code` (token-protected).
-- Delivery: native `http` hook pointing at `http://127.0.0.1:8765/hooks/claude-code` with
-  `Authorization: Bearer $RELAYBAY_TOKEN` and a short `timeout` (default 600 s is far too long).
-  Fallback for older Claude Code: command hook `relaybay hook` (stdlib-only, reads stdin, POSTs with
-  a 1 s timeout, always exits 0).
+- relaybay exposes `POST /hooks/claude-code` (token-protected). *Delivered in 1.6.*
+- Delivery (as built): by default the command hook `<python> -I -m relaybay.hook_client`
+  (stdlib-only, reads stdin, POSTs with a 0.3 s timeout, prints the server's JSON answer, always
+  exits 0, reads the token file). With `relaybay setup --mode http`: a native `http` hook pointing
+  at `http://127.0.0.1:8765/hooks/claude-code` with `Authorization: Bearer ${RELAYBAY_TOKEN}`,
+  `allowedEnvVars` and a 2 s `timeout` (default 600 s is far too long). Hook input is capped at
+  256 KB (`413`).
 - Hooks and MCP servers from user settings apply both to the CLI and to local sessions in the desktop
   app's Code tab, so one user-scope setup covers both.
 - Mapping: `SessionStart` → session `working`; `UserPromptSubmit` / `PreToolUse` → `working` +
   `activity` (tool name); `Notification` → `waiting` (needs the user); `Stop` → `idle`;
   `SessionEnd` → `ended`. `cwd` → project via `repo_path`.
-- `relaybay hooks install --scope user` prints (v1) or merges (v0.2) the settings snippet; it never
-  edits settings silently.
+- `relaybay setup` prints the plan by default and merges the settings only with `--apply` or the
+  board's Apply button (§11.3); it never edits settings silently.
 
-This is v1-scope and scheduled last (milestone 7): if it slips, it moves to 0.2 and v1 ships with
-MCP-reported status only.
+Delivered in stage 1.6 (see §11.3 for what was built and the decisions taken).
 
 ## 7. Markdown as data: import (v1) and export (v0.2)
 
@@ -540,7 +550,33 @@ the current rules plus a checklist. Claude Code lists MCP prompts as slash comma
 Decisions: default mode `warn`; with no coordinator configured every rule change is a proposal;
 rules are structured JSON with a fixed set of rule kinds, plus free-text guidance.
 
-### 11.3 Hooks and machine setup (accepted 2026-11-02)
+### 11.3 Hooks and machine setup (accepted 2026-11-02, delivered in 1.6)
+
+**As built (1.6):** A, B and the "never in the way" rule below are delivered: `web/hooks.py`,
+`machine_setup.py`, `hook_client.py`, migration `0007`, the Integrations page. Decisions taken while
+building, which replace the open questions at the end of this section:
+- *Exact linking first* (owner, 1.6): the `SessionStart` answer adds "Your relaybay hook session:
+  <id>. Pass it as `hook_session` in relaybay writes." to the agent's context; every write tool
+  takes `hook_session` and links it to the calling session. cwd + `repo_path` is only the fallback,
+  and when more than one session could match nothing is linked (listed under Integrations).
+- *Command hook by default* (owner, after review): it is silent when relaybay is down and needs
+  no environment variable. It runs the interpreter that runs relaybay (`<python> -I -m
+  relaybay.hook_client`), so nothing has to be on `PATH`. `--mode http` stays available: the
+  header references the token through `${RELAYBAY_TOKEN}` + `allowedEnvVars` (never written), and
+  Claude Code shows a non-blocking "hook error" notice while relaybay is down.
+- *Marker*: a command hook is relaybay's when it runs `-m relaybay.hook_client` (or `relaybay hook`)
+  with `--url <scheme>://<host>:<port>/hooks/claude-code`; an http hook when its URL path is exactly
+  `/hooks/claude-code` on a loopback or the configured host. No extra property is written; similar
+  user hooks (`…/hooks/claude-code-notify.py`, another host) are never claimed.
+- *Approved plan*: the dry run prints a plan hash (file before + after); `--apply/--remove --expect
+  <hash>` and the board's buttons write only that plan. Without `--expect` the guarantee covers
+  changes during the run only.
+- *MCP registration*: `~/.claude.json` is Claude Code's own file ("you don't need to edit it"), so
+  setup only reads it for the check and prints `claude mcp add …`.
+- *SessionEnd* unbinds every session kind (plain names too), for every end reason.
+- The minimum Claude Code version for http hooks is not stated in the hooks reference; 2.1.63 is
+  used (unverified).
+
 
 Goal: relaybay knows which session is working, waiting or gone without the agent's help, and sets
 up its own integration on the machine — safely, only on an explicit command or button.
@@ -582,8 +618,10 @@ up its own integration on the machine — safely, only on an explicit command or
     literally the plan says so.
 - `--dry-run` prints the exact diff; `--remove` deletes only relaybay's marked entries (with a
   backup); `relaybay setup --check` verifies end to end: MCP reachable with the token, a synthetic
-  hook POST accepted, Claude Code sees the server (`claude mcp list` output), and reports each item
-  green/red. The board page shows the same checks and a "Run check" button.
+  hook POST accepted, the hook entries present, the command hook's interpreter imports the
+  forwarder, the user-scope MCP entry in `~/.claude.json`; each item green/red, `--json` for
+  scripts (non-zero exit on a failure). The board page shows the same checks and a "Run check"
+  button.
 - Other agents (Codex, Gemini CLI, …) come later as adapters (stage 3), behind the same Integrations
   page.
 

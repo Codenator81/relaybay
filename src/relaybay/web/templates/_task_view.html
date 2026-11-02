@@ -50,6 +50,7 @@
       {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
     </div>
     {% if t.session_external_id %}<p class="muted mono">{{ t.session_external_id }}</p>{% endif %}
+    {% if t.session_activity_at %}<p class="session-activity">{% if t.session_status %}<span class="session-status status-{{ t.session_status }}">{{ t.session_status }}</span> {% endif %}<span class="muted">last activity: {{ t.session_activity or "—" }} · <time datetime="{{ t.session_activity_at }}" data-age>{{ t.session_activity_at|age }}</time></span></p>{% endif %}
     <form class="unbind-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/unbind"
           hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/unbind" hx-target="closest .task-view" hx-swap="outerHTML"
           hx-confirm="Unbind {{ t.session_name }} from {{ t.key }}? The binding history is kept.">

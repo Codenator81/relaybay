@@ -89,6 +89,8 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .crumb-sep { color: var(--muted); }
 .crumb { font-weight: 600; }
 
+.nav-link { margin-left: auto; font-size: 13px; }
+.nav-link ~ .live-status { margin-left: 12px; }
 .live-status {
   margin-left: auto;
   display: inline-flex;
@@ -258,6 +260,21 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
   background: var(--badge-bg);
 }
 .card .open-desktop.icon:hover { border-color: var(--accent); }
+/* Live session status from the hooks: a dot in the icon's corner. */
+.status-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  background: var(--muted);
+}
+.status-dot.dot-working { background: var(--ok); }
+.status-dot.dot-waiting { background: var(--warn); }
+.status-dot.dot-idle { background: var(--badge-text); }
+.status-dot.dot-ended { background: var(--muted); }
 .open-desktop.icon svg {
   width: 14px;
   height: 14px;
@@ -650,3 +667,24 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .login-submit { padding: 8px 14px; }
 .login-hint { font-size: 13px; line-height: 1.5; }
 .login-hint a { color: var(--accent); }
+
+/* --- integrations --------------------------------------------------------- */
+
+.session-activity { margin: 6px 0 0; font-size: 13px; }
+.session-activity .session-status { border-left: 0; padding-left: 0; }
+.integrations-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.integrations .form-actions { flex-wrap: wrap; margin-top: 12px; }
+.integrations .form-actions form { margin: 0; }
+.integrations .btn[disabled] { opacity: 0.5; cursor: default; }
+.diff {
+  margin: 8px 0;
+  padding: 8px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.checks { margin: 0; padding-left: 0; list-style: none; display: grid; gap: 4px; font-size: 14px; }
+.check.ok strong { color: var(--ok); }
+.check.fail strong { color: var(--bad); }

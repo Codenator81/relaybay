@@ -30,6 +30,8 @@ All three checks must pass before you report a change as done.
 - Cross-platform: `pathlib`, explicit UTF-8, no shell-specific behaviour; CI runs Linux, macOS and
   Windows.
 - Tests use temporary SQLite databases, no network, no real `claude` binary.
+- Setup code (`machine_setup.py`, `relaybay setup`, the Integrations page) is tested only against
+  temporary folders (`--claude-home`, `claude_home` in settings); never against your real home.
 - Conventional Commits titles; pull requests go into `main`.
 - Behaviour, command, setting or MCP tool changes update `README.md`, `docs/` and `CHANGELOG.md` in
   the same change.

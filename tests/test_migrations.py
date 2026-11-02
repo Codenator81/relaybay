@@ -14,7 +14,7 @@ MIGRATIONS = (
     "0004_next_step_freshness.sql",
     "0005_tracker_history.sql",
 )
-LATEST = 6
+LATEST = 7
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:

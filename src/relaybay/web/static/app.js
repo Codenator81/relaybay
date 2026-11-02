@@ -7,7 +7,7 @@
     "project.created", "project.updated",
     "task.created", "task.updated", "task.stage_changed",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
-    "task.tracker_unlogged", "session.seen"
+    "task.tracker_unlogged", "session.seen", "session.status_changed"
   ];
   var live = null;
   var lastId = 0;
@@ -69,9 +69,12 @@
     var data = {};
     try { data = JSON.parse(event.data); } catch (e) { return; }
 
-    // The task page is read-only: reload it when its own task changes.
+    // The task page is read-only: reload it when its own task changes (not for every hook
+    // status of its session, which comes every few seconds while it works).
     if (live.dataset.task) {
-      if (data.key === live.dataset.task) window.location.reload();
+      if (data.key === live.dataset.task && data.kind !== "session.status_changed") {
+        window.location.reload();
+      }
       return;
     }
 
@@ -94,6 +97,7 @@
         queue(data.stage === "done" ? column("done") : (card(data.key) || column(data.stage)));
         break;
       case "report.added":
+      case "session.status_changed":
       case "task.session_bound":
       case "task.session_unbound":
         queue(card(data.key) || column(data.stage));

@@ -34,6 +34,7 @@ class Settings:
     require_tracker_log: bool = False
     rules: dict[str, Any] = field(default_factory=lambda: copy.deepcopy(DEFAULT_RULES))
     rules_mode: str = "warn"
+    claude_home: Path | None = None  # where setup looks for Claude Code's files; None: real home
     replay_limit: int = 5000
     heartbeat_seconds: float = 15.0
 
@@ -126,6 +127,8 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         if "{id}" not in template:
             raise ValueError(f"{source}: desktop_link_template must contain '{{id}}'")
         settings.desktop_link_template = template
+    if "claude_home" in data:
+        settings.claude_home = Path(str(data["claude_home"])).expanduser()
     if "allowed_hosts" in data:
         value = data["allowed_hosts"]
         settings.allowed_hosts = _split_list(value) if isinstance(value, str) else list(value)
@@ -136,6 +139,7 @@ def load_settings(
     home: Path | None = None,
     host: str | None = None,
     port: int | None = None,
+    claude_home: Path | None = None,
     environ: dict[str, str] | None = None,
 ) -> Settings:
     env = os.environ if environ is None else environ
@@ -182,6 +186,7 @@ def load_settings(
                 "done_window_days",
                 "require_tracker_log",
                 "rules_mode",
+                "claude_home",
             )
             if env.get(f"RELAYBAY_{key.upper()}")
         },
@@ -191,4 +196,6 @@ def load_settings(
         settings.host = host
     if port is not None:
         settings.port = port
+    if claude_home is not None:
+        settings.claude_home = claude_home
     return settings
