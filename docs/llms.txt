@@ -1,0 +1,22 @@
+# relaybay
+
+> relaybay is a local, open-source live board and MCP server for people who run many Claude Code sessions across many repositories. Sessions create and update tasks through MCP tools (Streamable HTTP at http://127.0.0.1:8765/mcp, Bearer token) and Claude Code hooks report session status; the owner watches projects, tasks, stages and reports update in the browser. Python 3.12+, FastAPI, SQLite, MIT license, no telemetry.
+
+Stages are plan, dev, test, live, done. Every session should read `project_snapshot` first, pass its session on writes, keep `next_step`, `waiting_on` and `progress` current, and end every stage with `report_add` whose first line is `state · size · gist`.
+
+## Docs
+
+- [Specification](https://codenator81.github.io/relaybay/SPEC/): how relaybay behaves now: concepts, board, MCP contract, hooks, setup, working rules, security model, configuration, data model
+- [MCP tools](https://codenator81.github.io/relaybay/mcp-tools/): every tool and resource with parameters and results
+- [Connect Claude Code](https://codenator81.github.io/relaybay/connect-claude-code/): MCP registration, the instruction snippet for CLAUDE.md / AGENTS.md, hooks with `relaybay setup`
+- [Install and run](https://codenator81.github.io/relaybay/getting-started/install/): run the server and sign in to the board
+- [CLI reference](https://codenator81.github.io/relaybay/reference/cli/): `serve`, `token`, `setup`, `hook`
+- [Configuration reference](https://codenator81.github.io/relaybay/reference/configuration/): `config.toml` keys, environment variables, flags
+
+## Optional
+
+- [Architecture](https://codenator81.github.io/relaybay/architecture/): processes, modules, data model, transports, security layers
+- [Roadmap](https://codenator81.github.io/relaybay/ROADMAP/): versions and status
+- [Design documents](https://codenator81.github.io/relaybay/design/): upcoming steps
+- [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/)
+- [Source code](https://github.com/Codenator81/relaybay)

@@ -7,6 +7,10 @@ in the browser, on the desktop or on your phone.
 > **Status: early.** relaybay is built for my own workflow first and changes quickly. Expect rough
 > edges; issues and ideas are welcome.
 
+**Documentation:** [codenator81.github.io/relaybay](https://codenator81.github.io/relaybay/) ·
+[Specification](docs/SPEC.md) (how it behaves now) · [Roadmap](docs/ROADMAP.md) ·
+[Architecture](docs/architecture.md)
+
 - **Board** — projects with per-stage counts; per project, columns `plan → dev → test → live → done`
   with cards showing only the essentials: key, tracker badge, an "open in desktop" icon when a
   desktop session works on the task, title, waiting-on person, branch and the next step. Click a
@@ -166,14 +170,15 @@ a restart). After `relaybay token --rotate`, restart the server.
 
 ## Roadmap
 
-1. **Stage 1 (0.1.0)** — server, data model and event log, token security, MCP tools, minimal live
-   board with editing and a phone layout. *(in progress)*
-2. **Stage 2** — Claude Code hooks for live session status and `relaybay setup` *(done)*; import
-   of existing markdown task registries, full task view and event feed, packaging (`uvx`, Docker).
-3. **Stage 3** — starting and steering agents from relaybay.
+- **0.1.0** — board, MCP tools, working rules, hooks and `relaybay setup` *(done)*; packaging
+  (`uv tool install`, `uvx`, Docker), `relaybay doctor`, docs site, demo workspace *(next)*.
+- **0.2.0** — sidebar navigation and Inbox, comments to agents, project environments and access.
+- **0.3.0** — review checklist with screenshots, memory and documents.
+- **Later** — annotations, map and usage, rules versioning, intake, agents started from relaybay.
 
-The architecture is described in [docs/PLAN.md](docs/PLAN.md); decisions are recorded in
-[docs/adr/](docs/adr/).
+Details and status: [docs/ROADMAP.md](docs/ROADMAP.md). Designs of upcoming steps are in
+[docs/design/](docs/design/index.md), decisions in [docs/adr/](docs/adr/). relaybay sends no
+telemetry.
 
 ## Contributing
 

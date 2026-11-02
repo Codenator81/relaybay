@@ -125,6 +125,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Documentation restructured: `docs/SPEC.md` (shipped behaviour with stable `#spec-…` anchors),
+  `docs/ROADMAP.md` (versions 0.1.0 to 1.0 with status), `docs/architecture.md`, one design per
+  upcoming step in `docs/design/`, configuration and CLI reference pages, `docs/llms.txt`; the
+  former `docs/PLAN.md` is now a pointer to them. A MkDocs Material site (`mkdocs.yml`, optional
+  `docs` dependency group) is built with `mkdocs build --strict` on pull requests and deployed to
+  GitHub Pages from `main`.
 - Docs and tests use English examples for custom stage and report labels; labels in any language
   remain configurable, the defaults are English.
 

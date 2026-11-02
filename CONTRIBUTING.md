@@ -44,11 +44,24 @@ comes with a test.
 - [Conventional Commits](https://www.conventionalcommits.org/) titles: `feat: …`, `fix: …`,
   `docs: …`, `refactor: …`, `test: …`, `chore: …`.
 - Open pull requests against `main`; keep one topic per pull request.
-- A change in behaviour, a command, a setting or an MCP tool updates `README.md`, the relevant page
-  in `docs/` and `CHANGELOG.md` (`[Unreleased]`) in the same pull request.
+- A change in behaviour, a command, a setting or an MCP tool updates `README.md`, `docs/SPEC.md` and
+  the relevant reference page in `docs/`, and `CHANGELOG.md` (`[Unreleased]`) in the same pull
+  request.
 - Never commit secrets, tokens or personal data. Examples use the demo projects `acme-shop` and
   `demo-api`.
 
-## Architecture
+## Documentation
 
-Start with [docs/PLAN.md](docs/PLAN.md) and the ADRs in [docs/adr/](docs/adr/).
+- [docs/SPEC.md](docs/SPEC.md) — how relaybay behaves now; a behaviour change updates it in the same
+  pull request.
+- [docs/architecture.md](docs/architecture.md) — processes, modules, data model, transports.
+- [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/design/](docs/design/index.md) — what comes next; a
+  design's status changes when its step ships.
+- [docs/adr/](docs/adr/) — single decisions.
+
+The docs site is built with MkDocs Material:
+
+```bash
+uv sync --group docs
+uv run --no-sync mkdocs build --strict   # or: mkdocs serve
+```

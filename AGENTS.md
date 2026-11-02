@@ -6,7 +6,8 @@ Guidance for AI coding tools working in this repository. Humans: see `CONTRIBUTI
 
 relaybay: a local FastAPI server with a live board (Jinja2 + htmx + SSE) and an MCP server
 (official `mcp` SDK 2.x, Streamable HTTP at `/mcp`) backed by SQLite. Source in `src/relaybay/`,
-tests in `tests/`, architecture in `docs/PLAN.md`, decisions in `docs/adr/`.
+tests in `tests/`. Behaviour in `docs/SPEC.md`, architecture in `docs/architecture.md`, plans in
+`docs/ROADMAP.md` and `docs/design/`, decisions in `docs/adr/`.
 
 ## Commands
 
@@ -33,7 +34,9 @@ All three checks must pass before you report a change as done.
 - Setup code (`machine_setup.py`, `relaybay setup`, the Integrations page) is tested only against
   temporary folders (`--claude-home`, `claude_home` in settings); never against your real home.
 - Conventional Commits titles; pull requests go into `main`.
-- Behaviour, command, setting or MCP tool changes update `README.md`, `docs/` and `CHANGELOG.md` in
-  the same change.
+- Behaviour, command, setting or MCP tool changes update `README.md`, `docs/SPEC.md` (and the
+  reference page), `CHANGELOG.md` and the design's status in the same change. SPEC describes only
+  shipped behaviour; plans go to `docs/ROADMAP.md` and `docs/design/`.
+- Docs build: `uv sync --group docs`, then `uv run --no-sync mkdocs build --strict`.
 - Never add secrets, tokens, personal paths or personal data. Use the demo projects `acme-shop` and
   `demo-api` in examples.
