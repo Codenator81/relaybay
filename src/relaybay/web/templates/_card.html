@@ -1,0 +1,29 @@
+<article class="card" id="card-{{ t.key }}" data-key="{{ t.key }}"
+         hx-get="/p/{{ slug }}/t/{{ t.key }}/card" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  <div class="card-top">
+    <a class="card-key" href="/t/{{ t.key }}" title="Task page">{{ t.key }}</a>
+  </div>
+  <h3 class="card-title">
+    <button type="button" class="card-open" hx-get="/p/{{ slug }}/t/{{ t.key }}/edit"
+            hx-target="closest .card" hx-swap="outerHTML">{{ t.title }}</button>
+  </h3>
+  {% if t.waiting_on or t.branch %}
+  <div class="card-meta">
+    {% if t.waiting_on %}<span class="chip waiting" title="Waiting on">waiting on {{ t.waiting_on }}</span>{% endif %}
+    {% if t.branch %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
+  </div>
+  {% endif %}
+  {% if t.session_name %}
+  <div class="card-session">
+    {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
+  </div>
+  {% endif %}
+  {% if t.next_step %}<p class="card-next"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
+  {% if last %}
+  <div class="card-report">
+    {% with state = last.state, size = last.size %}{% include "_report_badges.html" %}{% endwith %}
+    <p class="summary">{{ last.summary }}
+      <time datetime="{{ last.created_at }}" data-age>{{ last.created_at|age }}</time></p>
+  </div>
+  {% endif %}
+</article>

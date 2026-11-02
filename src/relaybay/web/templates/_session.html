@@ -1,0 +1,11 @@
+{#- Session badge and desktop actions. Expects: name, status, link. -#}
+<span class="badge session" title="Session">{{ name }}{% if status %}<span class="session-status status-{{ status }}">{{ status }}</span>{% endif %}</span>
+{% if link %}
+<span class="session-actions">
+  <a class="action open-desktop" href="{{ link }}"
+     title="If nothing opens, paste the link into the Claude desktop app">Open in desktop</a>
+  <button type="button" class="action copy-link" data-link="{{ link }}"
+          title="If nothing opens, paste the link into the Claude desktop app">Copy link</button>
+  <input class="link-text" type="text" readonly value="{{ link }}" aria-label="Session link" hidden>
+</span>
+{% endif %}

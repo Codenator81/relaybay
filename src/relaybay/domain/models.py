@@ -1,0 +1,104 @@
+from dataclasses import dataclass, field
+from typing import Any
+
+from relaybay.domain.stages import Stage
+
+
+@dataclass(slots=True)
+class Project:
+    id: int
+    slug: str
+    name: str
+    repo_path: str | None
+    description: str | None
+    created_at: str
+    updated_at: str
+    archived_at: str | None = None
+
+
+@dataclass(slots=True)
+class Session:
+    id: int
+    name: str
+    external_id: str | None
+    kind: str | None
+    desktop_link: str | None
+    status: str | None
+    last_seen_at: str
+    created_at: str
+
+
+@dataclass(slots=True)
+class Task:
+    id: int
+    project_id: int
+    key: str
+    title: str
+    stage: Stage
+    stage_note: str | None
+    waiting_on: str | None
+    next_step: str | None
+    branch: str | None
+    doc_path: str | None
+    session_id: int | None
+    priority: int
+    version: int
+    created_at: str
+    updated_at: str
+    closed_at: str | None
+    project_slug: str = ""
+    session_name: str | None = None
+    session_external_id: str | None = None
+    session_status: str | None = None
+    session_link: str | None = None
+
+
+@dataclass(slots=True)
+class Binding:
+    """One period during which a session was bound to a task (`task_session` row)."""
+
+    id: int
+    task_id: int
+    session_id: int
+    session_name: str
+    session_external_id: str | None
+    session_link: str | None
+    bound_at: str
+    unbound_at: str | None
+    bound_by: str
+
+
+@dataclass(slots=True)
+class Report:
+    id: int
+    task_id: int
+    session_id: int | None
+    author: str
+    state: str | None
+    size: str | None
+    summary: str
+    body_md: str
+    created_at: str
+
+
+@dataclass(slots=True)
+class Decision:
+    id: int
+    task_id: int | None
+    project_id: int
+    text: str
+    decided_by: str | None
+    created_at: str
+    task_key: str | None = None
+
+
+@dataclass(slots=True)
+class Event:
+    id: int
+    ts: str
+    kind: str
+    project_id: int | None
+    task_id: int | None
+    session_id: int | None
+    actor: str
+    payload: dict[str, Any] = field(default_factory=dict)

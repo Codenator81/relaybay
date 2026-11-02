@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Projects</h1>
+  <div id="projects" hx-get="/fragments/projects" hx-trigger="rb:refresh" hx-swap="innerHTML">
+    {% include "_projects.html" %}
+  </div>
+</main>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% if not projects %}
+<div class="empty">
+  <p>No projects yet.</p>
+  <p>Connect a Claude Code session to the MCP server and ask it to create one with
+     <code>project_upsert</code>.</p>
+</div>
+{% else %}
+<ul class="project-list">
+  {% for item in projects %}
+  <li class="project-row">
+    <a class="project-link" href="/p/{{ item.project.slug }}">
+      <span class="project-name">{{ item.project.name }}</span>
+      <span class="project-slug">{{ item.project.slug }}</span>
+    </a>
+    <ul class="stage-counts" aria-label="Tasks per stage">
+      {% for stage in stages %}
+      <li class="stage-count stage-{{ stage }}{% if not item.counts.get(stage) %} is-zero{% endif %}">
+        <span class="stage-name">{{ label(stage) }}</span>
+        <span class="n">{{ item.counts.get(stage, 0) }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

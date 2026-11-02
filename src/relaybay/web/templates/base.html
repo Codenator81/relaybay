@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  {#- The CSP forbids inline styles and eval: keep htmx from injecting either. #}
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false}'>
+  <title>{% block title %}relaybay{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/sse.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">relaybay</a>
+    {% block crumbs %}{% endblock %}
+    {% block live %}
+    <span class="live-status" id="live-status" data-state="connecting" title="Live updates">
+      <span class="dot"></span><span class="live-label">connecting</span>
+    </span>
+    {% endblock %}
+  </header>
+  {% block content %}{% endblock %}
+</body>
+</html>

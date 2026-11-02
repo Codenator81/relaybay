@@ -1,0 +1,6 @@
+{% if state or size %}
+<span class="report-badges">
+  {%- if state %}<span class="badge-state state-{{ state }}" title="{{ report_hint(state) }}">{{ report_label(state) }}</span>{% endif -%}
+  {%- if size %}<span class="badge-size" title="{{ report_hint(size) }}">{{ report_label(size) }}</span>{% endif -%}
+</span>
+{% endif %}

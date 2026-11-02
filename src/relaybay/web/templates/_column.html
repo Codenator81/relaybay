@@ -1,0 +1,11 @@
+<section class="col col-{{ stage }}" id="col-{{ stage }}" data-stage="{{ stage }}"
+         hx-get="/p/{{ project.slug }}/col/{{ stage }}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  <h2 class="col-head"><span class="col-title">{{ label(stage) }}</span><span class="col-count">{{ tasks|length }}</span></h2>
+  <div class="cards">
+    {% for t in tasks %}
+    {% with slug = project.slug, last = last_reports.get(t.id) %}{% include "_card.html" %}{% endwith %}
+    {% else %}
+    <p class="col-empty">Nothing here</p>
+    {% endfor %}
+  </div>
+</section>

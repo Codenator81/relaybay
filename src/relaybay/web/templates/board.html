@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">{{ project.name }}</span>{% endblock %}
+{% block content %}
+<main class="board-page" id="live" hx-ext="sse" sse-connect="/events?project={{ project.slug }}"
+      data-last-event-id="{{ last_event_id }}" data-project="{{ project.slug }}">
+  {#- Radios drive the phone layout (one stage at a time) without JavaScript. #}
+  {% for stage in stages %}
+  <input class="stage-radio" type="radio" name="stage-tab" id="tab-{{ stage }}" value="{{ stage }}"{% if stage == active_stage %} checked{% endif %}>
+  {% endfor %}
+  <nav class="stage-tabs" aria-label="Stages">
+    {% for stage in stages %}
+    <label for="tab-{{ stage }}" class="stage-tab tab-{{ stage }}">{{ label(stage) }}</label>
+    {% endfor %}
+  </nav>
+  <div id="board" class="board">
+    {% include "_columns.html" %}
+  </div>
+</main>
+{% endblock %}
