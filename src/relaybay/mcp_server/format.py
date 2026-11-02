@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from relaybay.domain.environments import Environment, Proposal, change_summary
 from relaybay.domain.models import (
     Comment,
     Decision,
@@ -194,6 +195,9 @@ def snapshot(snap: Snapshot, require_log: bool = False) -> str:
     by_stage: dict[str, list[Task]] = {}
     for task in snap.tasks:
         by_stage.setdefault(task.stage.value, []).append(task)
+    if snap.environments:
+        lines.append("Environments (full map: environments_get):")
+        lines.extend(environment_line(e, snap.permission_defaults) for e in snap.environments)
     counts = " · ".join(f"{s} {len(by_stage.get(s, []))}" for s in STAGES if s in by_stage)
     lines.append(f"Tasks: {len(snap.tasks)}" + (f" ({counts})" if counts else ""))
     for stage in STAGES:
@@ -209,6 +213,70 @@ def snapshot(snap: Snapshot, require_log: bool = False) -> str:
         lines.append("\n## Recent decisions")
         lines.extend(decision_line(d) for d in snap.decisions)
     return "\n".join(lines)
+
+
+def level_label(env: Environment, defaults: dict[str, str]) -> str:
+    """`read (default)`, or `ask` when the environment sets it."""
+    level = env.effective_level(defaults)
+    return f"{level} (default)" if env.level is None else level
+
+
+def environment_line(env: Environment, defaults: dict[str, str]) -> str:
+    """`- live — live · agents: read (default) · https://shop.example.com`."""
+    parts = [env.kind, f"agents: {level_label(env, defaults)}"]
+    if env.base_url:
+        parts.append(env.base_url)
+    return f"- {env.name} — " + " · ".join(parts)
+
+
+LEVEL_HELP = (
+    "Levels: none (do not touch), read (look only), ask (ask the owner before each action),"
+    " full (act as needed). Only the owner changes them on the board; propose a change with"
+    " environment_propose."
+)
+
+
+def environments_text(
+    slug: str, items: list[Environment], defaults: dict[str, str], guard_mode: str
+) -> str:
+    """The full environments map of a project (`environments_get`, resource
+    `relaybay://project/{slug}/environments`). It holds references only, never secrets."""
+    if not items:
+        return (
+            f"No environments for {slug} yet. The owner adds them on the board (Stands &"
+            " access); propose one with environment_propose."
+        )
+    lines = [
+        f"# Environments of {slug}",
+        f"Guard: {guard_mode}. {LEVEL_HELP}",
+        "Secrets are never stored here, only where they live (a file, a variable, a vault).",
+    ]
+    for env in items:
+        lines.append(f"\n## {env.name} ({env.kind})")
+        if env.base_url:
+            lines.append(f"- base URL: {env.base_url}")
+        level = f"- agents: {level_label(env, defaults)}"
+        if env.overrides:
+            level += "; overrides: " + ", ".join(f"{k} {v}" for k, v in env.overrides.items())
+        lines.append(level)
+        sign_in = "yes" if env.sign_in_allowed else "no"
+        if env.login_state_path:
+            sign_in += f" · login state: `{env.login_state_path}`"
+        lines.append(f"- agent may sign in and remember the login: {sign_in}")
+        for entry in env.access:
+            values = ", ".join(f"{k}={v}" for k, v in entry.fields.items())
+            lines.append(f"- {entry.kind}: {values}")
+        if env.notes:
+            lines.append(f"- notes: {short(env.notes, 500)}")
+        lines.append(f"- updated {env.updated_at[:16]}Z by {env.updated_by}")
+    return "\n".join(lines)
+
+
+def proposal_saved(p: Proposal) -> str:
+    return (
+        f"Proposal #{p.id} for {p.project_slug} recorded: {change_summary(p.change)}. Nothing"
+        " changed yet: the owner accepts or rejects it on the board (Stands & access)."
+    )
 
 
 def decision_line(d: Decision) -> str:
@@ -358,6 +426,16 @@ def event_detail(e: Event) -> str:
         return f"#{p.get('comment_id')} → {p.get('session')}"
     if e.kind == "comment.read":
         return f"#{p.get('comment_id')} read"
+    if e.kind == "live.action":
+        return f"{p.get('environment')} · {p.get('decision')} · {p.get('command') or ''}".rstrip()
+    if e.kind in ("environment.created", "environment.deleted"):
+        return f"{p.get('environment')} ({p.get('env_kind')})"
+    if e.kind == "environment.updated":
+        return f"{p.get('environment')}: {', '.join(p.get('changes', []))}"
+    if e.kind.startswith("environment.access_"):
+        return f"{p.get('environment')}: {p.get('access_kind')}"
+    if e.kind.startswith("environment.proposal") or e.kind == "environment.proposed":
+        return f"#{p.get('proposal_id')} {p.get('change') or ''}".rstrip()
     if e.kind == "session.seen":
         reason = p.get("unlinked_reason")
         return f"{p.get('session')}" + (f" (unlinked: {reason})" if reason else "")

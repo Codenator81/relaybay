@@ -63,6 +63,13 @@ Something off? `relaybay doctor`.
   and agents answer with `comment_add` (their replies land in your Inbox). An opt-in, experimental
   wake-up hook (`relaybay setup --apply --wake --force-wake`) wakes an idle session for a new
   comment.
+- **Stands & access** — per project, the local, test and live environments with their base URL and
+  how agents reach them (ssh alias, kube context, database host, GitOps repository, log links),
+  stored as references only, never secrets; agents' permission level per environment (`none`,
+  `read`, `ask`, `full`; live is `read` by default), changed only by you on the board (agents
+  propose with `environment_propose`). The `PreToolUse` hook warns about or blocks a command aimed
+  at an environment its level forbids — a safety net against mistakes, not a sandbox — and every
+  agent tool call that touches live lands in a journal (Activity → Actions on live).
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
@@ -138,6 +145,8 @@ variables, then command-line flags.
 | keep done tasks without the tracker work log on the board | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — |
 | what a stage move that misses a rule does: `warn` or `strict` | `warn` | `RELAYBAY_RULES_MODE` | — |
 | `waiting_on` names that mean you (listed in the Inbox) | `owner`, `me`, `you` | `RELAYBAY_OWNER_NAMES` (comma-separated) | — |
+| what the PreToolUse guard does with a forbidden call: `off`, `warn` or `block` | `warn` | `RELAYBAY_GUARD_MODE` | — |
+| agents' default level per environment kind (`[permission_defaults]`) | local `full`, test `full`, live `read` | — | — |
 | folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
 
 The data directory holds `relaybay.sqlite`, the `token` file and the optional `config.toml`:
@@ -150,6 +159,12 @@ done_window_days = 7                # older done tasks are archived
 require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
 owner_names = ["owner", "me"]       # waiting_on values listed in the Inbox
 rules_mode = "warn"                 # "strict": a stage move that misses a rule is refused
+guard_mode = "warn"                 # PreToolUse guard: "off", "warn" or "block"
+
+[permission_defaults]               # agents' level where an environment sets none: none/read/ask/full
+local = "full"
+test = "full"
+live = "read"
 
 [stages.labels]                     # display names; the stage keys stay plan/dev/test/live/done
 dev = "in progress"

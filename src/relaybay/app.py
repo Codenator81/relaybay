@@ -24,6 +24,8 @@ def create_app(settings: Settings) -> FastAPI:
         desktop_link_template=settings.desktop_link_template,
         rules=settings.rules,
         rules_mode=settings.rules_mode,
+        permission_defaults=settings.permission_defaults,
+        guard_mode=settings.guard_mode,
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 

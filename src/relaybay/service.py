@@ -20,8 +20,19 @@ import aiosqlite
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain import comments as comment_text
+from relaybay.domain import environments as envs
+from relaybay.domain import guard
 from relaybay.domain.comments import COMMENT_MAX, STOP_BLOCK_CAP, STOP_COMMENT_CAP
-from relaybay.domain.errors import ConflictError, NotFoundError, ValidationError
+from relaybay.domain.environments import (
+    DEFAULT_GUARD_MODE,
+    DEFAULT_LEVELS,
+    GUARD_MODES,
+    KINDS,
+    LEVELS,
+    Environment,
+    Proposal,
+)
+from relaybay.domain.errors import ConfirmationNeeded, ConflictError, NotFoundError, ValidationError
 from relaybay.domain.hooks import (
     CC_ID_MAX,
     DELIVERY_EVENTS,
@@ -63,6 +74,8 @@ logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity event per session
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
+LIVE_ACTION = "live.action"
+JOURNAL_COMMAND_MAX = 200
 
 
 # Lines a write wants its caller to see without failing (e.g. a hook_session that was not
@@ -138,6 +151,7 @@ class TaskDetail:
     bindings: list[Binding]
     tracker_history: list[TrackerEntry]
     comments: list[Comment] = field(default_factory=list)
+    live_actions: list[Event] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -151,6 +165,7 @@ class Inbox:
     not_logged: list[Task]
     unlinked: list[Session]
     replies: list[tuple[Task, list[Comment]]] = field(default_factory=list)
+    proposals: list[Proposal] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -160,6 +175,7 @@ class Inbox:
             + len(self.not_logged)
             + len(self.unlinked)
             + len(self.replies)
+            + len(self.proposals)
         )
 
 
@@ -187,6 +203,8 @@ class Snapshot:
     last_reports: dict[int, Report]
     decisions: list[Decision]
     rules: Rules
+    environments: list[Environment] = field(default_factory=list)
+    permission_defaults: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEVELS))
 
 
 def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
@@ -290,6 +308,51 @@ def _clean_comment(body: Any) -> str:
     return text
 
 
+def _clean_environment(values: dict[str, Any]) -> dict[str, Any]:
+    """The given environment fields, validated; secret values are refused."""
+    unknown = sorted(set(values) - set(ENVIRONMENT_FIELDS))
+    if unknown:
+        raise ValidationError(f"Unknown environment field(s): {', '.join(unknown)}.")
+    clean: dict[str, Any] = {}
+    if "name" in values:
+        clean["name"] = envs.clean_name(values["name"])
+    if "kind" in values:
+        clean["kind"] = envs.clean_kind(values["kind"])
+    if "base_url" in values:
+        clean["base_url"] = envs.clean_base_url(values["base_url"])
+    if "sign_in_allowed" in values:
+        clean["sign_in_allowed"] = envs.clean_bool(values["sign_in_allowed"], "sign_in_allowed")
+    if "login_state_path" in values:
+        clean["login_state_path"] = envs.clean_path(values["login_state_path"], "login_state_path")
+    if "notes" in values:
+        clean["notes"] = envs.clean_notes(values["notes"])
+    if "level" in values:
+        clean["level"] = envs.clean_level(values["level"])
+    if "overrides" in values:
+        clean["overrides"] = envs.clean_overrides(values["overrides"])
+    return clean
+
+
+ENVIRONMENT_FIELDS = (
+    "name",
+    "kind",
+    "base_url",
+    "sign_in_allowed",
+    "login_state_path",
+    "notes",
+    "level",
+    "overrides",
+)
+
+
+def guard_command(call: guard.ToolCall) -> str:
+    """The journal's short, redacted summary of a tool call."""
+    text = " ".join(envs.redact(call.text).split())
+    if len(text) > JOURNAL_COMMAND_MAX:
+        text = text[: JOURNAL_COMMAND_MAX - 1].rstrip() + "…"
+    return text
+
+
 def _clean_slug(value: str) -> str:
     slug = value.strip().lower()
     if not SLUG_RE.match(slug):
@@ -310,9 +373,20 @@ class Service:
         rules: dict[str, Any] | None = None,
         rules_mode: str = "warn",
         hook_activity_window: float = HOOK_ACTIVITY_WINDOW,
+        permission_defaults: dict[str, str] | None = None,
+        guard_mode: str = DEFAULT_GUARD_MODE,
     ) -> None:
         if "{id}" not in desktop_link_template:
             raise ValueError("desktop_link_template must contain '{id}'.")
+        if guard_mode not in GUARD_MODES:
+            raise ValueError(f"guard_mode must be one of: {', '.join(GUARD_MODES)}.")
+        defaults = {**DEFAULT_LEVELS, **(permission_defaults or {})}
+        if set(defaults) != set(KINDS) or not set(defaults.values()) <= set(LEVELS):
+            raise ValueError(
+                f"permission_defaults maps {', '.join(KINDS)} to one of: {', '.join(LEVELS)}."
+            )
+        self.permission_defaults = defaults
+        self.guard_mode = guard_mode
         if rules_mode not in RULES_MODES:
             raise ValueError(f"rules_mode must be one of: {', '.join(RULES_MODES)}.")
         self.global_rules = Rules(rules if rules is not None else DEFAULT_RULES, mode=rules_mode)
@@ -838,6 +912,8 @@ class Service:
             if unread:
                 context += " " + comment_text.unread_line(unread)
             return _context("SessionStart", context)
+        if hook.event == "PreToolUse":
+            return await self._pre_tool_answer(payload, hook, session)
         if session is None:
             return None
         if hook.event == "UserPromptSubmit":
@@ -850,6 +926,93 @@ class Service:
         if hook.event == "Stop":
             return await self._stop_answer(session, hook.stop_hook_active)
         return None
+
+    async def _pre_tool_answer(
+        self, payload: Any, hook: HookEvent, exact: Session | None
+    ) -> dict[str, Any] | None:
+        """PreToolUse: the guard's decision plus owner comments for an exactly linked session.
+        The guard never stands in the way through a failure of its own: it then says nothing."""
+        try:
+            touch, warnings = await self._guard(payload, hook)
+        except Exception:
+            logger.exception("relaybay guard failed; the tool call goes on")
+            touch, warnings = None, []
+        contexts = list(warnings)
+        if exact is not None:
+            shown, total = await self._take_undelivered(exact)
+            if shown:
+                contexts.append(comment_text.delivery_text(shown, total))
+        out: dict[str, Any] = {"hookEventName": "PreToolUse"}
+        if touch is not None:
+            # Never "allow": that would skip Claude Code's own permission prompt.
+            out["permissionDecision"] = touch.decision
+            out["permissionDecisionReason"] = touch.reason
+        if contexts:
+            out["additionalContext"] = "\n".join(contexts)
+        return {"hookSpecificOutput": out} if len(out) > 1 else None
+
+    async def _guard_projects(self, session: Session | None, cwd: str | None) -> list[int]:
+        """Projects whose environments apply to a session: its own project and those of the
+        tasks bound to it; without either, the project of its working directory."""
+        ids: list[int] = []
+        if session is not None:
+            if session.project_id is not None:
+                ids.append(session.project_id)
+            ids += [t.project_id for t in await repo.open_tasks_of_session(self._r, session.id)]
+        if not ids:
+            project, _ = self._project_for_cwd(await repo.projects_with_repo_path(self._r), cwd)
+            if project is not None:
+                ids.append(project.id)
+        return list(dict.fromkeys(ids))
+
+    async def _guard(self, payload: Any, hook: HookEvent) -> tuple[guard.Touch | None, list[str]]:
+        """The strongest deny / ask decision for a PreToolUse call and the warnings of warn
+        mode. Calls that touch a live environment are written to the journal (`live.action`)."""
+        if self.guard_mode == "off":
+            return None, []
+        call = guard.tool_call(payload)
+        if call is None or not await repo.has_environments(self._r):
+            return None, []
+        session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+        project_ids = await self._guard_projects(session, hook.cwd)
+        environments = await repo.list_environments(self._r, project_ids)
+        touches = guard.check(call, environments, self.permission_defaults, self.guard_mode)
+        if not touches:
+            return None, []
+        live = [t for t in touches if t.environment.kind == "live"]
+        if live:
+            await self._journal(session, call, live)
+        top = guard.strongest(touches)
+        if top is not None and top.decision in ("deny", "ask"):
+            return top, []
+        warnings = [f"{t.reason} (warn mode: not blocked)" for t in touches if t.decision == "warn"]
+        return None, warnings
+
+    async def _journal(
+        self, session: Session | None, call: guard.ToolCall, touches: list[guard.Touch]
+    ) -> None:
+        actor = session.name if session else "hook"
+        command = guard_command(call)
+        async with self._tx() as tx:
+            bound = await repo.open_tasks_of_session(tx.conn, session.id) if session else []
+            for touch in touches:
+                env = touch.environment
+                task = next((t for t in bound if t.project_id == env.project_id), None)
+                await tx.event(
+                    LIVE_ACTION,
+                    actor,
+                    project_id=env.project_id,
+                    task_id=task.id if task else None,
+                    session_id=session.id if session else None,
+                    project=env.project_slug,
+                    **({"key": task.key, "stage": task.stage.value} if task else {}),
+                    environment=env.name,
+                    tool=call.tool,
+                    command=command,
+                    decision=touch.decision,
+                    level=touch.level,
+                    rule=touch.mutating,
+                )
 
     async def _stop_candidates(
         self, conn: aiosqlite.Connection, session: Session
@@ -961,6 +1124,7 @@ class Service:
             not_logged,
             await self.unlinked_hook_sessions(),
             [(by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id],
+            await repo.list_proposals(self._r),
         )
 
     async def list_sessions(self, project: str | None = None, limit: int = 200) -> list[SessionRow]:
@@ -1062,6 +1226,7 @@ class Service:
             bindings=await repo.list_bindings(self._r, task.id),
             tracker_history=await repo.list_tracker_entries(self._r, task.id),
             comments=await repo.list_comments(self._r, task.id),
+            live_actions=await repo.task_events(self._r, task.id, LIVE_ACTION, 20),
         )
 
     def _merged_rules(self, slug: str, body: str | None) -> Rules:
@@ -1101,6 +1266,8 @@ class Service:
             last_reports=await self.last_reports(tasks),
             decisions=await repo.list_decisions(self._r, project_id=project.id, limit=10),
             rules=await self._rules(self._r, project),
+            environments=await repo.list_environments(self._r, [project.id]),
+            permission_defaults=self.permission_defaults,
         )
 
     async def events_since(
@@ -1812,3 +1979,311 @@ class Service:
     ) -> tuple[Task, list[Comment]]:
         task = await self.get_task(ref)
         return task, await repo.list_comments(self._r, task.id, unread_only=unread_only)
+
+    # --- environments ------------------------------------------------------
+
+    async def environments(self, project: str) -> tuple[Project, list[Environment]]:
+        proj = await self.get_project(project)
+        return proj, await repo.list_environments(self._r, [proj.id])
+
+    async def proposals(self, project: str | None = None) -> list[Proposal]:
+        """Pending environment proposals, oldest first."""
+        project_id = (await self.get_project(project)).id if project else None
+        return await repo.list_proposals(self._r, project_id)
+
+    async def live_journal(self, project: str | None = None, limit: int = 20) -> list[Event]:
+        """The newest agent actions on live environments (`live.action` events)."""
+        return await self.activity(project=project, kind=LIVE_ACTION, limit=limit)
+
+    def _level(
+        self, level: str | None, overrides: dict[str, str], kind: str, cap: str | None
+    ) -> str:
+        if cap is not None and cap in overrides:
+            return overrides[cap]
+        return level or self.permission_defaults[kind]
+
+    async def _write_environment(
+        self,
+        tx: _Tx,
+        project: Project,
+        current: Environment | None,
+        values: dict[str, Any],
+        actor: str,
+        confirm_live: bool,
+    ) -> Environment:
+        """Create or change an environment from `values`. Raising live above read (explicitly,
+        not through the configured defaults) needs `confirm_live`."""
+        clean = _clean_environment(values)
+        name = clean.get("name", current.name if current else None)
+        kind = clean.get("kind", current.kind if current else None)
+        if name is None or kind is None:
+            raise ValidationError("A new environment needs a name and a kind (local, test, live).")
+        other = await repo.find_environment(tx.conn, project.id, name)
+        if other is not None and (current is None or other.id != current.id):
+            raise ValidationError(f"{project.slug} already has an environment named {name!r}.")
+        overrides = dict(current.overrides) if current else {}
+        for cap, value in clean.get("overrides", {}).items():
+            if value is None:
+                overrides.pop(cap, None)
+            else:
+                overrides[cap] = value
+        level = clean.get("level", current.level if current else None)
+        sign_in = clean.get(
+            "sign_in_allowed", current.sign_in_allowed if current else kind != "live"
+        )
+        raised = []
+        for cap in (None, *envs.CAPABILITIES):
+            after = self._level(level, overrides, kind, cap)
+            if current is not None and current.kind == "live" and kind != "live":
+                # Leaving live compares the effective levels, defaults included: a live
+                # environment (default read) turned into test (default full) is a raise.
+                before = self._level(current.level, current.overrides, current.kind, cap)
+            elif kind == "live":
+                if (cap is None and level is None) or (cap is not None and cap not in overrides):
+                    continue  # the configured default for live, not raised by this write
+                before = "read"
+                if current is not None and current.kind == "live":
+                    before = self._level(current.level, current.overrides, current.kind, cap)
+            else:
+                break
+            if envs.raises_live("live", before, after):
+                raised.append(f"{cap or 'level'} {after}")
+        if raised and not confirm_live:
+            raise ConfirmationNeeded(
+                f"Raising {project.slug} {name} (live) above read ({', '.join(raised)}) lets"
+                " agents change live without asking. Confirm to save."
+            )
+        row = {
+            "name": name,
+            "kind": kind,
+            "base_url": clean.get("base_url", current.base_url if current else None),
+            "sign_in_allowed": bool(sign_in) and kind != "live",
+            "login_state_path": clean.get(
+                "login_state_path", current.login_state_path if current else None
+            ),
+            "notes": clean.get("notes", current.notes if current else None),
+            "level": level,
+            "overrides": overrides,
+        }
+        payload = {"project": project.slug, "environment": name, "env_kind": kind}
+        if current is None:
+            env_id = await repo.insert_environment(tx.conn, project.id, row, actor, tx.now)
+            await tx.event("environment.created", actor, project_id=project.id, **payload)
+        else:
+            env_id = current.id
+            changes = {k: v for k, v in row.items() if v != getattr(current, k)}
+            if changes:
+                await repo.update_environment(tx.conn, env_id, changes, actor, tx.now)
+                await tx.event(
+                    "environment.updated",
+                    actor,
+                    project_id=project.id,
+                    **payload,
+                    changes=sorted(changes),
+                )
+        saved = await repo.get_environment(tx.conn, env_id)
+        assert saved is not None
+        return saved
+
+    async def _project_environment(
+        self, conn: aiosqlite.Connection, project: str, env_id: int
+    ) -> tuple[Project, Environment]:
+        proj = await self.get_project(project, conn)
+        env = await repo.get_environment(conn, env_id)
+        if env is None or env.project_id != proj.id:
+            raise NotFoundError(f"Environment #{env_id} not found in {proj.slug}.")
+        return proj, env
+
+    async def save_environment(
+        self,
+        project: str,
+        values: dict[str, Any],
+        *,
+        env_id: int | None = None,
+        confirm_live: bool = False,
+        actor: str = "board",
+    ) -> Environment:
+        """Create (`env_id` None) or change an environment. Board only: agents propose."""
+        async with self._tx() as tx:
+            if env_id is None:
+                proj, current = await self.get_project(project, tx.conn), None
+            else:
+                proj, current = await self._project_environment(tx.conn, project, env_id)
+            return await self._write_environment(tx, proj, current, values, actor, confirm_live)
+
+    async def delete_environment(self, project: str, env_id: int, *, actor: str = "board") -> None:
+        async with self._tx() as tx:
+            proj, env = await self._project_environment(tx.conn, project, env_id)
+            await repo.delete_environment(tx.conn, env.id)
+            await tx.event(
+                "environment.deleted",
+                actor,
+                project_id=proj.id,
+                project=proj.slug,
+                environment=env.name,
+                env_kind=env.kind,
+            )
+
+    async def _access_event(
+        self, tx: _Tx, kind: str, actor: str, proj: Project, env: Environment, **payload: Any
+    ) -> None:
+        await repo.update_environment(tx.conn, env.id, {}, actor, tx.now)
+        await tx.event(
+            kind,
+            actor,
+            project_id=proj.id,
+            project=proj.slug,
+            environment=env.name,
+            env_kind=env.kind,
+            **payload,
+        )
+
+    async def save_access(
+        self,
+        project: str,
+        env_id: int,
+        kind: str,
+        fields: dict[str, Any],
+        *,
+        access_id: int | None = None,
+        actor: str = "board",
+    ) -> Environment:
+        """Add an access entry (`access_id` None) or replace one."""
+        kind, clean = envs.clean_access(kind, fields)
+        async with self._tx() as tx:
+            proj, env = await self._project_environment(tx.conn, project, env_id)
+            if access_id is None:
+                access_id = await repo.insert_access(tx.conn, env.id, kind, clean, actor, tx.now)
+                event = "environment.access_added"
+            else:
+                entry = await repo.get_access(tx.conn, access_id)
+                if entry is None or entry.environment_id != env.id:
+                    raise NotFoundError(f"Access entry #{access_id} not found in {env.name}.")
+                if (entry.kind, entry.fields) == (kind, clean):
+                    return env
+                await repo.update_access(tx.conn, access_id, kind, clean, actor, tx.now)
+                event = "environment.access_updated"
+            await self._access_event(
+                tx, event, actor, proj, env, access_kind=kind, access_id=access_id
+            )
+            saved = await repo.get_environment(tx.conn, env.id)
+            assert saved is not None
+            return saved
+
+    async def delete_access(
+        self, project: str, env_id: int, access_id: int, *, actor: str = "board"
+    ) -> None:
+        async with self._tx() as tx:
+            proj, env = await self._project_environment(tx.conn, project, env_id)
+            entry = await repo.get_access(tx.conn, access_id)
+            if entry is None or entry.environment_id != env.id:
+                raise NotFoundError(f"Access entry #{access_id} not found in {env.name}.")
+            await repo.delete_access(tx.conn, access_id)
+            await self._access_event(
+                tx,
+                "environment.access_removed",
+                actor,
+                proj,
+                env,
+                access_kind=entry.kind,
+                access_id=access_id,
+            )
+
+    async def propose_environment_change(
+        self,
+        project: str,
+        change: Any,
+        reason: str,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> Proposal:
+        """An agent's proposal: recorded for the owner, nothing else changes."""
+        clean = envs.clean_change(change)
+        text = _clean_text(reason, "reason", envs.REASON_MAX)
+        if not text:
+            raise ValidationError("reason must say why the change is needed.")
+        envs.check_secret("reason", text)
+        async with self._tx() as tx:
+            proj = await self.get_project(project, tx.conn)
+            current = await repo.find_environment(tx.conn, proj.id, clean["environment"])
+            if current is None and "kind" not in clean:
+                raise ValidationError(
+                    f"{proj.slug} has no environment {clean['environment']!r}; a new one needs"
+                    " kind (local, test or live)."
+                )
+            if current is not None:
+                clean["environment"] = current.name
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            proposal_id = await repo.insert_proposal(
+                tx.conn, proj.id, clean, text, actor, sess.id if sess else None, tx.now
+            )
+            await tx.event(
+                "environment.proposed",
+                actor,
+                project_id=proj.id,
+                session_id=sess.id if sess else None,
+                project=proj.slug,
+                environment=clean["environment"],
+                proposal_id=proposal_id,
+                change=envs.change_summary(clean),
+            )
+            proposal = await repo.get_proposal(tx.conn, proposal_id)
+            assert proposal is not None
+            return proposal
+
+    async def decide_proposal(
+        self,
+        proposal_id: int,
+        accept: bool,
+        *,
+        project: str | None = None,
+        confirm_live: bool = False,
+        actor: str = "board",
+    ) -> Proposal:
+        """Accept (apply the change) or reject an agent's proposal. Board only."""
+        async with self._tx() as tx:
+            proposal = await repo.get_proposal(tx.conn, proposal_id)
+            if proposal is None or (
+                project is not None and proposal.project_slug != project.strip().lower()
+            ):
+                raise NotFoundError(f"Proposal #{proposal_id} not found.")
+            if proposal.status != "pending":
+                raise ConflictError(f"Proposal #{proposal_id} is already {proposal.status}.")
+            proj = await self.get_project(proposal.project_slug, tx.conn)
+            if accept:
+                change = dict(proposal.change)
+                access = change.pop("access", [])
+                name = change.pop("environment")
+                current = await repo.find_environment(tx.conn, proj.id, name)
+                values = {"name": current.name if current else name, **change}
+                env = await self._write_environment(tx, proj, current, values, actor, confirm_live)
+                for entry in access:
+                    access_id = await repo.insert_access(
+                        tx.conn, env.id, entry["kind"], entry["fields"], actor, tx.now
+                    )
+                    await self._access_event(
+                        tx,
+                        "environment.access_added",
+                        actor,
+                        proj,
+                        env,
+                        access_kind=entry["kind"],
+                        access_id=access_id,
+                    )
+            status = "accepted" if accept else "rejected"
+            await repo.decide_proposal(tx.conn, proposal.id, status, actor, tx.now)
+            await tx.event(
+                f"environment.proposal_{status}",
+                actor,
+                project_id=proj.id,
+                project=proj.slug,
+                environment=proposal.environment,
+                proposal_id=proposal.id,
+                change=envs.change_summary(proposal.change),
+            )
+            decided = await repo.get_proposal(tx.conn, proposal.id)
+            assert decided is not None
+            return decided

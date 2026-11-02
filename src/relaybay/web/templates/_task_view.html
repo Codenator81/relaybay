@@ -106,6 +106,15 @@
     {% endfor %}
   </section>
 
+  {% if detail.live_actions %}
+  <section class="panel">
+    <h2>Actions on live</h2>
+    <ol class="journal-list">
+      {% for e in detail.live_actions %}{% include "_live_action.html" %}{% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+
   {% if detail.decisions %}
   <section class="panel">
     <h2>Decisions</h2>

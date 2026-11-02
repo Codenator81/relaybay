@@ -12,3 +12,7 @@ class ConflictError(DomainError):
 
 class ValidationError(DomainError):
     pass
+
+
+class ConfirmationNeeded(ValidationError):
+    """The write is allowed only with an explicit confirmation (raising live above read)."""

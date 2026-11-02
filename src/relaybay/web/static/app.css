@@ -939,3 +939,59 @@ body:has(.task-dialog[open]) { overflow: hidden; }
   .activity-detail { grid-column: 1 / -1; }
   .activity-actor { text-align: left; }
 }
+
+/* --- stands & access, live journal ----------------------------------------- */
+
+.env-intro { margin: 6px 0 16px; font-size: 14px; }
+.env-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.env-head h2 { margin: 0; overflow-wrap: anywhere; }
+.env-url { min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+.env-kind, .env-level, .decision {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.env-kind.kind-local { color: var(--stage-plan); }
+.env-kind.kind-test { color: var(--stage-test); }
+.env-kind.kind-live { color: var(--accent-text); background: var(--stage-live); }
+.env-level.level-none, .decision-deny { color: var(--bad); }
+.env-level.level-read, .env-level.level-ask, .decision-warn, .decision-ask { color: var(--warn); }
+.env-level.level-full, .decision-allow { color: var(--ok); }
+.env-fields { margin-bottom: 8px; }
+.env-notes { white-space: pre-wrap; }
+.env .fields { grid-template-columns: max-content minmax(0, 1fr); }
+.env details { margin-top: 10px; }
+.env details > summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+.env details > form, .env details > .task-form { margin-top: 8px; }
+.env-overrides > summary { font-size: 13px; }
+.env-form .field-check { align-self: center; }
+.env-confirm { border-color: var(--warn); }
+.access-list, .journal-list { list-style: none; margin: 0; padding: 0; }
+.access-row, .journal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+.access-row:first-child, .journal-row:first-child { border-top: 0; }
+.access-kind { font-weight: 600; font-family: var(--mono); font-size: 13px; }
+.access-fields { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.access-field { overflow-wrap: anywhere; }
+.access-meta, .journal-meta { font-size: 12px; }
+.access-row .access-edit { flex-basis: 100%; margin-top: 2px; }
+.access-hint { margin: 0; font-size: 12px; }
+.journal-command {
+  flex-basis: 100%;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

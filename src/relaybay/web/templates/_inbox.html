@@ -10,7 +10,7 @@
   {% if not inbox.count %}
   <div class="empty">
     <p>Nothing needs you right now.</p>
-    <p>Tasks whose <em>waiting on</em> names you, agent replies to your comments, rule warnings and unlinked hook sessions show up here.</p>
+    <p>Tasks whose <em>waiting on</em> names you, agent replies to your comments, agents' proposals, rule warnings and unlinked hook sessions show up here.</p>
   </div>
   {% endif %}
 
@@ -38,6 +38,22 @@
       <li class="inbox-row">
         {{ task_row(t) }}
         <p class="inbox-note clamp clamp-2"><span class="muted">{{ last.author }}{% if replies|length > 1 %} (+{{ replies|length - 1 }} more){% endif %}:</span> {{ last.body_md }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.proposals %}
+  <section class="panel inbox-group" id="inbox-proposals">
+    <h2>Proposed by agents <span class="col-count">{{ inbox.proposals|length }}</span></h2>
+    <p class="muted inbox-hint">Changes to environments and permission levels; accept or reject them on the project's Stands &amp; access page.</p>
+    <ul class="inbox-list">
+      {% for p in inbox.proposals %}
+      <li class="inbox-row">
+        <a class="inbox-link" href="/p/{{ p.project_slug }}/environments#proposal-{{ p.id }}"><span class="card-key">#{{ p.id }}</span> <span class="inbox-title">{{ p.change|change_summary }}</span></a>
+        <p class="inbox-note clamp clamp-2">{{ p.reason }}</p>
+        <span class="inbox-meta muted">{{ p.project_slug }} · {{ p.proposed_by }} · <time datetime="{{ p.created_at }}" data-age>{{ p.created_at|age }}</time></span>
       </li>
       {% endfor %}
     </ul>

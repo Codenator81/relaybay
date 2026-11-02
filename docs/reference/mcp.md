@@ -27,6 +27,8 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`comment_add`](#comment_add) | write |
 | [`rules_get`](#rules_get) | read |
 | [`events_since`](#events_since) | read |
+| [`environments_get`](#environments_get) | read |
+| [`environment_propose`](#environment_propose) | write |
 
 ### `project_list`
 
@@ -254,11 +256,33 @@ Events after `since_id` (task created, stage changed, report added, ...), oldest
 | `project` | string or null | no | Project slug filter. |
 | `limit` | integer | no | Default: `50`. |
 
+### `environments_get`
+
+The project's environments (local, test, live): base URL, how to reach each one (ssh alias, kube context, database host, GitOps repository, log links; references only, never secrets) and your permission level there: none, read, ask (ask the owner first) or full. Read it before you touch a server, a cluster or a database.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+
+### `environment_propose`
+
+Propose a change to a project's environments or your permission level there. Nothing changes until the owner accepts it on the board; it shows in the owner's Inbox.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `change` | object | yes | What to change: {'environment': <name>, then any of kind (local, test, live), base_url, notes, sign_in_allowed, login_state_path, level (none, read, ask, full or default), overrides ({capability: level} for sign_in, ssh, kubectl, db, deploy), access ([{kind: ssh\|kubectl\|db\|gitops\|logs\|monitoring\|other, fields: {...}}] to add)}. References only: a key path, a variable name or a vault path, never a secret value. |
+| `reason` | string | yes | Why the change is needed, for the owner. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
 ## Resources
 
 | URI | Name | Type | Description |
 |---|---|---|---|
 | `relaybay://project/{slug}` | project-snapshot | text/markdown | Markdown snapshot of a project (same as project_snapshot). |
+| `relaybay://project/{slug}/environments` | project-environments | text/markdown | A project's environments, access map (no secrets) and permission levels. |
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |
 | `relaybay://rules/{project}` | project-rules | text/markdown | A project's working rules: global rules merged with the project override. |
 | `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_patch: name, type, description, clearing. |

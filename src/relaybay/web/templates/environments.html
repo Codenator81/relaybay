@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{#- Project → Stands & access. Expects: project, environments, proposals, defaults, guard_mode,
+    optional error + error_target (the form it belongs to), confirm (action, message, fields).
+    Plain form posts: every write comes from this page in a browser (cookie + CSRF). -#}
+{%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
+{%- macro error_for(target) -%}{% if target and error and error_target == target %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}{%- endmacro %}
+{%- macro level_options(selected, default_level) -%}
+<option value="default"{% if not selected %} selected{% endif %}>{{ "default (" ~ default_level ~ ")" if default_level else "default for the kind" }}</option>
+{%- for lvl in ["none", "read", "ask", "full"] %}
+<option value="{{ lvl }}"{% if selected == lvl %} selected{% endif %}>{{ lvl }}</option>
+{%- endfor %}
+{%- endmacro %}
+{%- macro environment_form(e, action, target) -%}
+{%- set kind = e.kind if e else "test" %}
+<form class="task-form env-form" method="post" action="{{ action }}">
+  {{ hidden_csrf() }}
+  {{ error_for(target) }}
+  <div class="field-row">
+    <label class="field"><span>Name</span>
+      <input name="name" required maxlength="60" value="{{ e.name if e else '' }}" placeholder="live" spellcheck="false">
+    </label>
+    <label class="field"><span>Kind</span>
+      <select name="kind">
+        {% for k in ["local", "test", "live"] %}<option value="{{ k }}"{% if k == kind %} selected{% endif %}>{{ k }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+  <label class="field"><span>Base URL</span>
+    <input name="base_url" type="url" maxlength="500" value="{{ (e.base_url or '') if e else '' }}" placeholder="https://shop.example.com" spellcheck="false">
+  </label>
+  <div class="field-row">
+    <label class="field"><span>Agents' level</span>
+      <select name="level">{{ level_options(e.level if e else None, defaults[e.kind] if e else None) }}</select>
+    </label>
+    <label class="field field-check">
+      <input type="hidden" name="sign_in_allowed" value="0">
+      <input type="checkbox" name="sign_in_allowed" value="1"{% if e and e.sign_in_allowed %} checked{% endif %}{% if e and e.kind == "live" %} disabled{% endif %}>
+      <span>Agent may sign in and remember the login{% if e and e.kind == "live" %} (never on live){% endif %}</span>
+    </label>
+  </div>
+  <details class="env-overrides"{% if e and e.overrides %} open{% endif %}>
+    <summary>Per capability</summary>
+    <div class="field-row">
+      {% for cap in ["sign_in", "ssh", "kubectl", "db", "deploy"] %}
+      <label class="field"><span>{{ cap }}</span>
+        <select name="override_{{ cap }}">
+          <option value="default"{% if not (e and cap in e.overrides) %} selected{% endif %}>as the environment</option>
+          {% for lvl in ["none", "read", "ask", "full"] %}<option value="{{ lvl }}"{% if e and e.overrides.get(cap) == lvl %} selected{% endif %}>{{ lvl }}</option>{% endfor %}
+        </select>
+      </label>
+      {% endfor %}
+    </div>
+  </details>
+  <label class="field"><span>Saved login state (path)</span>
+    <input name="login_state_path" maxlength="500" value="{{ (e.login_state_path or '') if e else '' }}" placeholder="~/.config/acme/test-login.json" spellcheck="false">
+  </label>
+  <label class="field"><span>Notes</span>
+    <textarea name="notes" rows="2" maxlength="4000">{{ (e.notes or '') if e else '' }}</textarea>
+  </label>
+  <div class="form-actions"><button type="submit" class="btn primary">{{ "Save" if e else "Add environment" }}</button></div>
+</form>
+{%- endmacro %}
+{%- macro access_form(action, target, entry=None) -%}
+<form class="task-form access-form" method="post" action="{{ action }}">
+  {{ hidden_csrf() }}
+  {{ error_for(target) }}
+  <label class="field"><span>Kind</span>
+    <select name="kind">
+      {% for k in ["ssh", "kubectl", "db", "gitops", "logs", "monitoring", "other"] %}<option value="{{ k }}"{% if entry and entry.kind == k %} selected{% endif %}>{{ k }}</option>{% endfor %}
+    </select>
+  </label>
+  <label class="field"><span>Fields, one <code>name: value</code> per line</span>
+    <textarea name="fields" rows="3" spellcheck="false" placeholder="alias: acme-live&#10;user: deploy&#10;key_path_ref: ~/.ssh/acme_live">{{ fields_text(entry.fields) if entry else '' }}</textarea>
+  </label>
+  <p class="muted access-hint">ssh: alias, host, port, user, key_path_ref · kubectl: context, namespace · db: type, host, port, port_forward, database, user, password_ref · gitops: repo, path, branch · logs, monitoring: url. References only: a key file path, an environment variable name ($DB_PASSWORD) or a vault path, never the secret.</p>
+  <div class="form-actions"><button type="submit" class="btn">{{ "Save" if entry else "Add access" }}</button></div>
+</form>
+{%- endmacro %}
+{% block title %}Stands & access · {{ project.name }} · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ project.slug }}">{{ project.name }}</a><span class="crumb-sep">/</span><span class="crumb">Stands &amp; access</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}" data-project="{{ project.slug }}">
+  <div class="page-head">
+    <h1>Stands &amp; access · {{ project.name }}</h1>
+    <a class="action" href="/activity?project={{ project.slug }}&amp;kind=live.action">Actions on live</a>
+  </div>
+  <p class="muted env-intro">Where this project runs, how agents reach it and what they may do there unasked. relaybay stores <strong>references only</strong>, never passwords, keys or tokens. The guard (<code>{{ guard_mode }}</code>) is a safety net against mistakes, not a sandbox: it only recognises the names listed here.</p>
+  {% if error and not error_target %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+  {% if confirm %}
+  <section class="panel env-confirm" id="confirm" role="alertdialog" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Confirm</h2>
+    <p class="form-warning">{{ confirm.message }}</p>
+    <div class="form-actions">
+      <form method="post" action="{{ confirm.action }}">
+        {{ hidden_csrf() }}
+        {% for name, value in confirm.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+        <input type="hidden" name="confirm_live" value="1">
+        <button type="submit" class="btn danger">Confirm and save</button>
+      </form>
+      <a class="btn" href="/p/{{ project.slug }}/environments">Cancel</a>
+    </div>
+  </section>
+  {% endif %}
+
+  {% include "_proposals.html" %}
+
+  {% for e in environments %}
+  {%- set level = e.effective_level(defaults) %}
+  <section class="panel env" id="env-{{ e.id }}">
+    <header class="env-head">
+      <h2>{{ e.name }}</h2>
+      <span class="env-kind kind-{{ e.kind }}">{{ e.kind }}</span>
+      <span class="env-level level-{{ level }}" title="What agents may do here unasked">agents: {{ level }}{% if not e.level %} (default){% endif %}</span>
+      {% set href = e.base_url|http_url %}{% if href %}<a class="env-url" href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ e.base_url }}</a>{% endif %}
+    </header>
+    {{ error_for("env-" ~ e.id) }}
+    <dl class="fields env-fields">
+      {% if e.overrides %}<dt>Per capability</dt><dd>{% for cap, lvl in e.overrides.items() %}<span class="env-level level-{{ lvl }}">{{ cap }}: {{ lvl }}</span> {% endfor %}</dd>{% endif %}
+      <dt>Sign in</dt><dd>{{ "agent may sign in and remember the login" if e.sign_in_allowed else "no" }}{% if e.login_state_path %} · <code>{{ e.login_state_path }}</code>{% endif %}</dd>
+      {% if e.notes %}<dt>Notes</dt><dd class="env-notes">{{ e.notes }}</dd>{% endif %}
+      <dt>Changed</dt><dd><time datetime="{{ e.updated_at }}" data-age title="{{ e.updated_at[:19] }}Z">{{ e.updated_at|age }}</time> by {{ e.updated_by }}</dd>
+    </dl>
+    <h3>Access</h3>
+    {% if e.access %}
+    <ul class="access-list">
+      {% for a in e.access %}
+      <li class="access-row" id="access-{{ a.id }}">
+        <span class="access-kind">{{ a.kind }}</span>
+        <span class="access-fields">{% for k, v in a.fields.items() %}<span class="access-field"><span class="muted">{{ k }}</span> <code>{{ v }}</code></span>{% endfor %}</span>
+        <span class="muted access-meta"><time datetime="{{ a.updated_at }}" data-age title="{{ a.updated_at[:19] }}Z">{{ a.updated_at|age }}</time> by {{ a.updated_by }}</span>
+        {{ error_for("access-" ~ a.id) }}
+        <details class="access-edit"{% if error and error_target == "access-" ~ a.id %} open{% endif %}>
+          <summary>Edit</summary>
+          {{ access_form("/p/" ~ project.slug ~ "/environments/" ~ e.id ~ "/access/" ~ a.id, "", a) }}
+          <form method="post" action="/p/{{ project.slug }}/environments/{{ e.id }}/access/{{ a.id }}/delete" data-confirm="Remove this {{ a.kind }} access entry from {{ e.name }}?">
+            {{ hidden_csrf() }}
+            <button type="submit" class="btn danger">Remove</button>
+          </form>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No access entries yet.</p>
+    {% endif %}
+    <details class="env-add-access"{% if error and error_target == "access-new-" ~ e.id %} open{% endif %}>
+      <summary>Add access</summary>
+      {{ access_form("/p/" ~ project.slug ~ "/environments/" ~ e.id ~ "/access", "access-new-" ~ e.id) }}
+    </details>
+    <details class="env-edit"{% if error and error_target == "env-" ~ e.id %} open{% endif %}>
+      <summary>Edit environment and level</summary>
+      {{ environment_form(e, "/p/" ~ project.slug ~ "/environments/" ~ e.id, "") }}
+      <form method="post" action="/p/{{ project.slug }}/environments/{{ e.id }}/delete" data-confirm="Delete {{ e.name }} and its access entries? The event log keeps the history.">
+        {{ hidden_csrf() }}
+        <button type="submit" class="btn danger">Delete environment</button>
+      </form>
+    </details>
+  </section>
+  {% else %}
+  <div class="empty"><p>No environments yet. Add local, test and live below; agents read them with <code>environments_get</code>.</p></div>
+  {% endfor %}
+
+  <section class="panel" id="env-new">
+    <h2>Add an environment</h2>
+    <p class="muted">Default levels: local {{ defaults.local }}, test {{ defaults.test }}, live {{ defaults.live }} (config <code>permission_defaults</code>). Raising live above read asks for a confirmation.</p>
+    {{ environment_form(None, "/p/" ~ project.slug ~ "/environments", "new") }}
+  </section>
+</main>
+{% endblock %}

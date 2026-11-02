@@ -8,12 +8,17 @@
     "task.created", "task.updated", "task.stage_changed",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
     "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
-    "comment.added", "comment.delivered", "comment.read"
+    "comment.added", "comment.delivered", "comment.read",
+    "environment.created", "environment.updated", "environment.deleted",
+    "environment.access_added", "environment.access_updated", "environment.access_removed",
+    "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
+    "live.action"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
-    "session.seen", "session.status_changed", "comment.added", "comment.read"
+    "session.seen", "session.status_changed", "comment.added", "comment.read",
+    "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -137,6 +142,16 @@
     var sessions = document.getElementById("sessions");
     if (sessions) {
       if (SESSION_KINDS.indexOf(data.kind) !== -1) queueThrottled(sessions);
+      return;
+    }
+    var journal = document.getElementById("journal");
+    if (journal && data.kind === "live.action") queueThrottled(journal);
+    // Stands & access: only the proposals list is live; the forms stay as the user left them.
+    var proposals = document.getElementById("proposals");
+    if (proposals) {
+      if (data.kind.indexOf("environment.propos") === 0 && data.project === live.dataset.project) {
+        queue(proposals);
+      }
       return;
     }
     var activity = document.getElementById("activity");
@@ -403,6 +418,14 @@
     var xhr = event.detail.xhr;
     if (event.detail.successful && xhr && xhr.getResponseHeader("X-Relaybay-Comment") === "saved") {
       form.reset();
+    }
+  });
+
+  // Plain forms with `data-confirm` (deleting an environment or an access entry) ask first.
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    if (form.dataset && form.dataset.confirm && !window.confirm(form.dataset.confirm)) {
+      event.preventDefault();
     }
   });
 

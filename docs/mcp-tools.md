@@ -15,8 +15,10 @@ report; start a report with the configured first line, states and sizes (taken f
 effective global rules, so they match `rules_get`); set `waiting_on` to who
 decides when the work needs a decision; use `task_patch` for fields your tool schema lacks; treat a
 `Warning (rules)` line as something to fix; when a hook hands over owner comments, handle them like
-a message from the user and call `comment_ack` (or answer with `comment_add`). The details live in
-the rules below.
+a message from the user and call `comment_ack` (or answer with `comment_add`); before touching a
+server, cluster or database, read `environments_get` — the level there says what is allowed
+unasked, live is read-only unless the owner set otherwise — never paste secrets into relaybay and
+propose changes with `environment_propose`. The details live in the rules below.
 
 Conventions:
 
@@ -98,6 +100,7 @@ Conventions:
 | `task_get` | `task`, `reports?` (default 5) | Ends with "Editable fields: …". All fields (a stale next step ends with `(stale)`), description and progress in full, current `version`, the bound session (name and desktop id, link), the tracker issue and work-log mark, session binding history, tracker history, latest reports with their bodies, decisions. |
 | `events_since` | `since_id?` (default 0), `project?`, `limit?` (default 50, max 500) | Events oldest first and the `since_id` for the next call. |
 | `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
+| `environments_get` | `project` | The project's environments (see *Environments and access* below): guard mode, per environment kind, base URL, agents' level (`(default)` when it comes from the configuration) and per-capability overrides, sign-in flag and login-state path, access entries (references only), notes, last change. |
 | `rules_get` | `project?` | The working rules as markdown: hash, scope, mode, report format, stage requirements, description template, guidance. Without `project`, the global rules; with it, the project's merged rules. |
 
 ## Writing
@@ -115,6 +118,8 @@ Conventions:
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `session?`, `session_title?`, `hook_session?` | Records a decision; it appears in the project snapshot. |
 | `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
 | `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
+
+| `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a proposal for the owner and changes nothing (`environment.proposed`); it shows in the owner's Inbox and on the Stands & access page, where the owner accepts or rejects it. `change`: `environment` (name) plus any of `kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`none` / `read` / `ask` / `full` / `default`), `overrides` (`{"ssh": "ask"}`; capabilities `sign_in`, `ssh`, `kubectl`, `db`, `deploy`), `access` (`[{"kind": "ssh", "fields": {"alias": "acme-live"}}]` to add). A new environment needs `kind`. Secret values are refused (a tool error naming the field). |
 
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
@@ -195,10 +200,38 @@ version that supports it, so `--wake` is refused unless `--force-wake` is given 
 (`MIN_ASYNC_REWAKE_VERSION` is unset); `setup --check` and `doctor` show the installed hook as
 `UNVERIFIED`. If turns end only after a long wait, run `relaybay setup --apply --no-wake`.
 
+## Environments and access
+
+Each project can list its environments (`local`, `test`, `live`) on the board's **Stands & access**
+page: base URL, how to reach each one (ssh alias, kube context, database host, GitOps repository,
+log and monitoring links) and what agents may do there. relaybay stores **references only**: a key
+file path (`~/.ssh/acme_live`), an environment variable name (`$DB_PASSWORD`) or a vault path
+(`vault://kv/acme/db`), never a password, key or token; writes with something that looks like one
+are refused.
+
+- **Levels** — `none` (do not touch), `read` (look only), `ask` (ask the owner before each action),
+  `full` (act as needed), per environment and optionally per capability (`sign_in`, `ssh`, `kubectl`,
+  `db`, `deploy`). Defaults: local and test `full`, live `read` (config `permission_defaults`). Only
+  the owner changes them on the board; agents call `environment_propose`.
+- **Guard** — the `PreToolUse` hook checks `Bash` commands and the input of MCP tools for the
+  environments' names (whole tokens; a single word such as `app` only as an ssh, `--context`, `-h` or URL host) and answers by level and `guard_mode` (`off` / `warn` /
+  `block`, default `warn`): `deny` (with the reason shown to you) for `none`, or for `read` when the
+  command looks like a change (kubectl apply / delete / rollout restart …, helm upgrade, ssh with
+  `systemctl restart` / `rm` …, SQL `insert` / `update` / `delete` / `drop` …, `git push`); `ask`
+  (the user confirms) for `ask`; a warning in `additionalContext` instead of `deny` in `warn` mode.
+  It is a safety net against mistakes, not a sandbox: it knows only the names listed on the board.
+  Details and the full rule table: [SPEC §7](SPEC.md#spec-guard).
+- **Journal** — every guarded tool call that touches a live environment is recorded as a
+  `live.action` event (tool, a short redacted command, decision) on your bound task; the owner sees
+  them under Activity → Actions on live and in the task dialog.
+
 ## Resources
 
 `relaybay://project/{slug}` — the same markdown as `project_snapshot`, so a session can attach a
 project snapshot as context.
+
+`relaybay://project/{slug}/environments` — the project's environments map (same as
+`environments_get`); references only, never secrets.
 
 `relaybay://rules` — the global working rules (same as `rules_get()`).
 

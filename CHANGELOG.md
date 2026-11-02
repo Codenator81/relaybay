@@ -34,6 +34,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`asyncRewake`, command mode) that wakes an idle session when an owner comment arrives; not
   verified against a live Claude Code, so `--wake` alone is refused and `doctor` marks it
   `UNVERIFIED`.
+- Project environments and access (Stands & access page, `/p/<slug>/environments`, in the
+  sidebar): local / test / live environments with base URL, notes, a sign-in flag (never on live)
+  and an access map of references only (ssh, kubectl, db, GitOps, logs, monitoring); obvious secret
+  values are refused. Agents' permission level per environment and capability (`none`, `read`,
+  `ask`, `full`; defaults local/test `full`, live `read`, setting `permission_defaults`), changed
+  only on the board, with a confirmation for raising live above read. Migration
+  `0009_environments`.
+- MCP tool `environments_get` and resource `relaybay://project/{slug}/environments`;
+  `project_snapshot` lists the environments; `environment_propose` records a proposal that the
+  owner accepts or rejects on the board (listed in the Inbox). The server instructions gain point 9.
+- PreToolUse guard (`guard_mode` = `off` / `warn` / `block`, default `warn`, `RELAYBAY_GUARD_MODE`):
+  a Bash command or MCP tool input that names an environment gets `permissionDecision` `deny` or
+  `ask`, or a warning, by its level and a table of mutating heuristics. A safety net against
+  mistakes, not a sandbox; no setup change needed (the existing `PreToolUse` hook is used).
+- Journal of actions on live: guarded tool calls that touch a live environment are recorded as
+  `live.action` events (tool, redacted command, decision) on the bound task, shown in Activity
+  ("Actions on live") and in the task dialog.
 
 ### Changed
 

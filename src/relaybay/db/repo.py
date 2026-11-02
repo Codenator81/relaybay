@@ -5,6 +5,7 @@ from typing import Any
 
 import aiosqlite
 
+from relaybay.domain.environments import AccessEntry, Environment, Proposal
 from relaybay.domain.models import (
     Binding,
     Comment,
@@ -906,3 +907,263 @@ async def list_project_rules(conn: aiosqlite.Connection) -> list[tuple[str, str]
         " ORDER BY p.slug",
     )
     return [(r["slug"], r["body"]) for r in rows]
+
+
+# --- environments ----------------------------------------------------------
+
+_ENV_SELECT = (
+    "SELECT e.*, p.slug AS project_slug FROM environment e JOIN project p ON p.id = e.project_id"
+)
+
+
+def _environment(row: aiosqlite.Row) -> Environment:
+    return Environment(
+        id=row["id"],
+        project_id=row["project_id"],
+        name=row["name"],
+        kind=row["kind"],
+        base_url=row["base_url"],
+        sign_in_allowed=bool(row["sign_in_allowed"]),
+        login_state_path=row["login_state_path"],
+        notes=row["notes"],
+        level=row["level"],
+        overrides=json.loads(row["overrides"] or "{}"),
+        position=row["position"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+        project_slug=row["project_slug"],
+    )
+
+
+def _access(row: aiosqlite.Row) -> AccessEntry:
+    return AccessEntry(
+        id=row["id"],
+        environment_id=row["environment_id"],
+        kind=row["kind"],
+        fields=json.loads(row["fields"] or "{}"),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+    )
+
+
+async def list_environments(
+    conn: aiosqlite.Connection, project_ids: list[int] | None = None
+) -> list[Environment]:
+    """Environments with their access entries, by project and position."""
+    sql, params = _ENV_SELECT, ()
+    if project_ids is not None:
+        if not project_ids:
+            return []
+        sql += f" WHERE e.project_id IN ({', '.join('?' for _ in project_ids)})"
+        params = tuple(project_ids)
+    sql += " ORDER BY p.slug, e.position, e.id"
+    envs = [_environment(r) for r in await _all(conn, sql, params)]
+    if not envs:
+        return envs
+    by_id = {e.id: e for e in envs}
+    marks = ", ".join("?" for _ in by_id)
+    rows = await _all(
+        conn,
+        f"SELECT * FROM environment_access WHERE environment_id IN ({marks}) ORDER BY id",
+        tuple(by_id),
+    )
+    for row in rows:
+        by_id[row["environment_id"]].access.append(_access(row))
+    return envs
+
+
+async def has_environments(conn: aiosqlite.Connection) -> bool:
+    return await _one(conn, "SELECT 1 FROM environment LIMIT 1", ()) is not None
+
+
+async def get_environment(conn: aiosqlite.Connection, env_id: int) -> Environment | None:
+    row = await _one(conn, _ENV_SELECT + " WHERE e.id = ?", (env_id,))
+    if row is None:
+        return None
+    env = _environment(row)
+    rows = await _all(
+        conn, "SELECT * FROM environment_access WHERE environment_id = ? ORDER BY id", (env_id,)
+    )
+    env.access = [_access(r) for r in rows]
+    return env
+
+
+async def find_environment(
+    conn: aiosqlite.Connection, project_id: int, name: str
+) -> Environment | None:
+    row = await _one(
+        conn,
+        "SELECT id FROM environment WHERE project_id = ? AND name = ? COLLATE NOCASE",
+        (project_id, name),
+    )
+    return await get_environment(conn, row["id"]) if row else None
+
+
+async def insert_environment(
+    conn: aiosqlite.Connection, project_id: int, values: dict[str, Any], actor: str, now: str
+) -> int:
+    row = await _one(
+        conn,
+        "SELECT COALESCE(MAX(position), 0) + 1 FROM environment WHERE project_id = ?",
+        (project_id,),
+    )
+    cur = await conn.execute(
+        "INSERT INTO environment (project_id, name, kind, base_url, sign_in_allowed,"
+        " login_state_path, notes, level, overrides, position, created_at, updated_at,"
+        " updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            project_id,
+            values["name"],
+            values["kind"],
+            values.get("base_url"),
+            int(values.get("sign_in_allowed", False)),
+            values.get("login_state_path"),
+            values.get("notes"),
+            values.get("level"),
+            json.dumps(values.get("overrides", {})),
+            int(row[0]),
+            now,
+            now,
+            actor,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_environment(
+    conn: aiosqlite.Connection, env_id: int, changes: dict[str, Any], actor: str, now: str
+) -> None:
+    values = {
+        k: (json.dumps(v) if k == "overrides" else int(v) if k == "sign_in_allowed" else v)
+        for k, v in changes.items()
+    }
+    sets = "".join(f"{k} = ?, " for k in values)
+    await conn.execute(
+        f"UPDATE environment SET {sets}updated_at = ?, updated_by = ? WHERE id = ?",
+        (*values.values(), now, actor, env_id),
+    )
+
+
+async def delete_environment(conn: aiosqlite.Connection, env_id: int) -> None:
+    await conn.execute("DELETE FROM environment WHERE id = ?", (env_id,))
+
+
+async def insert_access(
+    conn: aiosqlite.Connection,
+    env_id: int,
+    kind: str,
+    fields: dict[str, str],
+    actor: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO environment_access (environment_id, kind, fields, created_at, updated_at,"
+        " updated_by) VALUES (?, ?, ?, ?, ?, ?)",
+        (env_id, kind, json.dumps(fields, ensure_ascii=False), now, now, actor),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_access(
+    conn: aiosqlite.Connection,
+    access_id: int,
+    kind: str,
+    fields: dict[str, str],
+    actor: str,
+    now: str,
+) -> None:
+    await conn.execute(
+        "UPDATE environment_access SET kind = ?, fields = ?, updated_at = ?, updated_by = ?"
+        " WHERE id = ?",
+        (kind, json.dumps(fields, ensure_ascii=False), now, actor, access_id),
+    )
+
+
+async def get_access(conn: aiosqlite.Connection, access_id: int) -> AccessEntry | None:
+    row = await _one(conn, "SELECT * FROM environment_access WHERE id = ?", (access_id,))
+    return _access(row) if row else None
+
+
+async def delete_access(conn: aiosqlite.Connection, access_id: int) -> None:
+    await conn.execute("DELETE FROM environment_access WHERE id = ?", (access_id,))
+
+
+# --- environment proposals -------------------------------------------------
+
+_PROPOSAL_SELECT = (
+    "SELECT x.*, p.slug AS project_slug FROM environment_proposal x"
+    " JOIN project p ON p.id = x.project_id"
+)
+
+
+def _proposal(row: aiosqlite.Row) -> Proposal:
+    return Proposal(
+        id=row["id"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"],
+        change=json.loads(row["change"]),
+        reason=row["reason"],
+        proposed_by=row["proposed_by"],
+        session_id=row["session_id"],
+        status=row["status"],
+        created_at=row["created_at"],
+        decided_at=row["decided_at"],
+        decided_by=row["decided_by"],
+    )
+
+
+async def insert_proposal(
+    conn: aiosqlite.Connection,
+    project_id: int,
+    change: dict[str, Any],
+    reason: str,
+    proposed_by: str,
+    session_id: int | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO environment_proposal (project_id, change, reason, proposed_by, session_id,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (project_id, json.dumps(change, ensure_ascii=False), reason, proposed_by, session_id, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_proposal(conn: aiosqlite.Connection, proposal_id: int) -> Proposal | None:
+    row = await _one(conn, _PROPOSAL_SELECT + " WHERE x.id = ?", (proposal_id,))
+    return _proposal(row) if row else None
+
+
+async def list_proposals(
+    conn: aiosqlite.Connection, project_id: int | None = None, limit: int = 100
+) -> list[Proposal]:
+    """Pending proposals, oldest first."""
+    sql, params = _PROPOSAL_SELECT + " WHERE x.status = 'pending'", ()
+    if project_id is not None:
+        sql += " AND x.project_id = ?"
+        params = (project_id,)
+    rows = await _all(conn, sql + " ORDER BY x.id LIMIT ?", (*params, limit))
+    return [_proposal(r) for r in rows]
+
+
+async def decide_proposal(
+    conn: aiosqlite.Connection, proposal_id: int, status: str, actor: str, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE environment_proposal SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
+        (status, now, actor, proposal_id),
+    )
+
+
+async def task_events(
+    conn: aiosqlite.Connection, task_id: int, kind: str, limit: int = 50
+) -> list[Event]:
+    """A task's events of one kind, newest first."""
+    rows = await _all(
+        conn,
+        "SELECT * FROM event WHERE task_id = ? AND kind = ? ORDER BY id DESC LIMIT ?",
+        (task_id, kind, limit),
+    )
+    return [_event(r) for r in rows]
