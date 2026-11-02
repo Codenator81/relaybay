@@ -7,12 +7,12 @@
   {#- The CSP forbids inline styles and eval: keep htmx from injecting either. #}
   <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false}'>
   <title>{% block title %}relaybay{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="{{ static_url("app.css") }}">
   {#- Not deferred: it applies the remembered collapsed sidebar before the first paint. #}
-  <script src="/static/nav.js"></script>
-  <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/sse.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <script src="{{ static_url("nav.js") }}"></script>
+  <script src="{{ static_url("htmx.min.js") }}" defer></script>
+  <script src="{{ static_url("sse.js") }}" defer></script>
+  <script src="{{ static_url("app.js") }}" defer></script>
 </head>
 <body{% if nav %} class="has-nav"{% endif %}>
   {% if nav %}{% include "_sidebar.html" %}{% endif %}

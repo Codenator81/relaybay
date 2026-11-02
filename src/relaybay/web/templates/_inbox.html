@@ -14,6 +14,24 @@
   </div>
   {% endif %}
 
+  {% if inbox.review %}
+  <section class="panel inbox-group" id="inbox-review">
+    <h2>Review queue <span class="col-count">{{ inbox.review|length }}</span></h2>
+    <p class="muted inbox-hint">Tasks in review or test with a checklist, the longest waiting first. Open one to accept it step by step.</p>
+    <ul class="inbox-list">
+      {% for t in inbox.review %}
+      <li class="inbox-row">
+        <a class="inbox-link" href="/p/{{ t.project_slug }}?task={{ t.key }}&amp;tab=review">
+          <span class="card-key">{{ t.key }}</span>
+          <span class="inbox-title">{{ t.title }}</span>
+        </a>
+        <span class="inbox-meta muted"><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span> {{ t.project_slug }} · {{ t.review_accepted }}/{{ t.review_total }} accepted{% if t.review_rejected %} · {{ t.review_rejected }} rejected{% endif %} · since <time datetime="{{ t.stage_changed_at or t.updated_at }}" data-age>{{ (t.stage_changed_at or t.updated_at)|age }}</time></span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   {% if inbox.waiting %}
   <section class="panel inbox-group" id="inbox-waiting">
     <h2>Waiting on you <span class="col-count">{{ inbox.waiting|length }}</span></h2>

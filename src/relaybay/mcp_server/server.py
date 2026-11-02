@@ -25,8 +25,8 @@ def instructions(rules: Rules) -> str:
     return "\n".join(
         [
             "relaybay is the shared task board for this user's coding sessions. Projects contain"
-            " tasks; a task moves through the stages plan → dev → test → live → done. Working"
-            " contract:",
+            " tasks; a task moves through the stages plan → dev → review → test → live → done."
+            " Working contract:",
             "1. On start, read project_snapshot for your project. Its first line names the current"
             " rules; read relaybay://rules/<project> (or call rules_get) for the details.",
             "2. Pick the task you work on, or create one with task_create. Pass `session` on"
@@ -52,6 +52,9 @@ def instructions(rules: Rules) -> str:
             " live is read-only unless the owner's policy says otherwise (policy_get). Never"
             " paste secrets into relaybay; propose changes with environment_propose or"
             " policy_propose.",
+            "10. Before you move a task to review or test, write what the owner should check by"
+            " eye with review_steps_set (title plus what, how and why) and attach screenshots with"
+            " attach_file. The owner's decision on each step reaches you as an owner comment.",
         ]
     )
 
@@ -79,7 +82,7 @@ HookSession = Annotated[
 ]
 TaskRef = Annotated[str, Field(description="Task key such as 'acme-shop-12', or its numeric id.")]
 ProjectSlug = Annotated[str, Field(description="Project slug such as 'acme-shop'.")]
-StageArg = Annotated[str, Field(description="One of: plan, dev, test, live, done.")]
+StageArg = Annotated[str, Field(description="One of: plan, dev, review, test, live, done.")]
 DESCRIPTION_HELP = "What to do and why, 1-5 sentences of markdown."
 CLEARS = " '-' or '' clears it."
 EMPTY = " '-' or '' leaves it empty."
@@ -376,8 +379,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Move a task to another stage (plan, dev, test, live, done) when its work moves on, e.g.
-        to dev when you start coding, to test when it is ready for review, to done when finished.
+        """Move a task to another stage (plan, dev, review, test, live, done) when its work
+        moves on, e.g. to dev when you start coding, to review when the owner should accept it
+        step by step (fill the checklist with review_steps_set first), to test when it is on the
+        test environment, to done when finished.
         Any transition is allowed; a move that misses a working rule (see rules_get) adds a
         'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who
         acts next) whenever the stage changes or you report."""
@@ -626,6 +631,145 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         first. Call it to catch up on what other sessions did since you last looked."""
         items = await run(service.events_since(since_id, project, limit))
         return fmt.events(items, since_id)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def review_get(task: TaskRef) -> str:
+        """The task's review checklist: each step with its status (open, accepted, rejected), what
+        to check, its screenshots with captions and ids, plus the owner's comments on the steps.
+        Call it after an owner decision arrives, or before you change the checklist."""
+        row, review, comments = await run(service.review(task))
+        return fmt.review_text(row, review, comments)
+
+    @write
+    async def review_steps_set(
+        task: TaskRef,
+        steps: Annotated[
+            list[dict[str, Any]],
+            Field(
+                description="The whole checklist in order, e.g. [{'title': 'Login with 2FA',"
+                " 'details': 'What to check, how and why (markdown)'}]. It replaces the current"
+                " one: step N keeps its decision and screenshots while its title and details stay"
+                " the same; a changed step is open again; steps past the end are removed."
+            ),
+        ],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Write what the owner should check by eye (the Owner check) as an ordered checklist the
+        owner accepts step by step on the board. Do it before moving the task to review or
+        test."""
+        row, review = await run(
+            service.set_review_steps(
+                task,
+                steps,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.review_saved(row, review)
+
+    @write
+    async def review_step_update(
+        task: TaskRef,
+        step: Annotated[int, Field(ge=1, description="The step's number in the checklist.")],
+        title: Annotated[str | None, Field(description="New title.")] = None,
+        details: Annotated[
+            str | None, Field(description="New 'what, how and why' text (markdown).")
+        ] = None,
+        status: Annotated[
+            str | None,
+            Field(
+                description="Only 'open': ask the owner to look again after a fix. Accepting and"
+                " rejecting is the owner's, on the board."
+            ),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Change one review step: its text, or reopen it after you fixed what the owner
+        rejected. A changed text opens the step again."""
+        updated = await run(
+            service.update_review_step(
+                task,
+                step,
+                title=title,
+                details=details,
+                status=status,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return f"Step {updated.position} '{updated.title}' is {updated.status}."
+
+    @write
+    async def attach_file(
+        task: TaskRef,
+        path: Annotated[
+            str | None,
+            Field(
+                description="Absolute path of a PNG, JPEG, WebP or GIF file inside the project's"
+                " repository, the temp folder or a folder in `attachment_roots`. It is copied;"
+                " the original stays."
+            ),
+        ] = None,
+        content_base64: Annotated[
+            str | None,
+            Field(description="The image itself, base64, instead of a path (same rules)."),
+        ] = None,
+        filename: Annotated[
+            str | None, Field(description="A display name for content_base64.")
+        ] = None,
+        step: Annotated[
+            int | None, Field(ge=1, description="Review step number it belongs to.")
+        ] = None,
+        caption: Annotated[
+            str | None, Field(description="What the screenshot shows (markdown).")
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Attach a screenshot to a task, optionally to one review step, with a caption. The type
+        is checked by content (SVG and other files are refused) and sizes are limited. See the
+        how-to 'Screenshots for review' for producing the file."""
+        item, new = await run(
+            service.attach_file(
+                task,
+                path=path,
+                content_base64=content_base64,
+                filename=filename,
+                step=step,
+                caption=caption,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.attachment_saved(item, new)
+
+    @write
+    async def attachment_caption(
+        attachment_id: Annotated[int, Field(description="The attachment id from attach_file.")],
+        caption: Annotated[str, Field(description="New caption (markdown);" + CLEARS)],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Change the caption of a screenshot."""
+        item = await run(
+            service.set_attachment_caption(
+                attachment_id,
+                cleared(caption),
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return f"Caption of attachment #{item.id} on **{item.task_key}** saved."
 
     async def environments_map(project: str) -> str:
         proj, items = await service.environments(project)

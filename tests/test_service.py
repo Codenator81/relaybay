@@ -34,7 +34,7 @@ async def test_invalid_input_is_rejected(service: Service) -> None:
     with pytest.raises(ValidationError):
         await service.create_task("acme-shop", "   ")
     with pytest.raises(ValidationError):
-        await service.create_task("acme-shop", "x", stage="review")
+        await service.create_task("acme-shop", "x", stage="qa")
     with pytest.raises(NotFoundError):
         await service.create_task("nope", "x")
 

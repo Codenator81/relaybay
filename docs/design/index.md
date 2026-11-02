@@ -12,7 +12,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0004 | [Navigation: sidebar, Inbox, Map, Usage, Ctrl+K](0004-navigation.md) | Accepted | 0.2.0 / 0.4.0 |
 | 0005 | [Comments to agents](0005-comments-to-agents.md) | Implemented (unreleased) | 0.2.0 |
 | 0006 | [Environments, access and agent permissions](0006-environments-and-access.md) | Implemented (unreleased) | 0.2.0 |
-| 0007 | [Review: checklist with screenshots](0007-review.md) | Accepted | 0.3.0 |
+| 0007 | [Review: checklist with screenshots](0007-review.md) | Implemented | 0.3.0 |
 | 0008 | [Memory and context](0008-memory-and-context.md) | Accepted | 0.3.0 |
 | 0009 | [Screenshot annotations](0009-screenshot-annotations.md) | Accepted | 0.4.0 |
 | 0010 | [Map and Usage](0010-map-and-usage.md) | Accepted | 0.4.0 |

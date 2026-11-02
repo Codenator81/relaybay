@@ -18,6 +18,7 @@ from relaybay.domain.environments import (
 )
 from relaybay.domain.hooks import WAKE_HOLD_SECONDS
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
+from relaybay.domain.review import DEFAULT_FILE_MAX_MB, DEFAULT_TASK_MAX_MB
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
 from relaybay.domain.stages import STAGES
@@ -79,7 +80,7 @@ class Settings:
     stage_labels: dict[str, str] = field(
         default_factory=dict,
         metadata=_doc(
-            "Display names per stage (`plan`, `dev`, `test`, `live`, `done`).",
+            "Display names per stage (`plan`, `dev`, `review`, `test`, `live`, `done`).",
             key="[stages.labels]",
             default="the stage keys",
         ),
@@ -172,6 +173,33 @@ class Settings:
             default="`policy.json` in the data directory",
         ),
     )
+    attachment_roots: list[Path] = field(
+        default_factory=list,
+        metadata=_doc(
+            "Extra folders `attach_file` may read screenshots from, besides the project's"
+            " `repo_path` and the temp folder (for example a screenshots folder). The"
+            " environment variable is comma-separated.",
+            key="attachment_roots",
+            env="RELAYBAY_ATTACHMENT_ROOTS",
+            default="`[]`",
+        ),
+    )
+    attachments_max_mb: int = field(
+        default=DEFAULT_FILE_MAX_MB,
+        metadata=_doc(
+            "Largest screenshot in MB (whole number >= 1).",
+            key="attachments_max_mb",
+            env="RELAYBAY_ATTACHMENTS_MAX_MB",
+        ),
+    )
+    attachments_task_max_mb: int = field(
+        default=DEFAULT_TASK_MAX_MB,
+        metadata=_doc(
+            "Screenshots of one task in all, in MB (whole number >= 1).",
+            key="attachments_task_max_mb",
+            env="RELAYBAY_ATTACHMENTS_TASK_MAX_MB",
+        ),
+    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
@@ -194,6 +222,10 @@ class Settings:
     @property
     def db_path(self) -> Path:
         return self.home / "relaybay.sqlite"
+
+    @property
+    def attachments_dir(self) -> Path:
+        return self.home / "attachments"
 
     @property
     def token_path(self) -> Path:
@@ -269,6 +301,20 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
                 f"{source}: done_window_days must be a whole number >= 1, got {value!r}"
             )
         settings.done_window_days = value
+    for key in ("attachments_max_mb", "attachments_task_max_mb"):
+        if key in data:
+            value = data[key]
+            if isinstance(value, str) and value.strip().isdigit():
+                value = int(value)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{source}: {key} must be a whole number >= 1, got {value!r}")
+            setattr(settings, key, value)
+    if "attachment_roots" in data:
+        value = data["attachment_roots"]
+        roots = _split_list(value) if isinstance(value, str) else value
+        if not isinstance(roots, list) or not all(isinstance(r, str) and r.strip() for r in roots):
+            raise ValueError(f"{source}: attachment_roots must be a list of folders, got {value!r}")
+        settings.attachment_roots = [Path(r.strip()).expanduser() for r in roots]
     if "require_tracker_log" in data:
         value = data["require_tracker_log"]
         if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:

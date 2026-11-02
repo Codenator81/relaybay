@@ -39,9 +39,49 @@ editable fields come from one list (`domain/task_fields.py`) that drives write v
 
 <a id="spec-stages"></a>
 
-**Stage.** A fixed set: `plan → dev → test → live → done`. Any transition is allowed (work jumps back
+**Stage.** A fixed set: `plan → dev → review → test → live → done`. `review` is where the owner
+accepts the work step by step ([below](#spec-review)). Any transition is allowed (work jumps back
 from `test` to `dev`); the event log keeps the history. Moving to `done` sets the closed time.
 Display labels are configurable ([§10](#spec-config)); the keys stay English.
+
+<a id="spec-review"></a>
+
+**Review checklist.** A task can carry an ordered checklist of what the owner should check by eye
+(the Owner check, [design 0007](design/0007-review.md)): each step has a title, an optional "what,
+how and why" text (markdown) and a status `open`, `accepted` or `rejected` with who decided and
+when. Agents write it with `review_steps_set` (it replaces the list: step N keeps its status and
+screenshots while its title and details stay the same, a changed step is `open` again, steps past
+the new end are removed and their screenshots stay on the task) and change one step with
+`review_step_update` (text, or `status: open` to ask for a new look after a fix). Only the owner
+accepts or rejects, on the board. Each decision is an owner comment linked to the step
+(`comment.step_id`) and reaches the bound session through the comment path ([§4](#spec-hooks)):
+"Step 2 'Login with 2FA' accepted — continue with step 3", "… accepted — all 3 steps accepted",
+"Step 2 '…' rejected: <comment>", "… reopened", or "On step 2 '…': <comment>". A decision
+the step already has, without a comment (a double click, a stale panel), writes and delivers
+nothing. Moving a task to
+`review` or `test` while its checklist is empty adds a hint line to the MCP answer (not a rule
+warning). Events: `review.step_added`, `review.step_updated`, `review.step_removed`,
+`review.step_accepted`, `review.step_rejected`.
+
+<a id="spec-attachments"></a>
+
+**Screenshots (attachments).** Images of a task, optionally of one step, with a markdown caption.
+`attach_file` copies a file (`path`) or decoded `content_base64`; the owner can paste one into a
+step on the board. A path that starts with two slashes or backslashes (a UNC share, `\\?\` and
+`\\.\` device paths, named pipes) is refused by its text before the disk is touched, unless it lies
+under a share listed in `attachment_roots`. Only PNG, JPEG, WebP and GIF are kept, recognised by their magic bytes (never
+by name or claimed type; SVG and everything else is refused); at most `attachments_max_mb` (10)
+per file and `attachments_task_max_mb` (200) per task. A `path` must be absolute; symlinks and
+`..` are resolved before the check, and the real path must be a regular file (no device, pipe or
+folder) inside an allowed folder: the project's `repo_path`, the user's temp folder or one of
+`attachment_roots`, and not in relaybay's data folder itself or its `attachments/` folder. The
+opened file must be the one that was checked (its stat from the check and `fstat` of the open file
+are the same file). The same image (SHA-256) on the same task is stored once; attaching it again,
+to any step, reuses it and the answer names the step it is on. Files live at `<data dir>/attachments/<project>/<task key>/<random hex>.<ext>`; the database
+keeps only the stored name, the original name (display only), type, size, hash, caption, author
+and time. Removing an attachment deletes its file after the commit; on every start a sweep deletes
+files and folders under `attachments/` that no row names (left by a crash, a failed delete, a
+removed task). Events: `attachment.added`, `attachment.updated` (caption), `attachment.removed`.
 
 <a id="spec-session"></a>
 
@@ -152,16 +192,28 @@ exist yet are not shown.
 | Page | URL | Content |
 |---|---|---|
 | Projects | `/` | Projects with task counts per stage. |
-| Project board | `/p/<slug>` | One column per stage; on narrow screens a stage tab bar shows one column at a time. |
-| Task dialog | `/p/<slug>?task=<key>` | The task over the live board (full screen on a phone); closes with Back, Esc or a click outside. |
+| Project board | `/p/<slug>` | One column per stage on two pages (`?page=2`, [below](#spec-board-paging)); on narrow screens a stage tab bar shows one column at a time. |
+| Task dialog | `/p/<slug>?task=<key>` | The task over the live board (full screen on a phone), tabs Overview and Review (`&tab=review`); closes with Back, Esc or a click outside. |
 | Task page | `/t/<key>` | The same details as the dialog on a page of its own. |
 | Inbox | `/inbox` | Everything that needs the owner, across projects ([below](#spec-board-inbox)). |
 | Sessions | `/p/<slug>/sessions`, `/sessions` | The sessions of a project, or all sessions ([below](#spec-board-sessions)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
+| Notifications | `/settings/notifications` | Browser notifications: state and the button that asks for the permission ([below](#spec-board-notify)). |
+| Screenshot | `/files/<id>` | One stored image behind the board cookie ([§9](#spec-security)). |
 | Policy | `/settings/policy` | The effective policy per scope with the source of each value, preset, layer editors and agent proposals ([§7](#spec-policy-page)). |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
+
+<a id="spec-board-paging"></a>
+
+**Paged board.** Six columns do not fit one screen: on wide screens page 1 shows plan, dev,
+review and test, page 2 live and done. The pager next to the search (links "Plan · Dev · Review ·
+Test →" and "← Live · Done") and the keyboard ← / → switch pages; the keys are ignored inside
+inputs, text areas, selects and editable text, with a modifier key, and while a dialog or the
+screenshot viewer is open. The page is in the URL (`?page=2`, kept with search and archive
+filters; out of range clamps), switching does not reload, and live updates keep refreshing every
+column. Below 760 px there is no pager: the stage tab bar has six tabs.
 
 <a id="spec-board-cards"></a>
 
@@ -169,7 +221,8 @@ exist yet are not shown.
 a URL is set, ✓ when logged, "not logged" with `require_tracker_log`) and an icon-only "open in
 desktop" link with the session's hook status dot in the top row; then title, waiting on, branch and
 the next step (two lines, muted with "stale" when stale). Done cards hide waiting on and the next
-step.
+step. A task with a checklist shows **Review 2/5** (accepted / all; green when all are accepted,
+red-tinted while one is rejected), which opens the dialog on its Review tab.
 
 <a id="spec-board-dialog"></a>
 
@@ -179,6 +232,32 @@ with state and size badges, decisions, the bound session with its hook status an
 "Open in desktop" and "Copy link", the session binding history, the tracker history, an
 **Unbind session** button (with confirmation), the comments and the edit form. A stage move that
 misses a rule shows the warning in the form (or the refusal in `strict` mode).
+
+<a id="spec-board-review"></a>
+
+**Review tab** (task dialog; a Review section on the task page): "2 of 5 accepted · 1 rejected",
+then the steps in order. Each step has an Accept checkbox (checking accepts, unchecking reopens),
+its title and status, an expandable **What, how and why**, its screenshots as thumbnails with
+captions (each with **Remove**, confirmed) and a comment box with **Comment**, **Reject** and
+**Accept** (the comment travels with the decision). Screenshots of no step follow under "Other
+screenshots". Pressing Ctrl+V with an image in the clipboard while the focus is inside a step
+uploads it to that step (`POST /p/<slug>/t/<key>/review/<step id>/paste`, the raw image as body,
+the CSRF token in `X-Relaybay-CSRF`, signed-in browser only, the same checks as `attach_file`;
+413 above the size limit). All Review writes are board-only (cookie and CSRF, refused with a
+Bearer token). The tab refreshes live on `review.*` and `attachment.*` events of its task, but not
+while one of its comment boxes holds text.
+
+**Viewer.** A thumbnail opens a full-screen viewer over the dialog: the image fitted to the
+screen, its caption below, a counter "3 / 7" across the task's screenshots, ‹ › buttons and ← / →,
+Esc or Close to leave (the dialog stays open), swipe left or right on phones.
+
+<a id="spec-board-notify"></a>
+
+**Browser notification.** With the permission granted, every open board tab shows "Waiting for
+your acceptance: <task title>" when a `task.stage_changed` event moves a task to `review` or
+`test` (one per task: the task key is the notification tag); a click opens its Review tab. The
+permission is requested only by the **Allow notifications** button in Settings → Notifications,
+never on page load; the page shows whether this browser allows, blocks or has not decided.
 
 <a id="spec-board-comments"></a>
 
@@ -202,6 +281,9 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
 
 **Inbox** ("Needs you") lists, grouped, with a count per group:
 
+- **Review queue:** tasks in `review` or `test` with a checklist, across projects, the longest
+  waiting first (by the last stage change), with accepted / all; a row opens the task dialog on its
+  Review tab.
 - **Waiting on you:** open tasks whose `waiting_on` is one of `owner_names` (config, default
   `owner`, `me`, `you`; compared case-insensitively after trimming).
 - **Rule warnings:** tasks whose last stage move missed a working rule (the warnings in its
@@ -220,7 +302,7 @@ Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?tas
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
 `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
-`policy.proposal_*`), at most once per 2 s. With
+`policy.proposal_*`, `review.step_*`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -271,7 +353,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, nine numbered points: read
+**Server instructions** (sent on connect) are the working contract, ten numbered points: read
 `project_snapshot` first (its first line names the rules); pick or create a task and pass `session`
 (desktop id with `session_title`, else a name; `hook_session` if the session start gave one; don't
 rebind without your `local_` id); update `next_step`, `waiting_on` and `progress` on every stage
@@ -281,7 +363,9 @@ needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (
 when a hook gives owner comments, handle them like a user message and call `comment_ack` (or answer
 with `comment_add`); before touching a server, cluster or database read `environments_get` (the
 level says what is allowed unasked; live is read-only unless the owner set otherwise), never paste
-secrets, propose changes with `environment_propose`.
+secrets, propose changes with `environment_propose`; before moving a task to review or test,
+write the Owner check with `review_steps_set` and attach screenshots with `attach_file` (the
+owner's decisions arrive as owner comments).
 
 <a id="spec-mcp-tools"></a>
 
@@ -294,6 +378,7 @@ secrets, propose changes with `environment_propose`.
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
+| Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption` |
 | Environments | `environments_get`, `environment_propose` |
 | Catch-up and rules | `events_since`, `rules_get` |
 
@@ -509,9 +594,12 @@ settings come out as one failed `settings` item.
 <a id="spec-demo"></a>
 
 **`relaybay demo --home <dir> [--force]`** seeds a made-up workspace into the data folder: projects
-`acme-shop` (with a repository path) and `demo-api`, eight tasks across all five stages with
+`acme-shop` (with a repository path) and `demo-api`, nine tasks across all six stages with
 descriptions, progress and reports, tracker badges (one logged done task), a stale next step, a
-decision and a desktop session bound to a dev task and shown as working (one synthetic hook event).
+decision, a desktop session bound to a dev task and shown as working (one synthetic hook event),
+and a task in review with a three-step checklist and two generated PNG screenshots, bound to a
+session whose hook id `demo-review-hook-session` is linked exactly (so a simulated hook event
+receives the owner's decisions).
 `--home` is required. A database that already has a project or an event is refused (exit `1`);
 with `--force` it is renamed to `relaybay.sqlite.before-demo-<YYYYMMDD-HHMMSS>` (with its WAL files)
 and a new one is seeded. The token is not created; `relaybay serve --home <dir>` does that.
@@ -889,12 +977,27 @@ relaybay is a single-user local server. The security layers, in request order:
 7. **Response headers:** `Content-Security-Policy: default-src 'self'; img-src 'self' data:;
    object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
    `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`.
-   htmx runs with eval and script tags disabled.
+   htmx runs with eval and script tags disabled. Links to `/static/` carry `?v=<content hash>`,
+   so a browser fetches a changed script or stylesheet after an upgrade instead of a cached one.
 8. **Untrusted content:** agent markdown is rendered with raw HTML disabled; hook prompt text and tool
    input are never stored, except the redacted 200-character summary of a call that touches a live
    environment ([§7](#spec-journal)); hook bodies are capped at 256 KB.
 9. **No secrets at rest:** environment, access and proposal writes refuse obvious secret values
    ([§7](#spec-access-map)).
+10. **Stored files:** screenshots are kept only when their magic bytes say PNG, JPEG, WebP or GIF
+    (no SVG), under random names in the data folder, read by `attach_file` only from allowed
+    folders after resolving symlinks and `..` ([§1](#spec-attachments)). `GET /files/<id>` needs
+    the board cookie (or the Bearer token), answers with the stored `Content-Type`,
+    `Content-Disposition: inline`, `nosniff` and the CSP above, so a file is never run as a page.
+
+<a id="spec-security-forms"></a>
+
+**Full-page forms** (Stands & access, Settings → Policy, Settings → Integrations without htmx)
+answer a successful write with `303` to their page (POST → redirect → GET), so a refresh does not
+send the form again; the outcome ("Environment saved.", "Saved the acme-shop policy.", the check
+results) rides in a short-lived `HttpOnly`, `SameSite=Strict` cookie (`relaybay_flash`, 60 s) that
+the page shows once and deletes. A refused write still renders the page with the reason, and the
+"confirm raising live" step is a rendered page whose confirmed save redirects.
 
 <a id="spec-no-telemetry"></a>
 
@@ -919,8 +1022,9 @@ token file. The identity passed as `session` is for display, never for authorisa
 
 Settings come from defaults, then `config.toml` in the data directory, then `RELAYBAY_*` environment
 variables, then command-line flags. The data directory (per-user data dir via `platformdirs`, or
-`RELAYBAY_HOME` / `--home`) holds `relaybay.sqlite`, `token`, the optional `config.toml` and the
-optional global policy `policy.json` ([§7](#spec-policy)). An invalid value stops the start with a
+`RELAYBAY_HOME` / `--home`) holds `relaybay.sqlite`, `token`, the optional `config.toml`, the
+optional global policy `policy.json` ([§7](#spec-policy)) and `attachments/` (screenshots,
+[§1](#spec-attachments)). An invalid value stops the start with a
 message naming the key (an invalid policy file: its path and the problem). Keys, variables and
 flags: [configuration reference](reference/configuration.md); policy keys:
 [policy reference](reference/policy.md).
@@ -940,7 +1044,10 @@ non-root user with `RELAYBAY_HOME=/data` (a volume), `RELAYBAY_HOST=0.0.0.0`, po
 
 SQLite in WAL mode with `foreign_keys=ON` and a 5 s busy timeout; one process writes. Migrations are
 numbered SQL files applied in order at start, each atomically, tracked by `PRAGMA user_version`;
-existing databases upgrade in place.
+existing databases upgrade in place. A migration whose first line is
+`-- relaybay:foreign-keys-off` rebuilds a referenced table: it runs with foreign keys off and is
+committed only when `PRAGMA foreign_key_check` finds no violation that was not there before; the
+error names the tables. Dangling keys an older database already had are logged and kept.
 
 | Migration | Adds |
 |---|---|
@@ -954,6 +1061,7 @@ existing databases upgrade in place.
 | `0008_comments` | `comment` (task, author kind and name, author session, body, `in_reply_to`, created / delivered / read times, `delivered_to_session_id`); `session.cc_exact` (0 for links made before it) |
 | `0009_environments` | `environment` (project, name, kind, base URL, sign-in flag — never on live, login state path, notes, level, overrides JSON, position, changed at / by), `environment_access` (environment, kind, fields JSON), `environment_proposal` (project, change JSON, reason, proposed by, session, status, decided at / by) |
 | `0010_policy` | `policy_layer` (project, environment or none for the project layer, body JSON, changed at / by; one per scope), `policy_proposal` (scope, project, patch JSON, reason, proposed by, session, status, decided at / by) |
+| `0011_review` | the `review` stage (the `task` table rebuilt with the wider stage check, rows and ids kept), `review_step` (task, position, title, details, status, decided at / by, created by), `attachment` (task, step, kind, stored name, original name, type, size, SHA-256, caption, created by / at), `comment.step_id`, `comment.attachment_id` |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

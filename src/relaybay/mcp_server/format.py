@@ -19,6 +19,7 @@ from relaybay.domain.models import (
     Task,
     TrackerEntry,
 )
+from relaybay.domain.review import Attachment, Review, ReviewStep
 from relaybay.domain.rules import Rules, requirement_label, requirement_short
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
@@ -107,6 +108,8 @@ def task_line(
         extras.append(f"session: {session_label(task)}")
     if tracker := tracker_label(task, require_log):
         extras.append(f"tracker: {tracker}")
+    if task.review_total:
+        extras.append(f"review {task.review_accepted}/{task.review_total}")
     extras.append(f"v{task.version}")
     line = f"- {parts[0]} — " + " · ".join(extras)
     if task.stage_note:
@@ -118,6 +121,65 @@ def task_line(
     if last:
         line += f"\n  last report: {report_line(last)}"
     return line
+
+
+def attachment_line(item: Attachment) -> str:
+    caption = f": {short(item.caption_md)}" if item.caption_md else ""
+    return f"  - screenshot #{item.id} ({item.mime}, {item.size // 1024} KB){caption}"
+
+
+def step_line(step: ReviewStep) -> str:
+    line = f"{step.position}. [{step.status}] {step.title}"
+    if step.decided_by and step.status != "open":
+        when = f" {step.decided_at[:16]}Z" if step.decided_at else ""
+        line += f" — {step.status} by {step.decided_by}{when}"
+    if step.details_md:
+        line += f"\n   what, how, why: {short(step.details_md, 400)}"
+    return line
+
+
+def review_text(task: Task, review: Review, comments: list[Comment]) -> str:
+    """A task's checklist for `review_get`."""
+    if not review.steps and not review.loose:
+        return (
+            f"**{task.key}** has no review checklist yet. Write one with review_steps_set before"
+            " you move the task to review or test."
+        )
+    lines = [
+        f"# Review of {task.key} — {task.title}",
+        f"Stage {task.stage.value}; {review.accepted}/{len(review.steps)} accepted"
+        + (f", {review.rejected} rejected" if review.rejected else "")
+        + ".",
+    ]
+    for step in review.steps:
+        lines.append(step_line(step))
+        lines.extend(attachment_line(a) for a in step.attachments)
+        notes = [c for c in comments if c.step_id == step.id]
+        lines.extend(f"   owner #{c.id}: {short(c.body_md, 400)}" for c in notes)
+    if review.loose:
+        lines.append("Screenshots of no step:")
+        lines.extend(attachment_line(a) for a in review.loose)
+    return "\n".join(lines)
+
+
+def review_saved(task: Task, review: Review) -> str:
+    return (
+        f"Checklist of **{task.key}** saved: {len(review.steps)} step(s),"
+        f" {review.accepted} accepted. The owner decides each step on the board."
+    )
+
+
+def attachment_saved(item: Attachment, new: bool) -> str:
+    if not new:
+        where = f"step {item.step_position}" if item.step_position else "the task (no step)"
+        return (
+            f"The same image is already attached to **{item.task_key}** as #{item.id}, on"
+            f" {where}; reused, nothing was stored again. An image is kept once per task: to"
+            f" show it on another step, refer to #{item.id} in that step's details."
+        )
+    return (
+        f"Attached screenshot #{item.id} to **{item.task_key}** ({item.mime}, {item.size} bytes)."
+    )
 
 
 def project_list(items: list[ProjectSummary]) -> str:

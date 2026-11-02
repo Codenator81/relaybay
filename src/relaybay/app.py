@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from relaybay import __version__
 from relaybay.config import Settings, load_settings
 from relaybay.domain.errors import DomainError, NotFoundError
+from relaybay.domain.review import MB
 from relaybay.mcp_server.server import build_mcp, mcp_routes
 from relaybay.security import SecurityMiddleware, load_or_create_token
 from relaybay.service import Service
@@ -27,6 +28,10 @@ def create_app(settings: Settings) -> FastAPI:
         permission_defaults=settings.policy_config.get("permission_defaults"),
         guard_mode=settings.policy_config.get("guard_mode"),
         policy_file=settings.policy_path,
+        attachments_dir=settings.attachments_dir,
+        attachment_roots=settings.attachment_roots,
+        attachment_max_bytes=settings.attachments_max_mb * MB,
+        attachment_task_max_bytes=settings.attachments_task_max_mb * MB,
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 

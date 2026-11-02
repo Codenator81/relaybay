@@ -1,7 +1,8 @@
 # 0007 — Review: acceptance checklist with screenshots
 
-- Status: **Accepted** (step 11.5), planned for 0.3.0, after comments ([0005](0005-comments-to-agents.md))
-  and environments ([0006](0006-environments-and-access.md)).
+- Status: **Implemented** (step 11.5) for 0.3.0, after comments ([0005](0005-comments-to-agents.md))
+  and environments ([0006](0006-environments-and-access.md)). Shipped behaviour:
+  [SPEC](../SPEC.md#spec-review); recipes: [Screenshots for review](../how-to/screenshots-for-review.md).
 - Size: ~4–4.5 agent-days (data, storage and safety tests ~1, MCP ~0.5, Review tab and viewer
   ~1–1.5, review stage and paged board ~0.5, Review queue and notification ~0.5–1, screenshot recipes
   ~0.25).
@@ -90,6 +91,26 @@ agents (published as a how-to with `attach_file` examples):
   `uiautomator dump`, or a mobile MCP server.
 - **iOS simulator (macOS):** `xcrun simctl io booted screenshot shot.png`.
 - Then `attach_file(task, path, step, caption)`.
+
+## As built
+
+Choices made while implementing, where the design left room:
+
+- Steps are addressed by their number (`step=2`) in MCP and by id on the board.
+  `review_steps_set` matches steps by position: an unchanged step keeps its decision and
+  screenshots, a changed one opens again, removed steps leave their screenshots on the task
+  ("Other screenshots").
+- Agents may set a step only back to `open` (after a fix); accepting and rejecting is the
+  owner's, on the board. The decision text for the agent is an owner comment linked to the step.
+- The dialog has Overview and Review tabs; the binding and tracker history stay in Overview (no
+  separate History tab yet). The task page shows the checklist as a section.
+- `attach_file` takes absolute paths only, refuses files directly in the data folder (database,
+  token) and anything in `attachments/`, and checks that the opened file is the one it resolved.
+  `attachment_roots` adds folders to the defaults (repository, temp folder).
+- relaybay has no task deletion yet; files of tasks that disappear (and of crashed writes) are
+  removed by the startup sweep. Owners remove single screenshots on the board.
+- The notification fires for every move to review or test, with or without a checklist; the task
+  key is its tag, so several open tabs show one.
 
 ## Risks
 

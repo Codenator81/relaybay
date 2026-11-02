@@ -27,6 +27,11 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`comment_add`](#comment_add) | write |
 | [`rules_get`](#rules_get) | read |
 | [`events_since`](#events_since) | read |
+| [`review_get`](#review_get) | read |
+| [`review_steps_set`](#review_steps_set) | write |
+| [`review_step_update`](#review_step_update) | write |
+| [`attach_file`](#attach_file) | write |
+| [`attachment_caption`](#attachment_caption) | write |
 | [`environments_get`](#environments_get) | read |
 | [`environment_propose`](#environment_propose) | write |
 | [`policy_get`](#policy_get) | read |
@@ -144,12 +149,12 @@ Change any task fields given as one JSON object, with the same rules as task_upd
 
 ### `task_set_stage`
 
-Move a task to another stage (plan, dev, test, live, done) when its work moves on, e.g. to dev when you start coding, to test when it is ready for review, to done when finished. Any transition is allowed; a move that misses a working rule (see rules_get) adds a 'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Move a task to another stage (plan, dev, review, test, live, done) when its work moves on, e.g. to dev when you start coding, to review when the owner should accept it step by step (fill the checklist with review_steps_set first), to test when it is on the test environment, to done when finished. Any transition is allowed; a move that misses a working rule (see rules_get) adds a 'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
-| `stage` | string | yes | One of: plan, dev, test, live, done. |
+| `stage` | string | yes | One of: plan, dev, review, test, live, done. |
 | `note` | string or null | no | Short note next to the stage, e.g. 'PR open'. |
 | `next_step` | string or null | no | What happens next, one line; saved in the same write. A next step set before the last stage change shows as stale. Omit to keep it; '-' or '' clears it. |
 | `waiting_on` | string or null | no | Who acts next; saved in the same write. Omit to keep it; '-' or '' clears it. |
@@ -257,6 +262,69 @@ Events after `since_id` (task created, stage changed, report added, ...), oldest
 | `since_id` | integer | no | Last event id you have seen. Default: `0`. |
 | `project` | string or null | no | Project slug filter. |
 | `limit` | integer | no | Default: `50`. |
+
+### `review_get`
+
+The task's review checklist: each step with its status (open, accepted, rejected), what to check, its screenshots with captions and ids, plus the owner's comments on the steps. Call it after an owner decision arrives, or before you change the checklist.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+
+### `review_steps_set`
+
+Write what the owner should check by eye (the Owner check) as an ordered checklist the owner accepts step by step on the board. Do it before moving the task to review or test.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `steps` | list of object | yes | The whole checklist in order, e.g. [{'title': 'Login with 2FA', 'details': 'What to check, how and why (markdown)'}]. It replaces the current one: step N keeps its decision and screenshots while its title and details stay the same; a changed step is open again; steps past the end are removed. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `review_step_update`
+
+Change one review step: its text, or reopen it after you fixed what the owner rejected. A changed text opens the step again.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `step` | integer | yes | The step's number in the checklist. |
+| `title` | string or null | no | New title. |
+| `details` | string or null | no | New 'what, how and why' text (markdown). |
+| `status` | string or null | no | Only 'open': ask the owner to look again after a fix. Accepting and rejecting is the owner's, on the board. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `attach_file`
+
+Attach a screenshot to a task, optionally to one review step, with a caption. The type is checked by content (SVG and other files are refused) and sizes are limited. See the how-to 'Screenshots for review' for producing the file.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `path` | string or null | no | Absolute path of a PNG, JPEG, WebP or GIF file inside the project's repository, the temp folder or a folder in `attachment_roots`. It is copied; the original stays. |
+| `content_base64` | string or null | no | The image itself, base64, instead of a path (same rules). |
+| `filename` | string or null | no | A display name for content_base64. |
+| `step` | integer or null | no | Review step number it belongs to. |
+| `caption` | string or null | no | What the screenshot shows (markdown). |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `attachment_caption`
+
+Change the caption of a screenshot.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `attachment_id` | integer | yes | The attachment id from attach_file. |
+| `caption` | string | yes | New caption (markdown); '-' or '' clears it. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `environments_get`
 

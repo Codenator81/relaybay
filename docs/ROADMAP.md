@@ -45,7 +45,7 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| Review stage, paged board, Review tab with checklist and screenshots, Review queue in Inbox, browser notification (11.5) | later | [0007](design/0007-review.md) |
+| Review stage, paged board, Review tab with checklist and screenshots, Review queue in Inbox, browser notification (11.5) | done | [0007](design/0007-review.md) |
 | Memory and documents: decisions with scopes, memory notes and blocks, full-text search (11.6a) | later | [0008](design/0008-memory-and-context.md) |
 | Digests per level with cursors and budgets, SessionStart context injection (11.6b) | later | [0008](design/0008-memory-and-context.md) |
 | Markdown import and export of the memory layout, dry-run diff (11.6c) | later | [0008](design/0008-memory-and-context.md) |

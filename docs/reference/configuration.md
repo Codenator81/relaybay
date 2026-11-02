@@ -14,7 +14,7 @@ stops `relaybay serve` with a message that names the key.
 | `host` | `127.0.0.1` | `RELAYBAY_HOST` | `--host` | Bind address. Anything but loopback prints a warning. |
 | `port` | `8765` | `RELAYBAY_PORT` | `--port` | Port. |
 | `allowed_hosts` | `[]` | `RELAYBAY_ALLOWED_HOSTS` | — | Extra names accepted in the `Host` header (LAN names); the environment variable is comma-separated. |
-| `[stages.labels]` | the stage keys | — | — | Display names per stage (`plan`, `dev`, `test`, `live`, `done`). |
+| `[stages.labels]` | the stage keys | — | — | Display names per stage (`plan`, `dev`, `review`, `test`, `live`, `done`). |
 | `[reports.labels]` | built-in | — | — | Display names of report states and sizes. |
 | `[reports.hints]` | built-in | — | — | Tooltips of report badges. |
 | `desktop_link_template` | `claude://claude.ai/epitaxy/{id}` | `RELAYBAY_DESKTOP_LINK_TEMPLATE` | — | Link for a desktop session id; must contain `{id}`. |
@@ -26,6 +26,9 @@ stops `relaybay serve` with a message that names the key.
 | `[permission_defaults]` | `local = "full"`, `test = "full"`, `live = "read"` | — | — | Legacy: agents' level per environment kind (`none`, `read`, `ask`, `full`); a layer under `policy.json` ([policy reference](policy.md)). |
 | `guard_mode` | `warn` | `RELAYBAY_GUARD_MODE` | — | Legacy: `off`, `log`, `warn` or `block`, the guard mode; a layer under `policy.json` ([policy reference](policy.md)). |
 | `policy_file` | `policy.json` in the data directory | `RELAYBAY_POLICY_FILE` | — | The global policy layer (JSON, [policy reference](policy.md)); a relative path is read from the data directory. A missing file means the `default` preset. |
+| `attachment_roots` | `[]` | `RELAYBAY_ATTACHMENT_ROOTS` | — | Extra folders `attach_file` may read screenshots from, besides the project's `repo_path` and the temp folder (for example a screenshots folder). The environment variable is comma-separated. |
+| `attachments_max_mb` | `10` | `RELAYBAY_ATTACHMENTS_MAX_MB` | — | Largest screenshot in MB (whole number >= 1). |
+| `attachments_task_max_mb` | `200` | `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — | Screenshots of one task in all, in MB (whole number >= 1). |
 | `claude_home` | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` | Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor, Integrations). |
 
 ## Example `config.toml`

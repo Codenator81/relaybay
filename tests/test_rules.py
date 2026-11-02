@@ -107,7 +107,7 @@ def test_merge_per_stage_and_guidance() -> None:
     ("data", "message"),
     [
         ({"colour": 1}, "unknown rules key(s) colour"),
-        ({"stage_requirements": {"review": []}}, "unknown stage 'review'"),
+        ({"stage_requirements": {"qa": []}}, "unknown stage 'qa'"),
         ({"stage_requirements": {"test": {}}}, "stage_requirements.test must be a list"),
         ({"stage_requirements": {"test": [{"kind": "x"}]}}, "test[0].kind must be one of"),
         ({"stage_requirements": {"done": [{"kind": "field_present"}]}}, "field must be a task"),

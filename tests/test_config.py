@@ -37,8 +37,8 @@ def test_home_from_env(tmp_path: Path) -> None:
 
 
 def test_unknown_stage_label_is_an_error(tmp_path: Path) -> None:
-    (tmp_path / "config.toml").write_text('[stages.labels]\nreview = "x"\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="review"):
+    (tmp_path / "config.toml").write_text('[stages.labels]\nqa = "x"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="qa"):
         load_settings(home=tmp_path, environ={})
 
 

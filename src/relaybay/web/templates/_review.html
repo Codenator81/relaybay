@@ -1,0 +1,70 @@
+{#- The Review tab: the acceptance checklist with screenshots. Expects: t (the task), review,
+    optional error. Refetched on live events; the comment boxes are inside it, so a refresh waits
+    while one holds text (app.js). -#}
+{%- macro thumbs(items) -%}
+{% if items %}
+<ul class="thumbs">
+  {% for a in items %}
+  <li class="thumb">
+    <a class="thumb-link" href="/files/{{ a.id }}" data-viewer data-caption="{{ a.caption_md or '' }}" title="Open full screen">
+      <img src="/files/{{ a.id }}" alt="{{ a.caption_md or a.original_name or ('Screenshot #' ~ a.id) }}" loading="lazy">
+    </a>
+    {% if a.caption_md %}<div class="markdown thumb-caption">{{ a.caption_md|markdown }}</div>{% endif %}
+    <form class="thumb-remove" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/attachments/{{ a.id }}/delete"
+          hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/attachments/{{ a.id }}/delete" hx-target="closest .review" hx-swap="outerHTML"
+          hx-confirm="Remove this screenshot? The file is deleted.">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <button type="submit" class="link-button muted">Remove</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{%- endmacro -%}
+<div class="review" id="review-{{ t.key }}" data-key="{{ t.key }}" data-count="{{ review.accepted }}/{{ review.steps|length }}"
+     hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/review" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {% if review.steps %}
+  <p class="review-summary muted">{{ review.accepted }} of {{ review.steps|length }} accepted{% if review.rejected %} · {{ review.rejected }} rejected{% endif %}. A decision reaches {{ t.session_name or "the bound session" }} as a comment.</p>
+  <ol class="review-steps">
+    {% for s in review.steps %}
+    {%- set base = "/p/" ~ t.project_slug ~ "/t/" ~ t.key ~ "/review/" ~ s.id %}
+    <li class="review-step status-{{ s.status }}" id="step-{{ s.id }}" data-step="{{ s.id }}" data-paste="{{ base }}/paste">
+      <form class="review-accept" method="post" action="{{ base }}" hx-post="{{ base }}" hx-target="closest .review" hx-swap="outerHTML" hx-trigger="change">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        <input type="hidden" name="decision" value="{{ 'reopen' if s.status == 'accepted' else 'accept' }}">
+        <label class="review-check">
+          <input type="checkbox"{% if s.status == "accepted" %} checked{% endif %} aria-label="Accept step {{ s.position }}">
+          <span class="review-title"><span class="muted">{{ s.position }}.</span> {{ s.title }}</span>
+        </label>
+        <span class="review-status status-{{ s.status }}">{{ s.status }}</span>
+      </form>
+      {% if s.details_md %}
+      <details class="review-details">
+        <summary>What, how and why</summary>
+        <div class="markdown">{{ s.details_md|markdown }}</div>
+      </details>
+      {% endif %}
+      {{ thumbs(s.attachments) }}
+      <form class="review-comment" method="post" action="{{ base }}" hx-post="{{ base }}" hx-target="closest .review" hx-swap="outerHTML">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        <textarea name="comment" rows="2" maxlength="{{ comment_max }}" aria-label="Comment on step {{ s.position }}"
+                  placeholder="Comment for the agent (optional). Paste a screenshot here with Ctrl+V."></textarea>
+        <div class="form-actions">
+          <button type="submit" class="btn" name="decision" value="comment">Comment</button>
+          {% if s.status != "rejected" %}<button type="submit" class="btn danger" name="decision" value="reject">Reject</button>{% endif %}
+          {% if s.status != "accepted" %}<button type="submit" class="btn primary" name="decision" value="accept">Accept</button>{% endif %}
+          <span class="paste-note muted" role="status"></span>
+        </div>
+      </form>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="muted">No checklist yet. The agent writes what you should check with <code>review_steps_set</code> and attaches screenshots with <code>attach_file</code>.</p>
+  {% endif %}
+  {% if review.loose %}
+  <h3>Other screenshots</h3>
+  {{ thumbs(review.loose) }}
+  {% endif %}
+</div>

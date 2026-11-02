@@ -6,6 +6,11 @@
 <main class="page task-page" id="live" hx-ext="sse" sse-connect="/events"
       data-last-event-id="{{ last_event_id }}" data-project="{{ t.project_slug }}" data-task="{{ t.key }}">
   {% include "_task_view.html" %}
+  <section class="panel">
+    <h2>Review</h2>
+    {% with t = detail.task, review = detail.review %}{% include "_review.html" %}{% endwith %}
+  </section>
   {% with t = detail.task, comments = detail.comments %}{% include "_comments.html" %}{% endwith %}
+  {% include "_viewer.html" %}
 </main>
 {% endblock %}
