@@ -59,12 +59,12 @@ def test_report_labels_and_hints(tmp_path: Path) -> None:
     assert defaults.report_label("verified") == "Verified"
     assert defaults.report_hint("L") == "Large"
     (tmp_path / "config.toml").write_text(
-        '[reports.labels]\nverified = "проверено"\n[reports.hints]\nM = "средняя"\n',
+        '[reports.labels]\nverified = "checked"\n[reports.hints]\nM = "medium change"\n',
         encoding="utf-8",
     )
     custom = load_settings(home=tmp_path, environ={})
-    assert custom.report_label("verified") == "проверено"
-    assert custom.report_hint("M") == "средняя"
+    assert custom.report_label("verified") == "checked"
+    assert custom.report_hint("M") == "medium change"
     assert custom.report_label("blocked") == "Blocked"
     (tmp_path / "config.toml").write_text('[reports.labels]\nshipped = "x"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="shipped"):

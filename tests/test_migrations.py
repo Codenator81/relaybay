@@ -11,7 +11,9 @@ MIGRATIONS = (
     "0001_init.sql",
     "0002_task_description_progress.sql",
     "0003_tracker_and_session_alias.sql",
+    "0004_next_step_freshness.sql",
 )
+LATEST = 5
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -54,8 +56,8 @@ async def test_upgrade_from_0001_keeps_data(tmp_path: Path) -> None:
     conn = await connect(db)
     try:
         async with conn.execute("PRAGMA user_version") as cur:
-            assert (await cur.fetchone())[0] == 4
-        assert await migrate(conn) == 4  # idempotent
+            assert (await cur.fetchone())[0] == LATEST
+        assert await migrate(conn) == LATEST  # idempotent
     finally:
         await conn.close()
 
@@ -85,7 +87,7 @@ async def test_upgrade_from_0002_adds_tracker_fields_and_aliases(tmp_path: Path)
     conn = await connect(db)
     try:
         async with conn.execute("PRAGMA user_version") as cur:
-            assert (await cur.fetchone())[0] == 4
+            assert (await cur.fetchone())[0] == LATEST
     finally:
         await conn.close()
 
@@ -112,6 +114,60 @@ async def test_upgrade_from_0003_backfills_next_step_freshness(tmp_path: Path) -
 
     conn = await connect(db)
     try:
-        assert await migrate(conn) == 4
+        assert await migrate(conn) == LATEST
+    finally:
+        await conn.close()
+
+
+async def test_upgrade_from_0004_backfills_tracker_history(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    await make_old_db(db, version=4)
+    later = "2026-01-05T00:00:00.000+00:00"
+    conn = await connect(db)
+    try:
+        await conn.execute(
+            "UPDATE task SET tracker_name = 'Linear', tracker_ref = 'ENG-1',"
+            " tracker_url = 'https://tracker.example/ENG-1', tracker_logged = 1, updated_at = ?"
+            " WHERE key = 'acme-shop-1'",
+            (later,),
+        )
+        await conn.execute(
+            "INSERT INTO task (project_id, key, title, stage, tracker_ref, created_at, updated_at)"
+            " VALUES (1, 'acme-shop-2', 'Payment', 'dev', 'ENG-2', ?, ?)",
+            (NOW, NOW),
+        )
+        await conn.execute(
+            "INSERT INTO task (project_id, key, title, stage, created_at, updated_at)"
+            " VALUES (1, 'acme-shop-3', 'No tracker', 'plan', ?, ?)",
+            (NOW, NOW),
+        )
+    finally:
+        await conn.close()
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        logged = (await svc.task_detail("acme-shop-1")).tracker_history
+        assert [(e.tracker_name, e.tracker_ref, e.tracker_url) for e in logged] == [
+            ("Linear", "ENG-1", "https://tracker.example/ENG-1")
+        ]
+        assert (logged[0].logged_at, logged[0].unlogged_at, logged[0].created_at) == (
+            later,
+            None,
+            later,
+        )
+        open_entry = (await svc.task_detail("acme-shop-2")).tracker_history
+        assert [(e.tracker_ref, e.logged_at) for e in open_entry] == [("ENG-2", None)]
+        assert (await svc.task_detail("acme-shop-3")).tracker_history == []
+        task = await svc.get_task("acme-shop-1")
+        assert (task.tracker_ref, task.tracker_logged, task.version) == ("ENG-1", True, 1)
+    finally:
+        await svc.close()
+
+    conn = await connect(db)
+    try:
+        assert await migrate(conn) == LATEST  # idempotent: no second backfill
+        async with conn.execute("SELECT COUNT(*) FROM tracker_entry") as cur:
+            assert (await cur.fetchone())[0] == 2
     finally:
         await conn.close()

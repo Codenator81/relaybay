@@ -15,22 +15,24 @@ import aiosqlite
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain.errors import ConflictError, NotFoundError, ValidationError
-from relaybay.domain.models import Binding, Decision, Event, Project, Report, Session, Task
+from relaybay.domain.models import (
+    Binding,
+    Decision,
+    Event,
+    Project,
+    Report,
+    Session,
+    Task,
+    TrackerEntry,
+)
 from relaybay.domain.reports import parse_report
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import OPEN_STAGES, STAGES, Stage, parse_stage
+from relaybay.domain.task_fields import BY_NAME, FIELD_NAMES, NAME_MAX, TEXT_MAX, TITLE_MAX
 from relaybay.events import EventBus
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-TITLE_MAX = 200
-TEXT_MAX = 2000
-NAME_MAX = 100
-MARKDOWN_MAX = 20000
-TRACKER_REF_MAX = 100
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
-
-TEXT_FIELDS = ("stage_note", "waiting_on", "next_step", "branch", "doc_path")
-MARKDOWN_FIELDS = ("description", "progress")
 
 
 def now_iso() -> str:
@@ -83,6 +85,7 @@ class TaskDetail:
     reports: list[Report]
     decisions: list[Decision]
     bindings: list[Binding]
+    tracker_history: list[TrackerEntry]
 
 
 class BindResult(NamedTuple):
@@ -109,10 +112,6 @@ def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
     return text or None
 
 
-def _clean_field(name: str, value: Any) -> str | None:
-    return _clean_text(value, name, MARKDOWN_MAX if name in MARKDOWN_FIELDS else TEXT_MAX)
-
-
 def _clean_bool(value: Any, name: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -128,14 +127,27 @@ def _clean_url(value: Any, name: str) -> str | None:
     return url
 
 
-def _clean_tracker_field(name: str, value: Any) -> Any:
-    if name == "tracker_ref":
-        return _clean_text(value, name, TRACKER_REF_MAX)
-    if name == "tracker_name":
-        return _clean_text(value, name, NAME_MAX)
-    if name == "tracker_url":
+def _clean_field(name: str, value: Any) -> Any:
+    """Validate one task field by its entry in `TASK_FIELDS`; None (or '') clears a text."""
+    spec = BY_NAME[name]
+    if spec.kind == "bool":
+        return _clean_bool(value, name)
+    if spec.kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int | str | None):
+            raise ValidationError(f"{name} must be an integer.")
+        try:
+            return int(value or 0)
+        except ValueError:
+            raise ValidationError(f"{name} must be an integer, got {value!r}.") from None
+    if value is not None and not isinstance(value, str):
+        raise ValidationError(f"{name} must be a string.")
+    if spec.kind == "title":
+        return _clean_title(value)
+    if spec.kind == "stage":
+        return parse_stage(value or "").value
+    if spec.kind == "url":
         return _clean_url(value, name)
-    return _clean_bool(value, name)
+    return _clean_text(value, name, spec.max_length or TEXT_MAX)
 
 
 def _clean_title(value: Any) -> str:
@@ -152,6 +164,22 @@ def _task_diff(task: Task, clean: dict[str, Any]) -> dict[str, Any]:
     if "next_step" in clean and task.next_step and ("stage" in diff or task.next_step_stale):
         diff["next_step"] = clean["next_step"]
     return diff
+
+
+def _unlog_reason(task: Task, diff: dict[str, Any]) -> str | None:
+    """New work in `diff` that invalidates the task's work-log mark: a move back out of `live` or
+    `done` to an earlier stage, or a changed progress summary. Metadata edits do not count."""
+    reasons = []
+    stage = diff.get("stage")
+    if (
+        stage is not None
+        and task.stage in (Stage.LIVE, Stage.DONE)
+        and STAGES.index(Stage(stage)) < STAGES.index(task.stage)
+    ):
+        reasons.append(f"stage moved back from {task.stage.value} to {stage}")
+    if "progress" in diff:
+        reasons.append("progress changed")
+    return ", ".join(reasons) or None
 
 
 def _clean_slug(value: str) -> str:
@@ -295,6 +323,63 @@ class Service:
         )
         return True
 
+    async def _sync_tracker(self, tx: _Tx, task: Task, diff: dict[str, Any]) -> None:
+        """Mirror a write of the task's tracker fields into its `tracker_entry` history: a new
+        key appends an entry, the work-log mark stamps the current one. A cleared key leaves the
+        earlier entries as history."""
+        if not any(k.startswith("tracker_") for k in diff):
+            return
+        ref = diff.get("tracker_ref", task.tracker_ref)
+        if ref is None:
+            return
+        name = diff.get("tracker_name", task.tracker_name)
+        url = diff.get("tracker_url", task.tracker_url)
+        logged = diff.get("tracker_logged", task.tracker_logged)
+        entry = (
+            None
+            if "tracker_ref" in diff
+            else await repo.latest_tracker_entry(tx.conn, task.id, ref)
+        )
+        if entry is None:
+            logged_at = tx.now if logged else None
+            await repo.insert_tracker_entry(tx.conn, task.id, name, ref, url, logged_at, tx.now)
+            return
+        changes: dict[str, Any] = {
+            k: v
+            for k, v in (("tracker_name", name), ("tracker_url", url))
+            if v != getattr(entry, k)
+        }
+        if "tracker_logged" in diff:
+            # Logging again restarts the entry's mark: logged_at is the latest log.
+            changes.update(
+                {"logged_at": tx.now, "unlogged_at": None} if logged else {"unlogged_at": tx.now}
+            )
+        if changes:
+            await repo.update_tracker_entry(tx.conn, entry.id, changes)
+
+    async def _unlogged(
+        self,
+        tx: _Tx,
+        task: Task,
+        actor: str,
+        session_id: int | None,
+        stage: str,
+        tracker_ref: str | None,
+        reason: str,
+    ) -> None:
+        await tx.event(
+            "task.tracker_unlogged",
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=session_id,
+            project=task.project_slug,
+            key=task.key,
+            stage=stage,
+            tracker_ref=tracker_ref,
+            reason=reason,
+        )
+
     # --- reads -------------------------------------------------------------
 
     async def list_projects(self) -> list[ProjectSummary]:
@@ -355,6 +440,7 @@ class Service:
             reports=await repo.list_reports(self._r, task.id, reports),
             decisions=await repo.list_decisions(self._r, task_id=task.id, limit=10),
             bindings=await repo.list_bindings(self._r, task.id),
+            tracker_history=await repo.list_tracker_entries(self._r, task.id),
         )
 
     async def last_reports(self, tasks: list[Task]) -> dict[int, Report]:
@@ -474,10 +560,10 @@ class Service:
             "description": _clean_field("description", description),
             "progress": _clean_field("progress", progress),
             "priority": int(priority),
-            "tracker_ref": _clean_tracker_field("tracker_ref", tracker_ref),
-            "tracker_name": _clean_tracker_field("tracker_name", tracker_name),
-            "tracker_url": _clean_tracker_field("tracker_url", tracker_url),
-            "tracker_logged": _clean_tracker_field("tracker_logged", tracker_logged),
+            "tracker_ref": _clean_field("tracker_ref", tracker_ref),
+            "tracker_name": _clean_field("tracker_name", tracker_name),
+            "tracker_url": _clean_field("tracker_url", tracker_url),
+            "tracker_logged": _clean_field("tracker_logged", tracker_logged),
         }
         fields["stage"] = fields["stage"].value
         default_actor = actor
@@ -488,6 +574,16 @@ class Service:
             actor = sess.name if sess else default_actor
             key = f"{proj.slug}-{await repo.next_task_number(tx.conn, proj.id)}"
             task_id = await repo.insert_task(tx.conn, proj.id, key, fields, session_id, tx.now)
+            if fields["tracker_ref"]:
+                await repo.insert_tracker_entry(
+                    tx.conn,
+                    task_id,
+                    fields["tracker_name"],
+                    fields["tracker_ref"],
+                    fields["tracker_url"],
+                    tx.now if fields["tracker_logged"] else None,
+                    tx.now,
+                )
             await tx.event(
                 "task.created",
                 actor,
@@ -515,21 +611,13 @@ class Service:
         actor: str = "mcp",
     ) -> Task:
         """Patch fields; a value of None clears the field. Unchanged values are ignored."""
-        unknown = set(changes) - set(repo.TASK_FIELDS)
+        unknown = set(changes) - set(FIELD_NAMES)
         if unknown:
-            raise ValidationError(f"Unknown task field(s): {', '.join(sorted(unknown))}.")
-        clean: dict[str, Any] = {}
-        for name, value in changes.items():
-            if name == "title":
-                clean[name] = _clean_title(value)
-            elif name == "stage":
-                clean[name] = parse_stage(str(value)).value
-            elif name == "priority":
-                clean[name] = int(value or 0)
-            elif name.startswith("tracker_"):
-                clean[name] = _clean_tracker_field(name, value)
-            else:
-                clean[name] = _clean_field(name, value)
+            raise ValidationError(
+                f"Unknown task field(s): {', '.join(sorted(unknown))}."
+                f" Allowed: {', '.join(FIELD_NAMES)}."
+            )
+        clean = {name: _clean_field(name, value) for name, value in changes.items()}
         default_actor = actor
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
@@ -541,10 +629,22 @@ class Service:
             diff = _task_diff(task, clean)
             if not diff:
                 return task
+            # An explicit tracker_logged in the same write wins over the automatic unlog.
+            unlog = (
+                _unlog_reason(task, diff)
+                if task.tracker_logged and "tracker_logged" not in clean
+                else None
+            )
             sess = await self._session(tx, session, session_title)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
-            await repo.update_task(tx.conn, task.id, diff, tx.now)
+            # The mark belongs to the issue: a new key starts not logged unless the write says so.
+            new_issue = (
+                "tracker_ref" in diff and "tracker_logged" not in clean and task.tracker_logged
+            )
+            writes = {**diff, "tracker_logged": False} if unlog or new_issue else diff
+            await repo.update_task(tx.conn, task.id, writes, tx.now)
+            await self._sync_tracker(tx, task, writes)
             ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
             if "stage" in diff:
                 await tx.event(
@@ -557,7 +657,8 @@ class Service:
                     **{"from": task.stage.value, "to": diff["stage"]},
                     note=diff.get("stage_note"),
                 )
-            others = {k: v for k, v in diff.items() if k != "stage"}
+            # An automatic unlog has its own event; a new issue's reset is an ordinary change.
+            others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
             if others:
                 await tx.event(
                     "task.updated",
@@ -568,6 +669,10 @@ class Service:
                     stage=diff.get("stage", task.stage.value),
                     changes=others,
                 )
+            if unlog:
+                stage = diff.get("stage", task.stage.value)
+                ref = writes.get("tracker_ref", task.tracker_ref)
+                await self._unlogged(tx, task, actor, session_id, stage, ref, unlog)
             return await self.get_task(task.id, tx.conn)
 
     async def set_stage(
@@ -721,8 +826,14 @@ class Service:
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
             diff = _task_diff(task, clean)
+            unlog = None
+            if task.tracker_logged:
+                unlog = ", ".join(x for x in ("report added", _unlog_reason(task, diff)) if x)
+            writes = {**diff, "tracker_logged": False} if unlog else diff
+            if writes:
+                await repo.update_task(tx.conn, task.id, writes, tx.now)
+                await self._sync_tracker(tx, task, writes)
             if diff:
-                await repo.update_task(tx.conn, task.id, diff, tx.now)
                 await tx.event(
                     "task.updated",
                     actor,
@@ -733,6 +844,10 @@ class Service:
                     key=task.key,
                     stage=task.stage.value,
                     changes=diff,
+                )
+            if unlog:
+                await self._unlogged(
+                    tx, task, actor, session_id, task.stage.value, task.tracker_ref, unlog
                 )
             report_id = await repo.insert_report(
                 tx.conn, task.id, session_id, actor, state, size, summary, body, tx.now

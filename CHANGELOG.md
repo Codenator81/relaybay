@@ -62,10 +62,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clears them), and their descriptions ask sessions to keep both current. A next step set before
   the task's last stage change shows muted with a "stale" marker on the card and in the task
   dialog, and with `(stale)` in `task_get` / `project_snapshot`; writing it again over MCP (or editing it on the board) confirms it.
+- Tracker history (migration `0005`, upgrades existing databases in place and backfills one entry
+  per task with an issue key): a new `tracker_ref` appends an entry and earlier ones stay; marking
+  the work log entered or not stamps `logged_at` / `unlogged_at` on the current entry. The task
+  dialog and `/t/<key>` show a "Tracker history" block and `task_get` a "Tracker history" section;
+  the card badge and `project_snapshot` keep showing only the current issue.
+- Automatic unlog: when a logged task gets new work (a report, a changed `progress`, or a stage
+  move back out of `live` or `done` to an earlier stage), `tracker_logged` is cleared in the same
+  transaction with a `task.tracker_unlogged` event carrying the reason. Metadata edits (title,
+  branch, waiting on, next step, tracker fields) keep the mark; an explicit `tracker_logged` in
+  the same write wins. A new `tracker_ref` starts as not logged unless `tracker_logged` is passed
+  in the same write.
+- `task_patch` MCP tool: changes any editable task fields given as one JSON object (`fields`),
+  with the same validation, clearing, stage-move and auto-unlog rules as `task_update` /
+  `task_set_stage` and optional `expected_version`; unknown names fail with the allowed list. The
+  editable fields come from one list that also drives write validation, the new resource
+  `relaybay://schema/task` and an "Editable fields: …" line at the end of `task_get`, so clients
+  that cached an older `task_update` schema can still set new fields. README and
+  `docs/mcp-tools.md` explain schema caching in long-running sessions.
+- A test that keeps the repository English-only (no Cyrillic in `src/`, `docs/`, `tests/` and the
+  root markdown files).
 - `"-"` clears a text field in `task_update` (and leaves it empty in `task_create`, clears
   `progress` in `report_add`), since models cannot always send an empty string.
 
 ### Changed
+
+- Docs and tests use English examples for custom stage and report labels; labels in any language
+  remain configurable, the defaults are English.
 
 - Cards show only essentials: key, tracker badge (including "not logged") and an icon-only "open
   in desktop" link in the top row, then title, "waiting on", branch and the next step (two lines).

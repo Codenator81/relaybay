@@ -16,6 +16,7 @@ EXPECTED_TOOLS = {
     "task_get",
     "task_create",
     "task_update",
+    "task_patch",
     "task_set_stage",
     "task_bind_session",
     "task_unbind_session",
@@ -332,3 +333,79 @@ async def test_stage_and_report_keep_next_step_current(
         detail = await call(client, "task_get", task="demo-api-1")
         assert "next step" not in detail and "waiting on" not in detail
         assert "- version: 4" in detail
+
+
+async def test_task_patch_and_schema(live_server: Callable[[], LiveServer]) -> None:
+    live = live_server()
+    async with connect(live) as client:
+        await call(client, "project_upsert", slug="demo-api")
+        await call(
+            client, "task_create", project="demo-api", title="Rate limits", branch="feat/limits"
+        )
+
+        unknown = await client.call_tool(
+            "task_patch", {"task": "demo-api-1", "fields": {"owner": "x", "branch": "y"}}
+        )
+        text = unknown.content[0].text
+        assert unknown.is_error and "Unknown task field(s): owner" in text
+        assert "Allowed: title, stage," in text and "tracker_logged" in text
+        empty = await client.call_tool("task_patch", {"task": "demo-api-1", "fields": {}})
+        assert empty.is_error and "Nothing to update" in empty.content[0].text
+        bad_type = await client.call_tool(
+            "task_patch", {"task": "demo-api-1", "fields": {"tracker_logged": "yes"}}
+        )
+        assert bad_type.is_error and "true or false" in bad_type.content[0].text
+
+        patched = await call(
+            client,
+            "task_patch",
+            task="demo-api-1",
+            fields={"stage": "live", "next_step": "Watch", "branch": "-", "waiting_on": None},
+            expected_version=1,
+        )
+        assert "stage live" in patched and "version 2" in patched
+        detail = await call(client, "task_get", task="demo-api-1")
+        assert "- stage: live" in detail and "- next step: Watch" in detail
+        assert "- branch:" not in detail and "- waiting on:" not in detail
+
+        await call(
+            client,
+            "task_patch",
+            task="demo-api-1",
+            fields={"tracker_ref": "ENG-7", "tracker_name": "Linear", "tracker_logged": True},
+        )
+        moved_back = await call(client, "task_patch", task="demo-api-1", fields={"stage": "dev"})
+        assert "stage dev" in moved_back
+        detail = await call(client, "task_get", task="demo-api-1")
+        assert "- tracker: Linear ENG-7 · work log not entered" in detail  # auto-unlogged
+        assert "- Linear ENG-7 — logged " in detail and " · unlogged " in detail
+        await call(client, "task_patch", task="demo-api-1", fields={"tracker_logged": True})
+        await call(client, "task_patch", task="demo-api-1", fields={"tracker_ref": "ENG-8"})
+        detail = await call(client, "task_get", task="demo-api-1")
+        assert "- tracker: Linear ENG-8 · work log not entered" in detail  # new issue: not logged
+        assert "- Linear ENG-8 — not logged" in detail
+        await call(
+            client,
+            "task_patch",
+            task="demo-api-1",
+            fields={"tracker_ref": "ENG-9", "tracker_logged": True},
+        )
+        detail = await call(client, "task_get", task="demo-api-1")
+        assert "- tracker: Linear ENG-9 · work log ✓" in detail
+        last = detail.rstrip().splitlines()[-1]
+        assert last.startswith("Editable fields: title, stage,") and "tracker_logged" in last
+
+        stale = await client.call_tool(
+            "task_patch",
+            {"task": "demo-api-1", "fields": {"title": "x"}, "expected_version": 1},
+        )
+        assert stale.is_error and "not 1" in stale.content[0].text
+        no_title = await client.call_tool(
+            "task_patch", {"task": "demo-api-1", "fields": {"title": "-"}}
+        )
+        assert no_title.is_error and "title must not be empty" in no_title.content[0].text
+
+        schema = (await client.read_resource("relaybay://schema/task")).contents[0].text
+        assert "| `tracker_logged` | boolean |" in schema
+        assert "| `stage` | string |" in schema and "cannot be cleared" in schema
+        assert schema.count("\n| `") == len(last.split(":", 1)[1].split(","))

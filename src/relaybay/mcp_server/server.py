@@ -1,7 +1,7 @@
 """MCP server (official SDK 2.x `MCPServer`) served over Streamable HTTP at `/mcp`."""
 
 from collections.abc import Awaitable
-from typing import Annotated
+from typing import Annotated, Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
@@ -49,7 +49,9 @@ TRACKER_REF_HELP = "Issue key or number in the external tracker, e.g. 'ENG-12'."
 TRACKER_NAME_HELP = "Name of the external tracker, e.g. 'Linear'."
 TRACKER_URL_HELP = "Link to the issue (http:// or https:// only)."
 TRACKER_LOGGED_HELP = (
-    "True once the work log is entered in the external tracker. Done tasks without it stay on"
+    "True once the work log is entered in the external tracker. New work clears it again (a"
+    " report, a progress change, a move back from live or done). A new tracker_ref starts as not"
+    " logged unless tracker_logged is passed in the same write. Done tasks without it stay on"
     " the board marked 'not logged'."
 )
 NEXT_STEP_HELP = (
@@ -147,7 +149,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         reports: Annotated[int, Field(ge=1, le=50, description="How many reports.")] = 5,
     ) -> str:
         """Full task: fields, description, progress, current version, the latest reports and
-        decisions. Call it before task_update to get the version for expected_version."""
+        decisions, and the names of the editable fields (for task_patch). Call it before
+        task_update to get the version for expected_version."""
         return fmt.task_detail(await run(service.task_detail(task, reports)), require_tracker_log)
 
     @mcp.tool(annotations=WRITE, structured_output=False)
@@ -253,6 +256,42 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             changes["tracker_logged"] = tracker_logged
         if not changes:
             raise ToolError("Nothing to update: pass at least one field.")
+        updated = await run(
+            service.update_task(
+                task,
+                changes,
+                expected_version=expected_version,
+                session=session,
+                session_title=session_title,
+            )
+        )
+        return fmt.task_saved(updated, "Updated")
+
+    @mcp.tool(annotations=WRITE, structured_output=False)
+    async def task_patch(
+        task: TaskRef,
+        fields: Annotated[
+            dict[str, Any],
+            Field(
+                description='Task fields to change as one JSON object, e.g. {"branch": "x"}.'
+                " Call task_get or read relaybay://schema/task for the allowed fields; '-', ''"
+                " or null clears an optional text field."
+            ),
+        ],
+        expected_version: Annotated[
+            int | None,
+            Field(description="Fail instead of overwriting if the task changed since you read it."),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+    ) -> str:
+        """Change any task fields given as one JSON object, with the same rules as task_update
+        and task_set_stage (a `stage` value moves the task). Use it for a field your client's
+        task_update does not offer yet: its parameter list may be older than the server. Call
+        task_get or read relaybay://schema/task for the allowed fields."""
+        changes = {k: cleared(v) if isinstance(v, str) else v for k, v in fields.items()}
+        if not changes:
+            raise ToolError("Nothing to update: pass at least one field in `fields`.")
         updated = await run(
             service.update_task(
                 task,
@@ -431,6 +470,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             return fmt.snapshot(await service.snapshot(slug), require_tracker_log)
         except NotFoundError as exc:
             raise ResourceNotFoundError(str(exc)) from exc
+
+    @mcp.resource(
+        "relaybay://schema/task",
+        name="task-schema",
+        description="Editable task fields for task_patch: name, type, description, clearing.",
+        mime_type="text/markdown",
+    )
+    async def task_schema_resource() -> str:
+        return fmt.task_schema()
 
     return mcp
 

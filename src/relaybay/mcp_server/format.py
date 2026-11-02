@@ -2,8 +2,9 @@
 
 from datetime import UTC, datetime
 
-from relaybay.domain.models import Decision, Event, Project, Report, Task
+from relaybay.domain.models import Decision, Event, Project, Report, Task, TrackerEntry
 from relaybay.domain.stages import STAGES, Stage
+from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
 from relaybay.service import ProjectSummary, Snapshot, TaskDetail
 
 
@@ -54,6 +55,17 @@ def tracker_label(task: Task, require_log: bool = False) -> str:
 def next_step_label(task: Task) -> str:
     """The next step, marked `(stale)` when it was set before the last stage change."""
     return f"{task.next_step} (stale)" if task.next_step_stale else task.next_step or ""
+
+
+def tracker_entry_line(entry: TrackerEntry) -> str:
+    """`- Linear ENG-12 <url> — logged 2026-01-02 · unlogged 2026-01-03`."""
+    issue = " ".join(x for x in (entry.tracker_name, entry.tracker_ref, entry.tracker_url) if x)
+    marks = []
+    if entry.logged_at:
+        marks.append(f"logged {entry.logged_at[:10]}")
+    if entry.unlogged_at:
+        marks.append(f"unlogged {entry.unlogged_at[:10]}")
+    return f"- {issue} — {' · '.join(marks) or 'not logged'}"
 
 
 def report_line(report: Report) -> str:
@@ -173,6 +185,9 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
             until = f"until {b.unbound_at[:16]}Z" if b.unbound_at else "current"
             who = who_label(b.session_name, b.session_external_id)
             lines.append(f"- {who} — bound {b.bound_at[:16]}Z by {b.bound_by}, {until}")
+    if detail.tracker_history:
+        lines.append("\n## Tracker history (newest first)")
+        lines.extend(tracker_entry_line(e) for e in detail.tracker_history)
     if detail.reports:
         lines.append("\n## Reports (newest first)")
         for r in detail.reports:
@@ -180,6 +195,22 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
     if detail.decisions:
         lines.append("\n## Decisions")
         lines.extend(decision_line(d) for d in detail.decisions)
+    lines.append(f"\nEditable fields: {', '.join(FIELD_NAMES)}")
+    return "\n".join(lines)
+
+
+def task_schema() -> str:
+    """The editable task fields as a markdown table (resource `relaybay://schema/task`)."""
+    lines = [
+        "# Task fields",
+        "Set any of them with task_patch(task, fields={...}); omitted fields stay as they are.",
+        "",
+        "| field | type | description | clearing |",
+        "|---|---|---|---|",
+    ]
+    for f in TASK_FIELDS:
+        limit = f" Up to {f.max_length} characters." if f.max_length else ""
+        lines.append(f"| `{f.name}` | {f.type} | {f.description}{limit} | {f.clear} |")
     return "\n".join(lines)
 
 
@@ -206,6 +237,8 @@ def events(items: list[Event], since_id: int) -> str:
             detail = f"✕ {e.payload.get('session')}"
         elif e.kind == "session.alias_added":
             detail = f"'{e.payload.get('alias')}' = {e.payload.get('session')}"
+        elif e.kind == "task.tracker_unlogged":
+            detail = f"{e.payload.get('tracker_ref') or ''} ({e.payload.get('reason')})".strip()
         elif e.kind == "decision.added":
             detail = str(e.payload.get("text", ""))
         lines.append(f"- #{e.id} {e.ts[:19]}Z {e.kind} {key} {detail} ({e.actor})".rstrip())

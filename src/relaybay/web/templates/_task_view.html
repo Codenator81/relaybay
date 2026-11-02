@@ -22,6 +22,27 @@
     <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
   </dl>
 
+  {% if detail.tracker_history %}
+  <section class="panel">
+    <h2>Tracker history</h2>
+    <ol class="history tracker-history">
+      {% for e in detail.tracker_history %}
+      {%- set href = e.tracker_url|http_url %}
+      {%- set text = (e.tracker_name ~ " " if e.tracker_name else "") ~ e.tracker_ref %}
+      <li>
+        {% if href %}<a class="history-name" href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ text }}</a>{% else %}<span class="history-name">{{ text }}</span>{% endif %}
+        <span class="muted">—
+          {%- if e.logged_at %} logged <time datetime="{{ e.logged_at }}">{{ e.logged_at[:10] }}</time>{% endif %}
+          {%- if e.logged_at and e.unlogged_at %} ·{% endif %}
+          {%- if e.unlogged_at %} unlogged <time datetime="{{ e.unlogged_at }}">{{ e.unlogged_at[:10] }}</time>{% endif %}
+          {%- if not e.logged_at and not e.unlogged_at %} not logged{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+
   <section class="panel">
     <h2>Session</h2>
     {% if t.session_name %}

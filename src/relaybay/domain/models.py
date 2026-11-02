@@ -88,6 +88,21 @@ class Binding:
 
 
 @dataclass(slots=True)
+class TrackerEntry:
+    """One issue the task has had in an external tracker (`tracker_entry` row). `logged_at` is
+    when the work log was last marked entered; `unlogged_at` is set when the mark is cleared."""
+
+    id: int
+    task_id: int
+    tracker_name: str | None
+    tracker_ref: str
+    tracker_url: str | None
+    logged_at: str | None
+    unlogged_at: str | None
+    created_at: str
+
+
+@dataclass(slots=True)
 class Report:
     id: int
     task_id: int

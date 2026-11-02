@@ -331,6 +331,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if "tracker_logged" in values:
             # The form sends a hidden "0" before the checkbox, so the last value is the state.
             changes["tracker_logged"] = values["tracker_logged"] == "1"
+            if changes["tracker_logged"] == task.tracker_logged:
+                # Resent unchanged, it is not an explicit mark: new work may still clear it.
+                del changes["tracker_logged"]
         if changes.get("next_step", "") == task.next_step:
             # The form always resends the next step; only an edited one confirms it as current.
             del changes["next_step"]

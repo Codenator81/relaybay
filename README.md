@@ -25,11 +25,15 @@ in the browser, on the desktop or on your phone.
 - **External tracker mark** — a task can carry its issue in any tracker (tracker name, issue key,
   optional link) and a "work log entered" mark. The card shows the issue as a badge at the top (a
   link when a URL is set, ✓ once logged). With `require_tracker_log = true` a done task without
-  the mark shows "not logged" and stays out of the archive until it is marked.
+  the mark shows "not logged" and stays out of the archive until it is marked. Every issue key a
+  task has had is kept in its tracker history (task dialog, `/t/<key>`, `task_get`), and new work
+  on a logged task (a report, a progress change, a move back from `live` or `done`) clears the
+  mark again, so it always means "the log covers everything done".
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
-  task's desktop session binding: it becomes that session's alias.
+  task's desktop session binding: it becomes that session's alias. `task_patch` takes any task
+  fields as one JSON object, so clients with an older tool schema can still set new fields.
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
   no outbound calls, no CDN.
 
@@ -63,6 +67,15 @@ claude mcp add --transport http --scope user relaybay http://127.0.0.1:8765/mcp 
 `user` scope adds relaybay once for all repositories. See
 [docs/connect-claude-code.md](docs/connect-claude-code.md) for `.mcp.json` and a short instruction
 snippet for your project's `CLAUDE.md` / `AGENTS.md` that tells the agent when to call the tools.
+
+### Schema changes and long-running sessions
+
+A Claude Code session keeps the parameter schema of a tool it already loaded, even after relaybay
+restarts and the client reconnects: new tools appear, but new parameters of an existing tool do
+not. Use `task_patch(task, fields={...})` for fields your client does not know yet (the allowed
+names are at the end of `task_get` and in `relaybay://schema/task`), or refresh the schemas by
+reconnecting the server in the client (`/mcp` in the CLI) or starting a new session. See
+[docs/mcp-tools.md](docs/mcp-tools.md#schema-changes-and-long-running-sessions).
 The tool reference is in [docs/mcp-tools.md](docs/mcp-tools.md).
 
 ## Configuration
