@@ -57,6 +57,12 @@ Something off? `relaybay doctor`.
   task has had is kept in its tracker history (task dialog, `/t/<key>`, `task_get`), and new work
   on a logged task (a report, a progress change, a move back from `live` or `done`) clears the
   mark again, so it always means "the log covers everything done".
+- **Comments to agents** — write a comment on a task (dialog or task page) and the agent of the
+  bound session gets it through its hooks with its next prompt or tool call; the thread shows
+  "sent / delivered / read" live, `Stop` reminds the agent (at most twice) until it acknowledges,
+  and agents answer with `comment_add` (their replies land in your Inbox). An opt-in, experimental
+  wake-up hook (`relaybay setup --apply --wake --force-wake`) wakes an idle session for a new
+  comment.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
@@ -99,8 +105,9 @@ relaybay setup --apply --expect <hash> # adds relaybay's hooks to ~/.claude/sett
 relaybay setup --check                 # end-to-end check, one ok/FAIL line per item
 ```
 
-The hooks let the board show whether each session is working, waiting for you, idle or gone, and
-unbind a session from its task when it ends. Setup adds only its own entries (other hooks stay as
+The hooks let the board show whether each session is working, waiting for you, idle or gone,
+unbind a session from its task when it ends, and hand your comments to the agent of the task's
+session. Setup adds only its own entries (other hooks stay as
 they are), never writes the token into the file, and `--remove` takes them out again. The same plan
 and buttons are on the board under **Settings → Integrations**. Hooks stay silent when relaybay is not
 running. Details: [docs/connect-claude-code.md](docs/connect-claude-code.md#3-live-session-status-hooks).

@@ -61,11 +61,11 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
 | `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
-| `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity, fragments, forms, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code`), `markdown.py`, templates, vendored static assets |
+| `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
 | `doctor.py` | `relaybay doctor`: read-only diagnosis built from the setup checks plus versions, data folder, token and rules hash |
 | `demo.py` | `relaybay demo`: seeds the demo workspace through the service layer |
-| `hook_client.py` | The command hook: stdin → POST with 0.3 s timeouts → stdout, always exit 0 |
+| `hook_client.py` | The command hook: stdin → POST with 0.3 s timeouts → stdout (a 200 JSON answer only), always exit 0; with `--wait` the wake-up hook (long poll, exit 2 with the comment on stderr) |
 | `logs.py` | uvicorn log config that redacts the `/login` query string |
 
 <a id="data-model"></a>
@@ -83,7 +83,10 @@ report        id, task_id, session_id, author, state, size, summary, body_md, cr
 decision      id, task_id, project_id, text, decided_by, created_at
 session       id, external_id UNIQUE (local_<uuid>), name (unique among rows without external_id),
               project_id, cwd, kind, desktop_link, status (working|idle|waiting|ended), activity,
-              cc_session_id UNIQUE, activity_at, unlinked_reason, last_seen_at, created_at
+              cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, last_seen_at,
+              created_at
+comment       id, task_id, author_kind (owner|agent), author, session_id, body_md, in_reply_to,
+              created_at, delivered_at, delivered_to_session_id, read_at
 task_session  id, task_id, session_id, bound_at, unbound_at, bound_by   -- one open row per task
 session_alias name PK, session_id, created_at
 tracker_entry id, task_id, tracker_name, tracker_ref, tracker_url, logged_at, unlogged_at, created_at
@@ -108,7 +111,7 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
   `retry: 3000`. The stream subscribes to the bus *before* reading the backlog, so nothing committed
   in between is lost; duplicates are skipped by id.
 - The page never receives HTML over SSE: `app.js` maps an event to the fragment it affects
-  (column, card, dialog view, Inbox badge and list, sessions list) and asks htmx to refetch it, so
+  (column, card, dialog view, comment thread, Inbox badge and list, sessions list) and asks htmx to refetch it, so
   replay is idempotent; the Activity page asks for the rows newer than its newest one.
 - `nav.js` (loaded before the body, not deferred) applies the remembered collapsed sidebar before
   the first paint and runs the phone drawer.
@@ -138,7 +141,13 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
   `Authorization: Bearer ${RELAYBAY_TOKEN}` and `allowedEnvVars`.
 - `POST /hooks/claude-code` reads at most 256 KB, keeps only session id, event, `cwd`, source, tool
   name and notification message, and answers immediately; `SessionStart` returns
-  `additionalContext` with the hook session id so the agent can link itself exactly.
+  `additionalContext` with the hook session id so the agent can link itself exactly. Prompt and tool
+  events answer with the owner comments for an exactly linked session (`additionalContext`), `Stop`
+  with a `decision: "block"` while they are unacknowledged; the Stop counter and the wake-up
+  waiters live in the service's memory (lost on restart, which only means one more reminder).
+- Opt-in wake-up hook: an `asyncRewake` command hook at `Stop` long-polls
+  `POST /hooks/claude-code/wait` (polling the database once a second, up to 25 minutes, one waiter
+  per session) and exits 2 with the comment on stderr.
 
 ## Security layers
 

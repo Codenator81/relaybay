@@ -2,7 +2,15 @@
 
 from datetime import UTC, datetime
 
-from relaybay.domain.models import Decision, Event, Project, Report, Task, TrackerEntry
+from relaybay.domain.models import (
+    Comment,
+    Decision,
+    Event,
+    Project,
+    Report,
+    Task,
+    TrackerEntry,
+)
 from relaybay.domain.rules import Rules, requirement_label, requirement_short
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
@@ -235,6 +243,9 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
         if value:
             lines.append(f"- {label}: {value}")
     lines.append(f"- updated: {age(t.updated_at)}")
+    unread = sum(1 for c in detail.comments if c.from_owner and not c.read_at)
+    if unread:
+        lines.append(f"- unread owner comments: {unread} (call comments_list)")
     if t.description:
         lines.append(f"\n## Description\n{t.description}")
     if t.progress:
@@ -278,6 +289,42 @@ def task_saved(task: Task, verb: str) -> str:
     return f"{verb} **{task.key}** “{task.title}” · stage {task.stage} · version {task.version}."
 
 
+def _minute(ts: str) -> str:
+    return f"{ts[:16]}Z"
+
+
+def comment_marks(c: Comment) -> str:
+    """`sent … · delivered … to <session> · read …` for an owner comment; `reply · unread` for
+    an agent's."""
+    if not c.from_owner:
+        return (
+            "reply"
+            + (f" to #{c.in_reply_to}" if c.in_reply_to else "")
+            + ("" if c.read_at else " · unread by the owner")
+        )
+    marks = [f"sent {_minute(c.created_at)}"]
+    if c.delivered_at:
+        to = f" to {c.delivered_to_name}" if c.delivered_to_name else ""
+        marks.append(f"delivered {_minute(c.delivered_at)}{to}")
+    marks.append(f"read {_minute(c.read_at)}" if c.read_at else "unread")
+    return " · ".join(marks)
+
+
+def comments(task: Task, items: list[Comment], unread_only: bool = False) -> str:
+    if not items:
+        return f"No {'unread ' if unread_only else ''}comments on **{task.key}**."
+    lines = [f"# Comments on {task.key} (oldest first)"]
+    for c in items:
+        who = "owner" if c.from_owner else c.author
+        lines.append(f"\n## #{c.id} {who} · {comment_marks(c)}\n{c.body_md}")
+    if any(c.from_owner and not c.read_at for c in items):
+        lines.append(
+            "\nHandle the unread owner comments, then comment_ack(comment_id=…) or reply with"
+            " comment_add(task, body, in_reply_to=…)."
+        )
+    return "\n".join(lines)
+
+
 def event_subject(e: Event) -> str:
     """The task key of an event, or its project."""
     return str(e.payload.get("key") or e.payload.get("project") or "")
@@ -305,6 +352,12 @@ def event_detail(e: Event) -> str:
     if e.kind == "session.status_changed":
         change = f"{p['previous']} → {p.get('status')}" if p.get("previous") else p.get("status")
         return f"{p.get('session')}: {change}"
+    if e.kind == "comment.added":
+        return f"#{p.get('comment_id')} {p.get('excerpt') or ''}".rstrip()
+    if e.kind == "comment.delivered":
+        return f"#{p.get('comment_id')} → {p.get('session')}"
+    if e.kind == "comment.read":
+        return f"#{p.get('comment_id')} read"
     if e.kind == "session.seen":
         reason = p.get("unlinked_reason")
         return f"{p.get('session')}" + (f" (unlinked: {reason})" if reason else "")

@@ -1,0 +1,14 @@
+{#- Comments panel of the task dialog and the task page. Expects: t (the task), comments. -#}
+<section class="panel comments" aria-labelledby="comments-title-{{ t.key }}">
+  <h2 id="comments-title-{{ t.key }}">Comments</h2>
+  {% include "_comment_thread.html" %}
+  <form class="comment-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/comments"
+        hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/comments" hx-target="#comments-{{ t.key }}" hx-swap="outerHTML">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <label class="field"><span>Comment for the agent</span>
+      <textarea name="body" rows="3" maxlength="{{ comment_max }}" required
+                placeholder="Markdown. The agent of the bound session gets it with its next prompt or tool call."></textarea>
+    </label>
+    <div class="form-actions"><button type="submit" class="btn primary">Send comment</button></div>
+  </form>
+</section>

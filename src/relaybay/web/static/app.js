@@ -7,12 +7,13 @@
     "project.created", "project.updated",
     "task.created", "task.updated", "task.stage_changed",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
-    "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added"
+    "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
+    "comment.added", "comment.delivered", "comment.read"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
-    "session.seen", "session.status_changed"
+    "session.seen", "session.status_changed", "comment.added", "comment.read"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -100,6 +101,8 @@
   }
 
   function column(stage) { return stage ? document.getElementById("col-" + stage) : null; }
+  function thread(key) { return key ? document.getElementById("comments-" + key) : null; }
+  function isComment(kind) { return kind.indexOf("comment.") === 0; }
   function card(key) { return key ? document.getElementById("card-" + key) : null; }
 
   function onMessage(event) {
@@ -113,10 +116,17 @@
       queueThrottled(document.getElementById("inbox"));
     }
 
-    // The task page is read-only: reload it when its own task changes (not for every hook
-    // status of its session, which comes every few seconds while it works).
+    // The task page: comment events refetch the thread; other changes of its own task reload
+    // the page (not every hook status of its session, which comes every few seconds while it
+    // works), or only refetch the details while a comment is being written.
     if (live.dataset.task) {
-      if (data.key === live.dataset.task && data.kind !== "session.status_changed") {
+      if (data.key !== live.dataset.task || data.kind === "session.status_changed") return;
+      if (isComment(data.kind)) {
+        queue(thread(data.key));
+      } else if (commentDraft(document)) {
+        queue(document.querySelector(".task-view"));
+        queue(thread(data.key));
+      } else {
         window.location.reload();
       }
       return;
@@ -137,7 +147,9 @@
     if (!document.getElementById("board")) return;
     // Every page listens to all projects (the Inbox count); the board only to its own.
     if (data.project !== live.dataset.project) return;
-    if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) refreshDialog();
+    if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) {
+      if (isComment(data.kind)) queue(thread(data.key)); else refreshDialog();
+    }
 
     switch (data.kind) {
       case "task.created":
@@ -241,8 +253,14 @@
     return p;
   }
 
+  function commentDraft(root) {
+    var field = root.querySelector("form.comment-form textarea");
+    return !!(field && field.value.trim());
+  }
+
   function refreshDialog() {
     queue(dialog.querySelector(".task-view"));
+    queue(dialog.querySelector(".comment-thread"));
     var form = editForm();
     if (!form) return;
     if (form.dataset.dirty) {
@@ -376,6 +394,16 @@
     }
     var reload = event.target.closest(".form-reload");
     if (reload) queue(reload.closest(".task-form-box"));
+  });
+
+  // A sent comment clears its form; a refused one (error shown in the thread) keeps the text.
+  document.addEventListener("htmx:afterRequest", function (event) {
+    var form = event.target;
+    if (!form.matches || !form.matches("form.comment-form")) return;
+    var xhr = event.detail.xhr;
+    if (event.detail.successful && xhr && xhr.getResponseHeader("X-Relaybay-Comment") === "saved") {
+      form.reset();
+    }
   });
 
   // "Show archived" applies at once; the search applies on Enter or the Filter button.

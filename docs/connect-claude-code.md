@@ -94,8 +94,8 @@ plan shown on the page: if the file changed meanwhile, they refuse and show the 
 
 What it writes, and what it never touches:
 
-- One hook entry for each of `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Notification`,
-  `Stop` and `SessionEnd`, appended after the hooks you already have. An entry is relaybay's only
+- One hook entry for each of `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+  `Notification`, `Stop` and `SessionEnd`, appended after the hooks you already have. An entry is relaybay's only
   when it is a command hook that runs `-m relaybay.hook_client` (or `relaybay hook`) with
   `--url <scheme>://<host>:<port>/hooks/claude-code`, or an http hook whose URL path is exactly
   `/hooks/claude-code` on a loopback address or relaybay's configured host. Your own hooks with a
@@ -136,6 +136,27 @@ relaybay tells the agent that id ("Your relaybay hook session: <id>"); an agent 
 the one desktop session bound in the project whose `repo_path` contains the working directory;
 when several could match it does not guess and lists the session under Integrations →
 "Unlinked hook sessions". `SessionEnd` unbinds the session from its tasks (the history is kept).
+
+**Comments from the board.** A comment written on a task reaches the agent of the bound session
+through these hooks, only once the agent linked itself with `hook_session`: with its next prompt or
+tool call (as added context), and `Stop` keeps the turn going (at most twice) until the agent calls
+`comment_ack` or answers with `comment_add`. An idle session sees the comment with its next prompt.
+To have a new comment wake an idle session, add the opt-in wake-up hook (experimental, command mode,
+not verified against a live Claude Code):
+
+```bash
+relaybay setup --wake --force-wake                          # dry run with the extra Stop hook
+relaybay setup --apply --wake --force-wake --expect <hash>  # write it
+relaybay setup --apply --no-wake                            # take only the wake-up hook out again
+```
+
+It is an `asyncRewake` command hook that runs in the background after every turn and waits up to 25
+minutes for a comment; when one arrives it exits 2 with the comment, which wakes the session.
+`--force-wake` is required because no Claude Code version is documented to support `asyncRewake`:
+a build that ignored it would run the hook in the foreground and every turn would end only after up
+to 30 minutes. If you see that, remove it with `--no-wake`; `relaybay doctor` marks the hook
+`UNVERIFIED`. Details:
+[MCP tools → Owner comments through hooks](mcp-tools.md#owner-comments-through-hooks).
 
 For tests or a second machine profile, `--claude-home <folder>` (and `relaybay serve
 --claude-home <folder>` for the board page) points setup at another folder holding

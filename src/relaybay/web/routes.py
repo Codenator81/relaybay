@@ -14,6 +14,7 @@ from starlette.responses import StreamingResponse
 
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
+from relaybay.domain.comments import COMMENT_MAX
 from relaybay.domain.errors import ConflictError, DomainError, NotFoundError
 from relaybay.domain.models import Task
 from relaybay.domain.stages import STAGES, Stage
@@ -79,6 +80,9 @@ EVENT_KINDS = (
     "session.seen",
     "session.status_changed",
     "session.alias_added",
+    "comment.added",
+    "comment.delivered",
+    "comment.read",
 )
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
@@ -107,6 +111,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         csrf_field=CSRF_FIELD,
         csrf_token=csrf_token(token),
         require_tracker_log=settings.require_tracker_log,
+        comment_max=COMMENT_MAX,
     )
     env.filters["age"] = age
     env.filters["markdown"] = render_markdown
@@ -549,6 +554,55 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return RedirectResponse(f"/t/{task.key}", status_code=303)
         detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
         return render(request, "_task_view.html", detail=detail, error=error)
+
+    async def comment_thread(
+        request: Request, task: Task, error: str | None = None, saved: bool = False
+    ) -> HTMLResponse:
+        _, comments = await service.list_comments(task.key)
+        response = render(request, "_comment_thread.html", t=task, comments=comments, error=error)
+        if saved:
+            response.headers["X-Relaybay-Comment"] = "saved"  # app.js clears the form
+        return response
+
+    @router.get("/p/{slug}/t/{key}/comments", response_class=HTMLResponse)
+    async def comments_fragment(request: Request, slug: str, key: str):
+        return await comment_thread(request, await find_task(slug, key))
+
+    @router.post("/p/{slug}/t/{key}/comments", response_class=HTMLResponse)
+    async def add_comment(
+        request: Request,
+        slug: str,
+        key: str,
+        body: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        check_csrf(csrf)
+        task = await find_task(slug, key)
+        htmx = "hx-request" in request.headers
+        try:
+            await service.add_owner_comment(task.key, body, actor="owner")
+        except DomainError as exc:
+            if not htmx:
+                raise
+            # 200: htmx does not swap 4xx bodies by default.
+            return await comment_thread(request, task, error=str(exc))
+        if not htmx:
+            return RedirectResponse(f"/t/{task.key}", status_code=303)
+        return await comment_thread(request, task, saved=True)
+
+    @router.post("/p/{slug}/t/{key}/comments/read", response_class=HTMLResponse)
+    async def read_replies(
+        request: Request,
+        slug: str,
+        key: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        check_csrf(csrf)
+        task = await find_task(slug, key)
+        await service.mark_replies_read(task.key, actor="owner")
+        if "hx-request" not in request.headers:
+            return RedirectResponse(f"/t/{task.key}", status_code=303)
+        return await comment_thread(request, task)
 
     @router.get("/events")
     async def events(

@@ -124,7 +124,8 @@ def test_merge_keeps_foreign_entries_and_their_order(tmp_path: Path) -> None:
     assert merged["hooks"]["PreToolUse"][:2] == FOREIGN["hooks"]["PreToolUse"]
     assert merged["hooks"]["PreToolUse"][2] == groups["PreToolUse"]
     assert merged["hooks"]["Stop"][0] == FOREIGN["hooks"]["Stop"][0]
-    assert merged["hooks"]["PostToolUse"] == FOREIGN["hooks"]["PostToolUse"]
+    assert merged["hooks"]["PostToolUse"][:1] == FOREIGN["hooks"]["PostToolUse"]
+    assert merged["hooks"]["PostToolUse"][1] == groups["PostToolUse"]
     assert foreign_only(merged) == FOREIGN | {"hooks": FOREIGN["hooks"]}
     for event in ("SessionStart", "UserPromptSubmit", "Notification", "SessionEnd"):
         assert merged["hooks"][event] == [groups[event]]
@@ -688,3 +689,84 @@ def test_failed_replace_leaves_no_temp_file(
     monkeypatch.undo()
     assert path.read_bytes() == original
     assert not list(path.parent.glob(".*.relaybay.tmp"))
+
+
+# --- wake-up hook (opt-in) -------------------------------------------------------
+
+
+def test_wake_hook_is_opt_in_marked_and_removable(
+    tmp_path: Path, claude_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = tmp_path / "data"
+    path = claude_home / ".claude" / "settings.json"
+    write_foreign(path)
+    common = ["--home", str(data), "--claude-home", str(claude_home)]
+
+    assert run_cli(*common, "--apply") == 0
+    applied = json.loads(path.read_text(encoding="utf-8"))
+    assert not machine_setup.our_handlers(applied, "Stop", role="wake")  # default: off
+
+    assert run_cli(*common) == 0 and "--wake" not in capsys.readouterr().out
+    # No Claude Code version is known to run asyncRewake: refused without --force-wake.
+    assert machine_setup.MIN_ASYNC_REWAKE_VERSION is None
+    assert run_cli(*common, "--apply", "--wake") == 1
+    assert "Add --force-wake" in capsys.readouterr().out
+    assert json.loads(path.read_text(encoding="utf-8")) == applied
+    assert run_cli(*common, "--wake", "--force-wake") == 0
+    out = capsys.readouterr().out
+    assert "experimental, not verified" in out and "hold the end of every turn" in out
+    assert "--apply --mode command --wake --force-wake" in out
+    assert run_cli(*common, "--apply", "--wake", "--force-wake") == 0
+    data_wake = json.loads(path.read_text(encoding="utf-8"))
+    [wake] = machine_setup.our_handlers(data_wake, "Stop", role="wake")
+    assert wake["asyncRewake"] is True and wake["timeout"] == machine_setup.WAKE_TIMEOUT
+    words = shlex.split(wake["command"])
+    assert words[-1] == "--wait" and words[words.index("--url") + 1].endswith(
+        "/hooks/claude-code/wait"
+    )
+    # The normal hooks are untouched by it, the foreign Stop hook stays first.
+    assert installed_mode(data_wake) == "command"
+    assert data_wake["hooks"]["Stop"][0] == FOREIGN["hooks"]["Stop"][0]
+    assert len(machine_setup.our_handlers(data_wake, "Stop")) == 1
+
+    # Idempotent; a plain apply keeps it; --no-wake removes only it; --remove removes all.
+    assert run_cli(*common, "--apply", "--wake", "--force-wake") == 0
+    assert "already set up" in capsys.readouterr().out
+    assert run_cli(*common, "--apply") == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == data_wake
+    assert run_cli(*common, "--apply", "--no-wake") == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == applied
+    assert run_cli(*common, "--apply", "--wake", "--force-wake") == 0
+    checks = machine_setup.config_checks(
+        base_url=BASE,
+        token=None,
+        paths=claude_paths(claude_home),
+        run=lambda *a, **k: SimpleNamespace(returncode=0, stderr=""),
+    )
+    [wake_check] = [c for c in checks if c.name == "wake-up hook"]
+    assert wake_check.detail.startswith("UNVERIFIED")
+    assert run_cli(*common, "--remove") == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == FOREIGN
+
+    capsys.readouterr()
+    assert run_cli(*common, "--apply", "--wake", "--force-wake", "--mode", "http") == 1
+    assert "--wake needs --mode command" in capsys.readouterr().out
+
+
+def test_wake_marker_is_exact(tmp_path: Path) -> None:
+    wake = machine_setup.wake_handler(BASE, tmp_path / "token", python="/opt/py/bin/python")
+    assert machine_setup.handler_role(wake) == "wake" and is_ours(wake)
+    command = wake["command"]
+    for foreign in (
+        command.replace(" --wait", ""),  # the wait URL without --wait
+        command + " --verbose",
+        command.replace("/hooks/claude-code/wait", "/hooks/claude-code/waiting"),
+        command.replace(" --wait", " --wait && rm -rf x"),
+    ):
+        assert machine_setup.handler_role({"type": "command", "command": foreign}) is None
+    plain = hook_handler("command", BASE, tmp_path / "token", python="/opt/py/bin/python")
+    assert machine_setup.handler_role(plain) == "hook"
+    assert (
+        machine_setup.handler_role({"type": "http", "url": BASE + "/hooks/claude-code/wait"})
+        is None
+    )

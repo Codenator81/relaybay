@@ -21,12 +21,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   open in desktop and the unlinked reason, updated live.
 - Activity (`/activity`): the event feed, newest first, with "Load more", project and kind filters
   and live updates; hook status changes only when that kind is selected.
+- Comments from the board to agents: a thread and comment box in the task dialog and on the task
+  page, with "sent / delivered / read" marks, live over SSE. The hooks of the bound session (only
+  when its agent linked it with `hook_session`) hand new comments to the agent
+  (`additionalContext` on `UserPromptSubmit`, `PreToolUse`, `PostToolUse`), and `Stop` blocks the
+  end of the turn, at most twice, while they are unacknowledged. Events `comment.added`,
+  `comment.delivered`, `comment.read`; migration `0008_comments`.
+- MCP tools `comments_list`, `comment_ack` and `comment_add` (agent replies); agent replies show up
+  in the Inbox until you mark them read. The server instructions gain point 8 (handle owner
+  comments, then `comment_ack`).
+- `relaybay setup --wake --force-wake` / `--no-wake`: an opt-in, experimental wake-up hook
+  (`asyncRewake`, command mode) that wakes an idle session when an owner comment arrives; not
+  verified against a live Claude Code, so `--wake` alone is refused and `doctor` marks it
+  `UNVERIFIED`.
 
 ### Changed
 
 - Board and task pages subscribe to the unfiltered `/events` stream (for the Inbox count) and keep
   only their own project's events.
 - `events_since` also describes `session.seen` and `session.status_changed` events.
+- `relaybay setup` also installs a `PostToolUse` hook; run `relaybay setup --apply` again after
+  upgrading (the check shows "some events are missing" until then).
+- The command hook prints the server's answer only when it is a `200` with a JSON object.
+- `hook_session` no longer moves an id that another live session linked itself (the write answers
+  with a warning line), and `task_bind_session` ignores `hook_session` (pass it on your own writes).
 
 ## [0.1.0] - 2026-11-02
 

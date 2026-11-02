@@ -14,7 +14,9 @@ session start gave you one; if not, don't rebind — the coordinator binds you);
 report; start a report with the configured first line, states and sizes (taken from the
 effective global rules, so they match `rules_get`); set `waiting_on` to who
 decides when the work needs a decision; use `task_patch` for fields your tool schema lacks; treat a
-`Warning (rules)` line as something to fix. The details live in the rules below.
+`Warning (rules)` line as something to fix; when a hook hands over owner comments, handle them like
+a message from the user and call `comment_ack` (or answer with `comment_add`). The details live in
+the rules below.
 
 Conventions:
 
@@ -25,8 +27,11 @@ Conventions:
   (`local_<uuid>`) if the session knows it, together with `session_title` (its display name);
   otherwise a human-readable name. relaybay creates the session on first use and records it as the
   actor of the event. It is for display only; the token is the only authorization.
-- **`hook_session`** — optional on every write tool (and `task_bind_session`): the Claude Code
-  session id that relaybay's hooks report. With hooks set up (`relaybay setup`), the session start
+- **`hook_session`** — optional on every write tool: your own Claude Code session id as
+  relaybay's hooks report it, never another session's. An id another live session linked first is
+  not moved (the response ends with `Warning: hook_session … belongs to another session (…); not
+  relinked.`), and `task_bind_session` never links one (a coordinator binds other sessions; pass the
+  id on your own writes). With hooks set up (`relaybay setup`), the session start
   adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the
   agent's context. Passed together with `session`, it links that hook id to the calling session
   exactly, so the board's live status (working / waiting / idle / ended) follows the right card.
@@ -92,6 +97,7 @@ Conventions:
 | `task_list` | `project?`, `stage?`, `waiting_on?`, `session?` (id or name), `include_done?` | One line per task. Done tasks are left out unless `stage` or `include_done` is given. |
 | `task_get` | `task`, `reports?` (default 5) | Ends with "Editable fields: …". All fields (a stale next step ends with `(stale)`), description and progress in full, current `version`, the bound session (name and desktop id, link), the tracker issue and work-log mark, session binding history, tracker history, latest reports with their bodies, decisions. |
 | `events_since` | `since_id?` (default 0), `project?`, `limit?` (default 50, max 500) | Events oldest first and the `since_id` for the next call. |
+| `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
 | `rules_get` | `project?` | The working rules as markdown: hash, scope, mode, report format, stage requirements, description template, guidance. Without `project`, the global rules; with it, the project's merged rules. |
 
 ## Writing
@@ -103,10 +109,12 @@ Conventions:
 | `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage_note?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `expected_version?`, `session?`, `session_title?`, `hook_session?` | Patches fields; `"-"` or `""` clears a text field. With `expected_version`, fails instead of overwriting when the task changed meanwhile. |
 | `task_patch` | `task`, `fields` (JSON object), `expected_version?`, `session?`, `session_title?`, `hook_session?` | Changes any editable task fields with the same validation as `task_update` / `task_set_stage` (a `stage` value moves the task, auto-unlog applies). Unknown names fail with the list of allowed ones; `"-"`, `""` or `null` clears an optional text field. The allowed fields: the end of `task_get` or `relaybay://schema/task`. |
 | `task_set_stage` | `task`, `stage`, `note?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Moves the task; `note` is shown next to the stage. Moving to `done` sets the closed time. `next_step` and `waiting_on` are saved in the same transaction (`task.stage_changed` + `task.updated`, one version bump); `"-"` clears them. |
-| `task_bind_session` | `task`, `session`, `session_title?`, `hook_session?` | Shows the session in the task dialog as the one working on the task (a desktop session also gets an "open in desktop" icon on the card). The previous binding is closed and kept in the task's history (event `task.session_bound`). A plain name on a task bound to a desktop session keeps that binding and becomes its alias (see *Session aliases*). |
+| `task_bind_session` | `task`, `session`, `session_title?`, `hook_session?` (ignored: never linked here, a note says so) | Shows the session in the task dialog as the one working on the task (a desktop session also gets an "open in desktop" icon on the card). The previous binding is closed and kept in the task's history (event `task.session_bound`). A plain name on a task bound to a desktop session keeps that binding and becomes its alias (see *Session aliases*). |
 | `task_unbind_session` | `task`, `session?` | Removes the bound session from the task; the binding is closed and kept in the history (event `task.session_unbound`). With `session` (desktop id or name), fails without changes if another session is bound. Nothing bound: says so, changes nothing. |
 | `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`). `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `session?`, `session_title?`, `hook_session?` | Records a decision; it appears in the project snapshot. |
+| `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
+| `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
 
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
@@ -125,14 +133,14 @@ with the hook's input JSON. `relaybay setup` writes the hook entries (see
 
 | Hook event | Session status | Activity shown |
 |---|---|---|
-| `SessionStart` | working | `started (<source>)`; the answer adds the agent's `hook_session` id to its context |
+| `SessionStart` | working | `started (<source>)`; the answer adds the agent's `hook_session` id to its context, plus "You have N unread owner comment(s)…" when there are some |
 | `UserPromptSubmit` | working | `prompt` (the prompt text is not stored) |
-| `PreToolUse` | working | the tool name (the tool input is not stored) |
+| `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is not stored) |
 | `Notification` | waiting | the notification message |
 | `Stop` | idle | `turn finished` |
 | `SessionEnd` | ended | the session is unbound from its tasks (history kept, `task.session_unbound` with `reason: "session_end"`) |
 
-Other events are ignored (`204`). Activity of a working session is written at most once per 5 s per
+Other events are ignored (`204`); an event with nothing to say also gets an empty `204`. Activity of a working session is written at most once per 5 s per
 session (the latest one wins); status changes are written at once. Each change is a
 `session.status_changed` event per task the session is bound to.
 
@@ -143,6 +151,49 @@ to several projects, or the bound desktop sessions are linked to other live hook
 is guessed: the hook session stays unlinked and is listed on the board under Integrations until the
 agent passes its `hook_session`. With no desktop session in the project (or no project), it becomes
 a plain session named after the folder.
+
+### Owner comments through hooks
+
+Comments the owner writes on a task (task dialog or task page) reach the agent of the session bound
+to the task, but only when the agent linked its hook session itself (`hook_session` on a write); a
+link guessed from the folder, an unlinked or ended session never gets comment text.
+
+- `UserPromptSubmit`, `PreToolUse`, `PostToolUse`: the answer is
+  `{"hookSpecificOutput": {"hookEventName": …, "additionalContext": …}}` with the undelivered owner
+  comments of the session's tasks, one line each — `Owner comment on acme-shop-12 (#7): …` — and how
+  to answer (`comment_add` / `comment_ack`). They count as delivered (`comment.delivered`) and are not
+  sent again. At most about 8,000 characters per answer (below Claude Code's 10,000 limit); the rest
+  follow with the next events.
+- `Stop`: while delivered owner comments are not acknowledged (or new ones arrived), the answer is
+  `{"decision": "block", "reason": …}` with the comments, so the agent handles them before it ends
+  the turn. At most twice per turn per session and twice per comment in all; never when
+  `stop_hook_active` is set before relaybay blocked in this turn (another hook is already
+  continuing the turn); the per-turn counter resets on the next `UserPromptSubmit` and whenever a
+  Stop is allowed. Claude Code's own cap (8 continuations) still applies.
+- A rebind to another session hands the delivered-but-unread comments to the new session.
+- An idle session sees a comment with its next prompt. The coordinator sees `comment.added` in
+  `events_since` and can forward it; with the opt-in wake-up hook (`relaybay setup --wake`, below) the
+  comment wakes the idle session itself.
+
+The command hook prints the server's answer only when it is a `200` with a JSON object, and still
+exits 0 within 0.3 s per network step; http hooks get the same JSON body.
+
+**Wake-up hook (opt-in, experimental).** `relaybay setup --apply --wake --force-wake` adds a separate command hook
+to `Stop` with `"asyncRewake": true` and a 1800 s `timeout`:
+`<python> -I -m relaybay.hook_client --url …/hooks/claude-code/wait --token-file <path> --wait`.
+Claude Code runs it in the background after every turn; it long-polls `POST /hooks/claude-code/wait`
+for up to 25 minutes. When an owner comment arrives for the idle, exactly linked session, the server
+marks it delivered and answers `{"wake": text}`; the hook prints the text to stderr and exits 2,
+which wakes the session with the text as a system reminder. In every other case (nothing arrived,
+relaybay down, the session started working, a newer wait for the same session) it exits 0 silently.
+Following the hooks reference, this was not verified against a live Claude Code; `--no-wake` removes
+only this hook, a plain `--apply` keeps it.
+
+**Fallback risk:** a Claude Code build that ignored `asyncRewake` would run this hook in the
+foreground and hold the end of every turn for up to 30 minutes. The hooks reference names no
+version that supports it, so `--wake` is refused unless `--force-wake` is given too
+(`MIN_ASYNC_REWAKE_VERSION` is unset); `setup --check` and `doctor` show the installed hook as
+`UNVERIFIED`. If turns end only after a long wait, run `relaybay setup --apply --no-wake`.
 
 ## Resources
 

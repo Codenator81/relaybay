@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
 from relaybay import __version__
-from relaybay.domain.hooks import HOOK_EVENTS, HOOK_PATH
+from relaybay.domain.hooks import HOOK_EVENTS, HOOK_PATH, WAKE_PATH
 from relaybay.security import token_id
 
 # The hooks reference documents `http` hooks without the version that introduced them; this is
@@ -38,6 +38,16 @@ MIN_CLAUDE_CODE_VERSION = (2, 0, 0)
 TOKEN_ENV = "RELAYBAY_TOKEN"
 COMMAND_TIMEOUT = 3  # seconds; the command itself gives up after 0.3 s per network step
 HTTP_TIMEOUT = 2
+# The wake-up hook waits up to WAKE_HOLD_SECONDS (25 min) for a comment; Claude Code enforces
+# `timeout` on an asyncRewake hook, so it must be longer than that.
+WAKE_TIMEOUT = 1800
+# The first Claude Code release known to run `asyncRewake` hooks in the background. The hooks
+# reference names none, so it is unknown: a build that ignored the field would run the wake-up
+# hook in the foreground and hold every turn's Stop for up to WAKE_TIMEOUT. Until a version is
+# known, --wake needs --force-wake.
+MIN_ASYNC_REWAKE_VERSION: tuple[int, int, int] | None = None
+WAKE_EVENT = "Stop"
+TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 MODES = ("command", "http")
 DEFAULT_MODE = "command"
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -181,21 +191,25 @@ def _arg(value: str, platform: str) -> str:
 
 
 def hook_command(
-    base_url: str, token_path: Path, python: str | None = None, platform: str = sys.platform
+    base_url: str,
+    token_path: Path,
+    python: str | None = None,
+    platform: str = sys.platform,
+    wait: bool = False,
 ) -> str:
     """The command hook: this interpreter runs the stdlib-only forwarder, so nothing has to be
-    on PATH. Paths use forward slashes, which every shell on every OS accepts."""
+    on PATH. Paths use forward slashes, which every shell on every OS accepts. With `wait`, the
+    wake-up hook's command (long poll at WAKE_PATH)."""
     interpreter = Path(python or sys.executable).as_posix()
-    return " ".join(
-        [
-            _arg(interpreter, platform),
-            "-I -m relaybay.hook_client",
-            "--url",
-            _arg(base_url + HOOK_PATH, platform),
-            "--token-file",
-            _arg(token_path.resolve().as_posix(), platform),
-        ]
-    )
+    words = [
+        _arg(interpreter, platform),
+        "-I -m relaybay.hook_client",
+        "--url",
+        _arg(base_url + (WAKE_PATH if wait else HOOK_PATH), platform),
+        "--token-file",
+        _arg(token_path.resolve().as_posix(), platform),
+    ]
+    return " ".join([*words, "--wait"] if wait else words)
 
 
 def hook_interpreter(command: str) -> str | None:
@@ -223,33 +237,45 @@ def hook_handler(mode: str, base_url: str, token_path: Path, python: str | None 
     }
 
 
-def desired_groups(handler: dict) -> dict[str, dict]:
-    """One matcher group per event; PreToolUse matches every tool."""
+def wake_handler(base_url: str, token_path: Path, python: str | None = None) -> dict:
+    """The opt-in wake-up hook: runs in the background after every turn and wakes the idle
+    session (exit code 2) when an owner comment arrives. Command hooks only."""
     return {
-        event: ({"matcher": "*"} if event == "PreToolUse" else {}) | {"hooks": [handler]}
+        "type": "command",
+        "command": hook_command(base_url, token_path, python, wait=True),
+        "asyncRewake": True,
+        "timeout": WAKE_TIMEOUT,
+    }
+
+
+def desired_groups(handler: dict) -> dict[str, dict]:
+    """One matcher group per event; the tool events match every tool."""
+    return {
+        event: ({"matcher": "*"} if event in TOOL_EVENTS else {}) | {"hooks": [handler]}
         for event in HOOK_EVENTS
     }
 
 
-def _our_hook_url(url: str) -> bool:
+def _our_hook_url(url: str, path: str = HOOK_PATH) -> bool:
     parts = urlsplit(url)
     return (
         parts.scheme in ("http", "https")
         and bool(parts.hostname)
-        and parts.path == HOOK_PATH
+        and parts.path == path
         and not parts.query
         and not parts.fragment
     )
 
 
-def _is_our_command(command: str) -> bool:
-    """Only the exact command relaybay writes counts: `<python> [-I] -m relaybay.hook_client` or
-    `relaybay hook`, followed by exactly `--url <hook url> --token-file <path>` and nothing else.
-    A compound command (`a && b`), a wrapper or extra words make it the user's."""
+def _command_role(command: str) -> str | None:
+    """Only the exact commands relaybay writes count: `<python> [-I] -m relaybay.hook_client` or
+    `relaybay hook`, followed by exactly `--url <hook url> --token-file <path>` ('hook'), or by
+    `--url <wait url> --token-file <path> --wait` ('wake'), and nothing else. A compound
+    command (`a && b`), a wrapper or extra words make it the user's."""
     try:
         words = shlex.split(command)
     except ValueError:
-        return False
+        return None
     if len(words) >= 4 and words[1:4] == ["-I", "-m", "relaybay.hook_client"]:
         rest = words[4:]
     elif len(words) >= 3 and words[1:3] == ["-m", "relaybay.hook_client"]:
@@ -261,14 +287,14 @@ def _is_our_command(command: str) -> bool:
     ):
         rest = words[2:]
     else:
-        return False
-    return (
-        len(rest) == 4
-        and rest[0] == "--url"
-        and _our_hook_url(rest[1])
-        and rest[2] == "--token-file"
-        and bool(rest[3])
-    )
+        return None
+    if len(rest) < 4 or rest[0] != "--url" or rest[2] != "--token-file" or not rest[3]:
+        return None
+    if len(rest) == 4 and _our_hook_url(rest[1]):
+        return "hook"
+    if len(rest) == 5 and rest[4] == "--wait" and _our_hook_url(rest[1], WAKE_PATH):
+        return "wake"
+    return None
 
 
 def owned_hosts(base_url: str) -> frozenset[str]:
@@ -277,21 +303,27 @@ def owned_hosts(base_url: str) -> frozenset[str]:
     return LOOPBACK | ({host.lower()} if host else set())
 
 
-def is_ours(handler: Any, hosts: frozenset[str] = LOOPBACK) -> bool:
-    """A hook entry relaybay wrote. A command hook runs the relaybay forwarder with
-    `--url <scheme>://<host>/hooks/claude-code`; an http hook posts to exactly that path on a
-    loopback or the configured host. Anything else, even with a similar path, is the user's."""
+def handler_role(handler: Any, hosts: frozenset[str] = LOOPBACK) -> str | None:
+    """'hook' or 'wake' for a hook entry relaybay wrote, else None. A command hook runs the
+    relaybay forwarder with `--url <scheme>://<host>/hooks/claude-code` (the wake-up hook: the
+    `/wait` URL and `--wait`); an http hook posts to exactly that path on a loopback or the
+    configured host. Anything else, even with a similar path, is the user's."""
     if not isinstance(handler, dict):
-        return False
+        return None
     if handler.get("type") == "http":
         url = handler.get("url")
         if not isinstance(url, str):
-            return False
-        return _our_hook_url(url) and (urlsplit(url).hostname or "").lower() in hosts
+            return None
+        ours = _our_hook_url(url) and (urlsplit(url).hostname or "").lower() in hosts
+        return "hook" if ours else None
     command = handler.get("command")
     if handler.get("type") != "command" or not isinstance(command, str):
-        return False
-    return _is_our_command(command)
+        return None
+    return _command_role(command)
+
+
+def is_ours(handler: Any, hosts: frozenset[str] = LOOPBACK) -> bool:
+    return handler_role(handler, hosts) is not None
 
 
 # --- merge -----------------------------------------------------------------
@@ -312,17 +344,25 @@ def _hooks_section(data: dict) -> dict | None:
     return hooks
 
 
-def _drop_ours(groups: list, keep_first: dict | None, hosts: frozenset[str]) -> bool:
-    """Remove relaybay handlers from `groups` in place; with `keep_first`, the first one is
-    replaced by it instead. Groups left empty by the removal go too. True when one was kept."""
+def _drop_ours(
+    groups: list, keep_first: dict | None, hosts: frozenset[str], role: str | None = "hook"
+) -> bool:
+    """Remove relaybay handlers of `role` (None: any) from `groups` in place; with
+    `keep_first`, the first one is replaced by it instead. Groups left empty by the removal go
+    too. True when one was kept."""
+
+    def mine(handler: Any) -> bool:
+        found = handler_role(handler, hosts)
+        return found is not None and (role is None or found == role)
+
     kept = False
     for group in list(groups):
         handlers = group.get("hooks", [])
-        if not any(is_ours(h, hosts) for h in handlers):
+        if not any(mine(h) for h in handlers):
             continue
         new = []
         for handler in handlers:
-            if not is_ours(handler, hosts):
+            if not mine(handler):
                 new.append(handler)
             elif keep_first is not None and not kept:
                 new.append(keep_first)
@@ -334,8 +374,14 @@ def _drop_ours(groups: list, keep_first: dict | None, hosts: frozenset[str]) -> 
     return kept
 
 
-def merge_hooks(data: dict, groups: dict[str, dict], hosts: frozenset[str] = LOOPBACK) -> dict:
+def merge_hooks(
+    data: dict,
+    groups: dict[str, dict],
+    hosts: frozenset[str] = LOOPBACK,
+    wake: dict | bool | None = None,
+) -> dict:
     """`data` with relaybay's hook groups added (or its existing handlers updated in place).
+    `wake`: a wake-up handler to add or update, False to remove it, None to leave it as it is.
     Foreign entries keep their content and order."""
     result = copy.deepcopy(data)
     hooks = _hooks_section(result)
@@ -348,6 +394,18 @@ def merge_hooks(data: dict, groups: dict[str, dict], hosts: frozenset[str] = LOO
             continue
         if not _drop_ours(existing, group["hooks"][0], hosts):
             existing.append(copy.deepcopy(group))
+    if wake is False:
+        for event in list(hooks):
+            had = any(
+                handler_role(h, hosts) == "wake" for g in hooks[event] for h in g.get("hooks", [])
+            )
+            _drop_ours(hooks[event], None, hosts, role="wake")
+            if had and not hooks[event]:
+                del hooks[event]
+    elif isinstance(wake, dict):
+        existing = hooks.setdefault(WAKE_EVENT, [])
+        if not _drop_ours(existing, wake, hosts, role="wake"):
+            existing.append({"hooks": [copy.deepcopy(wake)]})
     return result
 
 
@@ -360,7 +418,7 @@ def remove_hooks(data: dict, hosts: frozenset[str] = LOOPBACK) -> dict:
     for event in list(hooks):
         groups = hooks[event]
         had = any(is_ours(h, hosts) for g in groups for h in g.get("hooks", []))
-        _drop_ours(groups, None, hosts)
+        _drop_ours(groups, None, hosts, role=None)
         if had and not groups:
             del hooks[event]
     if not hooks and data.get("hooks"):
@@ -368,7 +426,9 @@ def remove_hooks(data: dict, hosts: frozenset[str] = LOOPBACK) -> dict:
     return result
 
 
-def our_handlers(data: dict, event: str, hosts: frozenset[str] = LOOPBACK) -> list[dict]:
+def our_handlers(
+    data: dict, event: str, hosts: frozenset[str] = LOOPBACK, role: str = "hook"
+) -> list[dict]:
     hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
     groups = hooks.get(event) if isinstance(hooks.get(event), list) else []
     return [
@@ -376,7 +436,7 @@ def our_handlers(data: dict, event: str, hosts: frozenset[str] = LOOPBACK) -> li
         for g in groups
         if isinstance(g, dict) and isinstance(g.get("hooks"), list)
         for h in g["hooks"]
-        if is_ours(h, hosts)
+        if handler_role(h, hosts) == role
     ]
 
 
@@ -469,9 +529,14 @@ class FileChange:
         return "".join(lines)
 
 
-def plan_apply(path: Path, groups: dict[str, dict], hosts: frozenset[str] = LOOPBACK) -> FileChange:
+def plan_apply(
+    path: Path,
+    groups: dict[str, dict],
+    hosts: frozenset[str] = LOOPBACK,
+    wake: dict | bool | None = None,
+) -> FileChange:
     before, data = read_json(path)
-    merged = merge_hooks(data, groups, hosts)
+    merged = merge_hooks(data, groups, hosts, wake)
     if merged == data and before is not None:
         return FileChange(path, before, None, "already set up, no change")
     return FileChange(path, before, dump_json(merged, before), "add or update relaybay hooks")
@@ -564,6 +629,8 @@ class Plan:
     mcp_detail: str
     mcp_command: str
     notes: list[str] = field(default_factory=list)
+    wake: bool | None = None
+    force_wake: bool = False
 
 
 def make_plan(
@@ -577,17 +644,32 @@ def make_plan(
     remove: bool = False,
     environ: Mapping[str, str] = os.environ,
     python: str | None = None,
+    wake: bool | None = None,
+    force_wake: bool = False,
 ) -> Plan:
+    """`wake`: True adds the wake-up hook (command mode only), False removes it, None leaves it
+    as it is. Adding it needs a Claude Code known to run asyncRewake hooks in the background,
+    or `force_wake`."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
     hosts = owned_hosts(base_url)
     hooks, error = None, None
+    notes = mode_notes(mode, detection, environ, token)
     try:
         if remove:
             hooks = plan_remove(paths.settings, hosts)
+        elif wake and mode != "command":
+            error = (
+                "--wake needs --mode command: Claude Code runs asyncRewake only for command hooks"
+            )
+        elif wake and not force_wake and not async_rewake_known(detection):
+            error = WAKE_REFUSAL
         else:
             groups = desired_groups(hook_handler(mode, base_url, token_path, python))
-            hooks = plan_apply(paths.settings, groups, hosts)
+            wake_entry = wake_handler(base_url, token_path, python) if wake else wake
+            hooks = plan_apply(paths.settings, groups, hosts, wake_entry)
+            if wake:
+                notes.append(WAKE_NOTE)
     except (SetupError, OSError) as exc:
         error = str(exc)
     mcp_ok, mcp_detail = mcp_status(paths.config, base_url)
@@ -601,8 +683,35 @@ def make_plan(
         mcp_ok=mcp_ok,
         mcp_detail=mcp_detail,
         mcp_command=mcp_add_command(base_url),
-        notes=mode_notes(mode, detection, environ, token),
+        notes=notes,
+        wake=wake,
+        force_wake=force_wake,
     )
+
+
+def async_rewake_known(detection: Detection) -> bool:
+    version = detection.version_tuple
+    return (
+        MIN_ASYNC_REWAKE_VERSION is not None
+        and version is not None
+        and version >= MIN_ASYNC_REWAKE_VERSION
+    )
+
+
+WAKE_RISK = (
+    "a Claude Code that ignores asyncRewake would run it in the foreground and hold the end of"
+    " every turn for up to 30 minutes"
+)
+WAKE_REFUSAL = (
+    "--wake: no Claude Code version is documented to run asyncRewake hooks, and the wake-up hook"
+    f" is not verified; {WAKE_RISK}. Add --force-wake to install it anyway"
+)
+WAKE_NOTE = (
+    "The wake-up hook (experimental, not verified against a live Claude Code) runs in the"
+    " background after every turn for up to 25 minutes and wakes the idle session when an owner"
+    f" comment arrives; the agent then spends a turn on it. Risk: {WAKE_RISK}. If a turn ends"
+    " only after a long wait, remove it with --no-wake."
+)
 
 
 def format_plan(plan: Plan, *, remove: bool = False) -> list[str]:
@@ -626,6 +735,9 @@ def format_plan(plan: Plan, *, remove: bool = False) -> list[str]:
         if diff:
             lines.extend("  " + line for line in diff.rstrip("\n").splitlines())
             action = "--remove" if remove else f"--apply --mode {plan.mode}"
+            if not remove and plan.wake is not None:
+                action += " --wake" if plan.wake else " --no-wake"
+                action += " --force-wake" if plan.wake and plan.force_wake else ""
             lines.append(
                 f"  Plan hash: {plan.hooks.plan_hash} (write exactly this plan:"
                 f" relaybay setup {action} --expect {plan.hooks.plan_hash})"
@@ -795,6 +907,15 @@ def config_checks(
         else:
             detail = "some events are missing" if mode == "partial" else "none"
             checks.append(Check(False, "hooks in user settings", f"{detail} ({paths.settings})"))
+        if our_handlers(data, WAKE_EVENT, hosts, role="wake"):
+            checks.append(
+                Check(
+                    True,
+                    "wake-up hook",
+                    f"UNVERIFIED: asyncRewake hook at {WAKE_EVENT} (opt-in); {WAKE_RISK}."
+                    " Remove it with 'relaybay setup --apply --no-wake' if turns end slowly",
+                )
+            )
     except (SetupError, OSError) as exc:
         checks.append(Check(False, "hooks in user settings", str(exc)))
 

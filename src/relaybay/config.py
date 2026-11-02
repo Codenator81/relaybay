@@ -9,6 +9,7 @@ from typing import Any
 
 import platformdirs
 
+from relaybay.domain.hooks import WAKE_HOLD_SECONDS
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
@@ -148,6 +149,8 @@ class Settings:
     )
     replay_limit: int = 5000  # internal: not configurable
     heartbeat_seconds: float = 15.0  # internal: not configurable
+    wake_hold_seconds: float = WAKE_HOLD_SECONDS  # internal: wake-up hook long poll
+    wake_poll_seconds: float = 1.0  # internal
 
     @property
     def db_path(self) -> Path:

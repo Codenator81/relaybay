@@ -88,6 +88,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hook type: command (default; a small forwarder, silent when relaybay is down) or"
         " http (Claude Code posts itself; needs RELAYBAY_TOKEN in its environment).",
     )
+    wake = setup.add_mutually_exclusive_group()
+    wake.add_argument(
+        "--wake",
+        action="store_true",
+        help="Also add the opt-in wake-up hook (command mode, experimental): an asyncRewake hook"
+        " that wakes an idle session when an owner comment arrives.",
+    )
+    wake.add_argument("--no-wake", action="store_true", help="Remove the wake-up hook.")
+    setup.add_argument(
+        "--force-wake",
+        action="store_true",
+        help="With --wake: install it although no Claude Code version is known to run asyncRewake"
+        " hooks in the background (one that does not would hold every turn's end).",
+    )
 
     doctor = sub.add_parser(
         "doctor", help="Diagnose the installation: versions, data folder, server, Claude Code."
@@ -181,6 +195,8 @@ def cmd_setup(settings: Settings, args: argparse.Namespace) -> int:
         detection=detect(),
         mode=args.mode,
         remove=args.remove,
+        wake=True if args.wake else (False if args.no_wake else None),
+        force_wake=args.force_wake,
     )
     write = (args.apply or args.remove) and not args.dry_run
     title = "remove" if args.remove else "apply"

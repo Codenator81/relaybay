@@ -8,7 +8,8 @@ import logging
 import os
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,15 +19,20 @@ import aiosqlite
 
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
+from relaybay.domain import comments as comment_text
+from relaybay.domain.comments import COMMENT_MAX, STOP_BLOCK_CAP, STOP_COMMENT_CAP
 from relaybay.domain.errors import ConflictError, NotFoundError, ValidationError
 from relaybay.domain.hooks import (
     CC_ID_MAX,
+    DELIVERY_EVENTS,
     HookEvent,
     folder_name,
     parse_hook,
+    session_start_context,
 )
 from relaybay.domain.models import (
     Binding,
+    Comment,
     Decision,
     Event,
     Project,
@@ -57,6 +63,27 @@ logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity event per session
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
+
+
+# Lines a write wants its caller to see without failing (e.g. a hook_session that was not
+# linked); collected per MCP tool call by `collect_notes`.
+_NOTES: ContextVar[list[str] | None] = ContextVar("relaybay_notes", default=None)
+
+
+@contextlib.contextmanager
+def collect_notes() -> Iterator[list[str]]:
+    notes: list[str] = []
+    token = _NOTES.set(notes)
+    try:
+        yield notes
+    finally:
+        _NOTES.reset(token)
+
+
+def _note(text: str) -> None:
+    notes = _NOTES.get()
+    if notes is not None and text not in notes:
+        notes.append(text)
 
 
 def now_iso() -> str:
@@ -110,22 +137,29 @@ class TaskDetail:
     decisions: list[Decision]
     bindings: list[Binding]
     tracker_history: list[TrackerEntry]
+    comments: list[Comment] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class Inbox:
     """What needs the owner: tasks waiting on them, tasks whose last stage move missed a rule,
-    done tasks without the work-log mark (with `require_tracker_log`), unlinked hook sessions."""
+    done tasks without the work-log mark (with `require_tracker_log`), unlinked hook sessions,
+    tasks with agent replies the owner has not marked read."""
 
     waiting: list[Task]
     rule_warnings: list[tuple[Task, list[str]]]
     not_logged: list[Task]
     unlinked: list[Session]
+    replies: list[tuple[Task, list[Comment]]] = field(default_factory=list)
 
     @property
     def count(self) -> int:
         return (
-            len(self.waiting) + len(self.rule_warnings) + len(self.not_logged) + len(self.unlinked)
+            len(self.waiting)
+            + len(self.rule_warnings)
+            + len(self.not_logged)
+            + len(self.unlinked)
+            + len(self.replies)
         )
 
 
@@ -245,6 +279,17 @@ def _project_override(slug: str, body: str) -> dict[str, Any]:
     return validate_rules(data, source)
 
 
+def _context(event: str, text: str) -> dict[str, Any]:
+    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+
+
+def _clean_comment(body: Any) -> str:
+    text = _clean_text(body, "Comment", COMMENT_MAX)
+    if not text:
+        raise ValidationError("Comment must not be empty.")
+    return text
+
+
 def _clean_slug(value: str) -> str:
     slug = value.strip().lower()
     if not SLUG_RE.match(slug):
@@ -285,6 +330,10 @@ class Service:
         self._activity_pending: dict[int, HookEvent] = {}
         self._activity_timers: dict[int, asyncio.TimerHandle] = {}
         self._flushes: set[asyncio.Task[Any]] = set()
+        # Per session: Stop blocks in the current turn; the newest wake-up waiter's number.
+        self._stop_blocks: dict[int, int] = {}
+        self._waiters: dict[int, int] = {}
+        self._waiter_seq = 0
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -513,10 +562,23 @@ class Service:
     async def _link_hook_session(self, tx: _Tx, session: Session, cc_id: str) -> Session:
         """Exact link from an agent's write: `cc_id` now belongs to `session`. A row the hooks
         created for it by guess hands over its status and is removed when nothing refers to it."""
-        if session.cc_session_id == cc_id:
+        if session.cc_session_id == cc_id and session.cc_exact:
             return session
-        changes: dict[str, Any] = {"cc_session_id": cc_id, "unlinked_reason": None}
+        changes: dict[str, Any] = {"cc_session_id": cc_id, "cc_exact": 1, "unlinked_reason": None}
         other = await repo.get_session_by_cc(tx.conn, cc_id)
+        if (
+            other is not None
+            and other.id != session.id
+            and other.cc_exact
+            and other.status != "ended"
+        ):
+            # Another live session's agent linked this id itself: a write naming the wrong id
+            # (or a coordinator passing its own) must not move that session's comments here.
+            _note(
+                f"Warning: hook_session {cc_id} belongs to another session ({other.name}); not"
+                " relinked. Pass your own hook session id."
+            )
+            return session
         if other is not None and other.id != session.id:
             changes.update(
                 status=other.status,
@@ -531,7 +593,7 @@ class Service:
                     tx.conn,
                     other.id,
                     tx.now,
-                    {"cc_session_id": None, "unlinked_reason": None, "status": None},
+                    {"cc_session_id": None, "cc_exact": 0, "unlinked_reason": None, "status": None},
                 )
         if session.project_id is None and other is not None and other.project_id is not None:
             changes["project_id"] = other.project_id
@@ -581,7 +643,7 @@ class Service:
                     tx.conn,
                     existing.id,
                     tx.now,
-                    {"cc_session_id": hook.cc_session_id, "cwd": hook.cwd},
+                    {"cc_session_id": hook.cc_session_id, "cc_exact": 0, "cwd": hook.cwd},
                 )
                 found = await repo.get_session_by_id(tx.conn, existing.id)
                 assert found is not None
@@ -629,7 +691,7 @@ class Service:
             free = [s for s in bound if s.cc_session_id is None or s.status == "ended"]
             if len(free) == 1:
                 session = free[0]
-                changes = {"cc_session_id": hook.cc_session_id, "cwd": hook.cwd}
+                changes = {"cc_session_id": hook.cc_session_id, "cc_exact": 0, "cwd": hook.cwd}
                 if session.project_id is None:
                     changes["project_id"] = project.id
                 await repo.touch_session(tx.conn, session.id, tx.now, changes)
@@ -724,6 +786,147 @@ class Service:
                     )
             return updated
 
+    # --- comment delivery through hooks ------------------------------------
+
+    async def _exact_session(self, cc_session_id: str) -> Session | None:
+        """The session a hook event belongs to, only when the agent linked it itself."""
+        session = await repo.get_session_by_cc(self._r, cc_session_id)
+        if session is None or not session.cc_exact or session.status == "ended":
+            return None
+        return session
+
+    async def _deliver(self, tx: _Tx, session: Session, comments: list[Comment]) -> None:
+        await repo.mark_comments_delivered(tx.conn, [c.id for c in comments], session.id, tx.now)
+        tasks = {t.id: t for t in await repo.open_tasks_of_session(tx.conn, session.id)}
+        for comment in comments:
+            task = tasks[comment.task_id]
+            await tx.event(
+                "comment.delivered",
+                session.name,
+                project_id=task.project_id,
+                task_id=task.id,
+                session_id=session.id,
+                project=task.project_slug,
+                key=task.key,
+                stage=task.stage.value,
+                comment_id=comment.id,
+                session=session.name,
+            )
+
+    async def _take_undelivered(self, session: Session) -> tuple[list[Comment], int]:
+        """Mark the oldest undelivered owner comments that fit in one hook answer as delivered
+        to `session`; returns them and how many were waiting."""
+        if not await repo.undelivered_owner_comments(self._r, session.id):
+            return [], 0  # the common case: no write transaction per tool call
+        async with self._tx() as tx:
+            waiting = await repo.undelivered_owner_comments(tx.conn, session.id)
+            shown = comment_text.fit(waiting)
+            if shown:
+                await self._deliver(tx, session, shown)
+        return shown, len(waiting)
+
+    async def hook_answer(self, payload: Any) -> dict[str, Any] | None:
+        """The JSON a hook event is answered with, or None for an empty answer. Comment text goes
+        only to the hook session its agent linked itself and only for the tasks bound to it."""
+        hook = parse_hook(payload)
+        if hook is None:
+            return None
+        session = await self._exact_session(hook.cc_session_id)
+        if hook.event == "SessionStart":
+            context = session_start_context(hook.cc_session_id)
+            unread = await repo.unread_owner_count(self._r, session.id) if session else 0
+            if unread:
+                context += " " + comment_text.unread_line(unread)
+            return _context("SessionStart", context)
+        if session is None:
+            return None
+        if hook.event == "UserPromptSubmit":
+            self._stop_blocks.pop(session.id, None)  # a new turn
+        if hook.event in DELIVERY_EVENTS:
+            shown, total = await self._take_undelivered(session)
+            if shown:
+                return _context(hook.event, comment_text.delivery_text(shown, total))
+            return None
+        if hook.event == "Stop":
+            return await self._stop_answer(session, hook.stop_hook_active)
+        return None
+
+    async def _stop_candidates(
+        self, conn: aiosqlite.Connection, session: Session
+    ) -> tuple[list[Comment], int]:
+        """Owner comments a Stop may block for, oldest first: delivered to this session and not
+        acknowledged, or not delivered to it yet; each at most STOP_COMMENT_CAP times in all.
+        Also returns how many unread ones there are, capped or not."""
+        unread = await repo.delivered_unread_comments(conn, session.id)
+        new = await repo.undelivered_owner_comments(conn, session.id)
+        every = sorted(unread + new, key=lambda c: c.id)
+        return [c for c in every if c.stop_blocks < STOP_COMMENT_CAP], len(every)
+
+    async def _stop_answer(self, session: Session, stop_hook_active: bool) -> dict[str, Any] | None:
+        """Block the end of the turn while owner comments are unacknowledged: at most
+        STOP_BLOCK_CAP times per turn and STOP_COMMENT_CAP times per comment, and never on top
+        of another hook's continuation (`stop_hook_active` before relaybay blocked in this
+        turn). After that the SessionStart line and comments_list remind of them."""
+        blocks = self._stop_blocks.get(session.id, 0)
+        allowed = blocks < STOP_BLOCK_CAP and (blocks > 0 or not stop_hook_active)
+        if not allowed or not (await self._stop_candidates(self._r, session))[0]:
+            self._stop_blocks.pop(session.id, None)  # the turn ends
+            return None
+        async with self._tx() as tx:
+            candidates, total = await self._stop_candidates(tx.conn, session)
+            shown = comment_text.fit(candidates)
+            fresh = [c for c in shown if c.delivered_to_session_id != session.id]
+            if fresh:
+                await self._deliver(tx, session, fresh)
+            if shown:
+                await repo.count_stop_blocks(tx.conn, [c.id for c in shown])
+        if not shown:
+            self._stop_blocks.pop(session.id, None)
+            return None
+        self._stop_blocks[session.id] = blocks + 1
+        return {"decision": "block", "reason": comment_text.stop_reason(shown, total)}
+
+    async def wait_for_comments(
+        self,
+        payload: Any,
+        *,
+        hold: float,
+        poll: float = 1.0,
+        gone: Callable[[], Awaitable[bool]] | None = None,
+    ) -> str | None:
+        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment arrives
+        for the idle, exactly linked session of `payload`, mark it delivered and return the
+        text for the agent. None when the time is up, the session is not idle (its own hooks
+        deliver then), a newer wait for the same session started, or `gone()` says the hook
+        process went away."""
+        cc_id = payload.get("session_id") if isinstance(payload, dict) else None
+        if not isinstance(cc_id, str) or not cc_id.strip():
+            return None
+        session = await self._exact_session(cc_id.strip()[:CC_ID_MAX])
+        if session is None:
+            return None
+        self._waiter_seq += 1
+        me = self._waiters[session.id] = self._waiter_seq
+        deadline = time.monotonic() + hold
+        try:
+            while time.monotonic() < deadline:
+                await asyncio.sleep(poll)
+                if self._waiters.get(session.id) != me or (gone is not None and await gone()):
+                    return None
+                current = await self._exact_session(cc_id.strip()[:CC_ID_MAX])
+                if current is None or current.id != session.id:
+                    return None
+                # Not while a turn goes on: a Stop block of this turn means it continues.
+                if current.status != "idle" or session.id in self._stop_blocks:
+                    continue
+                shown, total = await self._take_undelivered(current)
+                if shown:
+                    return comment_text.delivery_text(shown, total)
+            return None
+        finally:
+            if self._waiters.get(session.id) == me:
+                del self._waiters[session.id]
+
     async def inbox(
         self,
         owner_names: list[str],
@@ -748,7 +951,17 @@ class Service:
             # Shown until the task moves again: the warning is about the move into this stage.
             if move and move.payload.get("warnings") and move.payload.get("to") == task.stage:
                 warned.append((task, list(move.payload["warnings"])))
-        return Inbox(waiting, warned, not_logged, await self.unlinked_hook_sessions())
+        by_id = {t.id: t for t in tasks}
+        replies: dict[int, list[Comment]] = {}
+        for reply in await repo.unread_agent_replies(self._r):
+            replies.setdefault(reply.task_id, []).append(reply)
+        return Inbox(
+            waiting,
+            warned,
+            not_logged,
+            await self.unlinked_hook_sessions(),
+            [(by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id],
+        )
 
     async def list_sessions(self, project: str | None = None, limit: int = 200) -> list[SessionRow]:
         """Sessions with the tasks bound to them now; with `project`, the sessions of that
@@ -848,6 +1061,7 @@ class Service:
             decisions=await repo.list_decisions(self._r, task_id=task.id, limit=10),
             bindings=await repo.list_bindings(self._r, task.id),
             tracker_history=await repo.list_tracker_entries(self._r, task.id),
+            comments=await repo.list_comments(self._r, task.id),
         )
 
     def _merged_rules(self, slug: str, body: str | None) -> Rules:
@@ -1219,12 +1433,13 @@ class Service:
         session: str,
         *,
         session_title: str | None = None,
-        hook_session: str | None = None,
     ) -> BindResult:
         """Bind a session to the task. A plain name never replaces a desktop session bound to
         the task (and its "Open in desktop" link): the binding is kept and the name becomes that
         session's alias, unless a plain session of that name already exists (aliases are global
-        and would hijack it); then nothing is written."""
+        and would hijack it); then nothing is written. No hook session is linked here: the
+        caller may be binding someone else (a coordinator), so only the agent's own writes link
+        its `hook_session`."""
         name = _clean_text(session, "session", NAME_MAX)
         if name is None:
             raise ValidationError("session must not be empty.")
@@ -1240,11 +1455,8 @@ class Service:
                     if taken:
                         return BindResult(task, current, alias_recorded=False)
                     await self._add_alias(tx, task, current, name)
-                    cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
-                    if cc_id is not None:
-                        current = await self._link_hook_session(tx, current, cc_id)
                     return BindResult(task, current, alias_recorded=True)
-            sess = await self._session(tx, name, session_title, hook_session)
+            sess = await self._session(tx, name, session_title)
             if sess is None:
                 raise ValidationError("session must not be empty.")
             await self._bind(tx, task, sess, sess.name)
@@ -1432,3 +1644,171 @@ class Service:
             )
             decisions = await repo.list_decisions(tx.conn, project_id=proj.id, limit=1)
         return decisions[0]
+
+    # --- comments ----------------------------------------------------------
+
+    async def _read(
+        self,
+        tx: _Tx,
+        task: Task,
+        comments: list[Comment],
+        actor: str,
+        session_id: int | None,
+    ) -> list[int]:
+        ids = [c.id for c in comments if c.read_at is None]
+        if not ids:
+            return []
+        await repo.mark_comments_read(tx.conn, ids, tx.now)
+        for comment_id in ids:
+            await tx.event(
+                "comment.read",
+                actor,
+                project_id=task.project_id,
+                task_id=task.id,
+                session_id=session_id,
+                project=task.project_slug,
+                key=task.key,
+                stage=task.stage.value,
+                comment_id=comment_id,
+            )
+        return ids
+
+    async def _insert_comment(
+        self,
+        tx: _Tx,
+        task: Task,
+        *,
+        author_kind: str,
+        author: str,
+        session_id: int | None,
+        body: str,
+        in_reply_to: int | None,
+    ) -> Comment:
+        comment_id = await repo.insert_comment(
+            tx.conn,
+            task_id=task.id,
+            author_kind=author_kind,
+            author=author,
+            session_id=session_id,
+            body_md=body,
+            in_reply_to=in_reply_to,
+            now=tx.now,
+        )
+        await tx.event(
+            "comment.added",
+            author,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=session_id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            comment_id=comment_id,
+            author_kind=author_kind,
+            in_reply_to=in_reply_to,
+            excerpt=" ".join(body.split())[:200],
+        )
+        comment = await repo.get_comment(tx.conn, comment_id)
+        assert comment is not None
+        return comment
+
+    async def _unread(self, tx: _Tx, task: Task, from_owner: bool) -> list[Comment]:
+        unread = await repo.list_comments(tx.conn, task.id, unread_only=True)
+        return [c for c in unread if c.from_owner == from_owner]
+
+    async def add_owner_comment(
+        self, ref: str | int, body: str, *, actor: str = "owner"
+    ) -> Comment:
+        """A comment from the board for the agent of the bound session. Writing one also marks
+        the agent's replies on the task read: the owner has seen the thread."""
+        text = _clean_comment(body)
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            await self._read(tx, task, await self._unread(tx, task, False), actor, None)
+            return await self._insert_comment(
+                tx,
+                task,
+                author_kind="owner",
+                author=actor,
+                session_id=None,
+                body=text,
+                in_reply_to=None,
+            )
+
+    async def add_agent_comment(
+        self,
+        ref: str | int,
+        body: str,
+        *,
+        in_reply_to: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Comment, list[int]]:
+        """An agent's reply. It marks the owner comment it answers read (`in_reply_to`), or
+        every unread owner comment of the task. Returns the reply and the ids marked read."""
+        text = _clean_comment(body)
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            session_id = sess.id if sess else None
+            unread = await self._unread(tx, task, True)
+            if in_reply_to is not None:
+                target = await repo.get_comment(tx.conn, in_reply_to)
+                if target is None or target.task_id != task.id:
+                    raise NotFoundError(f"Comment #{in_reply_to} not found on {task.key}.")
+                unread = [c for c in unread if c.id == in_reply_to]
+            read = await self._read(tx, task, unread, actor, session_id)
+            comment = await self._insert_comment(
+                tx,
+                task,
+                author_kind="agent",
+                author=actor,
+                session_id=session_id,
+                body=text,
+                in_reply_to=in_reply_to,
+            )
+        return comment, read
+
+    async def ack_comments(
+        self,
+        *,
+        comment_id: int | None = None,
+        task: str | int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Task, list[int]]:
+        """Mark owner comments read: one by id, or every unread one of a task. Returns the task
+        and the ids that were unread."""
+        async with self._tx() as tx:
+            if comment_id is not None:
+                comment = await repo.get_comment(tx.conn, comment_id)
+                if comment is None or not comment.from_owner:
+                    raise NotFoundError(f"Owner comment #{comment_id} not found.")
+                row = await self.get_task(comment.task_id, tx.conn)
+                if task is not None and (await self.get_task(task, tx.conn)).id != row.id:
+                    raise ValidationError(f"Comment #{comment_id} is not on {task}.")
+                targets = [comment]
+            elif task is not None:
+                row = await self.get_task(task, tx.conn)
+                targets = await self._unread(tx, row, True)
+            else:
+                raise ValidationError("Pass comment_id or task.")
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            read = await self._read(tx, row, targets, actor, sess.id if sess else None)
+        return row, read
+
+    async def mark_replies_read(self, ref: str | int, *, actor: str = "owner") -> list[int]:
+        """The owner has read the agent replies on the task."""
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            return await self._read(tx, task, await self._unread(tx, task, False), actor, None)
+
+    async def list_comments(
+        self, ref: str | int, *, unread_only: bool = False
+    ) -> tuple[Task, list[Comment]]:
+        task = await self.get_task(ref)
+        return task, await repo.list_comments(self._r, task.id, unread_only=unread_only)
