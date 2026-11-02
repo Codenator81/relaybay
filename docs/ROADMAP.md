@@ -29,7 +29,7 @@ live board.
 | CI check that a user-visible change touches `CHANGELOG.md` | later | [0003](design/0003-packaging-and-release.md) |
 | `llms-full.txt` (SPEC + reference in one file) | later | deferred from the docs restructure |
 
-## 0.2.0 — working with sessions
+## 0.2.0 — working with sessions (released 2026-11-02)
 
 | Item | Status | Design |
 |---|---|---|

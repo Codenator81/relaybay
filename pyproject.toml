@@ -1,6 +1,6 @@
 [project]
 name = "relaybay"
-version = "0.1.0"
+version = "0.2.0"
 description = "A live board and MCP server for coordinating many Claude Code sessions across projects."
 readme = "README.md"
 license = "MIT"

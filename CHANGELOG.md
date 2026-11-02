@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+
+Working with sessions: sidebar navigation, Inbox, Sessions and Activity; comments from the board
+to agents through hooks; project environments with agent permission levels, a guard and a journal
+of actions on live; access and safety rules as a layered JSON policy with presets.
+
 ### Added
 
 - Left sidebar on every page: Inbox with a live count, All boards, Activity, Settings, and each
@@ -265,5 +271,6 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.1.0
