@@ -1,0 +1,33 @@
+{#- Left navigation. Expects: nav (active, project, projects, inbox_count). Items whose feature
+    does not exist yet are not shown. -#}
+{%- macro item(href, text, is_active) -%}
+<a class="nav-item{% if is_active %} is-active{% endif %}" href="{{ href }}"{% if is_active %} aria-current="page"{% endif %}>{{ text }}{{ caller() if caller else "" }}</a>
+{%- endmacro %}
+<div class="nav-backdrop"></div>
+<nav class="sidebar" id="sidebar" aria-label="Main">
+  <ul class="nav-list">
+    <li>{% call item("/inbox", "Inbox", nav.active == "inbox") %}{% with count = nav.inbox_count %}{% include "_inbox_badge.html" %}{% endwith %}{% endcall %}</li>
+    <li>{{ item("/", "All boards", nav.active == "boards") }}</li>
+    <li>{{ item("/activity", "Activity", nav.active == "activity") }}</li>
+    <li>{{ item("/settings/integrations", "Settings", nav.active == "settings") }}</li>
+  </ul>
+  <h2 class="nav-heading">Projects</h2>
+  {% if nav.projects %}
+  <ul class="nav-list nav-projects">
+    {% for p in nav.projects %}
+    {%- set here = nav.project == p.slug %}
+    <li>
+      <details class="nav-project"{% if here %} open{% endif %}>
+        <summary class="nav-item{% if here %} is-current{% endif %}" title="{{ p.slug }}">{{ p.name }}</summary>
+        <ul class="nav-list nav-sub">
+          <li>{{ item("/p/" ~ p.slug, "Board", here and nav.active == "board") }}</li>
+          <li>{{ item("/p/" ~ p.slug ~ "/sessions", "Sessions", here and nav.active == "sessions") }}</li>
+        </ul>
+      </details>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="nav-empty muted">No projects yet.</p>
+  {% endif %}
+</nav>

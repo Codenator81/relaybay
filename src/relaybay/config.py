@@ -18,6 +18,7 @@ from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+DEFAULT_OWNER_NAMES = ("owner", "me", "you")
 
 
 def _doc(
@@ -106,6 +107,16 @@ class Settings:
             'Done tasks without the tracker mark show "not logged" and are never archived.',
             key="require_tracker_log",
             env="RELAYBAY_REQUIRE_TRACKER_LOG",
+        ),
+    )
+    owner_names: list[str] = field(
+        default_factory=lambda: list(DEFAULT_OWNER_NAMES),
+        metadata=_doc(
+            "Names that mean you in a task's `waiting_on` (case-insensitive): those tasks are"
+            " listed in the Inbox. The environment variable is comma-separated.",
+            key="owner_names",
+            env="RELAYBAY_OWNER_NAMES",
+            default='`["owner", "me", "you"]`',
         ),
     )
     rules: dict[str, Any] = field(
@@ -236,6 +247,18 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
     if "allowed_hosts" in data:
         value = data["allowed_hosts"]
         settings.allowed_hosts = _split_list(value) if isinstance(value, str) else list(value)
+    if "owner_names" in data:
+        value = data["owner_names"]
+        names = _split_list(value) if isinstance(value, str) else value
+        if (
+            not isinstance(names, list)
+            or not names
+            or not all(isinstance(n, str) and n.strip() for n in names)
+        ):
+            raise ValueError(
+                f"{source}: owner_names must be a non-empty list of names, got {value!r}"
+            )
+        settings.owner_names = [n.strip() for n in names]
 
 
 def load_settings(

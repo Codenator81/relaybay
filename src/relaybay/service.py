@@ -50,6 +50,7 @@ from relaybay.domain.rules import (
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.task_fields import BY_NAME, FIELD_NAMES, NAME_MAX, TEXT_MAX, TITLE_MAX
+from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
 
 logger = logging.getLogger("relaybay")
@@ -109,6 +110,29 @@ class TaskDetail:
     decisions: list[Decision]
     bindings: list[Binding]
     tracker_history: list[TrackerEntry]
+
+
+@dataclass(slots=True)
+class Inbox:
+    """What needs the owner: tasks waiting on them, tasks whose last stage move missed a rule,
+    done tasks without the work-log mark (with `require_tracker_log`), unlinked hook sessions."""
+
+    waiting: list[Task]
+    rule_warnings: list[tuple[Task, list[str]]]
+    not_logged: list[Task]
+    unlinked: list[Session]
+
+    @property
+    def count(self) -> int:
+        return (
+            len(self.waiting) + len(self.rule_warnings) + len(self.not_logged) + len(self.unlinked)
+        )
+
+
+@dataclass(slots=True)
+class SessionRow:
+    session: Session
+    tasks: list[Task]  # bound to the session now
 
 
 class Saved(NamedTuple):
@@ -699,6 +723,65 @@ class Service:
                         end_reason=hook.end_reason,
                     )
             return updated
+
+    async def inbox(
+        self,
+        owner_names: list[str],
+        *,
+        require_tracker_log: bool = False,
+        done_window_days: int = DEFAULT_DONE_WINDOW_DAYS,
+    ) -> Inbox:
+        owners = {name.strip().casefold() for name in owner_names}
+        tasks = await repo.list_tasks(self._r)
+        moves = await repo.latest_stage_changes(self._r)
+        now = datetime.now(UTC)
+        waiting, warned, not_logged = [], [], []
+        for task in tasks:
+            if is_archived(task, now, done_window_days, require_tracker_log):
+                continue
+            if task.stage == Stage.DONE:
+                if require_tracker_log and not task.tracker_logged:
+                    not_logged.append(task)
+            elif task.waiting_on and task.waiting_on.strip().casefold() in owners:
+                waiting.append(task)
+            move = moves.get(task.id)
+            # Shown until the task moves again: the warning is about the move into this stage.
+            if move and move.payload.get("warnings") and move.payload.get("to") == task.stage:
+                warned.append((task, list(move.payload["warnings"])))
+        return Inbox(waiting, warned, not_logged, await self.unlinked_hook_sessions())
+
+    async def list_sessions(self, project: str | None = None, limit: int = 200) -> list[SessionRow]:
+        """Sessions with the tasks bound to them now; with `project`, the sessions of that
+        project (placed there by its hooks or bound to one of its tasks)."""
+        project_id = (await self.get_project(project)).id if project else None
+        sessions = await repo.list_sessions(self._r, project_id, limit)
+        bound: dict[int, list[Task]] = {s.id: [] for s in sessions}
+        for task in await repo.list_tasks(self._r, session_ids=list(bound)):
+            if task.session_id is not None:
+                bound[task.session_id].append(task)
+        return [SessionRow(s, bound[s.id]) for s in sessions]
+
+    async def activity(
+        self,
+        *,
+        project: str | None = None,
+        kind: str | None = None,
+        before_id: int | None = None,
+        after_id: int | None = None,
+        exclude_kinds: tuple[str, ...] = (),
+        limit: int = 50,
+    ) -> list[Event]:
+        """Events newest first (the Activity feed)."""
+        project_id = (await self.get_project(project)).id if project else None
+        return await repo.events_page(
+            self._r,
+            before_id=before_id,
+            after_id=after_id,
+            project_id=project_id,
+            kind=kind,
+            exclude_kinds=exclude_kinds,
+            limit=max(1, min(limit, 500)),
+        )
 
     async def unlinked_hook_sessions(self, limit: int = 50) -> list[Session]:
         """Hook sessions that could not be linked to one relaybay session (Settings page)."""

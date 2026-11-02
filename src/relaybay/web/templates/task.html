@@ -3,7 +3,7 @@
 {% block title %}{{ t.key }} · relaybay{% endblock %}
 {% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ t.project_slug }}">{{ t.project_slug }}</a><span class="crumb-sep">/</span><span class="crumb">{{ t.key }}</span>{% endblock %}
 {% block content %}
-<main class="page task-page" id="live" hx-ext="sse" sse-connect="/events?project={{ t.project_slug }}"
+<main class="page task-page" id="live" hx-ext="sse" sse-connect="/events"
       data-last-event-id="{{ last_event_id }}" data-project="{{ t.project_slug }}" data-task="{{ t.key }}">
   {% include "_task_view.html" %}
 </main>

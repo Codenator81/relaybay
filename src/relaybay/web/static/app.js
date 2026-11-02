@@ -7,7 +7,16 @@
     "project.created", "project.updated",
     "task.created", "task.updated", "task.stage_changed",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
-    "task.tracker_unlogged", "session.seen", "session.status_changed"
+    "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added"
+  ];
+  // Events that can change what the Inbox lists (and its count in the sidebar).
+  var INBOX_KINDS = [
+    "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
+    "session.seen", "session.status_changed"
+  ];
+  var SESSION_KINDS = [
+    "session.seen", "session.status_changed", "session.alias_added",
+    "task.session_bound", "task.session_unbound"
   ];
   var live = null;
   var lastId = 0;
@@ -60,6 +69,36 @@
     }
   }
 
+  // Hook status events come every few seconds per working session: lists that react to them
+  // are refetched at most once per THROTTLE_MS (the last event in the window still counts).
+  var THROTTLE_MS = 2000;
+  var throttled = new Map();
+  function queueThrottled(el) {
+    if (!el || throttled.has(el.id)) return;
+    throttled.set(el.id, window.setTimeout(function () {
+      throttled.delete(el.id);
+      queue(document.getElementById(el.id));
+    }, THROTTLE_MS));
+  }
+
+  // Activity: prepend the events newer than the newest row shown, with the page's filters.
+  var activityBusy = false;
+  var activityAgain = false;
+  function prependActivity(list) {
+    if (activityBusy) { activityAgain = true; return; }
+    var first = list.querySelector(".activity-row");
+    var newest = first ? first.dataset.id : list.dataset.newest;
+    var filters = list.dataset.filters;
+    activityBusy = true;
+    htmx.ajax("GET", "/fragments/activity?after=" + encodeURIComponent(newest || "0") +
+      (filters ? "&" + filters : ""), { target: list, swap: "afterbegin" }).finally(function () {
+      activityBusy = false;
+      var empty = document.querySelector(".activity-empty");
+      if (empty && list.querySelector(".activity-row")) empty.remove();
+      if (activityAgain) { activityAgain = false; prependActivity(list); }
+    });
+  }
+
   function column(stage) { return stage ? document.getElementById("col-" + stage) : null; }
   function card(key) { return key ? document.getElementById("card-" + key) : null; }
 
@@ -68,6 +107,11 @@
     if (!isNaN(id) && id > lastId) lastId = id;
     var data = {};
     try { data = JSON.parse(event.data); } catch (e) { return; }
+
+    if (INBOX_KINDS.indexOf(data.kind) !== -1) {
+      queueThrottled(document.getElementById("inbox-badge"));
+      queueThrottled(document.getElementById("inbox"));
+    }
 
     // The task page is read-only: reload it when its own task changes (not for every hook
     // status of its session, which comes every few seconds while it works).
@@ -80,7 +124,19 @@
 
     var projects = document.getElementById("projects");
     if (projects) { queue(projects); return; }
+    var sessions = document.getElementById("sessions");
+    if (sessions) {
+      if (SESSION_KINDS.indexOf(data.kind) !== -1) queueThrottled(sessions);
+      return;
+    }
+    var activity = document.getElementById("activity");
+    if (activity) {
+      if (activity.dataset.live) prependActivity(activity);
+      return;
+    }
     if (!document.getElementById("board")) return;
+    // Every page listens to all projects (the Inbox count); the board only to its own.
+    if (data.project !== live.dataset.project) return;
     if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) refreshDialog();
 
     switch (data.kind) {

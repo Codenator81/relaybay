@@ -1,0 +1,2 @@
+{#- Inbox count in the sidebar; refetched by app.js on events that can change it. -#}
+<span class="nav-badge" id="inbox-badge" hx-get="/fragments/inbox-badge" hx-trigger="rb:refresh" hx-swap="outerHTML"{% if not count %} hidden{% endif %}><span class="visually-hidden">, </span>{{ count }}<span class="visually-hidden"> need you</span></span>

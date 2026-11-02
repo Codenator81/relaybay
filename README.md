@@ -102,7 +102,7 @@ relaybay setup --check                 # end-to-end check, one ok/FAIL line per 
 The hooks let the board show whether each session is working, waiting for you, idle or gone, and
 unbind a session from its task when it ends. Setup adds only its own entries (other hooks stay as
 they are), never writes the token into the file, and `--remove` takes them out again. The same plan
-and buttons are on the board under **Integrations**. Hooks stay silent when relaybay is not
+and buttons are on the board under **Settings → Integrations**. Hooks stay silent when relaybay is not
 running. Details: [docs/connect-claude-code.md](docs/connect-claude-code.md#3-live-session-status-hooks).
 
 ### Schema changes and long-running sessions
@@ -130,6 +130,7 @@ variables, then command-line flags.
 | days a done task stays in the done column | `7` | `RELAYBAY_DONE_WINDOW_DAYS` | — |
 | keep done tasks without the tracker work log on the board | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — |
 | what a stage move that misses a rule does: `warn` or `strict` | `warn` | `RELAYBAY_RULES_MODE` | — |
+| `waiting_on` names that mean you (listed in the Inbox) | `owner`, `me`, `you` | `RELAYBAY_OWNER_NAMES` (comma-separated) | — |
 | folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
 
 The data directory holds `relaybay.sqlite`, the `token` file and the optional `config.toml`:
@@ -140,6 +141,7 @@ allowed_hosts = ["my-laptop.lan"]   # needed only when you bind to a LAN address
 desktop_link_template = "claude://claude.ai/epitaxy/{id}"  # {id} = desktop session id (local_…)
 done_window_days = 7                # older done tasks are archived
 require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
+owner_names = ["owner", "me"]       # waiting_on values listed in the Inbox
 rules_mode = "warn"                 # "strict": a stage move that misses a rule is refused
 
 [stages.labels]                     # display names; the stage keys stay plan/dev/test/live/done

@@ -1,6 +1,7 @@
 # 0004 — Navigation: sidebar, Inbox, Map, Usage, quick switcher
 
-- Status: **Accepted**. Replaces the planned top tabs (Board | Review | Settings).
+- Status: **Accepted; step (1) implemented** (sidebar, Inbox, Sessions, Activity; see
+  [SPEC §2](../SPEC.md#spec-board-nav)). Replaces the planned top tabs (Board | Review | Settings).
 - Size and order: (1) sidebar, Inbox, Sessions, Activity ~1.5–2 agent-days, right after the
   documentation restructure (0.2.0); (2) Map ~2 and Usage ~1 after environments and access
   ([0010](0010-map-and-usage.md), 0.4.0); (3) Coordinator, Managers, Schedules with the runner

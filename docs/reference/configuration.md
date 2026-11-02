@@ -20,6 +20,7 @@ stops `relaybay serve` with a message that names the key.
 | `desktop_link_template` | `claude://claude.ai/epitaxy/{id}` | `RELAYBAY_DESKTOP_LINK_TEMPLATE` | — | Link for a desktop session id; must contain `{id}`. |
 | `done_window_days` | `7` | `RELAYBAY_DONE_WINDOW_DAYS` | — | Days a done task stays in the done column (whole number >= 1). |
 | `require_tracker_log` | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — | Done tasks without the tracker mark show "not logged" and are never archived. |
+| `owner_names` | `["owner", "me", "you"]` | `RELAYBAY_OWNER_NAMES` | — | Names that mean you in a task's `waiting_on` (case-insensitive): those tasks are listed in the Inbox. The environment variable is comma-separated. |
 | `[rules]` | built-in rules | — | — | Global working rules merged over the defaults ([SPEC §6](../SPEC.md#spec-rules)). |
 | `rules_mode` | `warn` | `RELAYBAY_RULES_MODE` | — | `warn` or `strict`: what a stage move that misses a rule does. |
 | `claude_home` | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` | Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor, Integrations). |
@@ -33,6 +34,7 @@ desktop_link_template = "claude://claude.ai/epitaxy/{id}"
 done_window_days = 7
 require_tracker_log = false
 rules_mode = "warn"
+owner_names = ["owner", "me", "alex"]   # waiting_on values listed in the Inbox
 
 [stages.labels]
 dev = "in progress"

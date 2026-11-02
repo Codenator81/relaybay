@@ -29,7 +29,8 @@ def test_board_page_renders_columns_and_cards(board: TestClient, seeded: str) ->
     assert "first pass" not in page.text  # the last report lives in the task dialog
     # Agent text is escaped, never rendered as HTML.
     assert "<b>bold</b>" not in page.text
-    assert 'sse-connect="/events?project=acme-shop"' in page.text
+    # All projects: the Inbox count in the sidebar; app.js keeps only this project's events.
+    assert 'sse-connect="/events"' in page.text and 'data-project="acme-shop"' in page.text
 
 
 def test_fragments(board: TestClient, seeded: str) -> None:

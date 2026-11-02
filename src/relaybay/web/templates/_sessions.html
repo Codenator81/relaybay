@@ -1,0 +1,39 @@
+{#- Sessions list. Expects: rows (SessionRow), sessions_project (or None for all sessions). -#}
+{%- set kinds = {"desktop": "desktop", "hook": "hook"} %}
+<div id="sessions" class="sessions" hx-get="/fragments/sessions{% if sessions_project %}?project={{ sessions_project.slug }}{% endif %}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if not rows %}
+  <div class="empty">
+    <p>No sessions yet.</p>
+    <p>A session shows up here once it writes to a task of {{ "this project" if sessions_project else "any project" }} or its Claude Code hooks report from the project's folder.</p>
+  </div>
+  {% else %}
+  <ul class="session-list">
+    {% for row in rows %}
+    {%- set s = row.session %}
+    <li class="session-row">
+      <div class="session-head">
+        <span class="status-dot{% if s.status %} dot-{{ s.status }}{% endif %}" aria-hidden="true"></span>
+        <span class="history-name">{{ s.name }}</span>
+        <span class="session-kind">{{ kinds.get(s.kind, "named") }}</span>
+        {% if s.status %}<span class="session-status status-{{ s.status }}">{{ s.status }}</span>{% else %}<span class="muted session-status">no hook status</span>{% endif %}
+        {% if s.desktop_link %}<a class="action open-desktop" href="{{ s.desktop_link }}" title="If nothing opens, paste the link into the Claude desktop app">Open in desktop</a>{% endif %}
+      </div>
+      <p class="session-line muted">
+        {% if s.activity %}{{ s.activity }} · {% endif %}last activity <time datetime="{{ s.last_seen_at }}" data-age>{{ s.last_seen_at|age }}</time>
+        {%- if s.cwd %} · <code>{{ s.cwd }}</code>{% endif %}
+      </p>
+      {% if s.unlinked_reason %}<p class="form-warning session-line">Unlinked: {{ s.unlinked_reason }}</p>{% endif %}
+      {% if row.tasks %}
+      <ul class="session-tasks">
+        {% for t in row.tasks %}
+        <li><a href="/p/{{ t.project_slug }}?task={{ t.key }}"><span class="card-key">{{ t.key }}</span> {{ t.title }}</a> <span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if not sessions_project or t.project_slug != sessions_project.slug %} <span class="muted">{{ t.project_slug }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="session-line muted">No task bound.</p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>

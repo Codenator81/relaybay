@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Activity · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">Activity</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Activity</h1>
+  <form class="board-tools" method="get" action="/activity">
+    <label class="field-inline">Project
+      <select name="project">
+        <option value="">All projects</option>
+        {% for p in nav.projects %}<option value="{{ p.slug }}"{% if p.slug == project_filter %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Kind
+      <select name="kind">
+        <option value="">All except hook status</option>
+        {% for k in kinds %}<option value="{{ k }}"{% if k == kind_filter %} selected{% endif %}>{{ k }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn">Filter</button>
+    {% if project_filter or kind_filter or paged %}<a class="action" href="/activity">Clear</a>{% endif %}
+  </form>
+  {#- The live-actions journal joins this page later as its own list. #}
+  {% block journal %}{% endblock %}
+  {% if not events %}
+  <div class="empty activity-empty"><p>No events{% if project_filter or kind_filter %} match these filters{% endif %}.</p></div>
+  {% endif %}
+  {#- Live: app.js prepends newer rows (only on the first page, not after "Load more" links). #}
+  <ol class="activity-list" id="activity"{% if not paged %} data-live="1"{% endif %}
+      data-filters="{{ filters_qs }}" data-newest="{{ events[0].id if events else last_event_id }}">
+    {% include "_activity_rows.html" %}
+  </ol>
+</main>
+{% endblock %}

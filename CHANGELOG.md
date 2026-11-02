@@ -7,6 +7,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Left sidebar on every page: Inbox with a live count, All boards, Activity, Settings, and each
+  project with Board and Sessions. Collapsible on wide screens (remembered in the browser), a
+  drawer on phones. It replaces the header's Integrations link; `/settings` redirects to
+  `/settings/integrations`.
+- Inbox (`/inbox`): tasks waiting on you, tasks whose last stage move missed a rule, done tasks not
+  logged in the tracker (with `require_tracker_log`) and unlinked hook sessions, updated live.
+- `owner_names` setting (`RELAYBAY_OWNER_NAMES`, default `["owner", "me", "you"]`): the
+  `waiting_on` values that mean you.
+- Sessions pages (`/p/<slug>/sessions`, `/sessions`): hook status, kind, last activity, bound tasks,
+  open in desktop and the unlinked reason, updated live.
+- Activity (`/activity`): the event feed, newest first, with "Load more", project and kind filters
+  and live updates; hook status changes only when that kind is selected.
+
+### Changed
+
+- Board and task pages subscribe to the unfiltered `/events` stream (for the Inbox count) and keep
+  only their own project's events.
+- `events_since` also describes `session.seen` and `session.status_changed` events.
+
 ## [0.1.0] - 2026-11-02
 
 First public release: a local board and MCP server for many Claude Code sessions, installable with
