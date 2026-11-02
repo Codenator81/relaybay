@@ -241,7 +241,32 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
 .card:hover { border-color: var(--accent); }
 .card.htmx-request { opacity: 0.7; }
 .card > * { min-width: 0; }
-.card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.card-top .card-key { flex: none; }
+.card-top .card-tracker { min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+/* Session as a single icon button, pushed to the right edge of the top row. */
+.card .open-desktop.icon {
+  flex: none;
+  margin-left: auto;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--badge-text);
+  background: var(--badge-bg);
+}
+.card .open-desktop.icon:hover { border-color: var(--accent); }
+.open-desktop.icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .card-key { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .card-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; }
 
@@ -280,15 +305,6 @@ a.badge.tracker:hover { text-decoration: underline; }
 .field.field-check { display: flex; align-items: center; gap: 8px; align-self: end; padding-bottom: 6px; }
 .field.field-check input[type="checkbox"] { width: auto; }
 
-.chip.no-session {
-  padding: 0 7px;
-  border: 1px dashed var(--border);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
 /* Card previews of markdown: a few lines, cut with an ellipsis. */
 .clamp {
   display: -webkit-box;
@@ -296,18 +312,15 @@ a.badge.tracker:hover { text-decoration: underline; }
   overflow: hidden;
   font-size: 13px;
 }
-.clamp-3 { -webkit-line-clamp: 3; line-clamp: 3; }
+.clamp-2 { -webkit-line-clamp: 2; line-clamp: 2; }
 .clamp > *, .clamp li > * { margin: 0; }
 .clamp :is(h1, h2, h3, h4, h5, h6) { font-size: inherit; }
 .clamp :is(ul, ol) { padding-left: 1.2em; }
 .clamp pre { padding: 0; background: none; }
-.card-desc { color: var(--muted); }
-.card-progress { display: grid; gap: 2px; }
-.card-label { font-size: 12px; font-weight: 600; color: var(--muted); }
 
 .card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .card-meta > *, .card-session > *, .card-tracker > * { min-width: 0; max-width: 100%; }
-.card-next, .card-report .summary { overflow-wrap: anywhere; }
+.card-next { min-width: 0; overflow-wrap: anywhere; }
 .clamp pre { white-space: pre-wrap; }
 .chip.waiting {
   overflow: hidden;
@@ -326,11 +339,13 @@ a.badge.tracker:hover { text-decoration: underline; }
   background: var(--badge-bg);
   color: var(--badge-text);
   font-size: 12px;
-  max-width: 60%;
+  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+/* The badge is a flex row; the name is the item that shrinks and gets the ellipsis. */
+.session-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-status { flex: none; }
 .branch {
   padding: 1px 6px;
   border-radius: 4px;
@@ -339,15 +354,15 @@ a.badge.tracker:hover { text-decoration: underline; }
   overflow-wrap: anywhere;
 }
 .card-next { margin: 0; font-size: 13px; }
-.card-report {
-  margin: 0;
-  padding-top: 6px;
-  border-top: 1px solid var(--border);
-  font-size: 13px;
+.card-next.stale { color: var(--muted); }
+.stale-mark {
+  padding: 0 6px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
   color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
-.card-report .summary { margin: 4px 0 0; color: var(--text); }
-.card-report time { margin-left: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .report-badges { display: inline-flex; gap: 4px; align-items: center; vertical-align: middle; }
 .badge-state, .badge-size {
   display: inline-block;

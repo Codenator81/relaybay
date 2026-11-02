@@ -42,8 +42,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `task_unbind_session` MCP tool and an "Unbind session" button (with confirmation) on the board:
   closes the binding, keeps the history and emits `task.session_unbound`; an optional `session`
   refuses to unbind a session that took over meanwhile.
-- Board cards show the first lines of the description, a "Done:" block with the progress and a
-  "no session" chip.
 - Session aliases (migration `0003`): `task_bind_session` with a plain name on a task bound to a
   desktop session keeps the desktop binding and records the name as that session's alias (event
   `session.alias_added`); the name then resolves to the desktop session in writes, `task_list` and
@@ -59,11 +57,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   badge (a link with a URL, ✓ when logged). Opt-in `require_tracker_log`
   (`RELAYBAY_REQUIRE_TRACKER_LOG`, default false): done tasks without the mark show "not logged" and
   are never archived.
+- Next step freshness (migration `0004`, upgrades existing databases in place): `task_set_stage`
+  and `report_add` accept `next_step` and `waiting_on`, saved in the same transaction (`"-"`
+  clears them), and their descriptions ask sessions to keep both current. A next step set before
+  the task's last stage change shows muted with a "stale" marker on the card and in the task
+  dialog, and with `(stale)` in `task_get` / `project_snapshot`; writing it again over MCP (or editing it on the board) confirms it.
 - `"-"` clears a text field in `task_update` (and leaves it empty in `task_create`, clears
   `progress` in `report_add`), since models cannot always send an empty string.
 
 ### Changed
 
+- Cards show only essentials: key, tracker badge (including "not logged") and an icon-only "open
+  in desktop" link in the top row, then title, "waiting on", branch and the next step (two lines).
+  Description, progress, the last report with its badges, the session name, "no session" and
+  "Copy link" moved off the card; the task dialog and `/t/<key>` still show all of them.
 - Done cards no longer show "waiting on" and the next step; the task dialog shows them muted.
 - The done column is no longer cut at 20 cards; it holds the window and is capped at 200 with a
   note.
@@ -76,3 +83,5 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Clearing a field in the board's edit form (an empty input) now clears it; it used to keep the old
   value.
+- A long session title no longer widens a card past its column: the session badge shrinks with an
+  ellipsis and shows the full title on hover.

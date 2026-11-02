@@ -10,7 +10,8 @@
     <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
     {%- set is_done = t.stage.value == "done" %}
     {% if t.waiting_on %}<dt>Waiting on</dt><dd>{% if is_done %}<span class="muted">{{ t.waiting_on }}</span>{% else %}<span class="chip waiting">{{ t.waiting_on }}</span>{% endif %}</dd>{% endif %}
-    {% if t.next_step %}<dt>Next step</dt><dd{% if is_done %} class="muted"{% endif %}>{{ t.next_step }}</dd>{% endif %}
+    {%- set stale = t.next_step_stale and not is_done %}
+    {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
     {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
     {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (require_tracker_log and is_done) %}
     <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}

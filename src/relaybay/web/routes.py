@@ -116,12 +116,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             by_stage[task.stage.value].append(task)
         done_more = max(0, len(by_stage[Stage.DONE]) - DONE_COLUMN_LIMIT)
         by_stage[Stage.DONE] = by_stage[Stage.DONE][:DONE_COLUMN_LIMIT]
-        shown = [t for column in by_stage.values() for t in column]
         view = {"archived": "1" if archived else "", "q": q}
         return {
             "project": project,
             "columns": by_stage,
-            "last_reports": await service.last_reports(shown),
             "archived": archived,
             "q": q,
             "view_qs": urlencode({k: v for k, v in view.items() if v}),
@@ -266,8 +264,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/p/{slug}/t/{key}/card", response_class=HTMLResponse)
     async def card_fragment(request: Request, slug: str, key: str):
         task = await find_task(slug, key)
-        reports = await service.last_reports([task])
-        return render(request, "_card.html", t=task, slug=slug, last=reports.get(task.id))
+        return render(request, "_card.html", t=task, slug=slug)
 
     async def dialog_context(slug: str, key: str) -> dict[str, Any]:
         task = await find_task(slug, key)
@@ -334,6 +331,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if "tracker_logged" in values:
             # The form sends a hidden "0" before the checkbox, so the last value is the state.
             changes["tracker_logged"] = values["tracker_logged"] == "1"
+        if changes.get("next_step", "") == task.next_step:
+            # The form always resends the next step; only an edited one confirms it as current.
+            del changes["next_step"]
         try:
             await service.update_task(task.key, changes, expected_version=version, actor="board")
         except ConflictError:

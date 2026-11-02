@@ -145,6 +145,15 @@ def _clean_title(value: Any) -> str:
     return title
 
 
+def _task_diff(task: Task, clean: dict[str, Any]) -> dict[str, Any]:
+    """Fields of `clean` that change `task`. A next step passed with the same text still counts
+    when it is stale or the same write changes the stage: it confirms the step as current."""
+    diff = {k: v for k, v in clean.items() if v != getattr(task, k)}
+    if "next_step" in clean and task.next_step and ("stage" in diff or task.next_step_stale):
+        diff["next_step"] = clean["next_step"]
+    return diff
+
+
 def _clean_slug(value: str) -> str:
     slug = value.strip().lower()
     if not SLUG_RE.match(slug):
@@ -529,7 +538,7 @@ class Service:
                     f"Task {task.key} is at version {task.version}, not {expected_version}:"
                     " someone changed it meanwhile. Re-read it with task_get and retry."
                 )
-            diff = {k: v for k, v in clean.items() if v != getattr(task, k)}
+            diff = _task_diff(task, clean)
             if not diff:
                 return task
             sess = await self._session(tx, session, session_title)
@@ -567,13 +576,22 @@ class Service:
         stage: str,
         *,
         note: str | None = None,
+        next_step: str | None = None,
+        waiting_on: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
         actor: str = "mcp",
     ) -> Task:
+        """Move the task; `next_step` / `waiting_on`, if given, are saved in the same
+        transaction ('' clears them)."""
         changes: dict[str, Any] = {"stage": stage}
-        if note is not None:
-            changes["stage_note"] = note
+        for name, value in (
+            ("stage_note", note),
+            ("next_step", next_step),
+            ("waiting_on", waiting_on),
+        ):
+            if value is not None:
+                changes[name] = value
         return await self.update_task(
             ref, changes, session=session, session_title=session_title, actor=actor
         )
@@ -685,22 +703,26 @@ class Service:
         session_title: str | None = None,
         author: str | None = None,
         progress: str | None = None,
+        next_step: str | None = None,
+        waiting_on: str | None = None,
     ) -> tuple[Task, Report]:
-        """Append a report; `progress`, if given, replaces the task's progress summary in the
-        same transaction ('' clears it)."""
+        """Append a report; `progress`, `next_step` and `waiting_on`, if given, are saved in the
+        same transaction ('' clears them)."""
         body = (body or "").strip()
         if not body:
             raise ValidationError("Report body must not be empty.")
         state, size, summary = parse_report(body)
-        new_progress = _clean_field("progress", progress)
+        given = {"progress": progress, "next_step": next_step, "waiting_on": waiting_on}
+        clean = {k: _clean_field(k, v) for k, v in given.items() if v is not None}
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
             sess = await self._session(tx, session, session_title)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
-            if progress is not None and new_progress != task.progress:
-                await repo.update_task(tx.conn, task.id, {"progress": new_progress}, tx.now)
+            diff = _task_diff(task, clean)
+            if diff:
+                await repo.update_task(tx.conn, task.id, diff, tx.now)
                 await tx.event(
                     "task.updated",
                     actor,
@@ -710,7 +732,7 @@ class Service:
                     project=task.project_slug,
                     key=task.key,
                     stage=task.stage.value,
-                    changes={"progress": new_progress},
+                    changes=diff,
                 )
             report_id = await repo.insert_report(
                 tx.conn, task.id, session_id, actor, state, size, summary, body, tx.now

@@ -213,3 +213,107 @@ async def test_failed_report_rolls_back_progress(service: Service, monkeypatch) 
     after = await service.get_task(task.key)
     assert (after.progress, after.version) == ("- cart", task.version)
     assert await service.last_event_id() == last
+
+
+@pytest.fixture
+def ticking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every transaction gets a later timestamp, so writes in the same millisecond still order."""
+    ticks = iter(range(1, 10_000))
+    monkeypatch.setattr(
+        "relaybay.service.now_iso", lambda: f"2026-01-01T00:00:{next(ticks):04d}.000+00:00"
+    )
+
+
+async def test_next_step_goes_stale_after_a_stage_change(service: Service, ticking: None) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", next_step="Write the cart")
+    assert task.next_step_at == task.stage_changed_at and not task.next_step_stale
+
+    moved = await service.set_stage(task.key, "dev")
+    assert moved.next_step_stale
+
+    # Same text again confirms it as current: version bump, task.updated, fresh.
+    confirmed = await service.update_task(task.key, {"next_step": "Write the cart"})
+    assert not confirmed.next_step_stale and confirmed.version == moved.version + 1
+    event = (await service.events_since(0))[-1]
+    assert event.payload["changes"] == {"next_step": "Write the cart"}
+    # A fresh step written again with the same text is still a no-op.
+    again = await service.update_task(task.key, {"next_step": "Write the cart"})
+    assert again.version == confirmed.version
+
+    # Moving back to the same stage is no stage change.
+    same = await service.set_stage(task.key, "dev")
+    assert not same.next_step_stale and same.stage_changed_at == moved.stage_changed_at
+
+    # The next step passed with the stage change is current, even with the same text.
+    with_next = await service.set_stage(task.key, "test", next_step="Write the cart")
+    assert not with_next.next_step_stale
+    assert with_next.next_step_at == with_next.stage_changed_at
+
+    # A report with a new next step refreshes it too.
+    await service.set_stage(task.key, "live")
+    reported, _ = await service.add_report(task.key, "deployed", next_step="Watch the logs")
+    assert reported.next_step == "Watch the logs" and not reported.next_step_stale
+
+    # A cleared next step is never stale.
+    cleared = await service.update_task(task.key, {"next_step": None})
+    await service.set_stage(task.key, "done")
+    assert not (await service.get_task(task.key)).next_step_stale and cleared.next_step is None
+
+
+async def test_set_stage_with_next_step_is_one_transaction(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", waiting_on="owner")
+    with service.bus.subscribe() as sub:
+        moved = await service.set_stage(
+            task.key, "test", next_step="Review the PR", waiting_on="reviewer"
+        )
+        events = [await sub.get(1) for _ in range(2)]
+    assert [e.kind for e in events] == ["task.stage_changed", "task.updated"]
+    assert events[1].payload["changes"] == {"next_step": "Review the PR", "waiting_on": "reviewer"}
+    assert (moved.stage, moved.next_step, moved.waiting_on) == (
+        Stage.TEST,
+        "Review the PR",
+        "reviewer",
+    )
+    assert moved.version == task.version + 1
+
+    # '' clears both (the MCP layer turns '-' into '').
+    cleared = await service.set_stage(task.key, "dev", next_step="", waiting_on="")
+    assert (cleared.next_step, cleared.waiting_on) == (None, None)
+
+
+async def test_report_with_next_step_and_waiting_on_is_one_transaction(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", next_step="Code it")
+    with service.bus.subscribe() as sub:
+        saved, _ = await service.add_report(
+            task.key, "changed · S · cart", progress="- cart", next_step="Test", waiting_on="qa"
+        )
+        events = [await sub.get(1) for _ in range(2)]
+    assert [e.kind for e in events] == ["task.updated", "report.added"]
+    assert events[0].payload["changes"] == {
+        "progress": "- cart",
+        "next_step": "Test",
+        "waiting_on": "qa",
+    }
+    assert (saved.next_step, saved.waiting_on, saved.version) == ("Test", "qa", task.version + 1)
+
+    cleared, _ = await service.add_report(task.key, "second", next_step="", waiting_on="")
+    assert (cleared.next_step, cleared.waiting_on, cleared.progress) == (None, None, "- cart")
+
+
+async def test_failed_report_rolls_back_next_step(service: Service, monkeypatch) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", next_step="Code it")
+    last = await service.last_event_id()
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(repo, "insert_report", broken)
+    with pytest.raises(RuntimeError):
+        await service.add_report(task.key, "report", next_step="Test", waiting_on="qa")
+    after = await service.get_task(task.key)
+    assert (after.next_step, after.waiting_on, after.version) == ("Code it", None, task.version)
+    assert await service.last_event_id() == last

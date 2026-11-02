@@ -52,6 +52,11 @@ TRACKER_LOGGED_HELP = (
     "True once the work log is entered in the external tracker. Done tasks without it stay on"
     " the board marked 'not logged'."
 )
+NEXT_STEP_HELP = (
+    "What happens next, one line; saved in the same write. A next step set before the last stage"
+    " change shows as stale. Omit to keep it;"
+)
+WAITING_ON_HELP = "Who acts next; saved in the same write. Omit to keep it;"
 PROGRESS_HELP = (
     "Markdown summary of everything done so far on the task (not just the last step). Rewrite"
     " it as the work goes on and keep it current with every report."
@@ -226,7 +231,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         """Change task fields (waiting on, next step, branch, description, progress, the tracker
         issue and its work-log mark, ...). Omitted fields stay as they are; '-' or an empty
         string clears a field. Keep `progress` current with every report. To move a task between
-        stages use task_set_stage."""
+        stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who
+        acts next) whenever the stage changes or you report."""
         given = {
             "title": title,
             "waiting_on": waiting_on,
@@ -265,14 +271,25 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         note: Annotated[
             str | None, Field(description="Short note next to the stage, e.g. 'PR open'.")
         ] = None,
+        next_step: Annotated[str | None, Field(description=NEXT_STEP_HELP + CLEARS)] = None,
+        waiting_on: Annotated[str | None, Field(description=WAITING_ON_HELP + CLEARS)] = None,
         session: Session = None,
         session_title: SessionTitle = None,
     ) -> str:
         """Move a task to another stage (plan, dev, test, live, done) when its work moves on, e.g.
         to dev when you start coding, to test when it is ready for review, to done when finished.
-        Any transition is allowed."""
+        Any transition is allowed. Also update next_step (what happens next) and waiting_on (who
+        acts next) whenever the stage changes or you report."""
         updated = await run(
-            service.set_stage(task, stage, note=note, session=session, session_title=session_title)
+            service.set_stage(
+                task,
+                stage,
+                note=note,
+                next_step=cleared(next_step),
+                waiting_on=cleared(waiting_on),
+                session=session,
+                session_title=session_title,
+            )
         )
         return fmt.task_saved(updated, "Moved")
 
@@ -282,8 +299,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session: Annotated[str, Field(description=SESSION_HELP)],
         session_title: SessionTitle = None,
     ) -> str:
-        """Mark that this session works on the task now; the board shows it on the card with a
-        link that opens the Claude desktop app session. Call it when you pick up an existing task.
+        """Mark that this session works on the task now; the board shows it with a link that
+        opens the Claude desktop app session. Call it when you pick up an existing task.
         Pass your own desktop session id (local_…) if you know it. If you don't know your local_
         id, don't rebind — the coordinator binds you; pass your session name only as `session` on
         writes. A plain name never replaces a desktop session bound to the task: it is recorded
@@ -332,7 +349,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         body: Annotated[
             str,
             Field(
-                description="Markdown report. Its first line is the card summary; a first line"
+                description="Markdown report. Its first line is the summary; a first line"
                 " 'state · size · gist' (e.g. 'verified · M · login fixed') also sets state"
                 " (inspected, changed, verified, committed, pushed, blocked) and size (S, M, L)."
             ),
@@ -345,12 +362,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 + CLEARS
             ),
         ] = None,
+        next_step: Annotated[str | None, Field(description=NEXT_STEP_HELP + CLEARS)] = None,
+        waiting_on: Annotated[str | None, Field(description=WAITING_ON_HELP + CLEARS)] = None,
         session: Session = None,
         session_title: SessionTitle = None,
     ) -> str:
         """Add a report to a task. Call it at the end of every stage with your final report: what
         changed, how it was checked, what is left. Pass `progress` too, so the task's summary of
-        what is done stays current with every report."""
+        what is done stays current with every report. Also update next_step (what happens next)
+        and waiting_on (who acts next) whenever the stage changes or you report."""
         saved, report = await run(
             service.add_report(
                 task,
@@ -358,6 +378,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 session=session,
                 session_title=session_title,
                 progress=cleared(progress),
+                next_step=cleared(next_step),
+                waiting_on=cleared(waiting_on),
             )
         )
         parsed = " · ".join(x for x in (report.state, report.size) if x)

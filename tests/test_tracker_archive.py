@@ -73,7 +73,8 @@ def test_card_tracker_badges(board: TestClient, seeded: str) -> None:
     run_in_app(board, service.update_task, seeded, {"tracker_ref": "ENG-12"})
     text = card(board, seeded)
     assert '<span class="badge tracker" title="Issue in the tracker">ENG-12</span>' in text
-    assert text.index("card-tracker") < text.index("card-top")  # at the very top
+    top = text[text.index('class="card-top"') : text.index("</div>")]
+    assert "card-tracker" in top and "ENG-12" in top  # in the top row, next to the key
 
     changes = {
         "tracker_name": "Linear",

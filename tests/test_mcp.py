@@ -288,3 +288,47 @@ async def test_alias_tracker_and_dash_clears(live_server: Callable[[], LiveServe
         detail = await call(client, "task_get", task="acme-shop-1")
         assert "- next step:" not in detail and "## Progress" not in detail
         assert "- tracker: Linear ENG-12 · work log not entered" in detail
+
+
+async def test_stage_and_report_keep_next_step_current(
+    live_server: Callable[[], LiveServer],
+) -> None:
+    live = live_server()
+    async with connect(live) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        hint = "Also update next_step (what happens next) and waiting_on (who acts next)"
+        for name in ("task_set_stage", "report_add", "task_update"):
+            assert hint in " ".join((tools[name].description or "").split())
+            props = tools[name].input_schema["properties"]
+            assert "next_step" in props and "waiting_on" in props
+
+        await call(client, "project_upsert", slug="demo-api")
+        await call(
+            client, "task_create", project="demo-api", title="Rate limits", next_step="Plan it"
+        )
+        moved = await call(client, "task_set_stage", task="demo-api-1", stage="dev")
+        assert "version 2" in moved
+        detail = await call(client, "task_get", task="demo-api-1")
+        assert "- next step: Plan it (stale)" in detail
+        snapshot = await call(client, "project_snapshot", project="demo-api")
+        assert "next: Plan it (stale)" in snapshot
+
+        moved = await call(
+            client,
+            "task_set_stage",
+            task="demo-api-1",
+            stage="test",
+            next_step="Review the limits",
+            waiting_on="reviewer",
+        )
+        assert "version 3" in moved  # stage and both fields in one write
+        detail = await call(client, "task_get", task="demo-api-1")
+        assert "- next step: Review the limits" in detail and "(stale)" not in detail
+        assert "- waiting on: reviewer" in detail
+
+        await call(
+            client, "report_add", task="demo-api-1", body="verified", next_step="-", waiting_on="-"
+        )
+        detail = await call(client, "task_get", task="demo-api-1")
+        assert "next step" not in detail and "waiting on" not in detail
+        assert "- version: 4" in detail

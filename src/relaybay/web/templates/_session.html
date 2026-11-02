@@ -1,5 +1,5 @@
 {#- Session badge and desktop actions. Expects: name, status, link. -#}
-<span class="badge session" title="Session">{{ name }}{% if status %}<span class="session-status status-{{ status }}">{{ status }}</span>{% endif %}</span>
+<span class="badge session" title="Session: {{ name }}"><span class="session-name">{{ name }}</span>{% if status %}<span class="session-status status-{{ status }}">{{ status }}</span>{% endif %}</span>
 {% if link %}
 <span class="session-actions">
   <a class="action open-desktop" href="{{ link }}"

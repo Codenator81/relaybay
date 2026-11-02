@@ -67,6 +67,8 @@ def _task(row: aiosqlite.Row) -> Task:
         tracker_name=row["tracker_name"],
         tracker_url=row["tracker_url"],
         tracker_logged=bool(row["tracker_logged"]),
+        next_step_at=row["next_step_at"],
+        stage_changed_at=row["stage_changed_at"],
         version=row["version"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -370,7 +372,8 @@ async def insert_task(
     now: str,
 ) -> int:
     cols = ["project_id", "key", *fields.keys(), "session_id", "created_at", "updated_at"]
-    values = [project_id, key, *fields.values(), session_id, now, now]
+    cols += ["next_step_at", "stage_changed_at"]
+    values = [project_id, key, *fields.values(), session_id, now, now, now, now]
     if fields.get("stage") == Stage.DONE:
         cols.append("closed_at")
         values.append(now)
@@ -389,6 +392,11 @@ async def update_task(
     if "stage" in changes:
         sets.append("closed_at = ?")
         params.append(now if changes["stage"] == Stage.DONE else None)
+        sets.append("stage_changed_at = ?")
+        params.append(now)
+    if "next_step" in changes:
+        sets.append("next_step_at = ?")
+        params.append(now)
     sets += ["version = version + 1", "updated_at = ?"]
     await conn.execute(f"UPDATE task SET {', '.join(sets)} WHERE id = ?", (*params, now, task_id))
 

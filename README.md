@@ -8,13 +8,16 @@ in the browser, on the desktop or on your phone.
 > edges; issues and ideas are welcome.
 
 - **Board** — projects with per-stage counts; per project, columns `plan → dev → test → live → done`
-  with cards showing the start of the task's description, a "Done:" summary of its progress, the
-  waiting-on person, the session working on the task (or "no session"), the branch and the last
-  report. Click a card to open the task in a dialog over the live board (its own URL,
+  with cards showing only the essentials: key, tracker badge, an "open in desktop" icon when a
+  desktop session works on the task, title, waiting-on person, branch and the next step. Click a
+  card to open the task in a dialog over the live board (its own URL,
   `/p/<project>?task=<key>`, full screen on a phone): description and progress in full, reports,
   session history, "Open in desktop", unbinding the session and editing the task. Each task also has
   a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a
   dropped connection, a stage tab bar on narrow screens.
+- **Next step that keeps up** — sessions pass the next step and who acts next together with a
+  stage change or a report; a next step left over from before the last stage change shows muted
+  and marked "stale".
 - **Done column and archive** — the `done` column shows tasks closed in the last
   `done_window_days` (default 7); older ones are archived and come back with "Show archived" or a
   search by key or title (`/p/<project>?archived=1`, `?q=…`). Done cards hide "waiting on" and the
