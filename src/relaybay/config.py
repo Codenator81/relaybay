@@ -11,6 +11,7 @@ import platformdirs
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
 from relaybay.domain.stages import STAGES
+from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -27,6 +28,8 @@ class Settings:
     report_labels: dict[str, str] = field(default_factory=dict)
     report_hints: dict[str, str] = field(default_factory=dict)
     desktop_link_template: str = DEFAULT_DESKTOP_LINK_TEMPLATE
+    done_window_days: int = DEFAULT_DONE_WINDOW_DAYS
+    require_tracker_log: bool = False
     replay_limit: int = 5000
     heartbeat_seconds: float = 15.0
 
@@ -78,6 +81,10 @@ def _split_list(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+_BOOL_WORDS = {"1": True, "true": True, "yes": True, "on": True}
+_BOOL_WORDS |= {"0": False, "false": False, "no": False, "off": False}
+
+
 def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
     if "host" in data:
         settings.host = str(data["host"])
@@ -86,6 +93,22 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
             settings.port = int(data["port"])
         except (TypeError, ValueError):
             raise ValueError(f"{source}: port must be an integer, got {data['port']!r}") from None
+    if "done_window_days" in data:
+        value = data["done_window_days"]
+        if isinstance(value, str) and value.strip().isdigit():
+            value = int(value)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(
+                f"{source}: done_window_days must be a whole number >= 1, got {value!r}"
+            )
+        settings.done_window_days = value
+    if "require_tracker_log" in data:
+        value = data["require_tracker_log"]
+        if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:
+            value = _BOOL_WORDS[value.strip().lower()]
+        if not isinstance(value, bool):
+            raise ValueError(f"{source}: require_tracker_log must be true or false, got {value!r}")
+        settings.require_tracker_log = value
     if "desktop_link_template" in data:
         template = str(data["desktop_link_template"])
         if "{id}" not in template:
@@ -136,7 +159,14 @@ def load_settings(
         settings,
         {
             key: env[f"RELAYBAY_{key.upper()}"]
-            for key in ("host", "port", "allowed_hosts", "desktop_link_template")
+            for key in (
+                "host",
+                "port",
+                "allowed_hosts",
+                "desktop_link_template",
+                "done_window_days",
+                "require_tracker_log",
+            )
             if env.get(f"RELAYBAY_{key.upper()}")
         },
         "environment",

@@ -19,7 +19,7 @@ from relaybay.web.routes import STATIC_DIR, build_router
 def create_app(settings: Settings) -> FastAPI:
     token = load_or_create_token(settings.token_path)
     service = Service(settings.db_path, desktop_link_template=settings.desktop_link_template)
-    mcp = build_mcp(service)
+    mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

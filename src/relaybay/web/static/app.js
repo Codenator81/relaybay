@@ -89,6 +89,9 @@
         queue(column(data.to));
         break;
       case "task.updated":
+        // A done task can leave the done column (archived) when it is marked as logged.
+        queue(data.stage === "done" ? column("done") : (card(data.key) || column(data.stage)));
+        break;
       case "report.added":
       case "task.session_bound":
       case "task.session_unbound":
@@ -139,9 +142,15 @@
   var pushed = false;     // the open dialog added a history entry that closing must undo
   var fromHistory = false;
 
+  function projectPath() { return "/p/" + encodeURIComponent(live.dataset.project); }
+
+  // The board URL with the open task; search and archive filters in the URL are kept.
   function boardUrl(key) {
-    var path = "/p/" + encodeURIComponent(live.dataset.project);
-    return key ? path + "?task=" + encodeURIComponent(key) : path;
+    var params = new URLSearchParams(window.location.search);
+    params.delete("task");
+    if (key) params.set("task", key);
+    var query = params.toString();
+    return projectPath() + (query ? "?" + query : "");
   }
 
   function editForm() { return dialog.querySelector("form.task-form"); }
@@ -150,7 +159,7 @@
     if (dialog.dataset.key !== key) {
       dialog.dataset.key = key;
       dialog.replaceChildren(loadingNote("Loading " + key + "…"));
-      htmx.ajax("GET", boardUrl(null) + "/t/" + encodeURIComponent(key) + "/dialog",
+      htmx.ajax("GET", projectPath() + "/t/" + encodeURIComponent(key) + "/dialog",
         { target: dialog, swap: "innerHTML" });
     }
     if (!dialog.open) dialog.showModal();
@@ -284,6 +293,13 @@
     }
     var reload = event.target.closest(".form-reload");
     if (reload) queue(reload.closest(".task-form-box"));
+  });
+
+  // "Show archived" applies at once; the search applies on Enter or the Filter button.
+  document.addEventListener("change", function (event) {
+    if (event.target.matches && event.target.matches(".board-tools input[type=checkbox]")) {
+      event.target.form.requestSubmit();
+    }
   });
 
   function refreshAges() {

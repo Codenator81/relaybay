@@ -44,10 +44,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refuses to unbind a session that took over meanwhile.
 - Board cards show the first lines of the description, a "Done:" block with the progress and a
   "no session" chip.
+- Session aliases (migration `0003`): `task_bind_session` with a plain name on a task bound to a
+  desktop session keeps the desktop binding and records the name as that session's alias (event
+  `session.alias_added`); the name then resolves to the desktop session in writes, `task_list` and
+  `task_unbind_session`. Aliases are global; no alias is made for a name a plain session already
+  has (the call warns and changes nothing).
+- Done column window and archive: the board's `done` column shows tasks closed within
+  `done_window_days` (default 7, `RELAYBAY_DONE_WINDOW_DAYS`); older ones are archived and shown
+  with "Show archived" (`?archived=1`). A search box filters cards by key or title (`?q=`) and also
+  searches the archive.
+- External tracker mark (migration `0003`): task fields `tracker_ref`, `tracker_name`,
+  `tracker_url` (http/https only) and `tracker_logged`, accepted by `task_create` / `task_update`,
+  shown by `task_get` and `project_snapshot`, edited in the task dialog. Cards show the issue as a
+  badge (a link with a URL, ✓ when logged). Opt-in `require_tracker_log`
+  (`RELAYBAY_REQUIRE_TRACKER_LOG`, default false): done tasks without the mark show "not logged" and
+  are never archived.
+- `"-"` clears a text field in `task_update` (and leaves it empty in `task_create`, clears
+  `progress` in `report_add`), since models cannot always send an empty string.
 
 ### Changed
 
+- Done cards no longer show "waiting on" and the next step; the task dialog shows them muted.
+- The done column is no longer cut at 20 cards; it holds the window and is capped at 200 with a
+  note.
 - Clicking a card opens the task in a dialog over the live board instead of an inline editor: the
   full task (description, progress, reports, session history, desktop link, unbind) and its edit
   form. The dialog has its own URL (`/p/<project>?task=<key>`), closes with Back, Esc or a click
   outside, and is full screen on narrow screens. The task page `/t/<key>` shows the same details.
+
+### Fixed
+
+- Clearing a field in the board's edit form (an empty input) now clears it; it used to keep the old
+  value.

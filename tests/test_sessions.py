@@ -31,7 +31,7 @@ def test_parse_session_id() -> None:
 async def test_uppercase_id_finds_the_same_session(service: Service) -> None:
     await service.upsert_project("acme-shop")
     task = await service.create_task("acme-shop", "Checkout", session=DESKTOP_A)
-    again = await service.bind_session(task.key, DESKTOP_A.upper())
+    again, _, _ = await service.bind_session(task.key, DESKTOP_A.upper())
     assert again.session_id == task.session_id
     assert again.session_link == f"claude://claude.ai/epitaxy/{DESKTOP_A}"
 
@@ -91,11 +91,12 @@ async def test_binding_history(service: Service) -> None:
     task = await service.create_task("acme-shop", "Checkout", session=DESKTOP_A, session_title="A")
     version = task.version
 
-    same = await service.bind_session(task.key, DESKTOP_A)
+    same, _, _ = await service.bind_session(task.key, DESKTOP_A)
     assert same.version == version  # already bound: nothing recorded
 
-    moved = await service.bind_session(task.key, DESKTOP_B, session_title="B")
+    moved, _, _ = await service.bind_session(task.key, DESKTOP_B, session_title="B")
     assert moved.session_external_id == DESKTOP_B and moved.version == version + 1
+    await service.unbind_session(task.key)
     await service.bind_session(task.key, "reviewer")
     await service.bind_session(task.key, DESKTOP_A)
 
@@ -110,7 +111,7 @@ async def test_binding_history(service: Service) -> None:
     assert [(e.payload["session"], e.payload["previous"]) for e in events] == [
         ("A", None),
         ("B", "A"),
-        ("reviewer", "B"),
+        ("reviewer", None),
         ("A", "reviewer"),
     ]
     assert events[1].payload["session_external_id"] == DESKTOP_B
@@ -162,3 +163,73 @@ async def test_bind_requires_a_session(service: Service) -> None:
     with pytest.raises(ValidationError):
         await service.bind_session(task.key, "local_123")
     assert (await service.task_detail(task.key)).bindings == []
+
+
+async def test_name_does_not_replace_a_desktop_binding(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task(
+        "acme-shop", "Checkout", session=DESKTOP_A, session_title="Checkout work"
+    )
+
+    with service.bus.subscribe() as sub:
+        same, kept, _ = await service.bind_session(task.key, "checkout-dev")
+        event = await sub.get(1)
+    assert kept is not None and kept.external_id == DESKTOP_A
+    assert same.session_external_id == DESKTOP_A and same.version == task.version
+    assert event.kind == "session.alias_added" and event.actor == "Checkout work"
+    assert (event.payload["alias"], event.payload["session_external_id"]) == (
+        "checkout-dev",
+        DESKTOP_A,
+    )
+    assert event.payload["key"] == task.key and event.payload["previous"] is None
+    assert [b.session_name for b in (await service.task_detail(task.key)).bindings] == [
+        "Checkout work"
+    ]
+
+    # The name now resolves to the desktop session: writes, filters and the unbind guard.
+    _, report = await service.add_report(task.key, "note", session="checkout-dev")
+    assert report.author == "Checkout work" and report.session_id == task.session_id
+    found = await service.list_tasks(project="acme-shop", session="checkout-dev")
+    assert [t.key for t in found] == [task.key]
+    other = await service.create_task("acme-shop", "Payment", session="checkout-dev")
+    assert other.session_external_id == DESKTOP_A
+
+    # Same name again: nothing new recorded.
+    last = await service.last_event_id()
+    _, kept, _ = await service.bind_session(task.key, "checkout-dev")
+    assert kept is not None and await service.last_event_id() == last
+
+    # A different desktop id still rebinds; the name then follows the session bound now.
+    moved, kept, _ = await service.bind_session(task.key, DESKTOP_B, session_title="B")
+    assert kept is None and moved.session_external_id == DESKTOP_B
+    _, kept, _ = await service.bind_session(task.key, "checkout-dev")
+    assert kept is not None and kept.external_id == DESKTOP_B
+    repointed = [e for e in await service.events_since(0) if e.kind == "session.alias_added"]
+    assert repointed[-1].payload["previous"] == "Checkout work"
+    unbound_task, unbound = await service.unbind_session(task.key, "checkout-dev")
+    assert unbound is not None and unbound.external_id == DESKTOP_B
+    assert unbound_task.session_id is None
+
+
+async def test_name_binds_normally_without_a_desktop_binding(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", session="planner")
+    bound, kept, _ = await service.bind_session(task.key, "checkout-dev")
+    assert kept is None and bound.session_name == "checkout-dev"
+    assert not [e for e in await service.events_since(0) if e.kind == "session.alias_added"]
+
+
+async def test_existing_plain_session_name_is_not_taken_as_an_alias(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    other = await service.create_task("acme-shop", "Other", session="reviewer")
+    task = await service.create_task("acme-shop", "Checkout", session=DESKTOP_A, session_title="A")
+    last = await service.last_event_id()
+
+    same, kept, alias_recorded = await service.bind_session(task.key, "reviewer")
+    assert kept is not None and kept.external_id == DESKTOP_A and not alias_recorded
+    assert same.session_external_id == DESKTOP_A
+    assert await service.last_event_id() == last  # nothing written
+
+    # The name still means the plain session, not the desktop one.
+    found = await service.list_tasks(project="acme-shop", session="reviewer")
+    assert [t.key for t in found] == [other.key]

@@ -84,6 +84,9 @@ task      id PK, project_id FK, key UNIQUE (e.g. "acme-shop-12"), title,
           progress NULL,            -- markdown: running summary of what is done (rewritten, not appended)
           session_id FK NULL,       -- session currently bound to the task
           priority INT DEFAULT 0, version INT,          -- optimistic concurrency
+          tracker_ref NULL, tracker_name NULL,          -- issue key / tracker in an external tracker
+          tracker_url NULL,         -- http(s) link to the issue, validated on write
+          tracker_logged INT DEFAULT 0,                 -- the work log is entered in the tracker
           created_at, updated_at, closed_at NULL
 report    id PK, task_id FK, session_id FK NULL, author TEXT,
           state TEXT NULL,          -- inspected / changed / verified / committed / pushed / blocked
@@ -99,18 +102,30 @@ session   id PK, external_id UNIQUE NULL,   -- desktop session id (local_<uuid>)
           last_seen_at, created_at
 task_session id PK, task_id FK, session_id FK, bound_at, unbound_at NULL, bound_by
           -- binding history; at most one open row per task
+session_alias name PK, session_id FK, created_at
+          -- plain names that resolve to a (desktop) session
 event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id NULL,
           session_id NULL, actor TEXT, payload JSON
 ```
 
 - **Event kinds:** `project.created|updated`, `task.created|updated|stage_changed|closed`,
   `task.session_bound|session_unbound`, `report.added`, `decision.added`,
-  `session.seen|status_changed|ended`, `import.completed`.
+  `session.seen|status_changed|ended|alias_added`, `import.completed`.
 - **Description and progress** (migration `0002`): changing either is a `task.updated` with a
   version bump like any field; `report_add` with `progress` writes both events in one transaction.
   Unbinding closes the open `task_session` row and clears `task.session_id`; history is kept.
   Payload carries the changed fields (`{"from": "dev", "to": "test"}`), enough to render a feed line
   and to patch the UI.
+- **Tracker mark and aliases** (migration `0003`): the four `tracker_*` fields are ordinary task
+  fields (`task.updated`, version bump). A plain name passed to `task_bind_session` for a task bound
+  to a desktop session does not rebind: it is stored in `session_alias` (`session.alias_added`) and
+  from then on resolves to that session. Aliases are global (one name, one session) and win over
+  plain sessions, so no alias is created for a name that a plain session already has; the call then
+  only warns.
+- **Archive** is computed, not stored: a done task whose `closed_at` is older than
+  `done_window_days` (config, default 7) is left out of the board's done column unless
+  "Show archived" or a search is active. With `require_tracker_log = true` (config, default false)
+  a done task without `tracker_logged` is never archived and shows "not logged".
 - **Stages** are a fixed enum in v1 with a display-label map in config (so a user can show "разработка"
   instead of "dev"). Any transition is allowed (real work jumps back from `test` to `dev`); the event
   log keeps history. Custom stage sets are a v0.2+ question.
@@ -216,10 +231,10 @@ trusted for authorization — the token is the only auth; identity is for displa
 | `project_snapshot` | Compact markdown snapshot of a project: open tasks by stage, waiting-on, last report per task, recent decisions | `project`, `include_done?` |
 | `task_list` | Filtered list | `project?`, `stage?`, `waiting_on?`, `session?` |
 | `task_get` | Full task with last N reports and decisions | `task` (key or id) |
-| `task_create` | New task | `project`, `title`, `stage?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `session?` |
-| `task_update` | Patch fields (incl. `description`, `progress`) | `task`, fields…, `expected_version?` |
+| `task_create` | New task | `project`, `title`, `stage?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `session?` |
+| `task_update` | Patch fields (incl. `description`, `progress`, `tracker_*`); `"-"` or `""` clears a text field | `task`, fields…, `expected_version?` |
 | `task_set_stage` | Move stage with a note | `task`, `stage`, `note?` |
-| `task_bind_session` | "Session X works on this task now" | `task`, `session` |
+| `task_bind_session` | "Session X works on this task now"; a plain name never replaces a desktop binding, it becomes its alias | `task`, `session` |
 | `task_unbind_session` | "Nobody works on this task now"; history kept; `session` guards against unbinding a successor | `task`, `session?` |
 | `report_add` | Append a report; first line becomes the card summary; optional `state`/`size` parsed from a leading `state · size · gist` line; optional `progress` updates the task's summary atomically | `task`, `body`, `progress?`, `session?` |
 | `decision_add` | Record a decision | `project`, `task?`, `text`, `decided_by?` |
@@ -346,7 +361,29 @@ workflow.
   the card shows the session badge and an "Open in desktop" button (with copy-link fallback), and a
   minimal task page `/t/{key}` shows the binding history and last reports.
 - **Stage 2** — milestones 6–9: markdown import, hooks, full event feed and task view, packaging
-  (wheel, `uvx`, Docker), community files (§11.1).
+  (wheel, `uvx`, Docker), community files (§11.1). Also:
+  - `SessionEnd` hook marks the session `ended` and unbinds it from its task automatically.
+- **Delivered early in 0.1.x** (planned for stage 2, see §3 and §5 for the final shape):
+  - *Session binding by name must not replace a desktop binding.* When a task is bound to a desktop
+    session (`local_<uuid>`) and `task_bind_session` arrives with a plain name, the desktop binding
+    is kept and the name is recorded as an alias of that session (`session_alias`,
+    `session.alias_added`) instead of rebinding and losing the "Open in desktop" link; the name then
+    resolves to that session in every tool. If a plain session of that name already exists, no
+    alias is made and the call warns "already bound to <title> (local_…); pass your local id".
+    Tool description: "If you don't know your `local_` id, don't rebind — the coordinator binds
+    you."
+  - *Done column and archive.* The `done` column shows tasks closed within the last N days
+    (`done_window_days`, default 7); older ones move to the archive, reachable through a
+    "Show archived" filter and search (by key or title, `?q=`). Done cards hide "waiting on" and
+    the next step.
+  - *Logged in an external tracker.* Task fields `tracker_ref` (issue key, "ENG-12"),
+    `tracker_name` (free text, "Linear"), `tracker_url` (optional http(s) link) and
+    `tracker_logged` (bool, "work log entered"). A badge at the very top of the card shows
+    "<tracker_name> <tracker_ref>" whenever a key is set (a link with a URL, ✓ when logged).
+    Opt-in `require_tracker_log` (default false): done tasks without the mark show "not logged"
+    and stay out of the archive until marked. Tracker names are not hard-coded. MCP:
+    `task_create` / `task_update` take all four.
+  - `"-"` clears a field in `task_update` / `report_add(progress)`: models cannot always send `""`.
 - **Stage 3** — agents inside relaybay (the v2 runner below, plus an embedded terminal / Agent Client
   Protocol adapter). The architecture reserves an `agents/` adapter module with one interface
   (`start`, `send`, `stop`, `events`) per backend (`claude -p` stream-json, embedded terminal, ACP);
@@ -393,7 +430,7 @@ files and settings land in stage 2.
   scanning + push protection, Dependabot alerts and security updates, private vulnerability reporting,
   read-only `GITHUB_TOKEN`. Required CI status checks are added to the ruleset once CI exists.
 
-### v0.2 — markdown export, search/filters, archive of done tasks, hook installer, custom stage labels.
+### v0.2 — markdown export, richer filters, hook installer, custom stage labels.
 
 ### v2 (0.3+) — runner: relaybay starts agents
 

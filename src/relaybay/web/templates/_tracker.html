@@ -1,0 +1,16 @@
+{#- External tracker badges of a task. Expects: t. The issue badge shows whenever a key is set
+    ("<tracker name> <key>", a link with a tracker URL, ✓ once the work log is entered); with
+    require_tracker_log, a done task without the work log also gets "not logged". -#}
+{%- set logged = t.tracker_logged -%}
+{%- set hint = "Work log entered in the tracker" if logged else "Issue in the tracker" -%}
+{%- if t.tracker_ref -%}
+{%- set href = t.tracker_url|http_url -%}
+{%- set text = (t.tracker_name ~ " " if t.tracker_name else "") ~ t.tracker_ref -%}
+{%- if href %}<a class="badge tracker{% if logged %} logged{% endif %}" href="{{ href }}" target="_blank" rel="noopener noreferrer" title="{{ hint }}">{% if logged %}✓ {% endif %}{{ text }}</a>
+{%- else %}<span class="badge tracker{% if logged %} logged{% endif %}" title="{{ hint }}">{% if logged %}✓ {% endif %}{{ text }}</span>{% endif -%}
+{%- elif logged -%}
+<span class="badge tracker logged" title="{{ hint }}">✓ logged</span>
+{%- endif -%}
+{%- if require_tracker_log and t.stage.value == "done" and not logged %}
+<span class="badge tracker not-logged" title="Done, but the work log is not marked as entered in the tracker">not logged</span>
+{%- endif -%}

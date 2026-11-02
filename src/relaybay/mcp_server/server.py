@@ -23,6 +23,7 @@ INSTRUCTIONS = " ".join(
         "your work, move its stage as you progress, and add a report at the end of every stage.",
         "Pass `session` on writes so the board shows who did what: your own desktop session id",
         "(local_…) if you know it, with `session_title`, otherwise a human-readable name.",
+        "If you don't know your local_ id, don't rebind a task — the coordinator binds you.",
     ]
 )
 
@@ -42,10 +43,24 @@ TaskRef = Annotated[str, Field(description="Task key such as 'acme-shop-12', or 
 ProjectSlug = Annotated[str, Field(description="Project slug such as 'acme-shop'.")]
 StageArg = Annotated[str, Field(description="One of: plan, dev, test, live, done.")]
 DESCRIPTION_HELP = "What to do and why, 1-5 sentences of markdown."
+CLEARS = " '-' or '' clears it."
+EMPTY = " '-' or '' leaves it empty."
+TRACKER_REF_HELP = "Issue key or number in the external tracker, e.g. 'ENG-12'."
+TRACKER_NAME_HELP = "Name of the external tracker, e.g. 'Linear'."
+TRACKER_URL_HELP = "Link to the issue (http:// or https:// only)."
+TRACKER_LOGGED_HELP = (
+    "True once the work log is entered in the external tracker. Done tasks without it stay on"
+    " the board marked 'not logged'."
+)
 PROGRESS_HELP = (
     "Markdown summary of everything done so far on the task (not just the last step). Rewrite"
     " it as the work goes on and keep it current with every report."
 )
+
+
+def cleared(value: str | None) -> str | None:
+    """'-' means "empty": models cannot reliably send '' as a tool argument."""
+    return "" if value is not None and value.strip() == "-" else value
 
 
 async def run[T](awaitable: Awaitable[T]) -> T:
@@ -56,7 +71,7 @@ async def run[T](awaitable: Awaitable[T]) -> T:
         raise ToolError(str(exc)) from exc
 
 
-def build_mcp(service: Service) -> MCPServer:
+def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServer:
     mcp = MCPServer(name="relaybay", version=__version__, instructions=INSTRUCTIONS)
 
     @mcp.tool(annotations=READ, structured_output=False)
@@ -96,7 +111,7 @@ def build_mcp(service: Service) -> MCPServer:
         branch, the start of the description and progress, last report, plus recent decisions.
         Call it at the start of a session to see the state of the project before you pick or
         create a task."""
-        return fmt.snapshot(await run(service.snapshot(project, include_done)))
+        return fmt.snapshot(await run(service.snapshot(project, include_done)), require_tracker_log)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def task_list(
@@ -119,7 +134,7 @@ def build_mcp(service: Service) -> MCPServer:
                 include_done=include_done,
             )
         )
-        return fmt.task_list(tasks)
+        return fmt.task_list(tasks, require_tracker_log)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def task_get(
@@ -128,19 +143,29 @@ def build_mcp(service: Service) -> MCPServer:
     ) -> str:
         """Full task: fields, description, progress, current version, the latest reports and
         decisions. Call it before task_update to get the version for expected_version."""
-        return fmt.task_detail(await run(service.task_detail(task, reports)))
+        return fmt.task_detail(await run(service.task_detail(task, reports)), require_tracker_log)
 
     @mcp.tool(annotations=WRITE, structured_output=False)
     async def task_create(
         project: ProjectSlug,
         title: Annotated[str, Field(description="Short task title.")],
         stage: Annotated[str | None, Field(description="Initial stage; default plan.")] = None,
-        waiting_on: Annotated[str | None, Field(description="Who the task waits on.")] = None,
-        next_step: Annotated[str | None, Field(description="The next concrete step.")] = None,
-        branch: Annotated[str | None, Field(description="Git branch.")] = None,
-        doc_path: Annotated[str | None, Field(description="Path to a task document.")] = None,
-        description: Annotated[str | None, Field(description=DESCRIPTION_HELP)] = None,
-        progress: Annotated[str | None, Field(description=PROGRESS_HELP)] = None,
+        waiting_on: Annotated[
+            str | None, Field(description="Who the task waits on." + EMPTY)
+        ] = None,
+        next_step: Annotated[
+            str | None, Field(description="The next concrete step." + EMPTY)
+        ] = None,
+        branch: Annotated[str | None, Field(description="Git branch." + EMPTY)] = None,
+        doc_path: Annotated[
+            str | None, Field(description="Path to a task document." + EMPTY)
+        ] = None,
+        description: Annotated[str | None, Field(description=DESCRIPTION_HELP + EMPTY)] = None,
+        progress: Annotated[str | None, Field(description=PROGRESS_HELP + EMPTY)] = None,
+        tracker_ref: Annotated[str | None, Field(description=TRACKER_REF_HELP + EMPTY)] = None,
+        tracker_name: Annotated[str | None, Field(description=TRACKER_NAME_HELP + EMPTY)] = None,
+        tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + EMPTY)] = None,
+        tracker_logged: Annotated[bool, Field(description=TRACKER_LOGGED_HELP)] = False,
         session: Session = None,
         session_title: SessionTitle = None,
     ) -> str:
@@ -152,12 +177,16 @@ def build_mcp(service: Service) -> MCPServer:
                 project,
                 title,
                 stage=stage,
-                waiting_on=waiting_on,
-                next_step=next_step,
-                branch=branch,
-                doc_path=doc_path,
-                description=description,
-                progress=progress,
+                waiting_on=cleared(waiting_on),
+                next_step=cleared(next_step),
+                branch=cleared(branch),
+                doc_path=cleared(doc_path),
+                description=cleared(description),
+                progress=cleared(progress),
+                tracker_ref=cleared(tracker_ref),
+                tracker_name=cleared(tracker_name),
+                tracker_url=cleared(tracker_url),
+                tracker_logged=tracker_logged,
                 session=session,
                 session_title=session_title,
             )
@@ -168,15 +197,25 @@ def build_mcp(service: Service) -> MCPServer:
     async def task_update(
         task: TaskRef,
         title: Annotated[str | None, Field(description="New title.")] = None,
-        waiting_on: Annotated[str | None, Field(description="'' clears it.")] = None,
-        next_step: Annotated[str | None, Field(description="'' clears it.")] = None,
-        branch: Annotated[str | None, Field(description="'' clears it.")] = None,
-        doc_path: Annotated[str | None, Field(description="'' clears it.")] = None,
-        stage_note: Annotated[str | None, Field(description="'' clears it.")] = None,
-        description: Annotated[
-            str | None, Field(description=DESCRIPTION_HELP + " '' clears it.")
+        waiting_on: Annotated[
+            str | None, Field(description="Who the task waits on." + CLEARS)
         ] = None,
-        progress: Annotated[str | None, Field(description=PROGRESS_HELP + " '' clears it.")] = None,
+        next_step: Annotated[
+            str | None, Field(description="The next concrete step." + CLEARS)
+        ] = None,
+        branch: Annotated[str | None, Field(description="Git branch." + CLEARS)] = None,
+        doc_path: Annotated[
+            str | None, Field(description="Path to a task document." + CLEARS)
+        ] = None,
+        stage_note: Annotated[
+            str | None, Field(description="Note next to the stage." + CLEARS)
+        ] = None,
+        description: Annotated[str | None, Field(description=DESCRIPTION_HELP + CLEARS)] = None,
+        progress: Annotated[str | None, Field(description=PROGRESS_HELP + CLEARS)] = None,
+        tracker_ref: Annotated[str | None, Field(description=TRACKER_REF_HELP + CLEARS)] = None,
+        tracker_name: Annotated[str | None, Field(description=TRACKER_NAME_HELP + CLEARS)] = None,
+        tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + CLEARS)] = None,
+        tracker_logged: Annotated[bool | None, Field(description=TRACKER_LOGGED_HELP)] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -184,9 +223,10 @@ def build_mcp(service: Service) -> MCPServer:
         session: Session = None,
         session_title: SessionTitle = None,
     ) -> str:
-        """Change task fields (waiting on, next step, branch, description, progress, ...). Omitted
-        fields stay as they are; an empty string clears a field. Keep `progress` current with
-        every report. To move a task between stages use task_set_stage."""
+        """Change task fields (waiting on, next step, branch, description, progress, the tracker
+        issue and its work-log mark, ...). Omitted fields stay as they are; '-' or an empty
+        string clears a field. Keep `progress` current with every report. To move a task between
+        stages use task_set_stage."""
         given = {
             "title": title,
             "waiting_on": waiting_on,
@@ -196,8 +236,15 @@ def build_mcp(service: Service) -> MCPServer:
             "stage_note": stage_note,
             "description": description,
             "progress": progress,
+            "tracker_ref": tracker_ref,
+            "tracker_name": tracker_name,
+            "tracker_url": tracker_url,
         }
-        changes = {k: (v or None) for k, v in given.items() if v is not None}
+        changes: dict[str, object] = {
+            k: (cleared(v) or None) for k, v in given.items() if v is not None
+        }
+        if tracker_logged is not None:
+            changes["tracker_logged"] = tracker_logged
         if not changes:
             raise ToolError("Nothing to update: pass at least one field.")
         updated = await run(
@@ -237,9 +284,26 @@ def build_mcp(service: Service) -> MCPServer:
     ) -> str:
         """Mark that this session works on the task now; the board shows it on the card with a
         link that opens the Claude desktop app session. Call it when you pick up an existing task.
-        Pass your own desktop session id (local_…) if you know it. Binding a session ends the
-        previous session's binding; the history is kept."""
-        updated = await run(service.bind_session(task, session, session_title=session_title))
+        Pass your own desktop session id (local_…) if you know it. If you don't know your local_
+        id, don't rebind — the coordinator binds you; pass your session name only as `session` on
+        writes. A plain name never replaces a desktop session bound to the task: it is recorded
+        as that session's alias. Binding a session ends the previous session's binding; the
+        history is kept."""
+        updated, kept, alias_recorded = await run(
+            service.bind_session(task, session, session_title=session_title)
+        )
+        if kept is not None:
+            who = fmt.who_label(kept.name, kept.external_id)
+            if not alias_recorded:
+                return (
+                    f"**{updated.key}** is already bound to {who}; pass your local id to rebind."
+                    f" '{session.strip()}' was not recorded as its alias: a session with that"
+                    " name already exists. Nothing changed."
+                )
+            return (
+                f"Kept the desktop session {who} on **{updated.key}**; recorded"
+                f" '{session.strip()}' as its alias. Pass your local_ id to rebind."
+            )
         return fmt.task_saved(updated, f"Bound {fmt.session_label(updated)} to")
 
     @mcp.tool(annotations=WRITE, structured_output=False)
@@ -275,7 +339,11 @@ def build_mcp(service: Service) -> MCPServer:
         ],
         progress: Annotated[
             str | None,
-            Field(description=PROGRESS_HELP + " Saved together with the report; omit to keep it."),
+            Field(
+                description=PROGRESS_HELP
+                + " Saved together with the report; omit to keep it;"
+                + CLEARS
+            ),
         ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
@@ -285,7 +353,11 @@ def build_mcp(service: Service) -> MCPServer:
         what is done stays current with every report."""
         saved, report = await run(
             service.add_report(
-                task, body, session=session, session_title=session_title, progress=progress
+                task,
+                body,
+                session=session,
+                session_title=session_title,
+                progress=cleared(progress),
             )
         )
         parsed = " · ".join(x for x in (report.state, report.size) if x)
@@ -334,7 +406,7 @@ def build_mcp(service: Service) -> MCPServer:
     )
     async def project_resource(slug: str) -> str:
         try:
-            return fmt.snapshot(await service.snapshot(slug))
+            return fmt.snapshot(await service.snapshot(slug), require_tracker_log)
         except NotFoundError as exc:
             raise ResourceNotFoundError(str(exc)) from exc
 

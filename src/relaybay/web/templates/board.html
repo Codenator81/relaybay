@@ -4,6 +4,13 @@
 {% block content %}
 <main class="board-page" id="live" hx-ext="sse" sse-connect="/events?project={{ project.slug }}"
       data-last-event-id="{{ last_event_id }}" data-project="{{ project.slug }}">
+  <form class="board-tools" method="get" action="/p/{{ project.slug }}" role="search">
+    <input class="board-search" type="search" name="q" value="{{ q }}" maxlength="200"
+           placeholder="Search key or title" aria-label="Search tasks by key or title">
+    <label class="board-archived"><input type="checkbox" name="archived" value="1"{% if archived %} checked{% endif %}> Show archived</label>
+    <button type="submit" class="btn">Filter</button>
+    {% if q or archived %}<a class="action" href="/p/{{ project.slug }}">Clear</a>{% endif %}
+  </form>
   {#- Radios drive the phone layout (one stage at a time) without JavaScript. #}
   {% for stage in stages %}
   <input class="stage-radio" type="radio" name="stage-tab" id="tab-{{ stage }}" value="{{ stage }}"{% if stage == active_stage %} checked{% endif %}>
