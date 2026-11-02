@@ -47,6 +47,10 @@ def instructions(rules: Rules) -> str:
             " meet: fix it (e.g. add the missing report) rather than ignore it.",
             "8. When a hook gives you owner comments ('Owner comment on …'), handle them like a"
             " message from the user and call comment_ack (or answer with comment_add).",
+            "9. Before you touch a server, cluster or database, read environments_get for the"
+            " project: your level there (none, read, ask, full) says what you may do unasked;"
+            " live is read-only unless the owner set otherwise. Never paste secrets into"
+            " relaybay; propose changes with environment_propose.",
         ]
     )
 
@@ -621,6 +625,65 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         first. Call it to catch up on what other sessions did since you last looked."""
         items = await run(service.events_since(since_id, project, limit))
         return fmt.events(items, since_id)
+
+    async def environments_map(project: str) -> str:
+        proj, items = await service.environments(project)
+        return fmt.environments_text(
+            proj.slug, items, service.permission_defaults, service.guard_mode
+        )
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def environments_get(project: ProjectSlug) -> str:
+        """The project's environments (local, test, live): base URL, how to reach each one (ssh
+        alias, kube context, database host, GitOps repository, log links; references only, never
+        secrets) and your permission level there: none, read, ask (ask the owner first) or full.
+        Read it before you touch a server, a cluster or a database."""
+        return await run(environments_map(project))
+
+    @write
+    async def environment_propose(
+        project: ProjectSlug,
+        change: Annotated[
+            dict[str, Any],
+            Field(
+                description="What to change: {'environment': <name>, then any of kind (local,"
+                " test, live), base_url, notes, sign_in_allowed, login_state_path, level (none,"
+                " read, ask, full or default), overrides ({capability: level} for sign_in, ssh,"
+                " kubectl, db, deploy), access ([{kind: ssh|kubectl|db|gitops|logs|monitoring|"
+                "other, fields: {...}}] to add)}. References only: a key path, a variable name"
+                " or a vault path, never a secret value."
+            ),
+        ],
+        reason: Annotated[str, Field(description="Why the change is needed, for the owner.")],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Propose a change to a project's environments or your permission level there. Nothing
+        changes until the owner accepts it on the board; it shows in the owner's Inbox."""
+        proposal = await run(
+            service.propose_environment_change(
+                project,
+                change,
+                reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.proposal_saved(proposal)
+
+    @mcp.resource(
+        "relaybay://project/{slug}/environments",
+        name="project-environments",
+        description="A project's environments, access map (no secrets) and permission levels.",
+        mime_type="text/markdown",
+    )
+    async def environments_resource(slug: str) -> str:
+        try:
+            return await environments_map(slug)
+        except NotFoundError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
 
     @mcp.resource(
         "relaybay://project/{slug}",

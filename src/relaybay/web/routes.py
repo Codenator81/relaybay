@@ -2,6 +2,7 @@
 
 import asyncio
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -14,8 +15,9 @@ from starlette.responses import StreamingResponse
 
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
+from relaybay.domain import environments as env_domain
 from relaybay.domain.comments import COMMENT_MAX
-from relaybay.domain.errors import ConflictError, DomainError, NotFoundError
+from relaybay.domain.errors import ConfirmationNeeded, ConflictError, DomainError, NotFoundError
 from relaybay.domain.models import Task
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.tasks import is_archived
@@ -83,7 +85,23 @@ EVENT_KINDS = (
     "comment.added",
     "comment.delivered",
     "comment.read",
+    "environment.created",
+    "environment.updated",
+    "environment.deleted",
+    "environment.access_added",
+    "environment.access_updated",
+    "environment.access_removed",
+    "environment.proposed",
+    "environment.proposal_accepted",
+    "environment.proposal_rejected",
+    "live.action",
 )
+BOARD_ONLY = (
+    "Environments and permission levels change only from the board in a browser; agents propose"
+    " changes with environment_propose."
+)
+ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "level")
+JOURNAL_LIMIT = 20
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
@@ -118,6 +136,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["http_url"] = http_url
     env.filters["event_detail"] = event_detail
     env.filters["event_subject"] = event_subject
+    env.filters["change_summary"] = env_domain.change_summary
+    env.globals["fields_text"] = env_domain.fields_text
 
     def render(request: Request, name: str, status: int = 200, **context: Any) -> HTMLResponse:
         return templates.TemplateResponse(request, name, context, status_code=status)
@@ -137,7 +157,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `activity`, `settings`, `sessions`; `board` or `sessions` with `project`)."""
+        `boards`, `activity`, `settings`, `sessions`; `board`, `sessions` or `environments`
+        with `project`)."""
         nav = {
             "active": active,
             "project": nav_project,
@@ -406,8 +427,15 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             kind_filter=kind,
             kinds=EVENT_KINDS,
             paged=before is not None,
+            journal=await service.live_journal(project or None, JOURNAL_LIMIT),
             last_event_id=last_event_id,
         )
+
+    @router.get("/fragments/journal", response_class=HTMLResponse)
+    async def journal_fragment(request: Request, project: str = ""):
+        project = project.strip().lower()
+        journal = await service.live_journal(project or None, JOURNAL_LIMIT)
+        return render(request, "_journal.html", journal=journal, project_filter=project)
 
     @router.get("/fragments/activity", response_class=HTMLResponse)
     async def activity_fragment(
@@ -603,6 +631,240 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if "hx-request" not in request.headers:
             return RedirectResponse(f"/t/{task.key}", status_code=303)
         return await comment_thread(request, task)
+
+    # --- Stands & access: environments, access map, permission levels -----------------
+
+    def board_only(request: Request, csrf: str) -> None:
+        """Environment writes come from a signed-in browser (cookie + CSRF), not from a
+        client that sends the token as a Bearer header."""
+        check_csrf(csrf)
+        cookie = request.cookies.get(COOKIE_NAME)
+        if "authorization" in request.headers or not same_secret(
+            cookie, session_cookie_value(token)
+        ):
+            raise HTTPException(status_code=403, detail=BOARD_ONLY)
+
+    async def environments_page(
+        request: Request,
+        slug: str,
+        *,
+        error: str | None = None,
+        error_target: str = "",
+        confirm: dict[str, Any] | None = None,
+        status: int = 200,
+    ) -> HTMLResponse:
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        project, items = await service.environments(slug)
+        return await page(
+            request,
+            "environments.html",
+            "environments",
+            project.slug,
+            status=status,
+            project=project,
+            environments=items,
+            proposals=await service.proposals(project.slug),
+            defaults=service.permission_defaults,
+            guard_mode=service.guard_mode,
+            error=error,
+            error_target=error_target,
+            confirm=confirm,
+            last_event_id=last_event_id,
+        )
+
+    def environment_values(form: Any) -> dict[str, Any]:
+        """The environment fields a board form sent; a field it did not send stays."""
+        values: dict[str, Any] = {}
+        for name in ENV_TEXT_FIELDS:
+            submitted = form.getlist(name)
+            if submitted and isinstance(submitted[-1], str):
+                values[name] = submitted[-1]
+        sign_in = form.getlist("sign_in_allowed")
+        if sign_in:
+            # A hidden "0" comes before the checkbox, so the last value is the state.
+            values["sign_in_allowed"] = sign_in[-1] == "1"
+        overrides = {
+            cap: form.get(f"override_{cap}") or ""
+            for cap in env_domain.CAPABILITIES
+            if f"override_{cap}" in form
+        }
+        if overrides:
+            values["overrides"] = overrides
+        return values
+
+    def confirm_fields(form: Any) -> list[tuple[str, str]]:
+        """The submitted fields, to resend with the confirmation."""
+        return [
+            (k, v)
+            for k, v in form.multi_items()
+            if isinstance(v, str) and k not in (CSRF_FIELD, "confirm_live")
+        ]
+
+    async def environment_write(
+        request: Request,
+        slug: str,
+        csrf: str,
+        target: str,
+        write: Callable[[Any], Awaitable[Any]],
+        anchor: str = "",
+    ) -> Response:
+        """Run a board write; on success back to the page, on failure the page with the
+        reason next to the form, or a confirmation for raising live above read."""
+        board_only(request, csrf)
+        form = await request.form()
+        try:
+            await write(form)
+        except ConfirmationNeeded as exc:
+            confirm = {
+                "action": str(request.url.path),
+                "message": str(exc),
+                "fields": confirm_fields(form),
+            }
+            return await environments_page(request, slug, confirm=confirm)
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return await environments_page(
+                request, slug, error=str(exc), error_target=target, status=400
+            )
+        return RedirectResponse(f"/p/{slug}/environments{anchor}", status_code=303)
+
+    def confirmed(form: Any) -> bool:
+        return form.get("confirm_live") == "1"
+
+    @router.get("/p/{slug}/environments", response_class=HTMLResponse)
+    async def environments(request: Request, slug: str):
+        return await environments_page(request, slug)
+
+    @router.get("/p/{slug}/environments/proposals", response_class=HTMLResponse)
+    async def proposals_fragment(request: Request, slug: str):
+        project = await service.get_project(slug)
+        return render(
+            request,
+            "_proposals.html",
+            project=project,
+            proposals=await service.proposals(project.slug),
+        )
+
+    @router.post("/p/{slug}/environments")
+    async def create_environment(
+        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        async def write(form: Any) -> None:
+            await service.save_environment(
+                slug, environment_values(form), confirm_live=confirmed(form), actor="owner"
+            )
+
+        return await environment_write(request, slug, csrf, "new", write)
+
+    @router.post("/p/{slug}/environments/{env_id}")
+    async def update_environment(
+        request: Request,
+        slug: str,
+        env_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> None:
+            await service.save_environment(
+                slug,
+                environment_values(form),
+                env_id=env_id,
+                confirm_live=confirmed(form),
+                actor="owner",
+            )
+
+        return await environment_write(
+            request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}"
+        )
+
+    @router.post("/p/{slug}/environments/{env_id}/delete")
+    async def delete_environment(
+        request: Request,
+        slug: str,
+        env_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> None:
+            await service.delete_environment(slug, env_id, actor="owner")
+
+        return await environment_write(request, slug, csrf, f"env-{env_id}", write)
+
+    @router.post("/p/{slug}/environments/{env_id}/access")
+    async def add_access(
+        request: Request,
+        slug: str,
+        env_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> None:
+            fields = env_domain.parse_fields_text(str(form.get("fields") or ""))
+            await service.save_access(
+                slug, env_id, str(form.get("kind") or ""), fields, actor="owner"
+            )
+
+        return await environment_write(
+            request, slug, csrf, f"access-new-{env_id}", write, f"#env-{env_id}"
+        )
+
+    @router.post("/p/{slug}/environments/{env_id}/access/{access_id}")
+    async def update_access(
+        request: Request,
+        slug: str,
+        env_id: int,
+        access_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> None:
+            fields = env_domain.parse_fields_text(str(form.get("fields") or ""))
+            await service.save_access(
+                slug,
+                env_id,
+                str(form.get("kind") or ""),
+                fields,
+                access_id=access_id,
+                actor="owner",
+            )
+
+        return await environment_write(
+            request, slug, csrf, f"access-{access_id}", write, f"#env-{env_id}"
+        )
+
+    @router.post("/p/{slug}/environments/{env_id}/access/{access_id}/delete")
+    async def delete_access(
+        request: Request,
+        slug: str,
+        env_id: int,
+        access_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> None:
+            await service.delete_access(slug, env_id, access_id, actor="owner")
+
+        return await environment_write(
+            request, slug, csrf, f"access-{access_id}", write, f"#env-{env_id}"
+        )
+
+    @router.post("/p/{slug}/proposals/{proposal_id}/{decision}")
+    async def decide_proposal(
+        request: Request,
+        slug: str,
+        proposal_id: int,
+        decision: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if decision not in ("accept", "reject"):
+            raise HTTPException(status_code=404)
+
+        async def write(form: Any) -> None:
+            await service.decide_proposal(
+                proposal_id,
+                decision == "accept",
+                project=slug,
+                confirm_live=confirmed(form),
+                actor="owner",
+            )
+
+        return await environment_write(request, slug, csrf, "", write)
 
     @router.get("/events")
     async def events(

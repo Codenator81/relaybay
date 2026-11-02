@@ -9,6 +9,13 @@ from typing import Any
 
 import platformdirs
 
+from relaybay.domain.environments import (
+    DEFAULT_GUARD_MODE,
+    DEFAULT_LEVELS,
+    GUARD_MODES,
+    KINDS,
+    LEVELS,
+)
 from relaybay.domain.hooks import WAKE_HOLD_SECONDS
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
@@ -136,6 +143,24 @@ class Settings:
             env="RELAYBAY_RULES_MODE",
         ),
     )
+    permission_defaults: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_LEVELS),
+        metadata=_doc(
+            "Agents' permission level per environment kind when an environment sets none"
+            " (`none`, `read`, `ask`, `full`) ([SPEC §7](../SPEC.md#spec-environments)).",
+            key="[permission_defaults]",
+            default='`local = "full"`, `test = "full"`, `live = "read"`',
+        ),
+    )
+    guard_mode: str = field(
+        default=DEFAULT_GUARD_MODE,
+        metadata=_doc(
+            "`off`, `warn` or `block`: what the PreToolUse guard does with a tool call the"
+            " environment's level forbids.",
+            key="guard_mode",
+            env="RELAYBAY_GUARD_MODE",
+        ),
+    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
@@ -240,6 +265,25 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
                 f" got {data['rules_mode']!r}"
             )
         settings.rules_mode = value
+    if "guard_mode" in data:
+        value = str(data["guard_mode"]).strip().lower()
+        if value not in GUARD_MODES:
+            raise ValueError(
+                f"{source}: guard_mode must be one of {', '.join(GUARD_MODES)},"
+                f" got {data['guard_mode']!r}"
+            )
+        settings.guard_mode = value
+    if "permission_defaults" in data:
+        table = data["permission_defaults"]
+        if not isinstance(table, dict):
+            raise ValueError(f"{source}: [permission_defaults] must be a table")
+        for kind, level in table.items():
+            if kind not in KINDS or str(level).strip().lower() not in LEVELS:
+                raise ValueError(
+                    f"{source}: [permission_defaults] maps {', '.join(KINDS)} to one of"
+                    f" {', '.join(LEVELS)}, got {kind} = {level!r}"
+                )
+            settings.permission_defaults[kind] = str(level).strip().lower()
     if "desktop_link_template" in data:
         template = str(data["desktop_link_template"])
         if "{id}" not in template:

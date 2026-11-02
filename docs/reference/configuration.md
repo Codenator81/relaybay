@@ -23,6 +23,8 @@ stops `relaybay serve` with a message that names the key.
 | `owner_names` | `["owner", "me", "you"]` | `RELAYBAY_OWNER_NAMES` | — | Names that mean you in a task's `waiting_on` (case-insensitive): those tasks are listed in the Inbox. The environment variable is comma-separated. |
 | `[rules]` | built-in rules | — | — | Global working rules merged over the defaults ([SPEC §6](../SPEC.md#spec-rules)). |
 | `rules_mode` | `warn` | `RELAYBAY_RULES_MODE` | — | `warn` or `strict`: what a stage move that misses a rule does. |
+| `[permission_defaults]` | `local = "full"`, `test = "full"`, `live = "read"` | — | — | Agents' permission level per environment kind when an environment sets none (`none`, `read`, `ask`, `full`) ([SPEC §7](../SPEC.md#spec-environments)). |
+| `guard_mode` | `warn` | `RELAYBAY_GUARD_MODE` | — | `off`, `warn` or `block`: what the PreToolUse guard does with a tool call the environment's level forbids. |
 | `claude_home` | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` | Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor, Integrations). |
 
 ## Example `config.toml`

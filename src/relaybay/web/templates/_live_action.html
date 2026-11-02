@@ -1,0 +1,9 @@
+{#- One `live.action` event. Expects: e. -#}
+{%- set p = e.payload %}
+<li class="journal-row">
+  <time class="muted" datetime="{{ e.ts }}" data-age title="{{ e.ts[:19] }}Z">{{ e.ts|age }}</time>
+  <span class="decision decision-{{ p.get('decision') }}">{{ p.get("decision") }}</span>
+  <span class="journal-where">{% if p.get("key") %}<a class="card-key" href="/p/{{ p.project }}?task={{ p.key }}">{{ p.key }}</a>{% else %}{{ p.get("project") }}{% endif %} · {{ p.get("environment") }}</span>
+  <code class="journal-command">{{ p.get("command") }}</code>
+  <span class="muted journal-meta">{{ p.get("tool") }} · level {{ p.get("level") }}{% if p.get("rule") %} · {{ p.rule }}{% endif %} · {{ e.actor }}</span>
+</li>

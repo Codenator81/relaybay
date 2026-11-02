@@ -1,7 +1,11 @@
 # 0006 — Project environments, access map and agent permissions
 
-- Status: **Accepted** (step 11.4b), planned for 0.2.0, before Review ([0007](0007-review.md)),
-  which uses it for screenshots.
+- Status: **Implemented** (step 11.4b, unreleased, for 0.2.0). Shipped behaviour: [SPEC §7](../SPEC.md#spec-environments).
+  Review ([0007](0007-review.md)) uses the sign-in flag for screenshots.
+- As built: the journal event is `live.action` (not `environment.action`); agents have no write
+  tool, only `environment_propose` (no `project_environments_set` or `project_upsert(environments=…)`);
+  `full` and allowed calls get no `permissionDecision` at all, because `allow` would skip Claude
+  Code's own permission prompt; `ask` stays `ask` in `warn` mode (the owner chose to be asked).
 - Size: ~1.5 agent-days for environments and the access map; +~1 for permission levels, the guard
   and the journal.
 

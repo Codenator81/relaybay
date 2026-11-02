@@ -20,8 +20,7 @@
     <button type="submit" class="btn">Filter</button>
     {% if project_filter or kind_filter or paged %}<a class="action" href="/activity">Clear</a>{% endif %}
   </form>
-  {#- The live-actions journal joins this page later as its own list. #}
-  {% block journal %}{% endblock %}
+  {% include "_journal.html" %}
   {% if not events %}
   <div class="empty activity-empty"><p>No events{% if project_filter or kind_filter %} match these filters{% endif %}.</p></div>
   {% endif %}

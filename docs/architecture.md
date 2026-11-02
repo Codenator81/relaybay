@@ -59,9 +59,9 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, `record_hook`, …): validation, rules checks, transaction, event append, publish |
 | `events.py` | `EventBus`: one bounded `asyncio.Queue` (256) per subscriber, optional project filter; a full queue drops the subscriber, which then resyncs |
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
-| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, errors |
+| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
-| `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `markdown.py`, templates, vendored static assets |
+| `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
 | `doctor.py` | `relaybay doctor`: read-only diagnosis built from the setup checks plus versions, data folder, token and rules hash |
 | `demo.py` | `relaybay demo`: seeds the demo workspace through the service layer |
@@ -91,6 +91,14 @@ task_session  id, task_id, session_id, bound_at, unbound_at, bound_by   -- one o
 session_alias name PK, session_id, created_at
 tracker_entry id, task_id, tracker_name, tracker_ref, tracker_url, logged_at, unlogged_at, created_at
 project_rules project_id PK, body (JSON), updated_at
+environment   id, project_id, name (UNIQUE per project), kind (local|test|live), base_url,
+              sign_in_allowed (CHECK: 0 on live), login_state_path, notes,
+              level (none|read|ask|full, NULL = permission_defaults), overrides (JSON),
+              position, created_at, updated_at, updated_by
+environment_access    id, environment_id, kind (ssh|kubectl|db|gitops|logs|monitoring|other),
+              fields (JSON, references only), created_at, updated_at, updated_by
+environment_proposal  id, project_id, change (JSON), reason, proposed_by, session_id,
+              status (pending|accepted|rejected), created_at, decided_at, decided_by
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
 ```
 
@@ -143,7 +151,9 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
   name and notification message, and answers immediately; `SessionStart` returns
   `additionalContext` with the hook session id so the agent can link itself exactly. Prompt and tool
   events answer with the owner comments for an exactly linked session (`additionalContext`), `Stop`
-  with a `decision: "block"` while they are unacknowledged; the Stop counter and the wake-up
+  with a `decision: "block"` while they are unacknowledged; `PreToolUse` also runs the guard
+  (`permissionDecision` `deny` / `ask` or a warning, and a `live.action` event for live) and never
+  answers `allow`; the Stop counter and the wake-up
   waiters live in the service's memory (lost on restart, which only means one more reminder).
 - Opt-in wake-up hook: an `asyncRewake` command hook at `Stop` long-polls
   `POST /hooks/claude-code/wait` (polling the database once a second, up to 25 minutes, one waiter

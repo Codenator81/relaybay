@@ -1,0 +1,15 @@
+{#- Actions on live: tool calls of agents that touched a live environment (`live.action`), newest
+    first. Expects: journal, project_filter. Refetched on live.action events. -#}
+<section class="panel journal" id="journal" hx-get="/fragments/journal{% if project_filter %}?project={{ project_filter }}{% endif %}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  <h2>Actions on live <span class="col-count">{{ journal|length }}</span></h2>
+  {% if journal %}
+  <ol class="journal-list">
+    {% for e in journal %}
+    {% include "_live_action.html" %}
+    {% endfor %}
+  </ol>
+  {% if journal|length >= 20 %}<p class="muted"><a class="action" href="/activity?kind=live.action{% if project_filter %}&amp;project={{ project_filter }}{% endif %}">All actions on live</a></p>{% endif %}
+  {% else %}
+  <p class="muted">No agent tool calls have touched a live environment{% if project_filter %} of {{ project_filter }}{% endif %} yet. The hooks record them here (a safety net: only names listed under Stands &amp; access are recognised).</p>
+  {% endif %}
+</section>

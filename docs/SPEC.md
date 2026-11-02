@@ -106,7 +106,10 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `project.updated`, `task.created`, `task.updated`, `task.stage_changed`, `task.session_bound`,
 `task.session_unbound`, `task.tracker_unlogged`, `report.added`, `decision.added`, `session.seen`,
 `session.status_changed`, `session.alias_added`, `comment.added`, `comment.delivered`,
-`comment.read`. A stage change that misses a rule carries the warnings in its payload.
+`comment.read`, `environment.created`, `environment.updated`, `environment.deleted`,
+`environment.access_added`, `environment.access_updated`, `environment.access_removed`,
+`environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`,
+`live.action`. A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
 
@@ -117,8 +120,13 @@ exactly linked session handed it to the agent ([§4](#spec-hooks-comments)), *re
 calls `comment_ack` or replies. An agent reply is unread until the owner marks it read or writes a
 comment on the task.
 
-Not shipped yet, therefore not concepts of this release: environments and access levels, the
-review checklist, memory notes and documents (see the [roadmap](ROADMAP.md)).
+<a id="spec-environments-concept"></a>
+
+**Environment.** A project's local, test or live stand with an access map that holds references
+only and the agents' permission level there ([§7](#spec-environments)).
+
+Not shipped yet, therefore not concepts of this release: the review checklist, memory notes and
+documents (see the [roadmap](ROADMAP.md)).
 
 <a id="spec-board"></a>
 
@@ -133,7 +141,7 @@ breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`).
 **Navigation.** Every signed-in page has a left sidebar ([design 0004](design/0004-navigation.md)):
 **Inbox** with a live count badge, **All boards**, **Activity**, **Settings** (the Integrations
 page), then **Projects**, each expandable (the current one is open) with **Board** and
-**Sessions**. The current item is highlighted (`aria-current="page"`). The header button hides or
+**Sessions** and **Stands & access**. The current item is highlighted (`aria-current="page"`). The header button hides or
 shows the sidebar on wide screens; the choice is remembered in the browser (`localStorage`, the
 sidebar is shown when storage is unavailable). Below 760 px the sidebar is a drawer opened by the
 same button and closed by Esc, a click outside or following a link. Items whose feature does not
@@ -149,7 +157,8 @@ exist yet are not shown.
 | Task page | `/t/<key>` | The same details as the dialog on a page of its own. |
 | Inbox | `/inbox` | Everything that needs the owner, across projects ([below](#spec-board-inbox)). |
 | Sessions | `/p/<slug>/sessions`, `/sessions` | The sessions of a project, or all sessions ([below](#spec-board-sessions)). |
-| Activity | `/activity` | The event feed ([below](#spec-board-activity)). |
+| Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
+| Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
 
@@ -201,11 +210,13 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
 - **Unlinked hook sessions** ([§4](#spec-hooks-linking)), linking to the Integrations page.
 - **Agent replies:** tasks with agent comments the owner has not marked read, with the newest
   reply's author and text.
+- **Proposed by agents:** pending environment proposals ([§7](#spec-proposals)), linking to the
+  project's Stands & access page.
 
 Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?task=<key>`). The
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
-`comment.read`), at most once per 2 s. With
+`comment.read`, `environment.proposed`, `environment.proposal_*`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -225,7 +236,8 @@ dialog). The list refetches on session and binding events, at most once per 2 s.
 shown only when that kind is selected. Each row has the age, the kind, the task key or project as a
 link, a short description (the same as `events_since`: `dev → test`, a report's summary, the
 changed fields, a session's status change) and the actor. On the first page new events are
-prepended live.
+prepended live. Above the feed, **Actions on live** lists the newest 20 `live.action` events
+([§7](#spec-journal)) for the project filter, refreshed live.
 
 <a id="spec-board-live"></a>
 
@@ -255,7 +267,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, eight numbered points: read
+**Server instructions** (sent on connect) are the working contract, nine numbered points: read
 `project_snapshot` first (its first line names the rules); pick or create a task and pass `session`
 (desktop id with `session_title`, else a name; `hook_session` if the session start gave one; don't
 rebind without your `local_` id); update `next_step`, `waiting_on` and `progress` on every stage
@@ -263,7 +275,9 @@ change and report; report at the end of every stage with the configured first li
 sizes (taken from the effective global rules); set `waiting_on` to who decides when a decision is
 needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (rules)` line names;
 when a hook gives owner comments, handle them like a user message and call `comment_ack` (or answer
-with `comment_add`).
+with `comment_add`); before touching a server, cluster or database read `environments_get` (the
+level says what is allowed unasked; live is read-only unless the owner set otherwise), never paste
+secrets, propose changes with `environment_propose`.
 
 <a id="spec-mcp-tools"></a>
 
@@ -276,6 +290,7 @@ with `comment_add`).
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
+| Environments | `environments_get`, `environment_propose` |
 | Catch-up and rules | `events_since`, `rules_get` |
 
 Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay.
@@ -287,6 +302,7 @@ last write wins.
 <a id="spec-mcp-resources"></a>
 
 **Resources.** `relaybay://project/{slug}` (same markdown as `project_snapshot`),
+`relaybay://project/{slug}/environments` (same as `environments_get`),
 `relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`), `relaybay://schema/task`
 (the editable task fields as a table: name, type, description, how to clear). No MCP prompts yet.
 
@@ -323,7 +339,7 @@ waiting on anything else.
 |---|---|---|
 | `SessionStart` | working | `started (<source>)`; the answer adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the agent's context (`hookSpecificOutput.additionalContext`) |
 | `UserPromptSubmit` | working | `prompt` (the prompt text is never stored) |
-| `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is never stored) |
+| `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is never stored; `PreToolUse` is also checked by the guard, and a call that touches live leaves a redacted summary in the journal, [§7](#spec-guard)) |
 | `Notification` | waiting | the notification message |
 | `Stop` | idle | `turn finished` |
 | `SessionEnd` | ended | the session is unbound from every task it is bound to (history kept, `task.session_unbound` with `reason: "session_end"`), for every session kind and end reason |
@@ -546,7 +562,166 @@ not checked on `report_add` in this release.
 
 ## 7. Environments and access
 
-Not part of this release. Design: [Environments and access](design/0006-environments-and-access.md).
+Design: [Environments and access](design/0006-environments-and-access.md).
+
+<a id="spec-environment"></a>
+
+**Environment.** A project's stand: `name` (unique per project, case-insensitive; letters, digits,
+spaces, dots, dashes, underscores), `kind` (`local` / `test` / `live`), optional `base_url` (`http://`
+or `https://`), `sign_in_allowed` ("an agent may sign in and remember the login"; on by default for
+local and test, always off for live: the flag is forced off and the database refuses it),
+`login_state_path` (where the saved login state lives), `notes`, the agents' permission level
+(below) and when and by whom it was last changed.
+
+<a id="spec-access-map"></a>
+
+**Access map, references only.** Each environment has access entries of a kind with string fields:
+
+| Kind | Fields |
+|---|---|
+| `ssh` | `alias`, `host`, `port`, `user`, `key_path_ref` |
+| `kubectl` | `context`, `namespace` |
+| `db` | `type`, `host`, `port`, `port_forward`, `database`, `user`, `password_ref` |
+| `gitops` | `repo`, `path`, `branch` |
+| `logs`, `monitoring` | `url` (`http://` or `https://`) |
+| `other` | any lowercase field names |
+
+relaybay never stores a secret, only where it lives. Every text written to an environment, an
+access entry or a proposal is checked: a field whose name contains `pass`, `pwd`, `token`,
+`secret`, `key`, `credential` or `private` must be a reference — a path (`~/.ssh/acme_live`,
+`C:\keys\x.pem`, a `*.pem`/`*.key`/… file name), an environment variable name (`$DB_PASSWORD`,
+`${DB_PASSWORD}`, `%DB_PASSWORD%`, `env:DB_PASSWORD`, an upper-case name with `_` such as
+`DB_PASSWORD`) or a vault path (`vault://…`, `op://…`, `keychain:…`, `ssm:…`; `pass:` / `file:` /
+`sops:` only with a path that has text on both sides of a `/`, e.g. `pass:acme/db`); a field
+whose name contains `user` or `login` must not hold `user:password`. Any field (notes too) is
+refused when it contains a private key block, a GitHub, GitLab, Slack, OpenAI-style or AWS access
+key, a JWT, or a value that is not a reference in one of these places: URL credentials
+(`user:pw@`, also with an empty user `:pw@`); `--password`, `--passwd`, `--pass`, `--token`,
+`--secret`, `--api-key` (with `=` or a space); `-u` / `--user user:password`; a `Bearer`,
+`Basic` or `Digest` credential, `Authorization: Token …`; `sshpass -p`; `-p<password>` with
+`mysql` / `mariadb` in the text; `-p <password>` with `docker login`; `-a <password>` with
+`redis-cli`; an assignment whose name contains `pass`, `pwd`, `token`, `secret` or `key`
+(`PGPASSWORD=…`, `API_KEY='…'`, `--from-literal=password=…`); `name: value` written as prose only
+for the `pass` / `pwd` / `token` / `secret` / `api_key` family and values of 6 characters or more.
+Quoted values count whole. The journal masks exactly these places, from the same table
+(`_SECRET_SPOTS`). A value that is a reference as a whole always passes. The refusal names the
+field and never repeats the value. These are pattern checks: a secret in an unusual shape (e.g. in
+plain prose) can pass.
+
+<a id="spec-permissions"></a>
+
+**Permission levels.** Per environment, `none` (do not touch), `read` (look only), `ask` (the
+owner approves each action) or `full` (act as needed); optionally per capability `sign_in`, `ssh`,
+`kubectl`, `db`, `deploy`. An environment without its own level uses `permission_defaults` from the
+configuration (default: local and test `full`, live `read`); a capability without an override uses
+the environment's level. Only a person changes levels, on the board, and some writes need a
+second confirmation: on an environment that becomes or stays live, an explicit level or override
+above `read` that is higher than before (a level that comes from `permission_defaults` does not
+ask); on a live environment whose kind changes, any capability whose effective level, defaults
+included, rises above `read` (live → test with the defaults turns `read` into `full`). Accepting
+a proposal asks the same. Agents propose changes instead (below).
+
+<a id="spec-environments-page"></a>
+
+**Stands & access page** (`/p/<slug>/environments`, sidebar item under each project): one panel per
+environment with its kind, effective level ("(default)" when it comes from the configuration),
+base URL, per-capability levels, sign-in flag, notes, who changed it when, and its access entries
+(each with its own change time and author); forms to add, edit and delete environments and access
+entries (fields typed as `name: value` lines) and to set the level and overrides. Writes are plain
+form posts that need the browser session cookie and the CSRF token; a request that authenticates
+with the Bearer token instead is refused (`403`) — a guard against an agent using the board, not
+a security boundary, since anyone with the token can sign in. Deleting asks first. Pending agent
+proposals are listed on top with **Accept** / **Reject** and refresh live.
+
+<a id="spec-proposals"></a>
+
+**Proposals.** `environment_propose(project, change, reason)` records a proposal and changes
+nothing (`environment.proposed`). `change` names the environment (`environment`) and any of
+`kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`default` clears it),
+`overrides` (`{capability: level}`, `default` removes one) and `access` (entries to add); a new
+environment needs `kind`. It is validated like a board write, secrets included, when proposed.
+Pending proposals appear in the Inbox ("Proposed by agents") and on the Stands & access page.
+Accepting applies the change in one transaction (with the same confirmation for raising live) and
+records `environment.proposal_accepted`; rejecting records `environment.proposal_rejected`; a
+decided proposal cannot be decided again.
+
+<a id="spec-guard"></a>
+
+**Guard (PreToolUse).** `guard_mode` (`off` / `warn` / `block`, default `warn`). The existing
+`PreToolUse` hook sends the tool call; relaybay reads the `command` of a `Bash` call, or every string
+in the input of an MCP tool (`mcp__<server>__<tool>`, except relaybay's own tools); only the first
+8 KB are read, in at most 200 command segments, with at most 50 identifiers per environment. The
+environments considered are those of the session's project and of the tasks bound to it, or, for
+an unknown session, of the project whose `repo_path` contains the hook's `cwd`. An environment is
+*touched* when the text names one of its identifiers (case-insensitive, at least 3 characters): the
+`base_url` host, an ssh `alias` or `host`, a kubectl `context`, a db `host`, a gitops `repo`
+(normalised: `git@host:org/repo.git` → `host/org/repo`). An identifier with a dot, dash or slash
+counts anywhere as a whole token (not part of a longer name); a single word (`app`, `postgres`)
+only where a host is expected, found by splitting each command segment into shell words once: the
+destination of `ssh` / `sftp` as the command (after `VAR=…`, `sudo`, `env` …; options with a
+value, attached or not — `-p 22`, `-p22`, `-oX=Y` — are skipped; with or without `user@`),
+`[user@]host:` in the arguments of `scp` / `rsync` / `sftp`, the value of `--context`,
+`--kube-context`, `-h` / `-hHOST` / `--host` (not for ssh), or a URL host — not in a commit
+message, an `echo`, a file name or a package name. A mutating rule counts for a matched identifier
+only when their capabilities agree (ssh → `ssh`, kubectl → `kubectl`, db → `db`, gitops →
+`deploy`; the `base_url` host and MCP tool names take any rule); the level is the strictest of the
+levels of those capabilities, and of all identifiers matched in one environment the strongest
+decision counts.
+
+Mutating heuristics (one table, `domain/guard.py`; they see text only). A rule applies when its
+change follows its command in the same command segment (the text split at `|`, `;`, `&` and
+newlines outside quotes), so `ssh app uptime; rm -rf build` is not a remote change:
+
+| Rule | Capability | Pattern (simplified) |
+|---|---|---|
+| kubectl change | `kubectl` | `kubectl … apply / create / delete / edit / patch / replace / scale / set / label / annotate / drain / cordon / uncordon / taint / exec / cp / rollout restart / undo / pause / resume` |
+| helm change | `deploy` | `helm … upgrade / install / uninstall / delete / rollback` |
+| remote change over ssh | `ssh` | `ssh …` with `rm`, `mv`, `cp`, `dd`, `tee`, `truncate`, `kill`, `reboot`, `shutdown`, `chmod`, `chown`, package managers, `sudo`, `crontab`, `systemctl start/stop/restart/reload/enable/disable/kill/mask`, `service … start/stop/restart/reload`, `docker rm/stop/restart/run/kill/exec/compose/pull`, `sed -i` |
+| file copy to a host | `ssh` | `scp` / `rsync` whose last argument is remote (`host:path`); copying from a host is a read |
+| file transfer session | `ssh` | `sftp` |
+| SQL change | `db` | after a database client (`psql`, `mysql`, `mariadb`, `sqlite3`, `sqlcmd`, `mongosh`, `redis-cli`, `clickhouse-client`, `cqlsh`, …; in MCP tool input also without one): `insert into`, `update … set`, `delete from`, `drop`, `alter`, `truncate`, `create table/database/index/user/role`, `grant`, `revoke`, `flushall`, `flushdb` |
+| git push | `deploy` | `git … push` |
+| terraform change | `deploy` | `terraform apply / destroy / import` |
+| MCP tool by name | — | an MCP tool whose name has a word such as `create`, `update`, `delete`, `apply`, `deploy`, `exec`, `run`, `restart`, `scale`, `push` |
+
+Decisions per touched environment: `full` → nothing; `read` → nothing unless a rule matched;
+`ask` → ask; `none`, or `read` with a rule → deny in `block` mode, a warning in `warn` mode. The
+strongest decision wins (deny > ask > warn). The answer is
+`{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny" | "ask",
+"permissionDecisionReason": …}}` — the reason (e.g. `relaybay guard: acme-shop live (live) is
+read-only for agents; this looks like a remote change over ssh (matched 'prod-alias'). Ask the
+owner, or propose a change with environment_propose.`) is shown to Claude for `deny` and to the user
+in the permission prompt for `ask`. In `warn` mode the call goes on and `additionalContext` carries
+the same reason ending `(warn mode: not blocked)`. relaybay never answers `allow`, which would skip
+Claude Code's own permission prompt. Owner comments for an exactly linked session are added to
+`additionalContext` of the same answer. A guard error is logged and the call goes on; relaybay down
+or slow means no answer at all ([§4](#spec-hooks-down)).
+
+**The guard is a safety net against mistakes, not a sandbox.** It knows only the names in the
+access map; a host reached by an IP address, another alias, a script, an environment variable, a
+tool other than Bash and MCP, or with the guard off is not recognised, and the heuristics both miss
+changes and flag harmless commands.
+
+<a id="spec-journal"></a>
+
+**Journal of actions on live.** Every guarded tool call that touches a `live` environment is
+recorded as a `live.action` event (any decision, including the calls that go on): project,
+environment, the bound task of that project (the first, if several; none when the session has no
+task there), tool name, the command — whitespace collapsed, obvious secrets masked (private key
+blocks, known token shapes, `token <value>` and every place the secret check above refuses, quoted
+values whole: `PGPASSWORD='***'`, `mysql -p'***'`, `sshpass -p ***`, `curl -u admin:***`, …), cut
+at 200 characters — the decision (`allow`,
+`warn`, `ask`, `deny`), the level and the matched rule. Activity shows the newest 20 as **Actions on
+live** above the feed (with the project filter, refreshed live, linking to `?kind=live.action` for
+all), and the task dialog and page show the task's own as **Actions on live**.
+
+<a id="spec-environments-mcp"></a>
+
+**MCP.** `environments_get(project)` and the resource `relaybay://project/{slug}/environments`
+return the full map (guard mode, each environment with base URL, level and overrides, sign-in flag
+and login-state path, access entries, notes, last change). `project_snapshot` adds one line per
+environment after the description: `- live — live · agents: read (default) · https://…`. There is
+no write tool besides `environment_propose`.
 
 <a id="spec-memory"></a>
 
@@ -583,7 +758,7 @@ relaybay is a single-user local server. The security layers, in request order:
    cookie (`Secure` over https, one year) derived from the token and redirects, so the token leaves
    the address bar; the access log redacts the `/login` query. Unauthenticated page visits redirect
    to `/login?next=…` (only local paths are accepted as `next`). A Bearer header also works for the
-   board's URLs.
+   board's URLs, except the environment writes ([§7](#spec-environments-page)).
 6. **CSRF.** Cookie-authenticated non-GET requests must be same-origin (`Origin`, or
    `Sec-Fetch-Site: same-origin`); board forms carry a CSRF token derived from the token; the sign-in
    form uses a double-submit nonce.
@@ -592,7 +767,10 @@ relaybay is a single-user local server. The security layers, in request order:
    `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`.
    htmx runs with eval and script tags disabled.
 8. **Untrusted content:** agent markdown is rendered with raw HTML disabled; hook prompt text and tool
-   input are never stored; hook bodies are capped at 256 KB.
+   input are never stored, except the redacted 200-character summary of a call that touches a live
+   environment ([§7](#spec-journal)); hook bodies are capped at 256 KB.
+9. **No secrets at rest:** environment, access and proposal writes refuse obvious secret values
+   ([§7](#spec-access-map)).
 
 <a id="spec-no-telemetry"></a>
 
@@ -605,7 +783,8 @@ at runtime, no CDN. The only network clients in the code talk to relaybay's own 
 **Threat model.** Protected against: other websites in the user's browser (Origin, CSRF, SameSite,
 Host allow-list), other users on the machine (token file permissions), other devices on the network
 (loopback bind by default), agent output used as an attack on the board (no raw HTML, CSP).
-**Non-goals:** relaybay is not a sandbox and does not restrict what agents do on the machine; anyone
+**Non-goals:** relaybay is not a sandbox and does not restrict what agents do on the machine (the
+guard, [§7](#spec-guard), only catches mistakes it can recognise); anyone
 with the token has full access (there are no accounts or roles); a LAN bind without a TLS proxy
 exposes the token and cookie to the network; a process running as the same OS user can read the
 token file. The identity passed as `session` is for display, never for authorisation.
@@ -647,6 +826,7 @@ existing databases upgrade in place.
 | `0006_project_rules` | `project_rules` (per-project rules override) |
 | `0007_hook_sessions` | `session.cc_session_id` (unique), `session.activity_at`, `session.unlinked_reason` |
 | `0008_comments` | `comment` (task, author kind and name, author session, body, `in_reply_to`, created / delivered / read times, `delivered_to_session_id`); `session.cc_exact` (0 for links made before it) |
+| `0009_environments` | `environment` (project, name, kind, base URL, sign-in flag — never on live, login state path, notes, level, overrides JSON, position, changed at / by), `environment_access` (environment, kind, fields JSON), `environment_proposal` (project, change JSON, reason, proposed by, session, status, decided at / by) |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).
