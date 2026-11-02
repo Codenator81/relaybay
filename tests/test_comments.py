@@ -428,6 +428,7 @@ def test_wait_command_against_a_live_server(live_server: Callable[[], LiveServer
         assert wait.stdin is not None
         wait.stdin.write(json.dumps(hook("Stop")).encode())
         wait.stdin.close()
+        wait.stdin = None  # communicate() must not flush the closed pipe (Python 3.12)
         time.sleep(1.5)
         assert wait.poll() is None  # still waiting: nothing to wake the session for
         with httpx.Client(base_url=server.url, headers={"Origin": server.url}) as board:
