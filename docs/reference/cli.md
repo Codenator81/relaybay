@@ -51,6 +51,9 @@ Connect Claude Code on this machine: hooks in user settings, MCP check.
 | `--port` | `PORT` | relaybay port (default 8765). |
 | `--claude-home` | `CLAUDE_HOME` | Folder holding .claude/settings.json and .claude.json (default: your home). |
 | `--mode` | `command\|http` | Hook type: command (default; a small forwarder, silent when relaybay is down) or http (Claude Code posts itself; needs RELAYBAY_TOKEN in its environment). Default: `command`. |
+| `--wake` |  | Also add the opt-in wake-up hook (command mode, experimental): an asyncRewake hook that wakes an idle session when an owner comment arrives. |
+| `--no-wake` |  | Remove the wake-up hook. |
+| `--force-wake` |  | With --wake: install it although no Claude Code version is known to run asyncRewake hooks in the background (one that does not would hold every turn's end). |
 
 ## `doctor`
 

@@ -7,6 +7,7 @@ import aiosqlite
 
 from relaybay.domain.models import (
     Binding,
+    Comment,
     Decision,
     Event,
     Project,
@@ -187,6 +188,7 @@ def _session(row: aiosqlite.Row) -> Session:
         activity_at=row["activity_at"],
         cc_session_id=row["cc_session_id"],
         unlinked_reason=row["unlinked_reason"],
+        cc_exact=bool(row["cc_exact"]),
     )
 
 
@@ -652,6 +654,142 @@ async def list_decisions(
         )
         for r in rows
     ]
+
+
+# --- comment ---------------------------------------------------------------
+
+_COMMENT_SELECT = """
+SELECT c.*, t.key AS task_key, d.name AS delivered_to_name
+FROM comment c
+JOIN task t ON t.id = c.task_id
+LEFT JOIN session d ON d.id = c.delivered_to_session_id
+"""
+# Owner comments on the tasks a session is bound to now.
+_BOUND_OWNER = (
+    " WHERE c.author_kind = 'owner' AND c.read_at IS NULL AND c.task_id IN"
+    " (SELECT task_id FROM task_session WHERE session_id = ? AND unbound_at IS NULL)"
+)
+
+
+def _comment(row: aiosqlite.Row) -> Comment:
+    return Comment(
+        id=row["id"],
+        task_id=row["task_id"],
+        author_kind=row["author_kind"],
+        author=row["author"],
+        session_id=row["session_id"],
+        body_md=row["body_md"],
+        in_reply_to=row["in_reply_to"],
+        created_at=row["created_at"],
+        delivered_at=row["delivered_at"],
+        delivered_to_session_id=row["delivered_to_session_id"],
+        read_at=row["read_at"],
+        stop_blocks=row["stop_blocks"],
+        task_key=row["task_key"],
+        delivered_to_name=row["delivered_to_name"],
+    )
+
+
+async def insert_comment(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: int,
+    author_kind: str,
+    author: str,
+    session_id: int | None,
+    body_md: str,
+    in_reply_to: int | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO comment (task_id, author_kind, author, session_id, body_md, in_reply_to,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (task_id, author_kind, author, session_id, body_md, in_reply_to, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_comment(conn: aiosqlite.Connection, comment_id: int) -> Comment | None:
+    row = await _one(conn, _COMMENT_SELECT + " WHERE c.id = ?", (comment_id,))
+    return _comment(row) if row else None
+
+
+async def list_comments(
+    conn: aiosqlite.Connection, task_id: int, *, unread_only: bool = False, limit: int = 200
+) -> list[Comment]:
+    """The task's comments, oldest first (the newest `limit` of them)."""
+    unread = " AND c.read_at IS NULL" if unread_only else ""
+    rows = await _all(
+        conn,
+        f"SELECT * FROM ({_COMMENT_SELECT} WHERE c.task_id = ?{unread}"
+        " ORDER BY c.id DESC LIMIT ?) ORDER BY id",
+        (task_id, limit),
+    )
+    return [_comment(r) for r in rows]
+
+
+async def undelivered_owner_comments(conn: aiosqlite.Connection, session_id: int) -> list[Comment]:
+    """Unread owner comments not delivered to this session: never delivered, or delivered to a
+    session bound before it (a rebind hands them to the new one)."""
+    rows = await _all(
+        conn,
+        _COMMENT_SELECT
+        + _BOUND_OWNER
+        + " AND (c.delivered_to_session_id IS NULL OR c.delivered_to_session_id != ?)"
+        " ORDER BY c.id",
+        (session_id, session_id),
+    )
+    return [_comment(r) for r in rows]
+
+
+async def delivered_unread_comments(conn: aiosqlite.Connection, session_id: int) -> list[Comment]:
+    """Owner comments delivered to this session that it has not acknowledged yet."""
+    rows = await _all(
+        conn,
+        _COMMENT_SELECT + _BOUND_OWNER + " AND c.delivered_to_session_id = ? ORDER BY c.id",
+        (session_id, session_id),
+    )
+    return [_comment(r) for r in rows]
+
+
+async def unread_owner_count(conn: aiosqlite.Connection, session_id: int) -> int:
+    row = await _one(conn, "SELECT COUNT(*) FROM comment c" + _BOUND_OWNER, (session_id,))
+    return int(row[0])
+
+
+async def mark_comments_delivered(
+    conn: aiosqlite.Connection, comment_ids: list[int], session_id: int, now: str
+) -> None:
+    marks = ", ".join("?" for _ in comment_ids)
+    await conn.execute(
+        f"UPDATE comment SET delivered_at = ?, delivered_to_session_id = ?, stop_blocks = 0"
+        f" WHERE id IN ({marks})",
+        (now, session_id, *comment_ids),
+    )
+
+
+async def count_stop_blocks(conn: aiosqlite.Connection, comment_ids: list[int]) -> None:
+    marks = ", ".join("?" for _ in comment_ids)
+    await conn.execute(
+        f"UPDATE comment SET stop_blocks = stop_blocks + 1 WHERE id IN ({marks})",
+        tuple(comment_ids),
+    )
+
+
+async def mark_comments_read(conn: aiosqlite.Connection, comment_ids: list[int], now: str) -> None:
+    marks = ", ".join("?" for _ in comment_ids)
+    await conn.execute(f"UPDATE comment SET read_at = ? WHERE id IN ({marks})", (now, *comment_ids))
+
+
+async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> list[Comment]:
+    """Agent replies the owner has not marked read, oldest first."""
+    rows = await _all(
+        conn,
+        _COMMENT_SELECT + " WHERE c.author_kind = 'agent' AND c.read_at IS NULL"
+        " ORDER BY c.id LIMIT ?",
+        (limit,),
+    )
+    return [_comment(r) for r in rows]
 
 
 # --- event -----------------------------------------------------------------

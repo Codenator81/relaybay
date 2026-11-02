@@ -1,6 +1,7 @@
 """MCP server (official SDK 2.x `MCPServer`) served over Streamable HTTP at `/mcp`."""
 
-from collections.abc import Awaitable
+import functools
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
 from mcp.server import MCPServer
@@ -14,7 +15,7 @@ from relaybay import __version__
 from relaybay.domain.errors import DomainError, NotFoundError
 from relaybay.domain.rules import Rules
 from relaybay.mcp_server import format as fmt
-from relaybay.service import Service
+from relaybay.service import Service, collect_notes
 
 
 def instructions(rules: Rules) -> str:
@@ -44,6 +45,8 @@ def instructions(rules: Rules) -> str:
             " relaybay://schema/task).",
             "7. A response line starting with 'Warning (rules)' names a rule the write did not"
             " meet: fix it (e.g. add the missing report) rather than ignore it.",
+            "8. When a hook gives you owner comments ('Owner comment on …'), handle them like a"
+            " message from the user and call comment_ack (or answer with comment_add).",
         ]
     )
 
@@ -63,8 +66,10 @@ SessionTitle = Annotated[
 HookSession = Annotated[
     str | None,
     Field(
-        description="Your Claude Code hook session id, if the session start told you one ('Your"
-        " relaybay hook session: …'). Links the board's live status to your session. Optional."
+        description="Your own Claude Code hook session id, if the session start told you one"
+        " ('Your relaybay hook session: …'); never another session's. Links the board's live"
+        " status and owner comments to your session. An id another live session linked first is"
+        " not moved (the response says so). Optional."
     ),
 ]
 TaskRef = Annotated[str, Field(description="Task key such as 'acme-shop-12', or its numeric id.")]
@@ -111,12 +116,24 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         name="relaybay", version=__version__, instructions=instructions(service.global_rules)
     )
 
+    def write(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+        """A write tool: lines the service noted without failing (a hook_session that was not
+        linked) are appended to its result."""
+
+        @functools.wraps(fn)
+        async def tool(*args: Any, **kwargs: Any) -> str:
+            with collect_notes() as notes:
+                text = await fn(*args, **kwargs)
+            return "\n".join([text, *notes])
+
+        return mcp.tool(annotations=WRITE, structured_output=False)(tool)
+
     @mcp.tool(annotations=READ, structured_output=False)
     async def project_list() -> str:
         """List all projects with task counts per stage. Call it to find a project's slug."""
         return fmt.project_list(await service.list_projects())
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def project_upsert(
         slug: ProjectSlug,
         name: Annotated[str | None, Field(description="Display name.")] = None,
@@ -185,7 +202,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         task_update to get the version for expected_version."""
         return fmt.task_detail(await run(service.task_detail(task, reports)), require_tracker_log)
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def task_create(
         project: ProjectSlug,
         title: Annotated[str, Field(description="Short task title.")],
@@ -235,7 +252,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return fmt.task_saved(created, "Created")
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def task_update(
         task: TaskRef,
         title: Annotated[str | None, Field(description="New title.")] = None,
@@ -303,7 +320,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def task_patch(
         task: TaskRef,
         fields: Annotated[
@@ -341,7 +358,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def task_set_stage(
         task: TaskRef,
         stage: StageArg,
@@ -373,12 +390,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return fmt.with_warnings(fmt.task_saved(saved.task, "Moved"), saved.warnings)
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def task_bind_session(
         task: TaskRef,
         session: Annotated[str, Field(description=SESSION_HELP)],
         session_title: SessionTitle = None,
-        hook_session: HookSession = None,
+        hook_session: Annotated[
+            str | None,
+            Field(description="Ignored here: pass your hook_session on your own writes instead."),
+        ] = None,
     ) -> str:
         """Mark that this session works on the task now; the board shows it with a link that
         opens the Claude desktop app session. Call it when you pick up an existing task.
@@ -386,11 +406,16 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         id, don't rebind — the coordinator binds you; pass your session name only as `session` on
         writes. A plain name never replaces a desktop session bound to the task: it is recorded
         as that session's alias. Binding a session ends the previous session's binding; the
-        history is kept."""
+        history is kept. It never links a hook session (the caller may bind someone else): your
+        own `hook_session` goes on your other writes."""
         updated, kept, alias_recorded = await run(
-            service.bind_session(
-                task, session, session_title=session_title, hook_session=hook_session
-            )
+            service.bind_session(task, session, session_title=session_title)
+        )
+        ignored = (
+            "\nNote: hook_session is not linked by task_bind_session; pass it on your own"
+            " writes (report_add, task_update, …)."
+            if hook_session
+            else ""
         )
         if kept is not None:
             who = fmt.who_label(kept.name, kept.external_id)
@@ -398,15 +423,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 return (
                     f"**{updated.key}** is already bound to {who}; pass your local id to rebind."
                     f" '{session.strip()}' was not recorded as its alias: a session with that"
-                    " name already exists. Nothing changed."
+                    " name already exists. Nothing changed." + ignored
                 )
             return (
                 f"Kept the desktop session {who} on **{updated.key}**; recorded"
-                f" '{session.strip()}' as its alias. Pass your local_ id to rebind."
+                f" '{session.strip()}' as its alias. Pass your local_ id to rebind." + ignored
             )
-        return fmt.task_saved(updated, f"Bound {fmt.session_label(updated)} to")
+        return fmt.task_saved(updated, f"Bound {fmt.session_label(updated)} to") + ignored
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def task_unbind_session(
         task: TaskRef,
         session: Annotated[
@@ -426,7 +451,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         who = fmt.who_label(unbound.name, unbound.external_id)
         return fmt.task_saved(updated, f"Unbound {who} from")
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def report_add(
         task: TaskRef,
         body: Annotated[
@@ -471,7 +496,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         extra = f" ({parsed})" if parsed else ""
         return f"Report #{report.id} added to **{saved.key}**{extra}: {report.summary}"
 
-    @mcp.tool(annotations=WRITE, structured_output=False)
+    @write
     async def decision_add(
         project: ProjectSlug,
         text: Annotated[str, Field(description="The decision, one or two sentences.")],
@@ -495,6 +520,83 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             )
         )
         return f"Decision #{decision.id} recorded for {project}."
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def comments_list(
+        task: TaskRef,
+        unread_only: Annotated[
+            bool,
+            Field(
+                description="Only unread ones: owner comments not acknowledged yet and"
+                " replies the owner has not read."
+            ),
+        ] = False,
+    ) -> str:
+        """Comments on a task, oldest first: the owner's (with sent / delivered / read marks)
+        and agents' replies. Call it when a hook or the session start says you have unread
+        owner comments."""
+        row, items = await run(service.list_comments(task, unread_only=unread_only))
+        return fmt.comments(row, items, unread_only)
+
+    @write
+    async def comment_ack(
+        comment_id: Annotated[
+            int | None, Field(description="The owner comment to mark read, e.g. 7 for '#7'.")
+        ] = None,
+        task: Annotated[
+            str | None,
+            Field(description="Task key: mark every unread owner comment on it read."),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Acknowledge owner comments once you have handled them: one by `comment_id`, or all
+        unread ones of `task`. The board then shows them as read, and the Stop hook stops
+        reminding you of them."""
+        row, read = await run(
+            service.ack_comments(
+                comment_id=comment_id,
+                task=task or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        if not read:
+            return f"Nothing to acknowledge on **{row.key}**: no unread owner comment."
+        return f"Marked {', '.join(f'#{i}' for i in read)} read on **{row.key}**."
+
+    @write
+    async def comment_add(
+        task: TaskRef,
+        body: Annotated[str, Field(description="Your reply to the owner, markdown.")],
+        in_reply_to: Annotated[
+            int | None,
+            Field(
+                description="The owner comment you answer; it is marked read. Without it, every"
+                " unread owner comment on the task is marked read."
+            ),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Reply to the owner on a task's comment thread (shown on the board and in the
+        owner's Inbox). Use it to answer an owner comment or to ask a short question; reports
+        stay in report_add."""
+        comment, read = await run(
+            service.add_agent_comment(
+                task,
+                body,
+                in_reply_to=in_reply_to,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        marked = f"; marked {', '.join(f'#{i}' for i in read)} read" if read else ""
+        return f"Comment #{comment.id} added to **{comment.task_key}**{marked}."
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def rules_get(

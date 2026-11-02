@@ -32,6 +32,7 @@ class Session:
     activity_at: str | None = None
     cc_session_id: str | None = None
     unlinked_reason: str | None = None
+    cc_exact: bool = False  # cc_session_id was linked by the agent itself (`hook_session`)
 
 
 @dataclass(slots=True)
@@ -132,6 +133,32 @@ class Decision:
     decided_by: str | None
     created_at: str
     task_key: str | None = None
+
+
+@dataclass(slots=True)
+class Comment:
+    """A comment on a task: the owner's (delivered to the bound session through its hooks) or an
+    agent's reply. `read_at` is when the agent acknowledged an owner comment, or when the owner
+    marked an agent reply read."""
+
+    id: int
+    task_id: int
+    author_kind: str  # 'owner' or 'agent'
+    author: str
+    session_id: int | None
+    body_md: str
+    in_reply_to: int | None
+    created_at: str
+    delivered_at: str | None
+    delivered_to_session_id: int | None
+    read_at: str | None
+    stop_blocks: int = 0  # Stop blocks this comment caused since it was delivered
+    task_key: str = ""
+    delivered_to_name: str | None = None
+
+    @property
+    def from_owner(self) -> bool:
+        return self.author_kind == "owner"
 
 
 @dataclass(slots=True)

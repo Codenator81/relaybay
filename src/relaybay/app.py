@@ -50,7 +50,11 @@ def create_app(settings: Settings) -> FastAPI:
 
     allowed = settings.host_allow_list()
     app.router.routes.extend(mcp_routes(mcp, allowed))
-    app.include_router(build_hooks_router(service))
+    app.include_router(
+        build_hooks_router(
+            service, wake_hold=settings.wake_hold_seconds, wake_poll=settings.wake_poll_seconds
+        )
+    )
     app.include_router(build_router(service, settings, token))
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.add_middleware(SecurityMiddleware, token=token, allowed_hosts=allowed)

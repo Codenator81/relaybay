@@ -39,11 +39,11 @@ async def bound_task(service: Service, session: str = DESKTOP_A, title: str = "C
 
 def test_parse_hook_keeps_no_prompt_or_tool_input() -> None:
     parsed = {e: parse_hook(p) for e, p in RECORDED.items()}
-    assert parsed["PostToolUse"] is None  # not an event relaybay reads
     assert {e: (p.status, p.activity) for e, p in parsed.items() if p} == {
         "SessionStart": ("working", "started (startup)"),
         "UserPromptSubmit": ("working", "prompt"),
         "PreToolUse": ("working", "Bash"),
+        "PostToolUse": ("working", "Bash"),
         "Notification": ("waiting", "Claude needs your permission to use Bash"),
         "Stop": ("idle", "turn finished"),
         "SessionEnd": ("ended", "session ended"),
@@ -82,7 +82,9 @@ async def test_status_follows_the_events_and_session_end_unbinds(service: Servic
 async def test_unknown_events_change_nothing(service: Service) -> None:
     await bound_task(service)
     before = await service.last_event_id()
-    assert await service.record_hook(RECORDED["PostToolUse"]) is None
+    assert (
+        await service.record_hook({"hook_event_name": "PostToolBatch", "session_id": CC_A}) is None
+    )
     assert await service.record_hook({"hook_event_name": "Future", "session_id": CC_A}) is None
     assert await service.last_event_id() == before
 
@@ -104,17 +106,35 @@ async def test_exact_link_from_hook_session_wins_over_the_folder_guess(service: 
 
 
 async def test_exact_link_through_an_alias_and_report_add(service: Service) -> None:
+    from relaybay.service import collect_notes
+
     task = await bound_task(service)
-    await service.bind_session(task.key, "checkout-dev", hook_session=CC_B)
+    # task_bind_session never links a hook id (the caller may bind someone else) ...
+    await service.bind_session(task.key, "checkout-dev")
+    await service.record_hook(hook("Stop", CC_B))  # linked by the folder guess only
+    [row] = [r.session for r in await service.list_sessions() if r.session.cc_session_id == CC_B]
+    assert row.external_id == DESKTOP_A and not row.cc_exact
+    # ... the agent's own write through its alias does.
+    await service.add_report(task.key, "changed · S · a", session="checkout-dev", hook_session=CC_B)
     await service.record_hook(hook("Stop", CC_B))
     assert (await service.get_task(task.key)).session_status == "idle"
 
+    # An id another live session linked itself is not moved; the write says so.
     other = await service.create_task("acme-shop", "Payment", session=DESKTOP_B)
-    await service.add_report(other.key, "changed · S · retry", session=DESKTOP_B, hook_session=CC_B)
+    with collect_notes() as notes:
+        await service.add_report(
+            other.key, "changed · S · retry", session=DESKTOP_B, hook_session=CC_B
+        )
+    assert len(notes) == 1 and "belongs to another session" in notes[0]
+    await service.record_hook(hook("PreToolUse", CC_B))
+    assert (await service.get_task(task.key)).session_status == "working"
+    assert (await service.get_task(other.key)).session_status is None
+
+    # Once that session ended, the id may move.
+    await service.record_hook(hook("SessionEnd", CC_B))
+    await service.add_report(other.key, "changed · S · again", session=DESKTOP_B, hook_session=CC_B)
     await service.record_hook(hook("PreToolUse", CC_B))
     assert (await service.get_task(other.key)).session_status == "working"
-    # The id moved to the other session; the first one's status is unknown again.
-    assert (await service.get_task(task.key)).session_status is None
 
 
 async def test_cwd_fallback_links_the_one_bound_desktop_session(service: Service) -> None:

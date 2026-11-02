@@ -13,8 +13,10 @@ MIGRATIONS = (
     "0003_tracker_and_session_alias.sql",
     "0004_next_step_freshness.sql",
     "0005_tracker_history.sql",
+    "0006_project_rules.sql",
+    "0007_hook_sessions.sql",
 )
-LATEST = 7
+LATEST = 8
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -204,3 +206,36 @@ async def test_upgrade_from_0005_adds_project_rules(tmp_path: Path) -> None:
         assert (await svc.rules("acme-shop")).requirements("test") == []
     finally:
         await svc.close()
+
+
+async def test_upgrade_from_0007_adds_comments(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    await make_old_db(db, version=7)
+    conn = await connect(db)
+    try:
+        await conn.execute(
+            "INSERT INTO session (name, cc_session_id, last_seen_at, created_at)"
+            " VALUES ('acme-shop', 'cc-1', ?, ?)",
+            (NOW, NOW),
+        )
+    finally:
+        await conn.close()
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        task = await svc.get_task("acme-shop-1")
+        assert (await svc.task_detail(task.key)).comments == []
+        comment = await svc.add_owner_comment(task.key, "Please rename the button")
+        assert (comment.author_kind, comment.delivered_at, comment.read_at) == ("owner", None, None)
+        # A hook link made before 0008 was not made by the agent: no comment goes to it.
+        rows = await svc.list_sessions()
+        assert [(r.session.cc_session_id, r.session.cc_exact) for r in rows] == [("cc-1", False)]
+    finally:
+        await svc.close()
+
+    conn = await connect(db)
+    try:
+        assert await migrate(conn) == LATEST
+    finally:
+        await conn.close()

@@ -10,7 +10,7 @@
   {% if not inbox.count %}
   <div class="empty">
     <p>Nothing needs you right now.</p>
-    <p>Tasks whose <em>waiting on</em> names you, rule warnings and unlinked hook sessions show up here.</p>
+    <p>Tasks whose <em>waiting on</em> names you, agent replies to your comments, rule warnings and unlinked hook sessions show up here.</p>
   </div>
   {% endif %}
 
@@ -22,6 +22,22 @@
       <li class="inbox-row">
         {{ task_row(t) }}
         {% if t.next_step %}<p class="inbox-note clamp clamp-2{% if t.next_step_stale %} stale{% endif %}"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.replies %}
+  <section class="panel inbox-group" id="inbox-replies">
+    <h2>Agent replies <span class="col-count">{{ inbox.replies|length }}</span></h2>
+    <p class="muted inbox-hint">Comments from agents you have not marked read. Open the task to answer or mark them read.</p>
+    <ul class="inbox-list">
+      {% for t, replies in inbox.replies %}
+      {%- set last = replies[-1] %}
+      <li class="inbox-row">
+        {{ task_row(t) }}
+        <p class="inbox-note clamp clamp-2"><span class="muted">{{ last.author }}{% if replies|length > 1 %} (+{{ replies|length - 1 }} more){% endif %}:</span> {{ last.body_md }}</p>
       </li>
       {% endfor %}
     </ul>

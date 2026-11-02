@@ -34,7 +34,8 @@ live board.
 | Item | Status | Design |
 |---|---|---|
 | Left sidebar navigation (replaces the header links), Inbox, Sessions, Activity | done | [0004](design/0004-navigation.md) |
-| Comments from the board to agents, delivered through hooks (11.4) | later | [0005](design/0005-comments-to-agents.md) |
+| Comments from the board to agents, delivered through hooks, opt-in wake-up hook (11.4) | done | [0005](design/0005-comments-to-agents.md) |
+| Unread comment counter on the card; wake-up hook verified against a live Claude Code | later | [0005](design/0005-comments-to-agents.md) |
 | Project environments and access map, agent permission levels, guard, live-actions journal (11.4b) | later | [0006](design/0006-environments-and-access.md) |
 
 ## 0.3.0 — acceptance and memory

@@ -105,11 +105,20 @@ not a feature: it uses the same tools as any session.
 The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `project.created`,
 `project.updated`, `task.created`, `task.updated`, `task.stage_changed`, `task.session_bound`,
 `task.session_unbound`, `task.tracker_unlogged`, `report.added`, `decision.added`, `session.seen`,
-`session.status_changed`, `session.alias_added`. A stage change that misses a rule carries the
-warnings in its payload.
+`session.status_changed`, `session.alias_added`, `comment.added`, `comment.delivered`,
+`comment.read`. A stage change that misses a rule carries the warnings in its payload.
 
-Not shipped yet, therefore not concepts of this release: environments and access levels, comments
-to agents, the review checklist, memory notes and documents (see the [roadmap](ROADMAP.md)).
+<a id="spec-comments"></a>
+
+**Comment.** A message on a task's thread: from the owner (written on the board, for the agent of
+the bound session) or an agent's reply (`comment_add`, author = the calling session). Markdown, up
+to 4000 characters. An owner comment is *sent* when written, *delivered* when a hook of the bound,
+exactly linked session handed it to the agent ([§4](#spec-hooks-comments)), *read* when the agent
+calls `comment_ack` or replies. An agent reply is unread until the owner marks it read or writes a
+comment on the task.
+
+Not shipped yet, therefore not concepts of this release: environments and access levels, the
+review checklist, memory notes and documents (see the [roadmap](ROADMAP.md)).
 
 <a id="spec-board"></a>
 
@@ -158,8 +167,19 @@ step.
 document path, updated time and version), description and progress in full, the latest reports
 with state and size badges, decisions, the bound session with its hook status and last activity,
 "Open in desktop" and "Copy link", the session binding history, the tracker history, an
-**Unbind session** button (with confirmation) and the edit form. A stage move that misses a rule
-shows the warning in the form (or the refusal in `strict` mode).
+**Unbind session** button (with confirmation), the comments and the edit form. A stage move that
+misses a rule shows the warning in the form (or the refusal in `strict` mode).
+
+<a id="spec-board-comments"></a>
+
+**Comments** (task dialog and task page): the thread oldest first, then a comment box (markdown, up
+to 4000 characters, CSRF-protected form). Each owner comment shows `sent <age>`, then
+`delivered <age> to <session>` or `not delivered yet`, and `read <age>` once acknowledged (exact UTC
+times on hover); agent replies show their author, age and `unread` until marked read. **Mark replies
+read** marks the task's unread replies read; sending a comment does the same. A note under the
+thread says which session a new comment goes to, or that none is bound and it waits. The thread
+refreshes live on `comment.*` events of its task; a draft in the box is kept (on the task page, other
+changes then refresh the details instead of reloading the page).
 
 <a id="spec-board-done"></a>
 
@@ -179,10 +199,13 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
 - **Not logged in the tracker:** done tasks without the work-log mark, only with
   `require_tracker_log = true`.
 - **Unlinked hook sessions** ([§4](#spec-hooks-linking)), linking to the Integrations page.
+- **Agent replies:** tasks with agent comments the owner has not marked read, with the newest
+  reply's author and text.
 
 Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?task=<key>`). The
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
-can change them (`task.*`, `session.seen`, `session.status_changed`), at most once per 2 s. With
+can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
+`comment.read`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -232,13 +255,15 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, seven numbered points: read
+**Server instructions** (sent on connect) are the working contract, eight numbered points: read
 `project_snapshot` first (its first line names the rules); pick or create a task and pass `session`
 (desktop id with `session_title`, else a name; `hook_session` if the session start gave one; don't
 rebind without your `local_` id); update `next_step`, `waiting_on` and `progress` on every stage
 change and report; report at the end of every stage with the configured first line, states and
 sizes (taken from the effective global rules); set `waiting_on` to who decides when a decision is
-needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (rules)` line names.
+needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (rules)` line names;
+when a hook gives owner comments, handle them like a user message and call `comment_ack` (or answer
+with `comment_add`).
 
 <a id="spec-mcp-tools"></a>
 
@@ -250,6 +275,7 @@ needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (
 | Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage` |
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |
+| Comments | `comments_list`, `comment_ack`, `comment_add` |
 | Catch-up and rules | `events_since`, `rules_get` |
 
 Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay.
@@ -287,7 +313,9 @@ unverified); http hooks need 2.1.63 (unverified, see [§4](#spec-hooks)).
 Claude Code hooks report session activity without the agent's help. Endpoint
 `POST /hooks/claude-code`, same Bearer token and Host/Origin rules as `/mcp`; the body is the hook's
 input JSON. Bodies over 256 KB are dropped with `204`; a body that is not JSON gets `400`; every other
-request answers `204` (or `200` with JSON for `SessionStart`) without waiting on anything else.
+request answers `200` with JSON when there is something to tell the agent (the `SessionStart`
+context, owner comments, a `Stop` block, [below](#spec-hooks-comments)) and `204` otherwise, without
+waiting on anything else.
 
 <a id="spec-hooks-events"></a>
 
@@ -295,7 +323,7 @@ request answers `204` (or `200` with JSON for `SessionStart`) without waiting on
 |---|---|---|
 | `SessionStart` | working | `started (<source>)`; the answer adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the agent's context (`hookSpecificOutput.additionalContext`) |
 | `UserPromptSubmit` | working | `prompt` (the prompt text is never stored) |
-| `PreToolUse` | working | the tool name (the tool input is never stored) |
+| `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is never stored) |
 | `Notification` | waiting | the notification message |
 | `Stop` | idle | `turn finished` |
 | `SessionEnd` | ended | the session is unbound from every task it is bound to (history kept, `task.session_unbound` with `reason: "session_end"`), for every session kind and end reason |
@@ -309,7 +337,10 @@ Other events are ignored. Activity of a working session is written at most once 
 
 1. Exact: a write passing `hook_session` (with `session`) links that Claude Code session id to the
    calling session; a row the hooks had created for it by guess hands over its status and is
-   removed.
+   removed. An id that another live (not ended) session already linked exactly is not moved: the
+   write succeeds and its response gets `Warning: hook_session <id> belongs to another session
+   (<name>); not relinked.` `task_bind_session` never links a hook id (the caller may be binding
+   another session); it answers with a note when one is passed.
 2. Fallback on first sight: the one desktop session bound to a task in the project whose
    `repo_path` contains the hook's `cwd`.
 3. Ambiguous (several candidates, the folder in several projects, or candidates already linked to
@@ -322,8 +353,57 @@ Other events are ignored. Activity of a working session is written at most once 
 **Never in the way when relaybay is down.** The command hook (`<python> -I -m relaybay.hook_client
 --url … --token-file …`, standard library only) gives up after 0.3 s per network step, prints
 nothing on failure (only the server's JSON answer on success), never uses a system proxy and always
-exits 0. http hook entries use a 2 s timeout; failures do not block the session, but Claude Code
-shows a non-blocking "hook error" notice. `relaybay hook` is the same forwarder behind the CLI.
+exits 0. It prints the server's answer only when it is a `200` with a JSON object. http hook
+entries use a 2 s timeout and get the same JSON body; failures do not block the session, but Claude
+Code shows a non-blocking "hook error" notice. `relaybay hook` is the same forwarder behind the CLI.
+
+<a id="spec-hooks-comments"></a>
+
+**Owner comments through hooks.** Only a hook session that the agent linked itself (`hook_session`
+on a write, step 1 above) gets comment text, and only for the tasks bound to its session now; a link
+guessed from the folder, an unlinked, unbound or ended session gets none (`session.cc_exact`).
+After the upgrade to `0008` no session gets comment text until its agent writes once with
+`hook_session` (earlier links count as guessed).
+
+- `UserPromptSubmit`, `PreToolUse`, `PostToolUse` answer
+  `hookSpecificOutput.additionalContext` with the undelivered owner comments, one line each —
+  `Owner comment on <key> (#<id>): <text>` — plus how to answer (`comment_add` with `in_reply_to`,
+  or `comment_ack`). They are marked delivered to that session (`comment.delivered`) and never sent
+  again by these events. When the task is bound to another session, owner comments delivered to
+  the previous one and still unread are delivered again to the new one. One answer holds at most 8000 characters of comments, at least one comment;
+  the rest go with the next events and the answer says how many are left.
+- `Stop` answers `{"decision": "block", "reason": …}` while owner comments are delivered but
+  unacknowledged, or undelivered (then delivered with the block), so the agent handles them first.
+  relaybay blocks at most twice per turn per session, and not when `stop_hook_active` is set before
+  it blocked in this turn (another hook continues the turn); its counter resets on
+  `UserPromptSubmit` and whenever a `Stop` is allowed. One comment causes at most two Stop blocks
+  in all, across turns (counted again from zero when it is delivered to a newly bound session);
+  after that only the `SessionStart` line and `comments_list` name it. Otherwise the turn ends
+  normally.
+- `SessionStart` adds `You have <n> unread owner comment(s) on your relaybay tasks: call
+  comments_list, then comment_ack or comment_add.` when there are any; that does not deliver them.
+- An idle session receives the comment with its next prompt. The coordinator sees `comment.added`
+  (with a 200-character excerpt) in `events_since` and can forward it.
+
+<a id="spec-hooks-wake"></a>
+
+**Wake-up hook (opt-in, experimental; not verified against a live Claude Code).** With
+`relaybay setup --apply --wake`, `Stop` also runs `<python> -I -m relaybay.hook_client --url
+<base>/hooks/claude-code/wait --token-file <data dir>/token --wait` as a command hook with
+`"asyncRewake": true` and a 1800 s timeout. Claude Code runs it in the background; it posts the
+`Stop` input to `POST /hooks/claude-code/wait`, which holds the request up to 25 minutes. When an
+undelivered owner comment exists for the exactly linked session while it is idle (and relaybay did
+not block this turn's `Stop`), the server marks it delivered and answers `200` `{"wake": "<the same
+lines>"}`; the hook writes them to stderr and exits `2`, which the hooks reference documents as
+waking Claude with stderr as a system reminder. Otherwise it answers `204` and the hook exits `0`
+silently: time up, the session not exactly linked, ended, a newer wait for the same session (each
+turn starts one), or the hook process gone. relaybay down: exit 0 at once.
+
+**Fallback risk:** a Claude Code build that ignored `asyncRewake` would run this hook in the
+foreground and hold the end of every turn for up to 30 minutes. The hooks reference names no
+version that supports it, so `--wake` is refused unless `--force-wake` is given too
+(`MIN_ASYNC_REWAKE_VERSION` is unset); `setup --check` and `doctor` show the installed hook as
+`UNVERIFIED`. If turns end only after a long wait, run `relaybay setup --apply --no-wake`.
 
 <a id="spec-setup"></a>
 
@@ -338,7 +418,7 @@ explicit command or button.
 | Command | Effect |
 |---|---|
 | `relaybay setup` (`--dry-run`) | Detection (`claude` on `PATH` and its version, the desktop app, whether http hooks are supported), the exact diff of the settings file and its plan hash. Writes nothing. |
-| `relaybay setup --apply [--expect <hash>] [--mode command\|http]` | Backs the file up, then adds relaybay's hook entries. |
+| `relaybay setup --apply [--expect <hash>] [--mode command\|http] [--wake [--force-wake] \| --no-wake]` | Backs the file up, then adds relaybay's hook entries. `--wake` also adds the wake-up hook ([§4](#spec-hooks-wake); command mode only; refused without `--force-wake` while no Claude Code version is known to support `asyncRewake`), `--no-wake` removes it; without either an existing wake-up hook is kept. |
 | `relaybay setup --remove [--dry-run] [--expect <hash>]` | Backs the file up, then removes only relaybay's entries. |
 | `relaybay setup --check [--json]` | End-to-end check, one ok/FAIL line per item; `--json` prints a list of `{ok, name, detail}` and the exit code is non-zero when an item fails. |
 
@@ -348,7 +428,9 @@ Options: `--home`, `--port`, `--claude-home <folder>` (a folder holding `.claude
 <a id="spec-setup-writes"></a>
 
 **What apply writes.** One hook entry for each of `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
-`Notification`, `Stop`, `SessionEnd`, appended after existing hooks.
+`PostToolUse`, `Notification`, `Stop`, `SessionEnd`, appended after existing hooks (the tool events
+with matcher `*`). An installation without `PostToolUse` shows as "some events are missing" in the
+check until apply runs again. With `--wake`, one more group in `Stop` for the wake-up hook.
 
 - `command` mode (default): runs the interpreter that runs relaybay, `<python> -I -m
   relaybay.hook_client --url <base>/hooks/claude-code --token-file <data dir>/token`, 3 s timeout.
@@ -361,7 +443,9 @@ Options: `--home`, `--port`, `--claude-home <folder>` (a folder holding `.claude
 - **Marker:** an entry is relaybay's only when it is a command hook running `-m
   relaybay.hook_client` (or `relaybay hook`) with `--url <scheme>://<host>:<port>/hooks/claude-code`,
   or an http hook whose URL path is exactly `/hooks/claude-code` on a loopback address or the
-  configured host. No extra property is written; similar user hooks are never claimed.
+  configured host. The wake-up hook is relaybay's when it is that command with the
+  `/hooks/claude-code/wait` URL followed by exactly `--wait`. No extra property is written; similar
+  user hooks are never claimed.
 - Nothing else in the file is changed, reordered or removed; indentation and line endings are kept;
   a symlinked file is written through to its target. Running apply again changes nothing; a new port
   or data folder updates only relaybay's entries.
@@ -382,8 +466,9 @@ Options: `--home`, `--port`, `--claude-home <folder>` (a folder holding `.claude
 **Check items:** relaybay server reachable with the same token (`/healthz` `token_id`); MCP
 `initialize` accepted with the token; a synthetic hook event accepted; relaybay's hooks present in
 the user settings for this base URL; in command mode, the hook's interpreter imports
-`relaybay.hook_client`; in http mode, `RELAYBAY_TOKEN` set to the token in this environment; the MCP
-server registered for Claude Code.
+`relaybay.hook_client`; in http mode, `RELAYBAY_TOKEN` set to the token in this environment; the
+wake-up hook (an ok line starting with `UNVERIFIED` and the fallback risk, only when installed;
+also in `doctor`); the MCP server registered for Claude Code.
 
 <a id="spec-doctor"></a>
 
@@ -561,6 +646,7 @@ existing databases upgrade in place.
 | `0005_tracker_history` | `tracker_entry` (backfilled one entry per task with a key) |
 | `0006_project_rules` | `project_rules` (per-project rules override) |
 | `0007_hook_sessions` | `session.cc_session_id` (unique), `session.activity_at`, `session.unlinked_reason` |
+| `0008_comments` | `comment` (task, author kind and name, author session, body, `in_reply_to`, created / delivered / read times, `delivered_to_session_id`); `session.cc_exact` (0 for links made before it) |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

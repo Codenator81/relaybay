@@ -22,6 +22,9 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`task_unbind_session`](#task_unbind_session) | write |
 | [`report_add`](#report_add) | write |
 | [`decision_add`](#decision_add) | write |
+| [`comments_list`](#comments_list) | read |
+| [`comment_ack`](#comment_ack) | write |
+| [`comment_add`](#comment_add) | write |
 | [`rules_get`](#rules_get) | read |
 | [`events_since`](#events_since) | read |
 
@@ -43,7 +46,7 @@ Create a project, or rename it / set its repository path. Call it once before cr
 | `description` | string or null | no | One-line description. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `project_snapshot`
 
@@ -96,7 +99,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `tracker_logged` | boolean | no | True once the work log is entered in the external tracker. New work clears it again (a report, a progress change, a move back from live or done). A new tracker_ref starts as not logged unless tracker_logged is passed in the same write. Done tasks without it stay on the board marked 'not logged'. Default: `False`. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `task_update`
 
@@ -120,7 +123,7 @@ Change task fields (waiting on, next step, branch, description, progress, the tr
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `task_patch`
 
@@ -133,7 +136,7 @@ Change any task fields given as one JSON object, with the same rules as task_upd
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `task_set_stage`
 
@@ -148,18 +151,18 @@ Move a task to another stage (plan, dev, test, live, done) when its work moves o
 | `waiting_on` | string or null | no | Who acts next; saved in the same write. Omit to keep it; '-' or '' clears it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `task_bind_session`
 
-Mark that this session works on the task now; the board shows it with a link that opens the Claude desktop app session. Call it when you pick up an existing task. Pass your own desktop session id (local_…) if you know it. If you don't know your local_ id, don't rebind — the coordinator binds you; pass your session name only as `session` on writes. A plain name never replaces a desktop session bound to the task: it is recorded as that session's alias. Binding a session ends the previous session's binding; the history is kept.
+Mark that this session works on the task now; the board shows it with a link that opens the Claude desktop app session. Call it when you pick up an existing task. Pass your own desktop session id (local_…) if you know it. If you don't know your local_ id, don't rebind — the coordinator binds you; pass your session name only as `session` on writes. A plain name never replaces a desktop session bound to the task: it is recorded as that session's alias. Binding a session ends the previous session's binding; the history is kept. It never links a hook session (the caller may bind someone else): your own `hook_session` goes on your other writes.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `session` | string | yes | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Ignored here: pass your hook_session on your own writes instead. |
 
 ### `task_unbind_session`
 
@@ -183,7 +186,7 @@ Add a report to a task. Call it at the end of every stage with your final report
 | `waiting_on` | string or null | no | Who acts next; saved in the same write. Omit to keep it; '-' or '' clears it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `decision_add`
 
@@ -197,7 +200,41 @@ Record a decision the user or the team made (scope, approach, trade-off), so lat
 | `decided_by` | string or null | no | Who decided. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'). Links the board's live status to your session. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `comments_list`
+
+Comments on a task, oldest first: the owner's (with sent / delivered / read marks) and agents' replies. Call it when a hook or the session start says you have unread owner comments.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `unread_only` | boolean | no | Only unread ones: owner comments not acknowledged yet and replies the owner has not read. Default: `False`. |
+
+### `comment_ack`
+
+Acknowledge owner comments once you have handled them: one by `comment_id`, or all unread ones of `task`. The board then shows them as read, and the Stop hook stops reminding you of them.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `comment_id` | integer or null | no | The owner comment to mark read, e.g. 7 for '#7'. |
+| `task` | string or null | no | Task key: mark every unread owner comment on it read. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `comment_add`
+
+Reply to the owner on a task's comment thread (shown on the board and in the owner's Inbox). Use it to answer an owner comment or to ask a short question; reports stay in report_add.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `body` | string | yes | Your reply to the owner, markdown. |
+| `in_reply_to` | integer or null | no | The owner comment you answer; it is marked read. Without it, every unread owner comment on the task is marked read. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `rules_get`
 

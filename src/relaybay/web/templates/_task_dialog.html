@@ -6,6 +6,7 @@
   </header>
   <div class="dialog-body">
     {% include "_task_view.html" %}
+    {% with t = detail.task, comments = detail.comments %}{% include "_comments.html" %}{% endwith %}
     <details class="panel dialog-edit">
       <summary>Edit task</summary>
       {% with t = detail.task %}{% include "_task_form.html" %}{% endwith %}
