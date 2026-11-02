@@ -61,6 +61,7 @@ nav:
   - How-to guides:
       - Coordinate many projects: how-to/coordinator.md
       - Phone and LAN access: how-to/lan-access.md
+      - Screenshots for review: how-to/screenshots-for-review.md
       - Troubleshooting: how-to/troubleshooting.md
       - Full access on a trusted machine: how-to/trusted-machine.md
       - Remove the integration: how-to/uninstall.md

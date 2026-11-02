@@ -75,7 +75,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 ```
 project       id, slug UNIQUE, name, repo_path, description, task_seq, created_at, updated_at,
               archived_at
-task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|test|live|done), stage_note,
+task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
               waiting_on, next_step, branch, doc_path, description, progress, session_id,
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
               next_step_at, stage_changed_at, created_at, updated_at, closed_at
@@ -86,7 +86,13 @@ session       id, external_id UNIQUE (local_<uuid>), name (unique among rows wit
               cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, last_seen_at,
               created_at
 comment       id, task_id, author_kind (owner|agent), author, session_id, body_md, in_reply_to,
-              created_at, delivered_at, delivered_to_session_id, read_at
+              created_at, delivered_at, delivered_to_session_id, read_at, step_id, attachment_id
+review_step   id, task_id, position (UNIQUE per task), title, details_md,
+              status (open|accepted|rejected), decided_at, decided_by, created_by, created_at,
+              updated_at
+attachment    id, task_id, step_id, kind (image), stored_name UNIQUE, original_name, mime, size,
+              sha256, caption_md, created_by, created_at
+              -- the file: <data dir>/attachments/<project>/<task key>/<stored_name>
 task_session  id, task_id, session_id, bound_at, unbound_at, bound_by   -- one open row per task
 session_alias name PK, session_id, created_at
 tracker_entry id, task_id, tracker_name, tracker_ref, tracker_url, logged_at, unlogged_at, created_at

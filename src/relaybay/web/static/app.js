@@ -14,7 +14,9 @@
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
     "policy.updated", "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
     "policy.proposal_reopened",
-    "live.action"
+    "live.action",
+    "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
+    "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -22,7 +24,9 @@
     "session.seen", "session.status_changed", "comment.added", "comment.read",
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
     "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
-    "policy.proposal_reopened"
+    "policy.proposal_reopened",
+    "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
+    "review.step_rejected"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -112,6 +116,19 @@
   function column(stage) { return stage ? document.getElementById("col-" + stage) : null; }
   function thread(key) { return key ? document.getElementById("comments-" + key) : null; }
   function isComment(kind) { return kind.indexOf("comment.") === 0; }
+  function isReview(kind) {
+    return kind.indexOf("review.") === 0 || kind.indexOf("attachment.") === 0;
+  }
+  function reviewPanel(key) { return key ? document.getElementById("review-" + key) : null; }
+  // A review panel is refetched only while none of its comment boxes holds text.
+  function queueReview(key) {
+    var panel = reviewPanel(key);
+    if (!panel) return;
+    var typing = Array.prototype.some.call(panel.querySelectorAll("textarea"), function (f) {
+      return f.value.trim();
+    });
+    if (typing) panel.dataset.stale = "1"; else queue(panel);
+  }
   function card(key) { return key ? document.getElementById("card-" + key) : null; }
 
   function onMessage(event) {
@@ -124,6 +141,7 @@
       queueThrottled(document.getElementById("inbox-badge"));
       queueThrottled(document.getElementById("inbox"));
     }
+    if (data.kind === "task.stage_changed") notifyAcceptance(data);
 
     // The task page: comment events refetch the thread; other changes of its own task reload
     // the page (not every hook status of its session, which comes every few seconds while it
@@ -132,6 +150,8 @@
       if (data.key !== live.dataset.task || data.kind === "session.status_changed") return;
       if (isComment(data.kind)) {
         queue(thread(data.key));
+      } else if (isReview(data.kind)) {
+        queueReview(data.key);
       } else if (commentDraft(document)) {
         queue(document.querySelector(".task-view"));
         queue(thread(data.key));
@@ -173,7 +193,13 @@
     // Every page listens to all projects (the Inbox count); the board only to its own.
     if (data.project !== live.dataset.project) return;
     if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) {
-      if (isComment(data.kind)) queue(thread(data.key)); else refreshDialog();
+      if (isComment(data.kind)) queue(thread(data.key));
+      else if (isReview(data.kind)) queueReview(data.key);
+      else refreshDialog();
+    }
+    if (isReview(data.kind)) {
+      queue(card(data.key) || column(data.stage));
+      return;
     }
 
     switch (data.kind) {
@@ -243,32 +269,48 @@
   function projectPath() { return "/p/" + encodeURIComponent(live.dataset.project); }
 
   // The board URL with the open task; search and archive filters in the URL are kept.
-  function boardUrl(key) {
+  function boardUrl(key, tab) {
     var params = new URLSearchParams(window.location.search);
     params.delete("task");
+    params.delete("tab");
     if (key) params.set("task", key);
+    if (key && tab === "review") params.set("tab", "review");
     var query = params.toString();
     return projectPath() + (query ? "?" + query : "");
   }
 
   function editForm() { return dialog.querySelector("form.task-form"); }
 
-  function openTask(key, push) {
+  function openTask(key, push, tab) {
     if (dialog.dataset.key !== key) {
       dialog.dataset.key = key;
       dialog.replaceChildren(loadingNote("Loading " + key + "…"));
-      htmx.ajax("GET", projectPath() + "/t/" + encodeURIComponent(key) + "/dialog",
-        { target: dialog, swap: "innerHTML" });
+      htmx.ajax("GET", projectPath() + "/t/" + encodeURIComponent(key) + "/dialog" +
+        (tab === "review" ? "?tab=review" : ""), { target: dialog, swap: "innerHTML" });
+    } else {
+      showTab(dialog, tab === "review" ? "review" : "overview");
     }
     if (!dialog.open) dialog.showModal();
     if (!push) return;
     // The URL still names a task when this open raced the previous close: reuse that entry.
     if (new URLSearchParams(window.location.search).has("task")) {
-      window.history.replaceState({ task: key }, "", boardUrl(key));
+      window.history.replaceState({ task: key }, "", boardUrl(key, tab));
     } else {
-      window.history.pushState({ task: key }, "", boardUrl(key));
+      window.history.pushState({ task: key }, "", boardUrl(key, tab));
       pushed = true;
     }
+  }
+
+  // Overview | Review tabs of the task dialog; the open tab is in the URL (?tab=review).
+  function showTab(root, name) {
+    var tabs = root.querySelectorAll(".dialog-tab");
+    if (!tabs.length) return;
+    tabs.forEach(function (tab) {
+      var on = tab.dataset.tab === name;
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      var panel = document.getElementById(tab.getAttribute("aria-controls"));
+      if (panel) panel.hidden = !on;
+    });
   }
 
   function loadingNote(text) {
@@ -286,6 +328,7 @@
   function refreshDialog() {
     queue(dialog.querySelector(".task-view"));
     queue(dialog.querySelector(".comment-thread"));
+    queueReview(dialog.dataset.key);
     var form = editForm();
     if (!form) return;
     if (form.dataset.dirty) {
@@ -376,9 +419,10 @@
     });
 
     window.addEventListener("popstate", function () {
-      var key = new URLSearchParams(window.location.search).get("task");
+      var params = new URLSearchParams(window.location.search);
+      var key = params.get("task");
       if (key) {
-        openTask(key, false);
+        openTask(key, false, params.get("tab"));
       } else if (dialog.open) {
         if (!mayDiscard()) {
           // Back already left the ?task= entry: put it back so URL and dialog agree.
@@ -406,11 +450,37 @@
       copyLink(button);
       return;
     }
-    var open = event.target.closest("a.card-open[data-task]");
-    if (open && dialog && event.button === 0 &&
-        !(event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)) {
+    var plain = event.button === 0 &&
+      !(event.ctrlKey || event.metaKey || event.shiftKey || event.altKey);
+    var open = event.target.closest("a.card-open[data-task], a.review-chip[data-task]");
+    if (open && dialog && plain) {
       event.preventDefault();
-      openTask(open.dataset.task, true);
+      openTask(open.dataset.task, true, open.dataset.tab);
+      return;
+    }
+    var tab = event.target.closest(".dialog-tab");
+    if (tab && dialog && dialog.contains(tab)) {
+      showTab(dialog, tab.dataset.tab);
+      if (dialog.dataset.key) {
+        window.history.replaceState(window.history.state, "",
+          boardUrl(dialog.dataset.key, tab.dataset.tab));
+      }
+      return;
+    }
+    var shot = event.target.closest("a[data-viewer]");
+    if (shot && plain) {
+      event.preventDefault();
+      openViewer(shot);
+      return;
+    }
+    var pager = event.target.closest(".pager-link[data-page]");
+    if (pager && plain) {
+      event.preventDefault();
+      setPage(parseInt(pager.dataset.page, 10));
+      return;
+    }
+    if (event.target.closest("[data-notify-enable]")) {
+      askNotifications();
       return;
     }
     if (dialog && event.target.closest(".dialog-close")) {
@@ -419,6 +489,14 @@
     }
     var reload = event.target.closest(".form-reload");
     if (reload) queue(reload.closest(".task-form-box"));
+  });
+
+  // The Review tab's "accepted / all" follows its refreshed panel.
+  document.addEventListener("htmx:load", function (event) {
+    var panel = event.detail.elt;
+    if (!panel.matches || !panel.matches(".review[data-count]") || !dialog) return;
+    var count = dialog.querySelector(".dialog-tab[data-tab=review] .col-count");
+    if (count) count.textContent = panel.dataset.count;
   });
 
   // A sent comment clears its form; a refused one (error shown in the thread) keeps the text.
@@ -459,6 +537,191 @@
     });
   }
 
+  // --- paged board: page 1 plan…test, page 2 live and done; ←/→ and the pager links --------
+  // The page is in the URL (?page=2); the columns stay in the page, so live updates go on.
+
+  function boardEl() { return document.getElementById("board"); }
+  function pageCount() { return document.querySelectorAll(".pager-link[data-page]").length; }
+
+  function setPage(n) {
+    var board = boardEl();
+    var count = pageCount();
+    if (!board || !count || isNaN(n) || n < 1 || n > count) return;
+    board.dataset.page = String(n);
+    document.querySelectorAll(".pager-link[data-page]").forEach(function (link) {
+      var on = link.dataset.page === String(n);
+      link.classList.toggle("is-active", on);
+      if (on) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+    });
+    var params = new URLSearchParams(window.location.search);
+    if (n > 1) params.set("page", String(n)); else params.delete("page");
+    var query = params.toString();
+    window.history.replaceState(window.history.state, "",
+      window.location.pathname + (query ? "?" + query : ""));
+  }
+
+  // Keys that type or move a caret, and open dialogs (task, viewer), keep their arrows.
+  function arrowsBelongElsewhere(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return true;
+    var el = event.target;
+    if (el && el.closest && el.closest("input, textarea, select, [contenteditable], dialog")) {
+      return true;
+    }
+    return !!document.querySelector("dialog[open]");
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    var board = boardEl();
+    if (!board || !pageCount() || arrowsBelongElsewhere(event)) return;
+    var current = parseInt(board.dataset.page || "1", 10);
+    var next = current + (event.key === "ArrowRight" ? 1 : -1);
+    if (next < 1 || next > pageCount()) return;
+    event.preventDefault();
+    setPage(next);
+  });
+
+  // --- screenshot viewer: full screen, fit, caption, ←/→, Esc, counter, swipe ---------------
+
+  var viewer = null;
+  var shots = [];
+  var shotIndex = 0;
+
+  function showShot(i) {
+    if (!shots.length) return;
+    shotIndex = (i + shots.length) % shots.length;
+    var link = shots[shotIndex];
+    var img = viewer.querySelector(".viewer-img");
+    img.src = link.getAttribute("href");
+    var inner = link.querySelector("img");
+    img.alt = inner ? inner.alt : "";
+    viewer.querySelector(".viewer-caption").textContent = link.dataset.caption || "";
+    viewer.querySelector(".viewer-count").textContent = (shotIndex + 1) + " / " + shots.length;
+    var many = shots.length > 1;
+    viewer.querySelector(".viewer-prev").hidden = !many;
+    viewer.querySelector(".viewer-next").hidden = !many;
+  }
+
+  function openViewer(link) {
+    if (!viewer) return;
+    var scope = link.closest(".review") || document;
+    shots = Array.prototype.slice.call(scope.querySelectorAll("a[data-viewer]"));
+    showShot(Math.max(0, shots.indexOf(link)));
+    if (!viewer.open) viewer.showModal();
+  }
+
+  function setupViewer() {
+    viewer = document.getElementById("viewer");
+    if (!viewer) return;
+    viewer.addEventListener("keydown", function (event) {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        event.stopPropagation();
+        showShot(shotIndex + (event.key === "ArrowRight" ? 1 : -1));
+      } else if (event.key === "Escape") {
+        // Only the viewer closes: the task dialog under it stays open.
+        event.preventDefault();
+        event.stopPropagation();
+        viewer.close();
+      }
+    });
+    viewer.addEventListener("click", function (event) {
+      if (event.target.closest(".viewer-prev")) showShot(shotIndex - 1);
+      else if (event.target.closest(".viewer-next")) showShot(shotIndex + 1);
+      else if (event.target.closest(".viewer-close") || event.target === viewer) viewer.close();
+    });
+    var startX = null;
+    viewer.addEventListener("touchstart", function (event) {
+      startX = event.touches.length === 1 ? event.touches[0].clientX : null;
+    }, { passive: true });
+    viewer.addEventListener("touchend", function (event) {
+      if (startX === null || !event.changedTouches.length) return;
+      var dx = event.changedTouches[0].clientX - startX;
+      startX = null;
+      if (Math.abs(dx) > 40) showShot(shotIndex + (dx < 0 ? 1 : -1));
+    });
+    viewer.addEventListener("close", function () {
+      viewer.querySelector(".viewer-img").removeAttribute("src");
+    });
+  }
+
+  // --- paste a screenshot into a review step (Ctrl+V) ---------------------------------------
+
+  function csrfValue() {
+    var field = document.querySelector("input[name=csrf_token]");
+    return field ? field.value : "";
+  }
+
+  document.addEventListener("paste", function (event) {
+    var step = event.target.closest && event.target.closest(".review-step[data-paste]");
+    if (!step || !event.clipboardData) return;
+    var file = null;
+    Array.prototype.forEach.call(event.clipboardData.items || [], function (item) {
+      if (!file && item.kind === "file" && item.type.indexOf("image/") === 0) {
+        file = item.getAsFile();
+      }
+    });
+    if (!file) return; // plain text goes into the comment box as usual
+    event.preventDefault();
+    var note = step.querySelector(".paste-note");
+    if (note) note.textContent = "Uploading the screenshot…";
+    fetch(step.dataset.paste, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-Relaybay-CSRF": csrfValue(), "Content-Type": file.type },
+      body: file
+    }).then(function (response) {
+      return response.text().then(function (text) {
+        if (!response.ok) throw new Error(text || "HTTP " + response.status);
+        var panel = step.closest(".review");
+        if (panel) htmx.trigger(panel, "rb:refresh");
+      });
+    }).catch(function (error) {
+      if (note) note.textContent = "Not attached: " + error.message;
+    });
+  });
+
+  // --- browser notification: "Waiting for your acceptance: <task>" ----------------------------
+  // Permission is asked only from the button in Settings → Notifications.
+
+  function notifyAcceptance(data) {
+    if (data.to !== "review" && data.to !== "test") return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    var title = "Waiting for your acceptance: " + (data.title || data.key);
+    try {
+      var note = new Notification(title, { body: data.key + " · " + data.to, tag: data.key });
+      note.onclick = function () {
+        window.focus();
+        window.location.href = "/p/" + encodeURIComponent(data.project) + "?task=" +
+          encodeURIComponent(data.key) + "&tab=review";
+      };
+    } catch (e) {
+      // Some browsers allow notifications only from a service worker; then none is shown.
+    }
+  }
+
+  function showNotifyState() {
+    var state = document.querySelector("[data-notify-state]");
+    var button = document.querySelector("[data-notify-enable]");
+    if (!state) return;
+    if (!("Notification" in window)) {
+      state.textContent = "This browser does not support notifications.";
+      return;
+    }
+    var texts = {
+      granted: "Allowed: this browser shows them while a relaybay tab is open.",
+      denied: "Blocked in this browser; allow them in its site settings.",
+      "default": "Not allowed yet."
+    };
+    state.textContent = texts[Notification.permission] || "";
+    if (button) button.hidden = Notification.permission !== "default";
+  }
+
+  function askNotifications() {
+    if (!("Notification" in window)) return;
+    Notification.requestPermission().then(showNotifyState);
+  }
+
   // A deferred script runs after parsing but before htmx processes the page on DOMContentLoaded,
   // so the starting id must be read here, not in a DOMContentLoaded handler.
   htmx.createEventSource = createEventSource;
@@ -466,6 +729,8 @@
   if (!live) { setStatus("off"); return; }
   lastId = parseInt(live.dataset.lastEventId || "0", 10) || 0;
   setupDialog();
+  setupViewer();
+  showNotifyState();
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") reconnect();
   });

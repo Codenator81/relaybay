@@ -2,11 +2,16 @@
 then the committed events are published on the in-process bus."""
 
 import asyncio
+import base64
+import binascii
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import re
+import secrets
+import tempfile
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
@@ -54,6 +59,24 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.reports import parse_report
+from relaybay.domain.review import (
+    CAPTION_MAX,
+    DEFAULT_FILE_MAX_MB,
+    DEFAULT_TASK_MAX_MB,
+    EXTENSIONS,
+    MB,
+    STEP_DETAILS_MAX,
+    STEPS_MAX,
+    Attachment,
+    Review,
+    ReviewStep,
+    clean_markdown,
+    clean_original_name,
+    clean_step_title,
+    read_source,
+    require_image,
+    resolve_source,
+)
 from relaybay.domain.rules import (
     DEFAULT_RULES,
     REPORT_SINCE_STAGE_CHANGE,
@@ -66,7 +89,7 @@ from relaybay.domain.rules import (
     warning_text,
 )
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
-from relaybay.domain.stages import OPEN_STAGES, STAGES, Stage, parse_stage
+from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.task_fields import BY_NAME, FIELD_NAMES, NAME_MAX, TEXT_MAX, TITLE_MAX
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
@@ -167,6 +190,7 @@ class TaskDetail:
     tracker_history: list[TrackerEntry]
     comments: list[Comment] = field(default_factory=list)
     live_actions: list[Event] = field(default_factory=list)
+    review: Review = field(default_factory=lambda: Review([], []))
 
 
 @dataclass(slots=True)
@@ -182,6 +206,7 @@ class Inbox:
     replies: list[tuple[Task, list[Comment]]] = field(default_factory=list)
     proposals: list[Proposal] = field(default_factory=list)
     policy_proposals: list[PolicyProposal] = field(default_factory=list)
+    review: list[Task] = field(default_factory=list)  # tasks in review/test with a checklist
 
     @property
     def count(self) -> int:
@@ -193,6 +218,7 @@ class Inbox:
             + len(self.replies)
             + len(self.proposals)
             + len(self.policy_proposals)
+            + len(self.review)
         )
 
 
@@ -390,6 +416,72 @@ def _patch_summary(patch: dict[str, Any], prefix: str = "") -> list[str]:
     return paths
 
 
+REVIEW_DECISIONS = ("accept", "reject", "reopen", "comment")
+EMPTY_CHECKLIST_HINT = (
+    "Hint: the review checklist of {key} is empty. Write what the owner should check by eye"
+    " with review_steps_set (and attach screenshots with attach_file)."
+)
+
+
+def review_decision_text(
+    step: ReviewStep, decision: str, note: str | None, steps: list[ReviewStep]
+) -> str:
+    """The owner comment that carries a decision to the agent, e.g. "Step 2 'Login with 2FA'
+    accepted — continue with step 3"."""
+    name = f"Step {step.position} '{step.title}'"
+    if decision == "comment":
+        return f"On {name[0].lower()}{name[1:]}: {note}"
+    if decision == "reject":
+        return f"{name} rejected: {note}" if note else f"{name} rejected."
+    if decision == "reopen":
+        return f"{name} reopened" + (f": {note}" if note else ".")
+    rest = [s for s in steps if s.status != "accepted"]
+    later = [s for s in rest if s.position > step.position]
+    nxt = (later or rest)[0] if rest else None
+    text = f"{name} accepted — " + (
+        f"continue with step {nxt.position}" if nxt else f"all {len(steps)} steps accepted"
+    )
+    return text + (f". {note}" if note else "")
+
+
+def _decode_base64(text: str, limit: int) -> bytes:
+    compact = "".join(text.split())
+    if len(compact) > (limit // 3 + 1) * 4:
+        raise ValidationError(f"The file is larger than {limit // MB} MB.")
+    try:
+        data = base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValidationError("content_base64 is not valid base64.") from None
+    if len(data) > limit:
+        raise ValidationError(f"The file is larger than {limit // MB} MB.")
+    if not data:
+        raise ValidationError("content_base64 is empty.")
+    return data
+
+
+def _sweep(root: Path, keep: set[tuple[str, str, str]]) -> int:
+    """Delete files under `root` (attachments/<project>/<task>/<file>) not in `keep`, then
+    empty folders. Symlinks are removed as links, never followed."""
+    removed = 0
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False, followlinks=False):
+        here = Path(dirpath)
+        parts = here.relative_to(root).parts
+        for name in filenames:
+            if len(parts) == 2 and (parts[0], parts[1], name) in keep:
+                continue
+            (here / name).unlink(missing_ok=True)
+            removed += 1
+        for name in dirnames:
+            child = here / name
+            if child.is_symlink():
+                child.unlink(missing_ok=True)
+                removed += 1
+        if here != root:
+            with contextlib.suppress(OSError):  # not empty: it still holds kept files
+                here.rmdir()
+    return removed
+
+
 def _clean_slug(value: str) -> str:
     slug = value.strip().lower()
     if not SLUG_RE.match(slug):
@@ -413,6 +505,10 @@ class Service:
         permission_defaults: dict[str, str] | None = None,
         guard_mode: str | None = None,
         policy_file: Path | None = None,
+        attachments_dir: Path | None = None,
+        attachment_roots: list[Path] | None = None,
+        attachment_max_bytes: int = DEFAULT_FILE_MAX_MB * MB,
+        attachment_task_max_bytes: int = DEFAULT_TASK_MAX_MB * MB,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -434,6 +530,10 @@ class Service:
         self.rules_mode = rules_mode
         self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
+        self.attachments_dir = attachments_dir or db_path.parent / "attachments"
+        self.attachment_roots = list(attachment_roots or [])
+        self.attachment_max_bytes = attachment_max_bytes
+        self.attachment_task_max_bytes = attachment_task_max_bytes
         self.bus = bus or EventBus()
         self.desktop_link_template = desktop_link_template
         self._write_conn: aiosqlite.Connection | None = None
@@ -462,6 +562,7 @@ class Service:
         self.policy_file.load()
         for row in await repo.list_policy_layers(self._read_conn):
             self._db_layer(row)
+        await self._sweep_attachments()
 
     async def close(self) -> None:
         for timer in self._activity_timers.values():
@@ -1176,6 +1277,7 @@ class Service:
             [(by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id],
             await repo.list_proposals(self._r),
             await repo.list_policy_proposals(self._r),
+            await repo.review_queue(self._r),
         )
 
     async def list_sessions(self, project: str | None = None, limit: int = 200) -> list[SessionRow]:
@@ -1278,6 +1380,7 @@ class Service:
             tracker_history=await repo.list_tracker_entries(self._r, task.id),
             comments=await repo.list_comments(self._r, task.id),
             live_actions=await repo.task_events(self._r, task.id, LIVE_ACTION, 20),
+            review=await self._load_review(self._r, task.id),
         )
 
     def _merged_rules(self, slug: str, body: str | None) -> Rules:
@@ -1541,6 +1644,8 @@ class Service:
             if not diff:
                 return Saved(task, [])
             warnings = await self._stage_warnings(tx, task, diff)
+            if diff.get("stage") in ACCEPTANCE_STAGES and not task.review_total:
+                _note(EMPTY_CHECKLIST_HINT.format(key=task.key))
             # An explicit tracker_logged in the same write wins over the automatic unlog.
             unlog = (
                 _unlog_reason(task, diff)
@@ -1566,6 +1671,7 @@ class Service:
                     project=task.project_slug,
                     key=task.key,
                     stage=diff["stage"],
+                    title=diff.get("title", task.title),
                     **{"from": task.stage.value, "to": diff["stage"]},
                     note=diff.get("stage_note"),
                     **({"warnings": warnings} if warnings else {}),
@@ -1902,6 +2008,7 @@ class Service:
         session_id: int | None,
         body: str,
         in_reply_to: int | None,
+        step_id: int | None = None,
     ) -> Comment:
         comment_id = await repo.insert_comment(
             tx.conn,
@@ -1912,6 +2019,7 @@ class Service:
             body_md=body,
             in_reply_to=in_reply_to,
             now=tx.now,
+            step_id=step_id,
         )
         await tx.event(
             "comment.added",
@@ -1926,6 +2034,7 @@ class Service:
             author_kind=author_kind,
             in_reply_to=in_reply_to,
             excerpt=" ".join(body.split())[:200],
+            **({"step_id": step_id} if step_id else {}),
         )
         comment = await repo.get_comment(tx.conn, comment_id)
         assert comment is not None
@@ -2031,6 +2140,449 @@ class Service:
     ) -> tuple[Task, list[Comment]]:
         task = await self.get_task(ref)
         return task, await repo.list_comments(self._r, task.id, unread_only=unread_only)
+
+    # --- review: checklist and screenshots ----------------------------------
+
+    async def _load_review(self, conn: aiosqlite.Connection, task_id: int) -> Review:
+        steps = await repo.list_review_steps(conn, task_id)
+        by_id = {s.id: s for s in steps}
+        loose = []
+        for item in await repo.list_attachments(conn, task_id):
+            step = by_id.get(item.step_id) if item.step_id is not None else None
+            if step is None:
+                loose.append(item)
+            else:
+                step.attachments.append(item)
+        return Review(steps, loose)
+
+    async def review(self, ref: str | int) -> tuple[Task, Review, list[Comment]]:
+        """A task's checklist with statuses and screenshots, and its owner comments."""
+        task = await self.get_task(ref)
+        comments = [c for c in await repo.list_comments(self._r, task.id) if c.from_owner]
+        return task, await self._load_review(self._r, task.id), comments
+
+    async def _step_at(self, tx: _Tx, task: Task, step: Any) -> ReviewStep:
+        """A step of `task` by its position (1, 2, …) as agents number them."""
+        if isinstance(step, bool) or not isinstance(step, int | str):
+            raise ValidationError("step is the step's number in the checklist: 1, 2, …")
+        text = str(step).strip()
+        if not text.isdigit():
+            raise ValidationError(f"step is the step's number in the checklist, got {step!r}.")
+        for item in await repo.list_review_steps(tx.conn, task.id):
+            if item.position == int(text):
+                return item
+        raise NotFoundError(f"{task.key} has no review step {text}; see review_get.")
+
+    async def _step_event(
+        self, tx: _Tx, kind: str, task: Task, step: ReviewStep, actor: str, **extra: Any
+    ) -> None:
+        await tx.event(
+            kind,
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            step_id=step.id,
+            position=step.position,
+            title=step.title,
+            **extra,
+        )
+
+    async def set_review_steps(
+        self,
+        ref: str | int,
+        steps: Any,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Task, Review]:
+        """Replace the checklist. Step N keeps its status and screenshots while its title and
+        details stay the same; a changed step opens again; steps past the new end are removed
+        (their screenshots stay on the task)."""
+        if not isinstance(steps, list):
+            raise ValidationError("steps must be a list of {title, details} objects.")
+        if len(steps) > STEPS_MAX:
+            raise ValidationError(f"A checklist has at most {STEPS_MAX} steps.")
+        wanted: list[tuple[str, str | None]] = []
+        for i, item in enumerate(steps, 1):
+            if isinstance(item, str):
+                item = {"title": item}
+            if not isinstance(item, dict) or set(item) - {"title", "details"}:
+                raise ValidationError(f"Step {i} must be an object with title and details.")
+            details = clean_markdown(item.get("details"), f"Step {i} details", STEP_DETAILS_MAX)
+            wanted.append((clean_step_title(item.get("title")), details))
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            current = await repo.list_review_steps(tx.conn, task.id)
+            for old in current[len(wanted) :]:
+                await repo.delete_review_step(tx.conn, old.id)
+                await self._step_event(tx, "review.step_removed", task, old, actor)
+            for position, (title, details) in enumerate(wanted, 1):
+                old = current[position - 1] if position <= len(current) else None
+                if old is None:
+                    step_id = await repo.insert_review_step(
+                        tx.conn, task.id, position, title, details, actor, tx.now
+                    )
+                    added = await repo.get_review_step(tx.conn, step_id)
+                    assert added is not None
+                    await self._step_event(tx, "review.step_added", task, added, actor)
+                elif (old.title, old.details_md) != (title, details):
+                    await self._rewrite_step(tx, task, old, title, details, actor)
+            return await self.get_task(task.id, tx.conn), await self._load_review(tx.conn, task.id)
+
+    async def _rewrite_step(
+        self, tx: _Tx, task: Task, step: ReviewStep, title: str, details: str | None, actor: str
+    ) -> None:
+        """New text for a step; a decision about the old text no longer holds."""
+        changes: dict[str, Any] = {"title": title, "details_md": details}
+        if step.status != "open":
+            changes |= {"status": "open", "decided_at": None, "decided_by": None}
+        await repo.update_review_step(tx.conn, step.id, changes, tx.now)
+        step.title = title
+        await self._step_event(
+            tx, "review.step_updated", task, step, actor, status="open", previous=step.status
+        )
+
+    async def update_review_step(
+        self,
+        ref: str | int,
+        step: Any,
+        *,
+        title: str | None = None,
+        details: str | None = None,
+        status: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> ReviewStep:
+        """An agent's change to one step: its text, or `status='open'` to ask for a new look
+        after a fix. Only the owner accepts or rejects, on the board."""
+        if status is not None and status != "open":
+            raise ValidationError(
+                "Agents may only set status 'open' (after a fix); the owner accepts or rejects"
+                " a step on the board."
+            )
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            current = await self._step_at(tx, task, step)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            new_title = current.title if title is None else clean_step_title(title)
+            new_details = (
+                current.details_md
+                if details is None
+                else clean_markdown(details, "details", STEP_DETAILS_MAX)
+            )
+            if (new_title, new_details) != (current.title, current.details_md):
+                await self._rewrite_step(tx, task, current, new_title, new_details, actor)
+            elif status == "open" and current.status != "open":
+                await repo.update_review_step(
+                    tx.conn,
+                    current.id,
+                    {"status": "open", "decided_at": None, "decided_by": None},
+                    tx.now,
+                )
+                await self._step_event(
+                    tx,
+                    "review.step_updated",
+                    task,
+                    current,
+                    actor,
+                    status="open",
+                    previous=current.status,
+                )
+            updated = await repo.get_review_step(tx.conn, current.id)
+            assert updated is not None
+            return updated
+
+    async def decide_review_step(
+        self,
+        ref: str | int,
+        step_id: int,
+        decision: str,
+        comment: str | None = None,
+        *,
+        actor: str = "owner",
+    ) -> Comment | None:
+        """The owner's decision on a step from the board: accept, reject, reopen, or only a
+        comment. It reaches the bound session as an owner comment, through the hooks. A
+        decision the step already has, without a comment (a double click, a stale panel),
+        writes and delivers nothing: None."""
+        if decision not in REVIEW_DECISIONS:
+            raise ValidationError(f"decision must be one of: {', '.join(REVIEW_DECISIONS)}.")
+        note = _clean_text(comment, "Comment", COMMENT_MAX)
+        if decision == "comment" and not note:
+            raise ValidationError("Comment must not be empty.")
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            step = await repo.get_review_step(tx.conn, step_id)
+            if step is None or step.task_id != task.id:
+                raise NotFoundError(f"Review step #{step_id} not found on {task.key}.")
+            status = {"accept": "accepted", "reject": "rejected", "reopen": "open"}.get(decision)
+            if status == step.status and not note:
+                return None
+            if status is not None and status != step.status:
+                decided = {"decided_at": tx.now, "decided_by": actor}
+                if status == "open":
+                    decided = {"decided_at": None, "decided_by": None}
+                await repo.update_review_step(
+                    tx.conn, step.id, {"status": status} | decided, tx.now
+                )
+                kind = {"accepted": "review.step_accepted", "rejected": "review.step_rejected"}
+                await self._step_event(
+                    tx,
+                    kind.get(status, "review.step_updated"),
+                    task,
+                    step,
+                    actor,
+                    status=status,
+                    previous=step.status,
+                )
+            steps = await repo.list_review_steps(tx.conn, task.id)
+            text = review_decision_text(step, decision, note, steps)
+            await self._read(tx, task, await self._unread(tx, task, False), actor, None)
+            return await self._insert_comment(
+                tx,
+                task,
+                author_kind="owner",
+                author=actor,
+                session_id=None,
+                body=text,
+                in_reply_to=None,
+                step_id=step.id,
+            )
+
+    # Files: the bytes are checked and written outside the write transaction; the transaction
+    # re-checks the limits and removes the new file again when it fails.
+
+    def _task_folder(self, task: Task) -> Path:
+        folder = (self.attachments_dir / task.project_slug / task.key).resolve()
+        if not folder.is_relative_to(self.attachments_dir.resolve()):
+            raise ValidationError("Invalid task folder.")  # slugs and keys never contain "/"
+        return folder
+
+    def _file_path(self, item: Attachment) -> Path:
+        return self.attachments_dir / item.project_slug / item.task_key / item.stored_name
+
+    def _store_bytes(self, folder: Path, data: bytes, ext: str) -> str:
+        folder.mkdir(parents=True, exist_ok=True)
+        name = secrets.token_hex(16) + ext
+        tmp = folder / f".{name}.tmp"
+        with tmp.open("xb") as fh:
+            fh.write(data)
+        tmp.replace(folder / name)
+        return name
+
+    def _source_roots(self, project: Project) -> list[Path]:
+        roots = [Path(tempfile.gettempdir()), *self.attachment_roots]
+        if project.repo_path:
+            roots.insert(0, Path(project.repo_path).expanduser())
+        return roots
+
+    async def attach_file(
+        self,
+        ref: str | int,
+        *,
+        path: str | None = None,
+        content_base64: str | None = None,
+        filename: str | None = None,
+        step: Any = None,
+        caption: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Attachment, bool]:
+        """Copy a screenshot to the task: from `path` (inside the allowed folders) or from
+        `content_base64`. Returns the attachment and whether it is new (the same image on the
+        same task is stored once)."""
+        if (path is None) == (content_base64 is None):
+            raise ValidationError("Pass either path or content_base64.")
+        task = await self.get_task(ref)
+        project = await self.get_project(task.project_slug)
+        if path is not None:
+            real, checked = resolve_source(
+                path, self._source_roots(project), [self.attachments_dir], self.db_path.parent
+            )
+            data = await asyncio.to_thread(read_source, real, checked, self.attachment_max_bytes)
+            original = filename or real.name
+        else:
+            data = _decode_base64(content_base64 or "", self.attachment_max_bytes)
+            original = filename
+        return await self._attach(
+            task,
+            data,
+            step=step,
+            caption=caption,
+            original=original,
+            session=session,
+            session_title=session_title,
+            hook_session=hook_session,
+        )
+
+    async def attach_pasted(
+        self, ref: str | int, step_id: int, data: bytes, *, actor: str = "owner"
+    ) -> tuple[Attachment, bool]:
+        """A screenshot the owner pasted into a step on the board."""
+        task = await self.get_task(ref)
+        step = await repo.get_review_step(self._r, step_id)
+        if step is None or step.task_id != task.id:
+            raise NotFoundError(f"Review step #{step_id} not found on {task.key}.")
+        if len(data) > self.attachment_max_bytes:
+            raise ValidationError(f"The file is larger than {self.attachment_max_bytes // MB} MB.")
+        return await self._attach(
+            task, data, step=step.position, caption=None, original="pasted image", actor=actor
+        )
+
+    async def _attach(
+        self,
+        task: Task,
+        data: bytes,
+        *,
+        step: Any,
+        caption: str | None,
+        original: str | None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        actor: str = "agent",
+    ) -> tuple[Attachment, bool]:
+        mime = require_image(data)
+        caption_md = clean_markdown(caption, "caption", CAPTION_MAX)
+        digest = hashlib.sha256(data).hexdigest()
+        folder = self._task_folder(task)
+        existing = await repo.find_attachment(self._r, task.id, digest)
+        stored = None
+        if existing is None:
+            stored = await asyncio.to_thread(self._store_bytes, folder, data, EXTENSIONS[mime])
+        try:
+            async with self._tx() as tx:
+                fresh = await self.get_task(task.id, tx.conn)
+                sess = await self._session(tx, session, session_title, hook_session)
+                who = sess.name if sess else actor
+                target = await self._step_at(tx, fresh, step) if step is not None else None
+                again = await repo.find_attachment(tx.conn, fresh.id, digest)
+                if again is not None:
+                    return again, False
+                if stored is None:  # removed meanwhile: store it after all on the next try
+                    raise ConflictError("The same image was removed meanwhile; try again.")
+                used = await repo.task_attachment_bytes(tx.conn, fresh.id)
+                if used + len(data) > self.attachment_task_max_bytes:
+                    raise ValidationError(
+                        f"{fresh.key} already holds {used // MB} MB of screenshots; the limit is"
+                        f" {self.attachment_task_max_bytes // MB} MB per task."
+                    )
+                attachment_id = await repo.insert_attachment(
+                    tx.conn,
+                    task_id=fresh.id,
+                    step_id=target.id if target else None,
+                    stored_name=stored,
+                    original_name=clean_original_name(original),
+                    mime=mime,
+                    size=len(data),
+                    sha256=digest,
+                    caption_md=caption_md,
+                    created_by=who,
+                    now=tx.now,
+                )
+                await tx.event(
+                    "attachment.added",
+                    who,
+                    project_id=fresh.project_id,
+                    task_id=fresh.id,
+                    session_id=sess.id if sess else None,
+                    project=fresh.project_slug,
+                    key=fresh.key,
+                    stage=fresh.stage.value,
+                    attachment_id=attachment_id,
+                    step_id=target.id if target else None,
+                    position=target.position if target else None,
+                )
+                item = await repo.get_attachment(tx.conn, attachment_id)
+                assert item is not None
+                stored = None  # kept
+                return item, True
+        finally:
+            if stored is not None:
+                (folder / stored).unlink(missing_ok=True)
+
+    async def set_attachment_caption(
+        self,
+        attachment_id: int,
+        caption: str | None,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> Attachment:
+        caption_md = clean_markdown(caption, "caption", CAPTION_MAX)
+        async with self._tx() as tx:
+            item = await repo.get_attachment(tx.conn, attachment_id)
+            if item is None:
+                raise NotFoundError(f"Attachment #{attachment_id} not found.")
+            sess = await self._session(tx, session, session_title, hook_session)
+            if caption_md != item.caption_md:
+                task = await self.get_task(item.task_id, tx.conn)
+                await repo.update_attachment(tx.conn, item.id, {"caption_md": caption_md})
+                await tx.event(
+                    "attachment.updated",
+                    sess.name if sess else "agent",
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    session_id=sess.id if sess else None,
+                    project=task.project_slug,
+                    key=task.key,
+                    stage=task.stage.value,
+                    attachment_id=item.id,
+                )
+            updated = await repo.get_attachment(tx.conn, item.id)
+            assert updated is not None
+            return updated
+
+    async def remove_attachment(
+        self, ref: str | int, attachment_id: int, *, actor: str = "owner"
+    ) -> None:
+        """Delete a screenshot and its file."""
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            item = await repo.get_attachment(tx.conn, attachment_id)
+            if item is None or item.task_id != task.id:
+                raise NotFoundError(f"Attachment #{attachment_id} not found on {task.key}.")
+            await repo.delete_attachment(tx.conn, item.id)
+            await tx.event(
+                "attachment.removed",
+                actor,
+                project_id=task.project_id,
+                task_id=task.id,
+                project=task.project_slug,
+                key=task.key,
+                stage=task.stage.value,
+                attachment_id=item.id,
+            )
+        # After the commit: a failed delete leaves an orphan for the startup sweep, never a
+        # row without its file.
+        self._file_path(item).unlink(missing_ok=True)
+
+    async def attachment_file(self, attachment_id: int) -> tuple[Attachment, Path]:
+        item = await repo.get_attachment(self._r, attachment_id)
+        if item is None:
+            raise NotFoundError(f"Attachment #{attachment_id} not found.")
+        return item, self._file_path(item)
+
+    async def _sweep_attachments(self) -> None:
+        """Remove files no attachment row names (left by a crash, a removed task, a failed
+        delete) and empty folders; never anything outside the attachments folder."""
+        root = self.attachments_dir
+        if not root.is_dir():
+            return
+        keep = await repo.stored_files(self._r)
+        removed = await asyncio.to_thread(_sweep, root, keep)
+        if removed:
+            logger.info("Removed %d orphaned attachment file(s) from %s", removed, root)
 
     # --- environments ------------------------------------------------------
 

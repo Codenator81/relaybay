@@ -68,6 +68,9 @@ class Task:
     session_link: str | None = None
     session_activity: str | None = None
     session_activity_at: str | None = None
+    review_total: int = 0  # review checklist: steps in all, accepted, rejected
+    review_accepted: int = 0
+    review_rejected: int = 0
 
     @property
     def next_step_stale(self) -> bool:
@@ -155,6 +158,8 @@ class Comment:
     stop_blocks: int = 0  # Stop blocks this comment caused since it was delivered
     task_key: str = ""
     delivered_to_name: str | None = None
+    step_id: int | None = None  # a comment about one review step (a decision is one)
+    attachment_id: int | None = None
 
     @property
     def from_owner(self) -> bool:

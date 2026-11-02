@@ -10,6 +10,15 @@
     <label class="board-archived"><input type="checkbox" name="archived" value="1"{% if archived %} checked{% endif %}> Show archived</label>
     <button type="submit" class="btn">Filter</button>
     {% if q or archived %}<a class="action" href="/p/{{ project.slug }}">Clear</a>{% endif %}
+    {#- Pages of the board on wide screens; ←/→ switch them too (app.js). #}
+    <span class="board-pager">
+      {%- for stages_of_page in board_pages %}
+      {%- set n = loop.index %}
+      <a class="pager-link{% if n == board_page %} is-active{% endif %}" href="/p/{{ project.slug }}?{{ page_qs[n] }}" data-page="{{ n }}"
+         {% if n == board_page %}aria-current="page"{% endif %} title="Page {{ n }} of {{ board_pages|length }} (← →)">
+        {%- if n > 1 %}<span aria-hidden="true">← </span>{% endif %}{% for s in stages_of_page %}{{ label(s) }}{% if not loop.last %} · {% endif %}{% endfor %}{% if n < board_pages|length %}<span aria-hidden="true"> →</span>{% endif %}</a>
+      {%- endfor %}
+    </span>
   </form>
   {#- Radios drive the phone layout (one stage at a time) without JavaScript. #}
   {% for stage in stages %}
@@ -20,12 +29,13 @@
     <label for="tab-{{ stage }}" class="stage-tab tab-{{ stage }}">{{ label(stage) }}</label>
     {% endfor %}
   </nav>
-  <div id="board" class="board">
+  <div id="board" class="board" data-page="{{ board_page }}">
     {% include "_columns.html" %}
   </div>
   {#- Opened by app.js; with ?task=<key> the content is rendered here and opened on load. #}
   <dialog class="task-dialog" id="task-dialog" aria-labelledby="task-title"{% if detail %} data-open="{{ detail.task.key }}"{% endif %}>
     {% if detail %}{% include "_task_dialog.html" %}{% endif %}
   </dialog>
+  {% include "_viewer.html" %}
 </main>
 {% endblock %}

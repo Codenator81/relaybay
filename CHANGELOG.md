@@ -7,6 +7,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Review stage between dev and test: `plan → dev → review → test → live → done` (migration
+  `0011_review` rebuilds the `task` table with the wider stage check, keeping every row). The
+  board has six columns on two pages on wide screens (plan, dev, review, test | live, done),
+  switched with the pager or ← / → (not inside inputs or dialogs); the page is in the URL
+  (`?page=2`). Phones keep the stage tab bar, now with six tabs.
+- Review checklist with screenshots: the task dialog gets Overview and Review tabs
+  (`?tab=review`); each step has an Accept checkbox, an expandable "What, how and why",
+  thumbnails with captions and a comment box with Comment / Reject / Accept. A full-screen viewer
+  (fit, caption, counter, ← / →, Esc, swipe) opens from a thumbnail. Ctrl+V pastes a screenshot
+  into a step. Each decision reaches the bound session as an owner comment ("Step 2 'Login with
+  2FA' accepted — continue with step 3"). Cards show "Review 2/5"; the Inbox lists a Review queue
+  (tasks in review or test with a checklist, oldest first).
+- MCP tools `review_get`, `review_steps_set`, `review_step_update`, `attach_file` and
+  `attachment_caption`; moving a task to review or test with an empty checklist adds a hint line;
+  the server instructions gain point 10 (write the Owner check into the checklist).
+- Screenshot storage under `<data dir>/attachments/`, served at `/files/<id>` behind the board
+  cookie with its type, `nosniff` and `inline`. Only PNG, JPEG, WebP and GIF by magic bytes (no
+  SVG); paths only from the project's repository, the temp folder or `attachment_roots`, resolved
+  before the check, copied under random names; limits `attachments_max_mb` (10) and
+  `attachments_task_max_mb` (200); duplicates stored once; an orphan sweep on start.
+- Browser notification "Waiting for your acceptance: <task>" when a task moves to review or test,
+  with the permission asked only from Settings → Notifications.
+- How-to "Screenshots for review": headless Chrome / Edge, Playwright with a saved login state
+  (test environments only), Android `adb`, iOS simulator, then `attach_file`; the owner pastes as
+  a fallback.
+- `relaybay demo` adds a task in review with a three-step checklist and two generated screenshots.
+
+### Fixed
+
+- Full-page board forms (Stands & access, Settings → Policy, Settings → Integrations without htmx)
+  answer a save with POST → 303 → GET and show the outcome once from a short-lived flash cookie,
+  so refreshing the page no longer sends the form again.
+- Scripts and the stylesheet are linked with `?v=<content hash>`, so browsers stop running a cached
+  `app.js` from an older version after an upgrade.
+
 ## [0.2.0] - 2026-11-02
 
 Working with sessions: sidebar navigation, Inbox, Sessions and Activity; comments from the board

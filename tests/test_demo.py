@@ -31,7 +31,7 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     assert board["projects"] == {"acme-shop", "demo-api"}
     tasks = board["tasks"]
     assert len(tasks) == result.tasks
-    assert {t.stage.value for t in tasks} == {"plan", "dev", "test", "live", "done"}
+    assert {t.stage.value for t in tasks} == {"plan", "dev", "review", "test", "live", "done"}
     assert any(t.tracker_ref and t.tracker_logged for t in tasks)
     assert any(t.next_step_stale for t in tasks)
     assert any(t.description for t in tasks) and any(t.progress for t in tasks)
@@ -40,6 +40,9 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     assert len(bound) == 1
     assert bound[0].session_status == "working" and bound[0].session_activity == "Edit"
     assert board["snapshot"].decisions
+    review = next(d for d in board["details"] if d.task.stage == "review")
+    assert len(review.review.steps) == 3 and len(review.review.images()) == 2
+    assert all(a.mime == "image/png" for a in review.review.images())
 
 
 def test_demo_refuses_a_board_unless_forced(tmp_path: Path) -> None:

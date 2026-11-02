@@ -93,6 +93,7 @@
     <a class="action" href="/activity?project={{ project.slug }}&amp;kind=live.action">Actions on live</a>
   </div>
   <p class="muted env-intro">Where this project runs, how agents reach it and what they may do there unasked. relaybay stores <strong>references only</strong>, never passwords, keys or tokens. The guard (<code>{{ project_policy.guard_mode }}</code>, preset <a href="/settings/policy?scope={{ project.slug }}">{{ project_policy.preset }}</a>) is a safety net against mistakes, not a sandbox: it only recognises the names listed here.</p>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error and not error_target %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
 
   {% if confirm %}

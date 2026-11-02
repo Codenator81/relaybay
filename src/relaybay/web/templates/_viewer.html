@@ -1,0 +1,13 @@
+{#- Full-screen screenshot viewer, opened by app.js from a thumbnail ([data-viewer]). -#}
+<dialog class="viewer" id="viewer" aria-label="Screenshot">
+  <div class="viewer-bar">
+    <span class="viewer-count" aria-live="polite"></span>
+    <button type="button" class="viewer-close" aria-label="Close (Esc)">Close</button>
+  </div>
+  <button type="button" class="viewer-nav viewer-prev" aria-label="Previous screenshot (←)">‹</button>
+  <figure class="viewer-figure">
+    <img class="viewer-img" alt="">
+    <figcaption class="viewer-caption"></figcaption>
+  </figure>
+  <button type="button" class="viewer-nav viewer-next" aria-label="Next screenshot (→)">›</button>
+</dialog>

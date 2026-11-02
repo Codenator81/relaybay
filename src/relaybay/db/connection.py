@@ -1,3 +1,4 @@
+import logging
 import re
 from importlib import resources
 from pathlib import Path
@@ -5,6 +6,9 @@ from pathlib import Path
 import aiosqlite
 
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
+# First line of a migration that rebuilds a table other tables reference.
+FOREIGN_KEYS_OFF = "-- relaybay:foreign-keys-off"
+logger = logging.getLogger("relaybay")
 
 
 async def connect(path: Path) -> aiosqlite.Connection:
@@ -15,6 +19,12 @@ async def connect(path: Path) -> aiosqlite.Connection:
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+
+async def _broken_keys(conn: aiosqlite.Connection) -> set[tuple[str, int, str, int]]:
+    """Rows whose foreign key points nowhere: (table, rowid, parent table, key index)."""
+    async with conn.execute("PRAGMA foreign_key_check") as cur:
+        return {(r[0], r[1], r[2], r[3]) for r in await cur.fetchall()}
 
 
 def _migrations() -> list[tuple[int, str]]:
@@ -34,13 +44,42 @@ async def migrate(conn: aiosqlite.Connection) -> int:
     for number, sql in _migrations():
         if number <= current:
             continue
-        # One script so SQLite parses statements itself; BEGIN/COMMIT inside keeps it atomic.
-        script = f"BEGIN IMMEDIATE;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;"
+        # A table rebuild runs with foreign keys off (the pragma is a no-op inside a
+        # transaction), and the result is checked before the commit.
+        rebuild = sql.startswith(FOREIGN_KEYS_OFF)
+        before: set[tuple[str, int, str, int]] = set()
+        if rebuild:
+            # Orphans an older database already had are not this migration's doing: they are
+            # logged and kept; only violations the rebuild itself introduced stop it.
+            before = await _broken_keys(conn)
+            if before:
+                tables = ", ".join(sorted({row[0] for row in before}))
+                logger.warning(
+                    "The database already has %d row(s) with a dangling foreign key (%s);"
+                    " migration %04d keeps them.",
+                    len(before),
+                    tables,
+                    number,
+                )
+            await conn.execute("PRAGMA foreign_keys=OFF")
         try:
-            await conn.executescript(script)
+            # One script so SQLite parses statements itself; the open transaction keeps it atomic.
+            await conn.executescript(f"BEGIN IMMEDIATE;\n{sql}\nPRAGMA user_version = {number};")
+            if rebuild:
+                new = await _broken_keys(conn) - before
+                if new:
+                    tables = ", ".join(sorted({row[0] for row in new}))
+                    raise RuntimeError(
+                        f"Migration {number:04d} would leave {len(new)} broken foreign key(s)"
+                        f" in {tables}; nothing was changed."
+                    )
+            await conn.execute("COMMIT")
         except BaseException:
             if conn.in_transaction:
                 await conn.execute("ROLLBACK")
             raise
+        finally:
+            if rebuild:
+                await conn.execute("PRAGMA foreign_keys=ON")
         current = number
     return current

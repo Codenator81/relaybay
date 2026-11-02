@@ -2,7 +2,7 @@
 
 > relaybay is a local, open-source live board and MCP server for people who run many Claude Code sessions across many repositories. Sessions create and update tasks through MCP tools (Streamable HTTP at http://127.0.0.1:8765/mcp, Bearer token) and Claude Code hooks report session status; the owner watches projects, tasks, stages and reports update in the browser. Python 3.12+, FastAPI, SQLite, MIT license, no telemetry.
 
-Stages are plan, dev, test, live, done. Every session should read `project_snapshot` first, pass its session on writes, keep `next_step`, `waiting_on` and `progress` current, and end every stage with `report_add` whose first line is `state · size · gist`.
+Stages are plan, dev, review, test, live, done. Every session should read `project_snapshot` first, pass its session on writes, keep `next_step`, `waiting_on` and `progress` current, and end every stage with `report_add` whose first line is `state · size · gist`.
 
 ## Docs
 

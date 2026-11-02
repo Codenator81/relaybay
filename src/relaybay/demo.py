@@ -1,6 +1,9 @@
 """`relaybay demo`: a neutral demo workspace for screenshots, the README GIF and manual testing."""
 
 import asyncio
+import base64
+import struct
+import zlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +14,38 @@ from relaybay.service import Service
 DEMO_DESKTOP_SESSION = "local_0d3e4a5b-6c7d-4e8f-9a0b-1c2d3e4f5a6b"
 DEMO_HOOK_SESSION = "demo-hook-session"
 ACME_REPO = "/home/demo/src/acme-shop"
+DEMO_REVIEW_HOOK = "demo-review-hook-session"
+
+
+def mock_screen(width: int, height: int, accent: tuple[int, int, int], rows: int) -> bytes:
+    """A made-up page as a PNG, drawn with the standard library: a header bar in `accent`,
+    `rows` grey content blocks and a button. Stands in for a real screenshot in the demo."""
+    white, grey, line = (255, 255, 255), (222, 226, 230), (241, 243, 245)
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)  # filter: none
+        for x in range(width):
+            if y < 56:
+                color = accent
+            elif 80 <= y < 80 + rows * 44 and (y - 80) % 44 < 28 and 40 <= x < width - 40:
+                color = grey if x < width * 0.7 else line
+            elif height - 90 <= y < height - 50 and width - 220 <= x < width - 40:
+                color = accent
+            else:
+                color = white
+            raw += bytes(color)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        + chunk(b"IEND", b"")
+    )
 
 
 class DemoError(Exception):
@@ -124,6 +159,50 @@ async def seed(service: Service) -> int:
         task=search,
         decided_by="owner",
     )
+    wishlist = await task(
+        "acme-shop",
+        "Wishlist on the product page",
+        stage="review",
+        branch="feat/wishlist",
+        description="A heart button on the product page saves the product to a wishlist.",
+        progress="- Heart button and wishlist page\n- Saved items survive a sign-out",
+        waiting_on="owner",
+        next_step="Accept the wishlist step by step in the Review tab.",
+        session="wishlist-agent",
+        hook_session=DEMO_REVIEW_HOOK,
+    )
+    await service.set_review_steps(
+        wishlist,
+        [
+            {
+                "title": "Heart button on the product page",
+                "details": "**What:** the heart next to *Add to cart*.\n\n**How:** open any"
+                " product and press the heart.\n\n**Why:** it is the only way in.",
+            },
+            {
+                "title": "Wishlist page lists the saved product",
+                "details": "Open *Account → Wishlist*; the product shows with its price.",
+            },
+            {
+                "title": "Saved items survive a sign-out",
+                "details": "Sign out and in again with the demo account; the list is the same.",
+            },
+        ],
+        session="wishlist-agent",
+    )
+    for step, accent, rows, caption in (
+        (1, (59, 91, 219), 4, "Product page with the heart button"),
+        (2, (112, 72, 232), 6, "Wishlist page with one saved product"),
+    ):
+        image = mock_screen(640, 400, accent, rows)
+        await service.attach_file(
+            wishlist,
+            content_base64=base64.b64encode(image).decode(),
+            filename=f"step-{step}.png",
+            step=step,
+            caption=caption,
+            session="wishlist-agent",
+        )
     banner = await task(
         "acme-shop",
         "Holiday banner",

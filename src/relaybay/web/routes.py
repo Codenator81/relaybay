@@ -1,6 +1,9 @@
 """Board: server-rendered pages and HTMX fragments, login, SSE endpoint, Integrations."""
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import json
 import secrets
 from collections.abc import Awaitable, Callable
@@ -10,7 +13,13 @@ from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.templating import Jinja2Templates
 from starlette.responses import StreamingResponse
 
@@ -20,7 +29,8 @@ from relaybay.domain import environments as env_domain
 from relaybay.domain.comments import COMMENT_MAX
 from relaybay.domain.errors import ConfirmationNeeded, ConflictError, DomainError, NotFoundError
 from relaybay.domain.models import Task
-from relaybay.domain.stages import STAGES, Stage
+from relaybay.domain.review import MB
+from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage
 from relaybay.domain.tasks import is_archived
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
@@ -42,6 +52,9 @@ from relaybay.web.sse import event_stream
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 LOGIN_CSRF_COOKIE = "relaybay_login_csrf"
 LOGIN_ERROR_COOKIE = "relaybay_login_error"
+# The outcome of a full-page form POST, shown once by the GET it redirects to.
+FLASH_COOKIE = "relaybay_flash"
+FLASH_TEXT_MAX = 600
 INVALID_TOKEN = (
     "That token is not valid for this server. Run 'relaybay token' with the same --home as"
     " 'relaybay serve'."
@@ -102,7 +115,16 @@ EVENT_KINDS = (
     "policy.proposal_rejected",
     "policy.proposal_reopened",
     "live.action",
+    "review.step_added",
+    "review.step_updated",
+    "review.step_removed",
+    "review.step_accepted",
+    "review.step_rejected",
+    "attachment.added",
+    "attachment.updated",
+    "attachment.removed",
 )
+CSRF_HEADER = "x-relaybay-csrf"
 BOARD_ONLY = (
     "Environments, permission levels and the policy change only from the board in a browser;"
     " agents propose changes with environment_propose or policy_propose."
@@ -112,6 +134,16 @@ JOURNAL_LIMIT = 20
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
+
+
+def static_versions(folder: Path = STATIC_DIR) -> dict[str, str]:
+    """A short content hash per static file: `?v=<hash>` makes a browser fetch a changed file
+    instead of reusing its cached copy after an upgrade."""
+    return {
+        f.name: hashlib.sha256(f.read_bytes()).hexdigest()[:12]
+        for f in folder.iterdir()
+        if f.is_file()
+    }
 
 
 def utcnow() -> datetime:
@@ -138,6 +170,12 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         require_tracker_log=settings.require_tracker_log,
         comment_max=COMMENT_MAX,
     )
+    versions = static_versions()
+
+    def static_url(name: str) -> str:
+        return f"/static/{name}?v={versions[name]}"
+
+    env.globals["static_url"] = static_url
     env.filters["age"] = age
     env.filters["markdown"] = render_markdown
     env.filters["http_url"] = http_url
@@ -149,6 +187,41 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     def render(request: Request, name: str, status: int = 200, **context: Any) -> HTMLResponse:
         return templates.TemplateResponse(request, name, context, status_code=status)
+
+    def flash_redirect(request: Request, url: str, **flash: Any) -> RedirectResponse:
+        """POST → 303 → GET: a refresh after saving does not resend the form. `flash`
+        (message, error, checks) rides along in a short-lived cookie the GET shows once."""
+        response = RedirectResponse(url, status_code=303)
+        data = {k: v for k, v in flash.items() if v}
+        for key in ("message", "error"):
+            if key in data:
+                data[key] = str(data[key])[:FLASH_TEXT_MAX]
+        if data:
+            value = base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
+            response.set_cookie(
+                FLASH_COOKIE,
+                value,
+                max_age=60,
+                httponly=True,
+                samesite="strict",
+                secure=request.url.scheme == "https",
+            )
+        return response
+
+    def take_flash(request: Request) -> dict[str, Any]:
+        raw = request.cookies.get(FLASH_COOKIE)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(base64.urlsafe_b64decode(raw.encode()))
+        except (binascii.Error, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def shown_once(request: Request, response: Response) -> Response:
+        if FLASH_COOKIE in request.cookies:
+            response.delete_cookie(FLASH_COOKIE)
+        return response
 
     async def inbox() -> Inbox:
         return await service.inbox(
@@ -197,7 +270,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         done_more = max(0, len(by_stage[Stage.DONE]) - DONE_COLUMN_LIMIT)
         by_stage[Stage.DONE] = by_stage[Stage.DONE][:DONE_COLUMN_LIMIT]
         view = {"archived": "1" if archived else "", "q": q}
+        page_qs = {
+            n: urlencode({k: v for k, v in {**view, "page": str(n) if n > 1 else ""}.items() if v})
+            for n in range(1, len(BOARD_PAGES) + 1)
+        }
         return {
+            "board_pages": BOARD_PAGES,
+            "page_qs": page_qs,
             "project": project,
             "columns": by_stage,
             "archived": archived,
@@ -312,13 +391,21 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/p/{slug}", response_class=HTMLResponse)
     async def board_page(
-        request: Request, slug: str, task: str | None = None, archived: bool = False, q: str = ""
+        request: Request,
+        slug: str,
+        task: str | None = None,
+        archived: bool = False,
+        q: str = "",
+        page_number: Annotated[str, Query(alias="page")] = "",
+        tab: str = "",
     ):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
         context = await board_context(slug, archived, q)
         first_busy = next((s for s in STAGES if context["columns"][s]), Stage.PLAN)
+        board_page = int(page_number) if page_number.isdigit() else 1
+        board_page = min(max(board_page, 1), len(BOARD_PAGES))
         # `?task=<key>` is the URL of the open task dialog: render it so the page opens with it.
-        dialog = await dialog_context(slug, task) if task else {}
+        dialog = await dialog_context(slug, task, tab) if task else {}
         return await page(
             request,
             "board.html",
@@ -327,6 +414,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             **context,
             **dialog,
             active_stage=first_busy,
+            board_page=board_page,
             last_event_id=last_event_id,
         )
 
@@ -470,17 +558,18 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         task = await find_task(slug, key)
         return render(request, "_card.html", t=task, slug=slug)
 
-    async def dialog_context(slug: str, key: str) -> dict[str, Any]:
+    async def dialog_context(slug: str, key: str, tab: str = "") -> dict[str, Any]:
         task = await find_task(slug, key)
         return {
             "detail": await service.task_detail(task.key, reports=TASK_PAGE_REPORTS),
             "values": {},
             "waiting_values": await service.waiting_on_values(),
+            "tab": tab,
         }
 
     @router.get("/p/{slug}/t/{key}/dialog", response_class=HTMLResponse)
-    async def dialog_fragment(request: Request, slug: str, key: str):
-        return render(request, "_task_dialog.html", **await dialog_context(slug, key))
+    async def dialog_fragment(request: Request, slug: str, key: str, tab: str = ""):
+        return render(request, "_task_dialog.html", **await dialog_context(slug, key, tab))
 
     @router.get("/p/{slug}/t/{key}/view", response_class=HTMLResponse)
     async def view_fragment(request: Request, slug: str, key: str):
@@ -640,6 +729,97 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return RedirectResponse(f"/t/{task.key}", status_code=303)
         return await comment_thread(request, task)
 
+    # --- Review: checklist decisions, pasted screenshots, files ----------------------
+
+    async def review_panel(request: Request, task: Task, error: str | None = None) -> HTMLResponse:
+        _, review, _ = await service.review(task.key)
+        fresh = await service.get_task(task.key)
+        return render(request, "_review.html", t=fresh, review=review, error=error)
+
+    @router.get("/p/{slug}/t/{key}/review", response_class=HTMLResponse)
+    async def review_fragment(request: Request, slug: str, key: str):
+        return await review_panel(request, await find_task(slug, key))
+
+    @router.post("/p/{slug}/t/{key}/review/{step_id}", response_class=HTMLResponse)
+    async def decide_step(
+        request: Request,
+        slug: str,
+        key: str,
+        step_id: int,
+        decision: Annotated[str, Form()] = "",
+        comment: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        board_only(request, csrf)
+        task = await find_task(slug, key)
+        htmx = "hx-request" in request.headers
+        try:
+            await service.decide_review_step(task.key, step_id, decision, comment, actor="owner")
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            if not htmx:
+                raise
+            return await review_panel(request, task, error=str(exc))  # 200: htmx swaps it
+        if not htmx:
+            return RedirectResponse(f"/p/{slug}?task={task.key}&tab=review", status_code=303)
+        return await review_panel(request, task)
+
+    @router.post("/p/{slug}/t/{key}/review/{step_id}/paste")
+    async def paste_screenshot(request: Request, slug: str, key: str, step_id: int):
+        """A screenshot pasted into a step: the raw image is the body, the CSRF token a header
+        (a board page's script sends it)."""
+        board_only(request, request.headers.get(CSRF_HEADER, ""))
+        task = await find_task(slug, key)
+        limit = service.attachment_max_bytes
+        body = bytearray()
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > limit:
+                return PlainTextResponse(
+                    f"The image is larger than {limit // MB} MB.", status_code=413
+                )
+        try:
+            item, new = await service.attach_pasted(task.key, step_id, bytes(body))
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return PlainTextResponse(str(exc), status_code=400)
+        return PlainTextResponse(
+            f"Attached #{item.id}." if new else f"Already attached as #{item.id}.",
+            status_code=201 if new else 200,
+        )
+
+    @router.post("/p/{slug}/t/{key}/attachments/{attachment_id}/delete")
+    async def delete_attachment(
+        request: Request,
+        slug: str,
+        key: str,
+        attachment_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        board_only(request, csrf)
+        task = await find_task(slug, key)
+        await service.remove_attachment(task.key, attachment_id, actor="owner")
+        if "hx-request" not in request.headers:
+            return RedirectResponse(f"/p/{slug}?task={task.key}&tab=review", status_code=303)
+        return await review_panel(request, task)
+
+    @router.get("/files/{attachment_id}")
+    async def attachment_file(attachment_id: int) -> Response:
+        """A stored screenshot, behind the board cookie, with its checked type; nosniff and the
+        CSP come from the security middleware."""
+        item, path = await service.attachment_file(attachment_id)
+        if not path.is_file():
+            raise NotFoundError(f"The file of attachment #{attachment_id} is missing.")
+        return FileResponse(
+            path,
+            media_type=item.mime,
+            content_disposition_type="inline",
+            filename=item.stored_name,
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+
     # --- Stands & access: environments, access map, permission levels -----------------
 
     def board_only(request: Request, csrf: str) -> None:
@@ -659,6 +839,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         error: str | None = None,
         error_target: str = "",
         confirm: dict[str, Any] | None = None,
+        message: str | None = None,
         status: int = 200,
     ) -> HTMLResponse:
         last_event_id = await service.last_event_id()  # before the data, see projects_page
@@ -677,6 +858,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             error=error,
             error_target=error_target,
             confirm=confirm,
+            message=message,
             last_event_id=last_event_id,
         )
 
@@ -715,6 +897,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         target: str,
         write: Callable[[Any], Awaitable[Any]],
         anchor: str = "",
+        message: str = "Saved.",
     ) -> Response:
         """Run a board write; on success back to the page, on failure the page with the
         reason next to the form, or a confirmation for raising live above read."""
@@ -735,7 +918,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return await environments_page(
                 request, slug, error=str(exc), error_target=target, status=400
             )
-        return RedirectResponse(f"/p/{slug}/environments{anchor}", status_code=303)
+        return flash_redirect(request, f"/p/{slug}/environments{anchor}", message=message)
 
     def confirmed(form: Any) -> bool:
         return form.get("confirm_live") == "1"
@@ -749,7 +932,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/p/{slug}/environments", response_class=HTMLResponse)
     async def environments(request: Request, slug: str):
-        return await environments_page(request, slug)
+        flash = take_flash(request)
+        response = await environments_page(request, slug, message=flash.get("message"))
+        return shown_once(request, response)
 
     @router.get("/p/{slug}/environments/proposals", response_class=HTMLResponse)
     async def proposals_fragment(request: Request, slug: str):
@@ -770,7 +955,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 slug, environment_values(form), confirm_live=confirmed(form), actor="owner"
             )
 
-        return await environment_write(request, slug, csrf, "new", write)
+        return await environment_write(
+            request, slug, csrf, "new", write, message="Environment added."
+        )
 
     @router.post("/p/{slug}/environments/{env_id}")
     async def update_environment(
@@ -789,7 +976,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             )
 
         return await environment_write(
-            request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}"
+            request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}", "Environment saved."
         )
 
     @router.post("/p/{slug}/environments/{env_id}/delete")
@@ -802,7 +989,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         async def write(form: Any) -> None:
             await service.delete_environment(slug, env_id, actor="owner")
 
-        return await environment_write(request, slug, csrf, f"env-{env_id}", write)
+        return await environment_write(
+            request, slug, csrf, f"env-{env_id}", write, message="Environment deleted."
+        )
 
     @router.post("/p/{slug}/environments/{env_id}/access")
     async def add_access(
@@ -885,7 +1074,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 actor="owner",
             )
 
-        return await environment_write(request, slug, csrf, "", write)
+        return await environment_write(
+            request, slug, csrf, "", write, message=f"Proposal #{proposal_id} {decision}ed."
+        )
 
     @router.get("/events")
     async def events(
@@ -963,9 +1154,27 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     async def settings_index() -> Response:
         return RedirectResponse("/settings/integrations", status_code=303)
 
+    @router.get("/settings/notifications", response_class=HTMLResponse)
+    async def notifications(request: Request):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        return await page(request, "notifications.html", "settings", last_event_id=last_event_id)
+
     @router.get("/settings/integrations", response_class=HTMLResponse)
     async def integrations(request: Request, mode: str = machine_setup.DEFAULT_MODE):
-        return await integrations_page(request, mode)
+        flash = take_flash(request)
+        checks = [
+            machine_setup.Check(bool(c[0]), str(c[1]), str(c[2]))
+            for c in flash.get("checks") or []
+            if isinstance(c, list) and len(c) == 3
+        ]
+        response = await integrations_page(
+            request,
+            mode,
+            message=flash.get("message"),
+            error=flash.get("error"),
+            checks=checks or None,
+        )
+        return shown_once(request, response)
 
     @router.post("/settings/integrations/{action}", response_class=HTMLResponse)
     async def integrations_action(
@@ -978,6 +1187,21 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         check_csrf(csrf)
         if mode not in machine_setup.MODES:
             mode = machine_setup.DEFAULT_MODE
+
+        async def answer(
+            message: str | None = None,
+            error: str | None = None,
+            checks: list[machine_setup.Check] | None = None,
+        ) -> Response:
+            # htmx swaps the fragment in place; a plain form post goes POST → 303 → GET.
+            if "hx-request" in request.headers:
+                return await integrations_page(
+                    request, mode, message=message, error=error, checks=checks
+                )
+            rows = [[c.ok, c.name, c.detail[:200]] for c in checks or []]
+            url = f"/settings/integrations?{urlencode({'mode': mode})}"
+            return flash_redirect(request, url, message=message, error=error, checks=rows)
+
         if action == "check":
             checks = await asyncio.to_thread(
                 machine_setup.run_check,
@@ -985,24 +1209,24 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 token=token,
                 paths=machine_setup.claude_paths(settings.claude_home),
             )
-            return await integrations_page(request, mode, checks=checks)
+            return await answer(checks=checks)
         if action not in ("apply", "remove"):
             raise HTTPException(status_code=404)
         detection = await asyncio.to_thread(machine_setup.detect)
         plan = integrations_plan(mode, detection, remove=action == "remove")
         if plan.error or plan.hooks is None:
-            return await integrations_page(request, mode, error=plan.error)
+            return await answer(error=plan.error)
         try:
             # `expect` is the hash of the plan shown on the page: write only what was approved.
             backup = machine_setup.write_change(plan.hooks, expect=expect)
         except (machine_setup.SetupError, OSError) as exc:
-            return await integrations_page(request, mode, error=str(exc))
+            return await answer(error=str(exc))
         if not plan.hooks.changed:
             message = "Nothing to change."
         else:
             done = "Removed relaybay's hooks from" if action == "remove" else "Wrote"
             message = f"{done} {plan.hooks.path}" + (f" (backup: {backup.name})" if backup else "")
-        return await integrations_page(request, mode, message=message)
+        return await answer(message=message)
 
     # --- Settings → Policy -------------------------------------------------------------
 
@@ -1080,11 +1304,14 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return await policy_page(
                 request, scope, text=form.get("body"), error=str(exc), status=400
             )
-        return await policy_page(request, scope, message=message)
+        url = "/settings/policy" + (f"?{urlencode({'scope': scope})}" if scope != "global" else "")
+        return flash_redirect(request, url, message=message)
 
     @router.get("/settings/policy", response_class=HTMLResponse)
     async def policy_settings(request: Request, scope: str = "global"):
-        return await policy_page(request, scope)
+        flash = take_flash(request)
+        response = await policy_page(request, scope, message=flash.get("message"))
+        return shown_once(request, response)
 
     @router.get("/settings/policy/proposals", response_class=HTMLResponse)
     async def policy_proposals_fragment(request: Request):

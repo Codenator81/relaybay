@@ -24,12 +24,18 @@ from relaybay.domain.models import (
     Task,
     TrackerEntry,
 )
-from relaybay.domain.stages import Stage
+from relaybay.domain.review import Attachment, ReviewStep
+from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 
 _TASK_SELECT = """
 SELECT t.*, p.slug AS project_slug, s.name AS session_name, s.external_id AS session_external_id,
        s.status AS session_status, s.desktop_link AS session_link,
-       s.activity AS session_activity, s.activity_at AS session_activity_at
+       s.activity AS session_activity, s.activity_at AS session_activity_at,
+       (SELECT COUNT(*) FROM review_step r WHERE r.task_id = t.id) AS review_total,
+       (SELECT COUNT(*) FROM review_step r WHERE r.task_id = t.id AND r.status = 'accepted')
+           AS review_accepted,
+       (SELECT COUNT(*) FROM review_step r WHERE r.task_id = t.id AND r.status = 'rejected')
+           AS review_rejected
 FROM task t
 JOIN project p ON p.id = t.project_id
 LEFT JOIN session s ON s.id = t.session_id
@@ -82,6 +88,9 @@ def _task(row: aiosqlite.Row) -> Task:
         session_link=row["session_link"],
         session_activity=row["session_activity"],
         session_activity_at=row["session_activity_at"],
+        review_total=row["review_total"],
+        review_accepted=row["review_accepted"],
+        review_rejected=row["review_rejected"],
     )
 
 
@@ -695,6 +704,8 @@ def _comment(row: aiosqlite.Row) -> Comment:
         stop_blocks=row["stop_blocks"],
         task_key=row["task_key"],
         delivered_to_name=row["delivered_to_name"],
+        step_id=row["step_id"],
+        attachment_id=row["attachment_id"],
     )
 
 
@@ -708,11 +719,23 @@ async def insert_comment(
     body_md: str,
     in_reply_to: int | None,
     now: str,
+    step_id: int | None = None,
+    attachment_id: int | None = None,
 ) -> int:
     cur = await conn.execute(
         "INSERT INTO comment (task_id, author_kind, author, session_id, body_md, in_reply_to,"
-        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (task_id, author_kind, author, session_id, body_md, in_reply_to, now),
+        " created_at, step_id, attachment_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            task_id,
+            author_kind,
+            author,
+            session_id,
+            body_md,
+            in_reply_to,
+            now,
+            step_id,
+            attachment_id,
+        ),
     )
     return int(cur.lastrowid or 0)
 
@@ -798,6 +821,192 @@ async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> 
         (limit,),
     )
     return [_comment(r) for r in rows]
+
+
+# --- review ----------------------------------------------------------------
+
+
+def _step(row: aiosqlite.Row) -> ReviewStep:
+    return ReviewStep(
+        id=row["id"],
+        task_id=row["task_id"],
+        position=row["position"],
+        title=row["title"],
+        details_md=row["details_md"],
+        status=row["status"],
+        decided_at=row["decided_at"],
+        decided_by=row["decided_by"],
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def list_review_steps(conn: aiosqlite.Connection, task_id: int) -> list[ReviewStep]:
+    rows = await _all(
+        conn, "SELECT * FROM review_step WHERE task_id = ? ORDER BY position", (task_id,)
+    )
+    return [_step(r) for r in rows]
+
+
+async def get_review_step(conn: aiosqlite.Connection, step_id: int) -> ReviewStep | None:
+    row = await _one(conn, "SELECT * FROM review_step WHERE id = ?", (step_id,))
+    return _step(row) if row else None
+
+
+async def insert_review_step(
+    conn: aiosqlite.Connection,
+    task_id: int,
+    position: int,
+    title: str,
+    details_md: str | None,
+    created_by: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO review_step (task_id, position, title, details_md, created_by, created_at,"
+        " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (task_id, position, title, details_md, created_by, now, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_review_step(
+    conn: aiosqlite.Connection, step_id: int, changes: dict[str, Any], now: str
+) -> None:
+    sets = [f"{k} = ?" for k in changes]
+    await conn.execute(
+        f"UPDATE review_step SET {', '.join(sets)}, updated_at = ? WHERE id = ?",
+        (*changes.values(), now, step_id),
+    )
+
+
+async def delete_review_step(conn: aiosqlite.Connection, step_id: int) -> None:
+    await conn.execute("DELETE FROM review_step WHERE id = ?", (step_id,))
+
+
+_ATTACHMENT_SELECT = """
+SELECT a.*, t.key AS task_key, p.slug AS project_slug, r.position AS step_position
+FROM attachment a
+JOIN task t ON t.id = a.task_id
+JOIN project p ON p.id = t.project_id
+LEFT JOIN review_step r ON r.id = a.step_id
+"""
+
+
+def _attachment(row: aiosqlite.Row) -> Attachment:
+    return Attachment(
+        id=row["id"],
+        task_id=row["task_id"],
+        step_id=row["step_id"],
+        kind=row["kind"],
+        stored_name=row["stored_name"],
+        original_name=row["original_name"],
+        mime=row["mime"],
+        size=row["size"],
+        sha256=row["sha256"],
+        caption_md=row["caption_md"],
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+        task_key=row["task_key"],
+        project_slug=row["project_slug"],
+        step_position=row["step_position"],
+    )
+
+
+async def insert_attachment(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: int,
+    step_id: int | None,
+    stored_name: str,
+    original_name: str | None,
+    mime: str,
+    size: int,
+    sha256: str,
+    caption_md: str | None,
+    created_by: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO attachment (task_id, step_id, stored_name, original_name, mime, size,"
+        " sha256, caption_md, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            task_id,
+            step_id,
+            stored_name,
+            original_name,
+            mime,
+            size,
+            sha256,
+            caption_md,
+            created_by,
+            now,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_attachment(conn: aiosqlite.Connection, attachment_id: int) -> Attachment | None:
+    row = await _one(conn, _ATTACHMENT_SELECT + " WHERE a.id = ?", (attachment_id,))
+    return _attachment(row) if row else None
+
+
+async def list_attachments(conn: aiosqlite.Connection, task_id: int) -> list[Attachment]:
+    rows = await _all(conn, _ATTACHMENT_SELECT + " WHERE a.task_id = ? ORDER BY a.id", (task_id,))
+    return [_attachment(r) for r in rows]
+
+
+async def find_attachment(
+    conn: aiosqlite.Connection, task_id: int, sha256: str
+) -> Attachment | None:
+    row = await _one(
+        conn, _ATTACHMENT_SELECT + " WHERE a.task_id = ? AND a.sha256 = ?", (task_id, sha256)
+    )
+    return _attachment(row) if row else None
+
+
+async def task_attachment_bytes(conn: aiosqlite.Connection, task_id: int) -> int:
+    row = await _one(
+        conn, "SELECT COALESCE(SUM(size), 0) FROM attachment WHERE task_id = ?", (task_id,)
+    )
+    return int(row[0])
+
+
+async def update_attachment(
+    conn: aiosqlite.Connection, attachment_id: int, changes: dict[str, Any]
+) -> None:
+    sets = [f"{k} = ?" for k in changes]
+    await conn.execute(
+        f"UPDATE attachment SET {', '.join(sets)} WHERE id = ?",
+        (*changes.values(), attachment_id),
+    )
+
+
+async def delete_attachment(conn: aiosqlite.Connection, attachment_id: int) -> None:
+    await conn.execute("DELETE FROM attachment WHERE id = ?", (attachment_id,))
+
+
+async def stored_files(conn: aiosqlite.Connection) -> set[tuple[str, str, str]]:
+    """(project slug, task key, stored name) of every attachment: the files that must exist."""
+    rows = await _all(
+        conn,
+        "SELECT p.slug, t.key, a.stored_name FROM attachment a"
+        " JOIN task t ON t.id = a.task_id JOIN project p ON p.id = t.project_id",
+    )
+    return {(r[0], r[1], r[2]) for r in rows}
+
+
+async def review_queue(conn: aiosqlite.Connection) -> list[Task]:
+    """Tasks in review or test with a checklist, across projects, the longest waiting first."""
+    marks = ", ".join("?" for _ in ACCEPTANCE_STAGES)
+    rows = await _all(
+        conn,
+        f"SELECT * FROM ({_TASK_SELECT} WHERE t.stage IN ({marks}))"
+        " WHERE review_total > 0 ORDER BY COALESCE(stage_changed_at, updated_at), id",
+        tuple(s.value for s in ACCEPTANCE_STAGES),
+    )
+    return [_task(r) for r in rows]
 
 
 # --- event -----------------------------------------------------------------

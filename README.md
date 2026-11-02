@@ -35,14 +35,20 @@ Something off? `relaybay doctor`.
 
 ## Features
 
-- **Board** — projects with per-stage counts; per project, columns `plan → dev → test → live → done`
+- **Board** — projects with per-stage counts; per project, columns `plan → dev → review → test → live → done` on two pages
   with cards showing only the essentials: key, tracker badge, an "open in desktop" icon when a
   desktop session works on the task, title, waiting-on person, branch and the next step. Click a
   card to open the task in a dialog over the live board (its own URL,
   `/p/<project>?task=<key>`, full screen on a phone): description and progress in full, reports,
   session history, "Open in desktop", unbinding the session and editing the task. Each task also has
   a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a
-  dropped connection, a stage tab bar on narrow screens.
+  dropped connection, a stage tab bar on narrow screens; ← / → switch the two board pages.
+- **Review** — agents write what you should check by eye as a checklist and attach screenshots
+  (`review_steps_set`, `attach_file`); you accept or reject each step in the task's Review tab,
+  look at screenshots full screen, paste your own with Ctrl+V, and each decision reaches the
+  agent as a comment. Tasks waiting for acceptance are in the Inbox's Review queue; an optional
+  browser notification (Settings → Notifications) says when one arrives. How agents make
+  screenshot files: [Screenshots for review](https://codenator81.github.io/relaybay/how-to/screenshots-for-review/).
 - **Next step that keeps up** — sessions pass the next step and who acts next together with a
   stage change or a report; a next step left over from before the last stage change shows muted
   and marked "stale".
@@ -155,9 +161,11 @@ variables, then command-line flags.
 | legacy: the guard mode (`off`, `log`, `warn`, `block`), a layer under the policy file | from the policy (`warn`) | `RELAYBAY_GUARD_MODE` | — |
 | legacy: agents' level per environment kind (`[permission_defaults]`), a layer under the policy file | from the policy (local `full`, test `full`, live `read`) | — | — |
 | folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
+| extra folders `attach_file` may read screenshots from (besides the project repository and the temp folder) | none | `RELAYBAY_ATTACHMENT_ROOTS` (comma-separated) | — |
+| largest screenshot / screenshots per task, MB | `10` / `200` | `RELAYBAY_ATTACHMENTS_MAX_MB` / `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — |
 
-The data directory holds `relaybay.sqlite`, the `token` file, the optional `config.toml` and
-the optional `policy.json` (what agents may do; see
+The data directory holds `relaybay.sqlite`, the `token` file, `attachments/` (screenshots), the
+optional `config.toml` and the optional `policy.json` (what agents may do; see
 [Full access on a trusted local machine](https://codenator81.github.io/relaybay/how-to/trusted-machine/)
 for an example):
 
@@ -170,7 +178,7 @@ require_tracker_log = false         # true: done tasks without the tracker work 
 owner_names = ["owner", "me"]       # waiting_on values listed in the Inbox
 rules_mode = "warn"                 # "strict": a stage move that misses a rule is refused
 
-[stages.labels]                     # display names; the stage keys stay plan/dev/test/live/done
+[stages.labels]                     # display names; the stage keys stay plan/dev/review/test/live/done
 dev = "in progress"
 done = "shipped"
 

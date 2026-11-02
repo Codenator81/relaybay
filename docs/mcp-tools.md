@@ -18,13 +18,16 @@ decides when the work needs a decision; use `task_patch` for fields your tool sc
 a message from the user and call `comment_ack` (or answer with `comment_add`); before touching a
 server, cluster or database, read `environments_get` — the level there says what is allowed
 unasked, live is read-only unless the owner set otherwise — never paste secrets into relaybay and
-propose changes with `environment_propose`. The details live in the rules below.
+propose changes with `environment_propose`; before moving a task to review or test, write what the
+owner should check with `review_steps_set` and attach screenshots with `attach_file` (the owner's
+decisions arrive as owner comments). The details live in the rules below.
 
 Conventions:
 
 - **Task reference** — the key (`acme-shop-12`) or the numeric id.
-- **Stages** — `plan`, `dev`, `test`, `live`, `done`. Any transition is allowed; the event log keeps
-  the history.
+- **Stages** — `plan`, `dev`, `review`, `test`, `live`, `done`. Any transition is allowed; the
+  event log keeps the history. `review` is where the owner accepts the work step by step (see
+  *Review* below).
 - **`session`** — optional on writes: who is calling. Pass the Claude desktop app session id
   (`local_<uuid>`) if the session knows it, together with `session_title` (its display name);
   otherwise a human-readable name. relaybay creates the session on first use and records it as the
@@ -102,6 +105,7 @@ Conventions:
 | `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
 | `environments_get` | `project` | The project's environments (see *Environments and access* below): the preset and guard mode, per environment kind, base URL, agents' level (`(default)` when it comes from the default preset, `(policy: <layer>)` from another policy layer) and per-capability overrides, sign-in flag and login-state path, access entries (references only; test secrets by name only unless the policy exposes them), notes, last change. |
 | `policy_get` | `project?`, `environment?` | The effective policy (see *Policy* below) of the global scope, a project or one of its environments: the layer chain, then one line per value with the layer that set it, e.g. `- levels.live.default = "read"  (preset:default)`, and any ignored broken layer. |
+| `review_get` | `task` | The checklist (`1. [accepted] Sign in — accepted by owner …`) with each step's what / how / why, its screenshots (`screenshot #7 (image/png, 41 KB): caption`), the owner's comments on the step, then screenshots of no step. |
 | `rules_get` | `project?` | The working rules as markdown: hash, scope, mode, report format, stage requirements, description template, guidance. Without `project`, the global rules; with it, the project's merged rules. |
 
 ## Writing
@@ -122,6 +126,11 @@ Conventions:
 | `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a proposal for the owner and changes nothing (`environment.proposed`); it shows in the owner's Inbox and on the Stands & access page, where the owner accepts or rejects it. `change`: `environment` (name) plus any of `kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`none` / `read` / `ask` / `full` / `default`), `overrides` (`{"ssh": "ask"}`; capabilities `sign_in`, `ssh`, `kubectl`, `db`, `deploy`), `access` (`[{"kind": "ssh", "fields": {"alias": "acme-live"}}]` to add). A new environment needs `kind`. Secret values are refused (a tool error naming the field); test secrets are never accepted from agents. |
 | `policy_propose` | `scope` (`global`, `<project>` or `<project>/<environment>`), `patch` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a policy proposal and changes nothing (`policy.proposed`); it shows in the owner's Inbox and in Settings → Policy. The patch is merged into the layer's JSON (objects key by key, other values replace, `null` removes a key) and the result must validate against the [policy schema](reference/policy.md); a tool error names the path otherwise. Accepting applies it (`policy.updated`, `policy.proposal_accepted`), with a confirmation when it widens agents' access on live. |
 
+| `review_steps_set` | `task`, `steps` (`[{"title", "details?"}]`, up to 50), `session?`, `session_title?`, `hook_session?` | Replaces the checklist (see *Review*). Step N keeps its status and screenshots while its title and details stay the same; a changed step is open again; steps past the new end are removed (their screenshots stay on the task). |
+| `review_step_update` | `task`, `step` (number), `title?`, `details?`, `status?` (only `open`), `session?`, `session_title?`, `hook_session?` | Changes one step's text (which reopens it) or reopens it after a fix. Accepting and rejecting is the owner's, on the board. |
+| `attach_file` | `task`, `path?` or `content_base64?`, `filename?`, `step?` (number), `caption?` (markdown), `session?`, `session_title?`, `hook_session?` | Copies a PNG, JPEG, WebP or GIF (checked by content; SVG and others refused) to the task, optionally to a step. `path` is absolute and inside the project's `repo_path`, the temp folder or `attachment_roots`. Limits `attachments_max_mb` per file and `attachments_task_max_mb` per task. The same image on the same task is stored once (the answer says so). How to produce the file: [Screenshots for review](how-to/screenshots-for-review.md). |
+| `attachment_caption` | `attachment_id`, `caption` (`"-"` clears), `session?`, `session_title?`, `hook_session?` | Changes a screenshot's caption. |
+
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
 
@@ -130,6 +139,28 @@ checked against the project's rules. In `warn` mode the write succeeds and the r
 line per unmet requirement, e.g. `Warning (rules): moving to test usually needs a report since the
 last stage change.`; the `task.stage_changed` event carries the same lines as `warnings`. In
 `strict` mode the write fails with `Rules: moving to test requires … Nothing changed.`
+
+## Review
+
+The owner accepts a task step by step in the task dialog's **Review** tab. What to check by eye
+(the Owner check) belongs in the checklist, not only in the report:
+
+```text
+review_steps_set(task="acme-shop-12", steps=[
+  {"title": "Sign in with 2FA", "details": "**What:** the code screen. **How:** sign in with the
+   demo account. **Why:** the new step must not skip the code."},
+  {"title": "Cart badge", "details": "Add two products; the badge shows 2."}])
+attach_file(task="acme-shop-12", path="/tmp/acme-shop-2fa.png", step=1, caption="Code screen")
+task_set_stage(task="acme-shop-12", stage="review", waiting_on="owner")
+```
+
+Moving a task to `review` or `test` with an empty checklist adds a `Hint:` line to the answer.
+Each decision on the board reaches the bound session as an owner comment (like any other, see
+*Owner comments through hooks*), linked to its step: `Step 1 'Sign in with 2FA' accepted —
+continue with step 2`, `Step 2 'Cart badge' rejected: the badge shows 1`, or a plain comment `On
+step 2 'Cart badge': …`. Acknowledge it with `comment_ack`; after a fix, reopen the step with
+`review_step_update(status="open")` or change its text. The card shows "Review 1/2"; tasks in
+review or test with a checklist are listed in the owner's Inbox (Review queue).
 
 ## Session status from hooks
 
