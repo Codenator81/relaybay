@@ -455,6 +455,64 @@ files and settings land in stage 2.
   scanning + push protection, Dependabot alerts and security updates, private vulnerability reporting,
   read-only `GITHUB_TOKEN`. Required CI status checks are added to the ruleset once CI exists.
 
+### 11.2 Working rules inside relaybay (accepted 2026-11-02)
+
+Goal: the rules for how agents (and people) work with tasks live in relaybay itself — any client
+gets them from the server, the server enforces them, and they can be upgraded through MCP — instead
+of living only in each user's private agent setup.
+
+**A. Working contract in MCP `instructions` (always on).** The server instructions become the full
+contract: on start read `project_snapshot`; pick or create a task and pass your session; on every
+stage change or report update `next_step`, `waiting_on` and `progress`; the first line of a report is
+`state · size · gist`; when the work needs a decision, set `waiting_on` to who decides. Short, stable
+text; the details come from the rules (B).
+
+**B. Rules as versioned data.** Tables `rule_set` (scope: `global` or a project) and `rule_version`
+(number, body as structured JSON + rendered markdown, author session, reason, created_at, diff to the
+previous version). A rule set holds:
+- report format (required first line, allowed states and sizes);
+- required fields per stage (e.g. `test` needs a report since the last stage change, `done` needs
+  `progress`; with `require_tracker_log`, `done` needs the tracker mark);
+- description template for new tasks;
+- free-text guidance shown to agents.
+
+Agents read them through `relaybay://rules` (global + project, merged, with version numbers) and
+`rules_get(project?)`; `project_snapshot` starts with "Rules vN (global vG, project vP)". When the
+version an agent last saw is older, tool responses add one line: "rules updated to vN — re-read
+relaybay://rules".
+
+**C. Changing rules.**
+- `rules_update(scope, patch, reason)` — creates a new version; allowed directly only for the
+  coordinator session(s) named in config (`coordinators = ["…"]`, matched by desktop id, alias or
+  name). Everyone else gets an error pointing to `rules_propose`.
+- `rules_propose(scope, patch, reason)` — stored as a proposal; the board shows it under Settings →
+  Rules with Accept / Reject for the owner; accepting creates the next version.
+- UI: Settings → Rules shows the current version, history with author, reason and diff, and
+  "Roll back to vK" (creates a new version equal to vK).
+
+**D. Server-side checks.** The same rule version drives validation in `task_set_stage`,
+`report_add`, `task_update` and `task_patch`. Mode per config: `rules_mode = "warn"` (default; the
+write succeeds and the response carries the warning) or `"strict"` (the write fails with a clear
+message, e.g. "moving to test requires a report since the last stage change"). Board edits follow
+the same mode.
+
+**E. MCP prompts.** Prompts `start_task` and `finish_stage` (arguments: project, task) that expand to
+the current rules plus a checklist. Claude Code lists MCP prompts as slash commands
+(`/mcp__relaybay__start_task`); to verify on the current client version before relying on it.
+
+**Order and size.**
+1. 1.5a — contract in `instructions` + read-only rules (global + project) from config/DB, resource
+   `relaybay://rules`, `rules_get`, rules line in `project_snapshot`, `warn` checks for two rules
+   (report before `test`, `progress` before `done`). ~1–1.5 agent-days. *Proposed as the next
+   branch.*
+2. 1.5b — versioning, `rules_update` / `rules_propose`, coordinator config, "rules updated" hint,
+   `strict` mode. ~1.5 agent-days.
+3. 1.5c — Settings → Rules UI (history, diff, accept/reject, roll back) and MCP prompts.
+   ~1.5–2 agent-days.
+
+Decisions: default mode `warn`; with no coordinator configured every rule change is a proposal;
+rules are structured JSON with a fixed set of rule kinds, plus free-text guidance.
+
 ### v0.2 — markdown export, richer filters, hook installer, custom stage labels.
 
 ### v2 (0.3+) — runner: relaybay starts agents
