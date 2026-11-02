@@ -1,0 +1,14 @@
+{#- Content of the board's task dialog. Expects: detail, values, waiting_values. -#}
+<div class="dialog-frame" data-key="{{ detail.task.key }}">
+  <header class="dialog-head">
+    <a class="card-key" href="/t/{{ detail.task.key }}" title="Task page">{{ detail.task.key }}</a>
+    <button type="button" class="dialog-close" aria-label="Close">Close</button>
+  </header>
+  <div class="dialog-body">
+    {% include "_task_view.html" %}
+    <details class="panel dialog-edit">
+      <summary>Edit task</summary>
+      {% with t = detail.task %}{% include "_task_form.html" %}{% endwith %}
+    </details>
+  </div>
+</div>

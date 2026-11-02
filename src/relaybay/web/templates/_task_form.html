@@ -1,0 +1,50 @@
+{#- Edit form of the task dialog. Expects: t, values, waiting_values, optional error / saved. The box
+    is refetched on live events only while the form is untouched (see app.js). -#}
+<div class="task-form-box" id="form-{{ t.key }}"
+     hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/form" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {#- After a failed save the form holds the user's unsaved input: dirty, so live events keep it. #}
+  <form class="task-form"{% if error %} data-dirty="1"{% endif %} hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}"
+        hx-target="closest .task-form-box" hx-swap="outerHTML">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="version" value="{{ t.version }}">
+    {% if error %}<p class="form-error" role="alert">{{ error }}
+      {%- if conflict %} <button type="button" class="action form-reload">Discard my edits and reload</button>{% endif %}</p>
+    {% elif saved %}<p class="form-ok" role="status">Saved.</p>{% endif %}
+    <p class="form-stale" role="status" hidden>This task changed while you were editing.
+      <button type="button" class="action form-reload">Discard my edits and reload</button></p>
+    <label class="field"><span>Title</span>
+      <input name="title" required maxlength="200" value="{{ values.get('title', t.title) }}">
+    </label>
+    <div class="field-row">
+      <label class="field"><span>Stage</span>
+        <select name="stage">
+          {% for stage in stages %}
+          <option value="{{ stage }}"{% if stage == values.get('stage', t.stage.value) %} selected{% endif %}>{{ label(stage) }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field"><span>Waiting on</span>
+        <input name="waiting_on" list="waiting-values-{{ t.key }}" value="{{ values.get('waiting_on', t.waiting_on or '') }}">
+        <datalist id="waiting-values-{{ t.key }}">
+          {% for v in waiting_values %}<option value="{{ v }}">{% endfor %}
+        </datalist>
+      </label>
+    </div>
+    <label class="field"><span>Next step</span>
+      <textarea name="next_step" rows="2">{{ values.get('next_step', t.next_step or '') }}</textarea>
+    </label>
+    <label class="field"><span>Branch</span>
+      <input name="branch" value="{{ values.get('branch', t.branch or '') }}" spellcheck="false">
+    </label>
+    <label class="field"><span>Description <span class="muted">· markdown</span></span>
+      <textarea name="description" rows="5">{{ values.get('description', t.description or '') }}</textarea>
+    </label>
+    <label class="field"><span>Done so far <span class="muted">· markdown</span></span>
+      <textarea name="progress" rows="6">{{ values.get('progress', t.progress or '') }}</textarea>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Save</button>
+      <span class="muted">v{{ t.version }}</span>
+    </div>
+  </form>
+</div>

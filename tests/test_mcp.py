@@ -18,6 +18,7 @@ EXPECTED_TOOLS = {
     "task_update",
     "task_set_stage",
     "task_bind_session",
+    "task_unbind_session",
     "report_add",
     "decision_add",
     "events_since",
@@ -153,3 +154,62 @@ async def test_desktop_session_binding(live_server: Callable[[], LiveServer]) ->
         tools = {t.name: t for t in (await client.list_tools()).tools}
         schema = tools["task_bind_session"].input_schema["properties"]
         assert "local_" in schema["session"]["description"] and "session_title" in schema
+
+
+async def test_description_progress_and_unbind(live_server: Callable[[], LiveServer]) -> None:
+    live = live_server()
+    long_progress = "- cart\n- totals\n" + "- more work " * 30
+    async with connect(live) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        for name in ("task_create", "task_update", "report_add"):
+            props = tools[name].input_schema["properties"]
+            assert "keep it current with every report" in props["progress"]["description"]
+        assert "description" in tools["task_update"].input_schema["properties"]
+
+        await call(client, "project_upsert", slug="acme-shop")
+        await call(
+            client,
+            "task_create",
+            project="acme-shop",
+            title="Checkout",
+            description="Build the **checkout** page so users can pay.",
+            session="checkout-dev",
+        )
+        report = await call(
+            client,
+            "report_add",
+            task="acme-shop-1",
+            body="changed · S · cart",
+            progress=long_progress,
+            session="checkout-dev",
+        )
+        assert "(changed · S): cart" in report
+
+        detail = await call(client, "task_get", task="acme-shop-1")
+        assert "## Description\nBuild the **checkout** page so users can pay." in detail
+        assert f"## Progress (done so far)\n{long_progress.strip()}" in detail
+        assert "- version: 2" in detail  # the progress from report_add bumped it
+
+        snapshot = await call(client, "project_snapshot", project="acme-shop")
+        assert "  about: Build the **checkout** page so users can pay." in snapshot
+        done_line = next(line for line in snapshot.splitlines() if line.startswith("  done: "))
+        assert done_line.startswith("  done: - cart - totals") and done_line.endswith("…")
+        assert len(done_line) <= len("  done: ") + 160
+
+        await call(client, "task_update", task="acme-shop-1", description="")
+        assert "## Description" not in await call(client, "task_get", task="acme-shop-1")
+
+        stale = await client.call_tool(
+            "task_unbind_session", {"task": "acme-shop-1", "session": "someone-else"}
+        )
+        assert stale.is_error and "bound to checkout-dev" in stale.content[0].text
+        unbound = await call(client, "task_unbind_session", task="acme-shop-1")
+        assert "Unbound checkout-dev from **acme-shop-1**" in unbound
+        assert "No session is bound" in await call(
+            client, "task_unbind_session", task="acme-shop-1"
+        )
+        detail = await call(client, "task_get", task="acme-shop-1")
+        assert "- session:" not in detail and "- checkout-dev — bound" in detail
+
+        events = await call(client, "events_since", since_id=0, project="acme-shop")
+        assert "task.session_unbound acme-shop-1 ✕ checkout-dev (mcp)" in events

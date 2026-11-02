@@ -8,12 +8,16 @@ in the browser, on the desktop or on your phone.
 > edges; issues and ideas are welcome.
 
 - **Board** — projects with per-stage counts; per project, columns `plan → dev → test → live → done`
-  with cards showing the waiting-on person, the session working on the task, the branch and the last
-  report. Claude desktop app sessions get an "Open in desktop" link; each task has a page with its
-  session history and reports. Live updates over Server-Sent Events, catch-up after sleep or a dropped connection, a stage
-  tab bar on narrow screens. Click a card to edit it.
+  with cards showing the start of the task's description, a "Done:" summary of its progress, the
+  waiting-on person, the session working on the task (or "no session"), the branch and the last
+  report. Click a card to open the task in a dialog over the live board (its own URL,
+  `/p/<project>?task=<key>`, full screen on a phone): description and progress in full, reports,
+  session history, "Open in desktop", unbinding the session and editing the task. Each task also has
+  a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a
+  dropped connection, a stage tab bar on narrow screens.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
-  stages, add reports and decisions, get a markdown snapshot of a project.
+  stages, keep a task's description and progress summary current, add reports and decisions, bind
+  and unbind sessions, get a markdown snapshot of a project.
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
   no outbound calls, no CDN.
 

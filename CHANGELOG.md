@@ -36,3 +36,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   button; the link template is configurable (`desktop_link_template`).
 - Session binding history per task (`task_session`), shown on the task page and in `task_get`;
   binding a session emits `task.session_bound`.
+- Task `description` and `progress` (markdown, migration `0002` upgrades existing databases in
+  place): `task_create` and `task_update` accept both, `report_add` takes an optional `progress`
+  saved in the same transaction, `task_get` shows them in full and `project_snapshot` shortened.
+- `task_unbind_session` MCP tool and an "Unbind session" button (with confirmation) on the board:
+  closes the binding, keeps the history and emits `task.session_unbound`; an optional `session`
+  refuses to unbind a session that took over meanwhile.
+- Board cards show the first lines of the description, a "Done:" block with the progress and a
+  "no session" chip.
+
+### Changed
+
+- Clicking a card opens the task in a dialog over the live board instead of an inline editor: the
+  full task (description, progress, reports, session history, desktop link, unbind) and its edit
+  form. The dialog has its own URL (`/p/<project>?task=<key>`), closes with Back, Esc or a click
+  outside, and is full screen on narrow screens. The task page `/t/<key>` shows the same details.

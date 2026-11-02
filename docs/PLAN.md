@@ -80,6 +80,8 @@ task      id PK, project_id FK, key UNIQUE (e.g. "acme-shop-12"), title,
           stage_note NULL,          -- free text next to the stage ("PR open, waiting for CI")
           waiting_on NULL,          -- who the task waits for: "owner", "reviewer", a name, a session
           next_step NULL, branch NULL, doc_path NULL,   -- link to an external TASK.md
+          description NULL,         -- markdown: what to do and why (1–5 sentences)
+          progress NULL,            -- markdown: running summary of what is done (rewritten, not appended)
           session_id FK NULL,       -- session currently bound to the task
           priority INT DEFAULT 0, version INT,          -- optimistic concurrency
           created_at, updated_at, closed_at NULL
@@ -102,8 +104,11 @@ event     id INTEGER PK AUTOINCREMENT, ts, kind TEXT, project_id NULL, task_id N
 ```
 
 - **Event kinds:** `project.created|updated`, `task.created|updated|stage_changed|closed`,
-  `task.session_bound`, `report.added`, `decision.added`, `session.seen|status_changed|ended`,
-  `import.completed`.
+  `task.session_bound|session_unbound`, `report.added`, `decision.added`,
+  `session.seen|status_changed|ended`, `import.completed`.
+- **Description and progress** (migration `0002`): changing either is a `task.updated` with a
+  version bump like any field; `report_add` with `progress` writes both events in one transaction.
+  Unbinding closes the open `task_session` row and clears `task.session_id`; history is kept.
   Payload carries the changed fields (`{"from": "dev", "to": "test"}`), enough to render a feed line
   and to patch the UI.
 - **Stages** are a fixed enum in v1 with a display-label map in config (so a user can show "разработка"
@@ -211,11 +216,12 @@ trusted for authorization — the token is the only auth; identity is for displa
 | `project_snapshot` | Compact markdown snapshot of a project: open tasks by stage, waiting-on, last report per task, recent decisions | `project`, `include_done?` |
 | `task_list` | Filtered list | `project?`, `stage?`, `waiting_on?`, `session?` |
 | `task_get` | Full task with last N reports and decisions | `task` (key or id) |
-| `task_create` | New task | `project`, `title`, `stage?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `session?` |
-| `task_update` | Patch fields | `task`, fields…, `expected_version?` |
+| `task_create` | New task | `project`, `title`, `stage?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `session?` |
+| `task_update` | Patch fields (incl. `description`, `progress`) | `task`, fields…, `expected_version?` |
 | `task_set_stage` | Move stage with a note | `task`, `stage`, `note?` |
 | `task_bind_session` | "Session X works on this task now" | `task`, `session` |
-| `report_add` | Append a report; first line becomes the card summary; optional `state`/`size` parsed from a leading `state · size · gist` line | `task`, `body`, `session?` |
+| `task_unbind_session` | "Nobody works on this task now"; history kept; `session` guards against unbinding a successor | `task`, `session?` |
+| `report_add` | Append a report; first line becomes the card summary; optional `state`/`size` parsed from a leading `state · size · gist` line; optional `progress` updates the task's summary atomically | `task`, `body`, `progress?`, `session?` |
 | `decision_add` | Record a decision | `project`, `task?`, `text`, `decided_by?` |
 | `events_since` | Event feed for catch-up by an agent | `since_id?`, `project?`, `limit?` |
 

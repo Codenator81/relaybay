@@ -6,7 +6,8 @@
   var KINDS = [
     "project.created", "project.updated",
     "task.created", "task.updated", "task.stage_changed",
-    "report.added", "decision.added", "task.session_bound", "session.seen"
+    "report.added", "decision.added", "task.session_bound", "task.session_unbound",
+    "session.seen"
   ];
   var live = null;
   var lastId = 0;
@@ -41,12 +42,8 @@
     return es;
   }
 
-  function isEditing(el) {
-    return el.matches("form") || el.querySelector("form.card-form") !== null;
-  }
-
   function queue(el) {
-    if (!el || isEditing(el)) return;
+    if (!el) return;
     pending.add(el);
     if (flushTimer === null) {
       flushTimer = window.setTimeout(function () {
@@ -55,7 +52,7 @@
           if (!document.body.contains(target)) return;
           // A card whose column is refetched anyway would be swapped twice.
           var col = target.closest(".col");
-          if (col !== target && pending.has(col)) return;
+          if (col && col !== target && pending.has(col)) return;
           htmx.trigger(target, "rb:refresh");
         });
         pending.clear();
@@ -81,6 +78,7 @@
     var projects = document.getElementById("projects");
     if (projects) { queue(projects); return; }
     if (!document.getElementById("board")) return;
+    if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) refreshDialog();
 
     switch (data.kind) {
       case "task.created":
@@ -93,6 +91,7 @@
       case "task.updated":
       case "report.added":
       case "task.session_bound":
+      case "task.session_unbound":
         queue(card(data.key) || column(data.stage));
         break;
     }
@@ -131,12 +130,160 @@
     }
   }
 
+  // --- task dialog: /p/<slug>?task=<key> --------------------------------------------------
+  // Opening pushes the ?task= URL; Back, Esc, the close button and a click on the backdrop close
+  // it. The board under it keeps updating; the dialog refetches its read-only part on events for
+  // its task, and its form only while the user has not typed into it.
+
+  var dialog = null;
+  var pushed = false;     // the open dialog added a history entry that closing must undo
+  var fromHistory = false;
+
+  function boardUrl(key) {
+    var path = "/p/" + encodeURIComponent(live.dataset.project);
+    return key ? path + "?task=" + encodeURIComponent(key) : path;
+  }
+
+  function editForm() { return dialog.querySelector("form.task-form"); }
+
+  function openTask(key, push) {
+    if (dialog.dataset.key !== key) {
+      dialog.dataset.key = key;
+      dialog.replaceChildren(loadingNote("Loading " + key + "…"));
+      htmx.ajax("GET", boardUrl(null) + "/t/" + encodeURIComponent(key) + "/dialog",
+        { target: dialog, swap: "innerHTML" });
+    }
+    if (!dialog.open) dialog.showModal();
+    if (!push) return;
+    // The URL still names a task when this open raced the previous close: reuse that entry.
+    if (new URLSearchParams(window.location.search).has("task")) {
+      window.history.replaceState({ task: key }, "", boardUrl(key));
+    } else {
+      window.history.pushState({ task: key }, "", boardUrl(key));
+      pushed = true;
+    }
+  }
+
+  function loadingNote(text) {
+    var p = document.createElement("p");
+    p.className = "dialog-loading muted";
+    p.textContent = text;
+    return p;
+  }
+
+  function refreshDialog() {
+    queue(dialog.querySelector(".task-view"));
+    var form = editForm();
+    if (!form) return;
+    if (form.dataset.dirty) {
+      var note = form.querySelector(".form-stale");
+      if (note) note.hidden = false;
+    } else {
+      queue(form.closest(".task-form-box"));
+    }
+  }
+
+  // Every way of closing the dialog asks before throwing away unsaved edits.
+  function mayDiscard() {
+    var form = editForm();
+    return !(form && form.dataset.dirty) || window.confirm("Discard your edits?");
+  }
+
+  function requestClose() {
+    if (mayDiscard()) dialog.close();
+  }
+
+  function setupDialog() {
+    dialog = document.getElementById("task-dialog");
+    if (!dialog) return;
+
+    dialog.addEventListener("close", function () {
+      // "close" is dispatched asynchronously: a task opened in the meantime stays open.
+      if (dialog.open) return;
+      delete dialog.dataset.key;
+      dialog.replaceChildren();
+      if (fromHistory) {
+        fromHistory = false;
+      } else if (pushed) {
+        // Also async: a task opened before this back() lands is closed by its popstate (rare race).
+        window.history.back();
+      } else if (new URLSearchParams(window.location.search).has("task")) {
+        window.history.replaceState(null, "", boardUrl(null));
+      }
+      pushed = false;
+    });
+    // Handle Esc ourselves: Chromium makes a repeated Esc "cancel" non-cancelable, which would
+    // close the dialog even after the user chose to keep their edits.
+    dialog.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      requestClose();
+    });
+    dialog.addEventListener("cancel", function (event) {
+      if (!mayDiscard()) event.preventDefault();
+    });
+    dialog.addEventListener("click", function (event) {
+      // A click on the backdrop targets the dialog itself, outside its box.
+      if (event.target !== dialog) return;
+      var r = dialog.getBoundingClientRect();
+      var inside = event.clientX >= r.left && event.clientX <= r.right &&
+        event.clientY >= r.top && event.clientY <= r.bottom;
+      if (!inside) requestClose();
+    });
+    dialog.addEventListener("htmx:responseError", function (event) {
+      if (event.detail.target !== dialog) return;
+      dialog.replaceChildren(loadingNote("Could not load the task (HTTP " +
+        event.detail.xhr.status + "). Close this and reload the board."));
+    });
+    dialog.addEventListener("input", function (event) {
+      var form = event.target.closest("form.task-form");
+      if (form) form.dataset.dirty = "1";
+    });
+
+    window.addEventListener("popstate", function () {
+      var key = new URLSearchParams(window.location.search).get("task");
+      if (key) {
+        openTask(key, false);
+      } else if (dialog.open) {
+        if (!mayDiscard()) {
+          // Back already left the ?task= entry: put it back so URL and dialog agree.
+          window.history.pushState({ task: dialog.dataset.key }, "", boardUrl(dialog.dataset.key));
+          pushed = true;
+          return;
+        }
+        fromHistory = true;
+        dialog.close();
+      }
+    });
+
+    if (dialog.dataset.open) {
+      dialog.dataset.key = dialog.dataset.open;
+      delete dialog.dataset.open;
+      dialog.showModal();
+    }
+  }
+
   document.addEventListener("click", function (event) {
-    var button = event.target.closest ? event.target.closest(".copy-link") : null;
+    if (!event.target.closest) return;
+    var button = event.target.closest(".copy-link");
     if (button) {
       event.preventDefault();
       copyLink(button);
+      return;
     }
+    var open = event.target.closest("a.card-open[data-task]");
+    if (open && dialog && event.button === 0 &&
+        !(event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)) {
+      event.preventDefault();
+      openTask(open.dataset.task, true);
+      return;
+    }
+    if (dialog && event.target.closest(".dialog-close")) {
+      requestClose();
+      return;
+    }
+    var reload = event.target.closest(".form-reload");
+    if (reload) queue(reload.closest(".task-form-box"));
   });
 
   function refreshAges() {
@@ -158,6 +305,7 @@
   live = document.getElementById("live");
   if (!live) { setStatus("off"); return; }
   lastId = parseInt(live.dataset.lastEventId || "0", 10) || 0;
+  setupDialog();
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") reconnect();
   });

@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from relaybay.db import repo
 from relaybay.domain.errors import ConflictError, NotFoundError, ValidationError
 from relaybay.domain.models import Event
 from relaybay.domain.reports import parse_report
@@ -156,3 +157,59 @@ async def test_project_filter_on_bus(service: Service) -> None:
         event = await sub.get(1)
         assert event is not None and event.payload["key"] == "acme-shop-1"
         assert await asyncio.wait_for(sub.get(0.05), 1) is None
+
+
+async def test_description_and_progress(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task(
+        "acme-shop", "Checkout", description="  Build the **checkout**.\r\nCards only.  "
+    )
+    assert task.description == "Build the **checkout**.\nCards only." and task.progress is None
+
+    updated = await service.update_task(task.key, {"progress": "- cart"})
+    assert updated.progress == "- cart" and updated.version == task.version + 1
+    event = (await service.events_since(0))[-1]
+    assert event.kind == "task.updated" and event.payload["changes"] == {"progress": "- cart"}
+
+    cleared = await service.update_task(task.key, {"description": None})
+    assert cleared.description is None
+    with pytest.raises(ValidationError, match="20000"):
+        await service.update_task(task.key, {"progress": "x" * 20001})
+
+
+async def test_report_with_progress_is_one_transaction(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout")
+    with service.bus.subscribe() as sub:
+        saved, report = await service.add_report(
+            task.key, "changed · S · cart", session="checkout-dev", progress="- cart"
+        )
+        kinds = [(await sub.get(1)).kind for _ in range(3)]
+    assert kinds == ["session.seen", "task.updated", "report.added"]
+    assert saved.progress == "- cart" and saved.version == task.version + 1
+    assert report.summary == "cart"
+
+    # Same progress again: only the report is added, the version stays.
+    again, _ = await service.add_report(task.key, "second", progress="- cart")
+    assert again.version == saved.version
+    # Without progress the summary is kept; '' clears it.
+    kept, _ = await service.add_report(task.key, "third")
+    assert kept.progress == "- cart"
+    cleared, _ = await service.add_report(task.key, "fourth", progress="")
+    assert cleared.progress is None
+
+
+async def test_failed_report_rolls_back_progress(service: Service, monkeypatch) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", progress="- cart")
+    last = await service.last_event_id()
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(repo, "insert_report", broken)
+    with pytest.raises(RuntimeError):
+        await service.add_report(task.key, "report", progress="- cart\n- totals")
+    after = await service.get_task(task.key)
+    assert (after.progress, after.version) == ("- cart", task.version)
+    assert await service.last_event_id() == last

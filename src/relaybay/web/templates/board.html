@@ -16,5 +16,9 @@
   <div id="board" class="board">
     {% include "_columns.html" %}
   </div>
+  {#- Opened by app.js; with ?task=<key> the content is rendered here and opened on load. #}
+  <dialog class="task-dialog" id="task-dialog" aria-labelledby="task-title"{% if detail %} data-open="{{ detail.task.key }}"{% endif %}>
+    {% if detail %}{% include "_task_dialog.html" %}{% endif %}
+  </dialog>
 </main>
 {% endblock %}

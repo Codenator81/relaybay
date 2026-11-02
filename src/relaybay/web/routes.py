@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.responses import StreamingResponse
 
 from relaybay import __version__
 from relaybay.config import Settings
-from relaybay.domain.errors import DomainError, NotFoundError
+from relaybay.domain.errors import ConflictError, DomainError, NotFoundError
 from relaybay.domain.models import Task
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.mcp_server.format import age
@@ -41,8 +41,11 @@ DOCS_URL = "https://github.com/Codenator81/relaybay#readme"
 STATIC_DIR = Path(__file__).parent / "static"
 DONE_COLUMN_LIMIT = 20
 TASK_PAGE_REPORTS = 10
+SAVE_CONFLICT = (
+    "Someone else changed this task while you were editing. Your edits are kept below; Save"
+    " again to overwrite their change, or reload to discard your edits."
+)
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365
-EDITABLE = ("title", "stage", "waiting_on", "next_step", "branch")
 
 
 def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
@@ -173,14 +176,17 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return render(request, "_projects.html", projects=await service.list_projects())
 
     @router.get("/p/{slug}", response_class=HTMLResponse)
-    async def board_page(request: Request, slug: str):
+    async def board_page(request: Request, slug: str, task: str | None = None):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
         context = await board_context(slug)
         first_busy = next((s for s in STAGES if context["columns"][s]), Stage.PLAN)
+        # `?task=<key>` is the URL of the open task dialog: render it so the page opens with it.
+        dialog = await dialog_context(slug, task) if task else {}
         return render(
             request,
             "board.html",
             **context,
+            **dialog,
             active_stage=first_busy,
             last_event_id=last_event_id,
         )
@@ -213,66 +219,123 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         reports = await service.last_reports([task])
         return render(request, "_card.html", t=task, slug=slug, last=reports.get(task.id))
 
-    @router.get("/p/{slug}/t/{key}/edit", response_class=HTMLResponse)
-    async def edit_fragment(request: Request, slug: str, key: str):
+    async def dialog_context(slug: str, key: str) -> dict[str, Any]:
         task = await find_task(slug, key)
-        return await edit_form(request, slug, task)
+        return {
+            "detail": await service.task_detail(task.key, reports=TASK_PAGE_REPORTS),
+            "values": {},
+            "waiting_values": await service.waiting_on_values(),
+        }
+
+    @router.get("/p/{slug}/t/{key}/dialog", response_class=HTMLResponse)
+    async def dialog_fragment(request: Request, slug: str, key: str):
+        return render(request, "_task_dialog.html", **await dialog_context(slug, key))
+
+    @router.get("/p/{slug}/t/{key}/view", response_class=HTMLResponse)
+    async def view_fragment(request: Request, slug: str, key: str):
+        task = await find_task(slug, key)
+        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+        return render(request, "_task_view.html", detail=detail)
+
+    @router.get("/p/{slug}/t/{key}/form", response_class=HTMLResponse)
+    async def form_fragment(request: Request, slug: str, key: str):
+        return await edit_form(request, await find_task(slug, key))
 
     async def edit_form(
         request: Request,
-        slug: str,
         task: Task,
         error: str | None = None,
         values: dict[str, str] | None = None,
+        saved: bool = False,
+        conflict: bool = False,
     ) -> HTMLResponse:
-        reports = await service.last_reports([task])
-        response = render(
+        # Errors come back as 200: htmx does not swap 4xx bodies by default.
+        return render(
             request,
-            "_card_form.html",
+            "_task_form.html",
             t=task,
-            slug=slug,
-            last=reports.get(task.id),
             error=error,
+            conflict=conflict,
+            saved=saved,
             values=values or {},
             waiting_values=await service.waiting_on_values(),
         )
-        if error:
-            # htmx does not swap 4xx bodies by default, so the form comes back as 200 and is
-            # re-targeted at itself.
-            response.headers["HX-Retarget"] = f"#card-{task.key}"
-            response.headers["HX-Reswap"] = "outerHTML"
-        return response
 
     @router.post("/p/{slug}/t/{key}", response_class=HTMLResponse)
-    async def save_card(
+    async def save_task(
         request: Request,
         slug: str,
         key: str,
-        title: Annotated[str, Form()] = "",
-        stage: Annotated[str, Form()] = "",
-        waiting_on: Annotated[str, Form()] = "",
-        next_step: Annotated[str, Form()] = "",
-        branch: Annotated[str, Form()] = "",
+        title: Annotated[str | None, Form()] = None,
+        stage: Annotated[str | None, Form()] = None,
+        waiting_on: Annotated[str | None, Form()] = None,
+        next_step: Annotated[str | None, Form()] = None,
+        branch: Annotated[str | None, Form()] = None,
+        description: Annotated[str | None, Form()] = None,
+        progress: Annotated[str | None, Form()] = None,
         version: Annotated[int | None, Form()] = None,
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ):
         if not same_secret(csrf, csrf_token(token)):
             raise HTTPException(status_code=403, detail="Missing CSRF token")
         task = await find_task(slug, key)
-        values = {
+        submitted = {
             "title": title,
             "stage": stage,
             "waiting_on": waiting_on,
             "next_step": next_step,
             "branch": branch,
+            "description": description,
+            "progress": progress,
         }
+        # A field missing from the form stays as it is; an empty one clears it.
+        values = {k: v for k, v in submitted.items() if v is not None}
         changes = {k: (v.strip() or None) for k, v in values.items()}
         try:
             await service.update_task(task.key, changes, expected_version=version, actor="board")
+        except ConflictError:
+            fresh = await find_task(slug, key)
+            return await edit_form(
+                request, fresh, error=SAVE_CONFLICT, values=values, conflict=True
+            )
         except DomainError as exc:
             fresh = await find_task(slug, key)
-            return await edit_form(request, slug, fresh, error=str(exc), values=values)
-        return render(request, "_columns.html", **await board_context(slug))
+            return await edit_form(request, fresh, error=str(exc), values=values)
+        return await edit_form(request, await find_task(slug, key), saved=True)
+
+    @router.post("/p/{slug}/t/{key}/unbind")
+    async def unbind_task_session(
+        request: Request,
+        slug: str,
+        key: str,
+        session: Annotated[str | None, Form()] = None,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if not same_secret(csrf, csrf_token(token)):
+            raise HTTPException(status_code=403, detail="Missing CSRF token")
+        task = await find_task(slug, key)
+        htmx = "hx-request" in request.headers
+        error = None
+        try:
+            # `session` is the binding the user saw; a session that took over meanwhile stays.
+            await service.unbind_session(task.key, session or None, actor="board")
+        except ConflictError:
+            fresh = await find_task(slug, key)
+            error = (
+                f"This task is now bound to {fresh.session_name}; nothing changed."
+                if fresh.session_name
+                else "No session is bound to this task any more; nothing changed."
+            )
+        except DomainError as exc:
+            if not htmx:
+                raise  # plain form post: the app's DomainError handler answers
+            error = str(exc)
+        if not htmx:
+            if error:
+                return PlainTextResponse(error, status_code=409)
+            return RedirectResponse(f"/t/{task.key}", status_code=303)
+        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+        return render(request, "_task_view.html", detail=detail, error=error)
 
     @router.get("/events")
     async def events(

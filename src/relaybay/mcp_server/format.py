@@ -18,7 +18,7 @@ def age(ts: str, now: datetime | None = None) -> str:
     return "just now"
 
 
-def _who(name: str, external_id: str | None) -> str:
+def who_label(name: str, external_id: str | None) -> str:
     """`name (local_…)` for a desktop session, the plain name otherwise."""
     if external_id and external_id != name:
         return f"{name} ({external_id})"
@@ -26,7 +26,16 @@ def _who(name: str, external_id: str | None) -> str:
 
 
 def session_label(task: Task) -> str:
-    return _who(task.session_name, task.session_external_id) if task.session_name else ""
+    return who_label(task.session_name, task.session_external_id) if task.session_name else ""
+
+
+SHORT_MAX = 160
+
+
+def short(text: str, limit: int = SHORT_MAX) -> str:
+    """One line: whitespace collapsed, cut at `limit` characters."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
 def report_line(report: Report) -> str:
@@ -35,7 +44,7 @@ def report_line(report: Report) -> str:
     return f"{prefix}{report.summary} ({report.author}, {age(report.created_at)})"
 
 
-def task_line(task: Task, last: Report | None = None) -> str:
+def task_line(task: Task, last: Report | None = None, *, texts: bool = False) -> str:
     parts = [f"**{task.key}** {task.title}"]
     extras = []
     if task.waiting_on:
@@ -50,6 +59,10 @@ def task_line(task: Task, last: Report | None = None) -> str:
     line = f"- {parts[0]} — " + " · ".join(extras)
     if task.stage_note:
         line += f"\n  note: {task.stage_note}"
+    if texts and task.description:
+        line += f"\n  about: {short(task.description)}"
+    if texts and task.progress:
+        line += f"\n  done: {short(task.progress)}"
     if last:
         line += f"\n  last report: {report_line(last)}"
     return line
@@ -86,7 +99,7 @@ def snapshot(snap: Snapshot) -> str:
         if not tasks:
             continue
         lines.append(f"\n## {stage}")
-        lines.extend(task_line(t, snap.last_reports.get(t.id)) for t in tasks)
+        lines.extend(task_line(t, snap.last_reports.get(t.id), texts=True) for t in tasks)
     if snap.decisions:
         lines.append("\n## Recent decisions")
         lines.extend(decision_line(d) for d in snap.decisions)
@@ -124,11 +137,15 @@ def task_detail(detail: TaskDetail) -> str:
         if value:
             lines.append(f"- {label}: {value}")
     lines.append(f"- updated: {age(t.updated_at)}")
+    if t.description:
+        lines.append(f"\n## Description\n{t.description}")
+    if t.progress:
+        lines.append(f"\n## Progress (done so far)\n{t.progress}")
     if detail.bindings:
         lines.append("\n## Sessions (newest first)")
         for b in detail.bindings:
             until = f"until {b.unbound_at[:16]}Z" if b.unbound_at else "current"
-            who = _who(b.session_name, b.session_external_id)
+            who = who_label(b.session_name, b.session_external_id)
             lines.append(f"- {who} — bound {b.bound_at[:16]}Z by {b.bound_by}, {until}")
     if detail.reports:
         lines.append("\n## Reports (newest first)")
@@ -159,6 +176,8 @@ def events(items: list[Event], since_id: int) -> str:
             detail = ", ".join(sorted(e.payload.get("changes", {})))
         elif e.kind == "task.session_bound":
             detail = f"→ {e.payload.get('session')}"
+        elif e.kind == "task.session_unbound":
+            detail = f"✕ {e.payload.get('session')}"
         elif e.kind == "decision.added":
             detail = str(e.payload.get("text", ""))
         lines.append(f"- #{e.id} {e.ts[:19]}Z {e.kind} {key} {detail} ({e.actor})".rstrip())

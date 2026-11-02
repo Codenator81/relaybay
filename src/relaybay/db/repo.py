@@ -24,6 +24,8 @@ TASK_FIELDS = (
     "next_step",
     "branch",
     "doc_path",
+    "description",
+    "progress",
     "priority",
 )
 
@@ -53,6 +55,8 @@ def _task(row: aiosqlite.Row) -> Task:
         next_step=row["next_step"],
         branch=row["branch"],
         doc_path=row["doc_path"],
+        description=row["description"],
+        progress=row["progress"],
         session_id=row["session_id"],
         priority=row["priority"],
         version=row["version"],
@@ -181,6 +185,11 @@ async def get_session_by_name(conn: aiosqlite.Connection, name: str) -> Session 
     return _session(row) if row else None
 
 
+async def get_session_by_id(conn: aiosqlite.Connection, session_id: int) -> Session | None:
+    row = await _one(conn, "SELECT * FROM session WHERE id = ?", (session_id,))
+    return _session(row) if row else None
+
+
 async def get_session_by_external_id(
     conn: aiosqlite.Connection, external_id: str
 ) -> Session | None:
@@ -244,6 +253,13 @@ async def rebind(
     await conn.execute(
         "INSERT INTO task_session (task_id, session_id, bound_at, bound_by) VALUES (?, ?, ?, ?)",
         (task_id, session_id, now, actor),
+    )
+
+
+async def unbind(conn: aiosqlite.Connection, task_id: int, now: str) -> None:
+    await conn.execute(
+        "UPDATE task_session SET unbound_at = ? WHERE task_id = ? AND unbound_at IS NULL",
+        (now, task_id),
     )
 
 

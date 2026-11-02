@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from relaybay.domain.errors import ValidationError
+from relaybay.domain.errors import ConflictError, ValidationError
 from relaybay.domain.sessions import parse_session_id
 from relaybay.service import Service
 
@@ -114,6 +114,44 @@ async def test_binding_history(service: Service) -> None:
         ("A", "reviewer"),
     ]
     assert events[1].payload["session_external_id"] == DESKTOP_B
+
+
+async def test_unbind_keeps_history(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", session=DESKTOP_A, session_title="A")
+
+    with pytest.raises(ConflictError, match="bound to A, not someone-else"):
+        await service.unbind_session(task.key, "someone-else")
+    assert (await service.get_task(task.key)).session_id == task.session_id
+
+    with service.bus.subscribe() as sub:
+        unbound_task, unbound = await service.unbind_session(task.key, DESKTOP_A.upper())
+        event = await sub.get(1)
+    assert unbound is not None and unbound.name == "A"
+    assert unbound_task.session_id is None and unbound_task.session_name is None
+    assert unbound_task.version == task.version + 1
+    assert event.kind == "task.session_unbound" and event.actor == "mcp"
+    assert (event.payload["session"], event.payload["session_external_id"]) == ("A", DESKTOP_A)
+    assert event.session_id == task.session_id
+
+    bindings = (await service.task_detail(task.key)).bindings
+    assert [b.session_name for b in bindings] == ["A"] and bindings[0].unbound_at is not None
+
+    # Nothing bound: no write, no event; with an expected session it is an error.
+    last = await service.last_event_id()
+    same, none = await service.unbind_session(task.key)
+    assert none is None and same.version == unbound_task.version
+    assert await service.last_event_id() == last
+    with pytest.raises(ConflictError, match="No session is bound"):
+        await service.unbind_session(task.key, "A")
+
+    # Binding again opens a new history row.
+    await service.bind_session(task.key, "reviewer")
+    unbound_task, unbound = await service.unbind_session(task.key, "reviewer")
+    assert unbound is not None and unbound.name == "reviewer"
+    history = (await service.task_detail(task.key)).bindings
+    assert [b.session_name for b in history] == ["reviewer", "A"]
+    assert all(b.unbound_at for b in history)
 
 
 async def test_bind_requires_a_session(service: Service) -> None:

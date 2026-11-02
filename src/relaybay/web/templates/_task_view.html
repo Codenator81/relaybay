@@ -1,0 +1,90 @@
+{#- Read-only task details, shared by the board's task dialog and the task page. Expects: detail,
+    optional error. Refetched on live events, so it holds no form state of its own. -#}
+{%- set t = detail.task -%}
+<div class="task-view" id="view-{{ t.key }}" data-key="{{ t.key }}"
+     hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/view" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  <h1 class="task-title" id="task-title">{{ t.title }}</h1>
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+  <dl class="fields">
+    <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
+    {% if t.waiting_on %}<dt>Waiting on</dt><dd><span class="chip waiting">{{ t.waiting_on }}</span></dd>{% endif %}
+    {% if t.next_step %}<dt>Next step</dt><dd>{{ t.next_step }}</dd>{% endif %}
+    {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
+    {% if t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code></dd>{% endif %}
+    <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
+  </dl>
+
+  <section class="panel">
+    <h2>Session</h2>
+    {% if t.session_name %}
+    <div class="card-session">
+      {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
+    </div>
+    {% if t.session_external_id %}<p class="muted mono">{{ t.session_external_id }}</p>{% endif %}
+    <form class="unbind-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/unbind"
+          hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/unbind" hx-target="closest .task-view" hx-swap="outerHTML"
+          hx-confirm="Unbind {{ t.session_name }} from {{ t.key }}? The binding history is kept.">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <input type="hidden" name="session" value="{{ t.session_external_id or t.session_name }}">
+      <button type="submit" class="btn danger">Unbind session</button>
+    </form>
+    {% else %}
+    <p class="muted">No session is bound to this task.</p>
+    {% endif %}
+    {% if detail.bindings %}
+    <h3>History</h3>
+    <ol class="history">
+      {% for b in detail.bindings %}
+      <li>
+        <span class="history-name">{{ b.session_name }}</span>
+        {% if b.session_external_id and b.session_external_id != b.session_name %}<span class="muted mono">{{ b.session_external_id }}</span>{% endif %}
+        <span class="muted">
+          bound <time datetime="{{ b.bound_at }}" data-age>{{ b.bound_at|age }}</time> by {{ b.bound_by }}
+          {% if b.unbound_at %}· until <time datetime="{{ b.unbound_at }}" data-age>{{ b.unbound_at|age }}</time>{% else %}· current{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Description</h2>
+    {% if t.description %}<div class="markdown task-description">{{ t.description|markdown }}</div>
+    {% else %}<p class="muted">No description yet.</p>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Done so far</h2>
+    {% if t.progress %}<div class="markdown task-progress">{{ t.progress|markdown }}</div>
+    {% else %}<p class="muted">No progress summary yet.</p>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Last report</h2>
+    {% for r in detail.reports %}
+    {% if loop.index == 2 %}<h3>Earlier reports</h3>{% endif %}
+    <article class="report">
+      <header class="report-head">
+        {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
+        <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
+      </header>
+      <div class="markdown">{{ r.body_md|markdown }}</div>
+    </article>
+    {% else %}
+    <p class="muted">No reports yet.</p>
+    {% endfor %}
+  </section>
+
+  {% if detail.decisions %}
+  <section class="panel">
+    <h2>Decisions</h2>
+    <ul class="history">
+      {% for d in detail.decisions %}
+      <li>{{ d.text }} <span class="muted">· {{ d.created_at[:10] }}{% if d.decided_by %} · {{ d.decided_by }}{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
