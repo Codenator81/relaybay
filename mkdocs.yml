@@ -1,0 +1,89 @@
+site_name: relaybay
+site_description: A live board and MCP server for coordinating many Claude Code sessions across projects.
+site_url: https://codenator81.github.io/relaybay/
+repo_url: https://github.com/Codenator81/relaybay
+repo_name: Codenator81/relaybay
+edit_uri: edit/main/docs/
+copyright: MIT License
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+# Diataxis: tutorials, how-to guides, reference, explanation.
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install and run: getting-started/install.md
+      - Connect Claude Code: connect-claude-code.md
+      - Install with your coding agent: getting-started/agent-install.md
+  - How-to guides:
+      - Coordinate many projects: how-to/coordinator.md
+      - Phone and LAN access: how-to/lan-access.md
+      - Troubleshooting: how-to/troubleshooting.md
+      - Remove the integration: how-to/uninstall.md
+  - Reference:
+      - Specification: SPEC.md
+      - MCP tools: mcp-tools.md
+      - CLI: reference/cli.md
+      - Configuration: reference/configuration.md
+      - Roadmap: ROADMAP.md
+      - Changelog: changelog.md
+  - Explanation:
+      - Architecture: architecture.md
+      - Design documents:
+          - design/index.md
+          - Hooks and setup: design/0001-hooks-and-setup.md
+          - Working rules: design/0002-working-rules.md
+          - Packaging and release: design/0003-packaging-and-release.md
+          - Navigation: design/0004-navigation.md
+          - Comments to agents: design/0005-comments-to-agents.md
+          - Environments and access: design/0006-environments-and-access.md
+          - Review: design/0007-review.md
+          - Memory and context: design/0008-memory-and-context.md
+          - Screenshot annotations: design/0009-screenshot-annotations.md
+          - Map and Usage: design/0010-map-and-usage.md
+          - Documents in the database: design/0011-docs-in-database.md
+          - Runner and embedded terminal: design/0012-runner-and-embedded-terminal.md
+      - Decisions (ADR):
+          - HTMX + SSE front-end: adr/0001-htmx-sse.md
+      - Former plan: PLAN.md
