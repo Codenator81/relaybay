@@ -1,4 +1,4 @@
-"""Command line: `relaybay serve`, `relaybay token`, `relaybay setup`, `relaybay hook`."""
+"""Command line: `relaybay serve`, `token`, `setup`, `doctor`, `demo` and `hook`."""
 
 import argparse
 import json
@@ -15,6 +15,7 @@ from relaybay.domain.hooks import HOOK_PATH
 from relaybay.machine_setup import (
     DEFAULT_MODE,
     MODES,
+    Check,
     SetupError,
     claude_paths,
     detect,
@@ -26,7 +27,7 @@ from relaybay.machine_setup import (
 from relaybay.security import load_or_create_token, rotate_token, token_id
 
 
-def _parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="relaybay", description="Live board and MCP server for Claude Code sessions."
     )
@@ -88,6 +89,30 @@ def _parser() -> argparse.ArgumentParser:
         " http (Claude Code posts itself; needs RELAYBAY_TOKEN in its environment).",
     )
 
+    doctor = sub.add_parser(
+        "doctor", help="Diagnose the installation: versions, data folder, server, Claude Code."
+    )
+    doctor.add_argument("--json", action="store_true", help="Print the results as JSON.")
+    doctor.add_argument("--home", type=Path, help="relaybay data directory.")
+    doctor.add_argument("--port", type=int, help="relaybay port (default 8765).")
+    doctor.add_argument(
+        "--claude-home",
+        type=Path,
+        help="Folder holding .claude/settings.json and .claude.json (default: your home).",
+    )
+
+    demo = sub.add_parser(
+        "demo", help="Seed a demo workspace (acme-shop, demo-api) into a data directory."
+    )
+    demo.add_argument(
+        "--home", type=Path, required=True, help="Data directory for the demo (required)."
+    )
+    demo.add_argument(
+        "--force",
+        action="store_true",
+        help="If the folder already holds a board, rename its database aside and start over.",
+    )
+
     hook = sub.add_parser("hook", help="Forward one hook event from stdin (command hook).")
     hook.add_argument("--home", type=Path, help="Data directory.")
     hook.add_argument("--port", type=int, help="Port (default 8765).")
@@ -144,12 +169,7 @@ def cmd_setup(settings: Settings, args: argparse.Namespace) -> int:
     paths = claude_paths(settings.claude_home)
     if args.check:
         checks = run_check(base_url=settings.base_url, token=token, paths=paths)
-        if args.json:
-            print(json.dumps([asdict(c) for c in checks], indent=2))
-        else:
-            for check in checks:
-                print(f"[{'ok' if check.ok else 'FAIL'}] {check.name}: {check.detail}")
-        return 0 if all(c.ok for c in checks) else 1
+        return print_checks(checks, args.json)
     if args.dry_run and args.apply:
         print("relaybay setup: --dry-run and --apply exclude each other.", file=sys.stderr)
         return 2
@@ -184,6 +204,38 @@ def cmd_setup(settings: Settings, args: argparse.Namespace) -> int:
         print("Nothing to write.")
     else:
         print(f"Wrote {plan.hooks.path}" + (f" (backup: {backup})" if backup else ""))
+    return 0
+
+
+def print_checks(checks: list[Check], as_json: bool) -> int:
+    """`setup --check` and `doctor` output: a JSON list of {ok, name, detail} or one line per
+    item; exit code 1 when an item failed."""
+    if as_json:
+        print(json.dumps([asdict(c) for c in checks], indent=2))
+    else:
+        for check in checks:
+            print(f"[{'ok' if check.ok else 'FAIL'}] {check.name}: {check.detail}")
+    return 0 if all(c.ok for c in checks) else 1
+
+
+def cmd_doctor(settings: Settings, as_json: bool) -> int:
+    from relaybay.doctor import doctor_checks
+
+    return print_checks(doctor_checks(settings), as_json)
+
+
+def cmd_demo(settings: Settings, force: bool) -> int:
+    from relaybay.demo import DemoError, create_demo
+
+    try:
+        result = create_demo(settings.db_path, force=force)
+    except DemoError as exc:
+        print(f"relaybay demo: {exc}", file=sys.stderr)
+        return 1
+    if result.backup:
+        print(f"Moved the previous database to {result.backup}")
+    print(f"Demo workspace: {result.projects} projects, {result.tasks} tasks in {result.db_path}")
+    print(f"Show it: relaybay serve --home {settings.home}")
     return 0
 
 
@@ -241,7 +293,7 @@ def cmd_serve(settings: Settings, reload: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
     command = args.command or "serve"
     try:
         settings = load_settings(
@@ -253,12 +305,18 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError) as exc:
         if command == "hook":
             return 0  # a hook never fails the session
+        if command == "doctor":
+            return print_checks([Check(False, "settings", str(exc))], args.json)
         print(f"relaybay: {exc}", file=sys.stderr)
         return 2
     if command == "hook":
         return cmd_hook(settings)
     if command == "setup":
         return cmd_setup(settings, args)
+    if command == "doctor":
+        return cmd_doctor(settings, args.json)
+    if command == "demo":
+        return cmd_demo(settings, args.force)
     if command == "token":
         return cmd_token(settings, args.rotate)
     return cmd_serve(settings, getattr(args, "reload", False))

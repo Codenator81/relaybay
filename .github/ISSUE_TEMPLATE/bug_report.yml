@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in relaybay does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not paste tokens, the content of your `token` file, or
+        private project data; use the demo workspace (`relaybay demo --home <folder>`) to show a
+        problem when you can. Security problems go to private vulnerability reporting instead
+        (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. relaybay serve --home /tmp/rb
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `relaybay doctor`
+      description: Versions, data folder, server and Claude Code checks. Remove anything private.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How relaybay is installed
+      options:
+        - uv tool install
+        - uvx
+        - pipx
+        - Docker
+        - from a checkout
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log or browser console (optional)
+      render: text

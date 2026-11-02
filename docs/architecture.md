@@ -52,7 +52,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 | Module | Responsibility |
 |---|---|
-| `__main__.py`, `cli.py` | `relaybay [serve]`, `token`, `setup`, `hook`; standard-library `argparse` |
+| `__main__.py`, `cli.py` | `relaybay [serve]`, `token`, `setup`, `doctor`, `demo`, `hook`; standard-library `argparse` |
 | `config.py` | `Settings`: defaults → `config.toml` → `RELAYBAY_*` → flags; data dir via `platformdirs` |
 | `app.py` | FastAPI app: lifespan (service start, MCP session manager), routers, static files, middleware; OpenAPI and docs UI disabled |
 | `security.py` | Token file, cookie and CSRF values (HMAC of the token), `token_id`, `SecurityMiddleware` (pure ASGI, so streams pass through) |
@@ -62,7 +62,9 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
 | `web/` | `routes.py` (pages, fragments, forms, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code`), `markdown.py`, templates, vendored static assets |
-| `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check |
+| `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
+| `doctor.py` | `relaybay doctor`: read-only diagnosis built from the setup checks plus versions, data folder, token and rules hash |
+| `demo.py` | `relaybay demo`: seeds the demo workspace through the service layer |
 | `hook_client.py` | The command hook: stdin → POST with 0.3 s timeouts → stdout, always exit 0 |
 | `logs.py` | uvicorn log config that redacts the `/login` query string |
 
@@ -148,16 +150,19 @@ threat model and non-goals: [SPEC §9](SPEC.md#spec-security).
   site: the optional `docs` group (`mkdocs-material`).
 - All file I/O is explicit UTF-8; `pathlib` everywhere; Windows, macOS and Linux run in CI with
   Python 3.12 and 3.13.
-- No OS service: the user starts `relaybay serve`. Wheel, `uvx`, Docker image and release automation
-  are the [packaging design](design/0003-packaging-and-release.md).
+- No OS service: the user starts `relaybay serve` (or runs the Docker image). Wheel and sdist,
+  `uv tool install` / `uvx` / `pipx`, the Docker image and the tag-driven release workflow follow the
+  [packaging design](design/0003-packaging-and-release.md).
 
 ## Repository layout
 
 ```
-README.md  CONTRIBUTING.md  AGENTS.md  CHANGELOG.md  LICENSE  mkdocs.yml
-pyproject.toml  uv.lock  .github/workflows/{ci.yml, docs.yml}
+README.md  CONTRIBUTING.md  AGENTS.md  CHANGELOG.md  LICENSE  mkdocs.yml  Dockerfile
+CODE_OF_CONDUCT.md  SECURITY.md  GOVERNANCE.md
+pyproject.toml  uv.lock  .github/workflows/{ci.yml, docs.yml, release.yml}  .github/ISSUE_TEMPLATE/
+scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py record_gif.md
 src/relaybay/   cli.py config.py app.py security.py service.py events.py machine_setup.py
-                hook_client.py logs.py  db/  domain/  mcp_server/  web/
+                doctor.py demo.py hook_client.py logs.py  db/  domain/  mcp_server/  web/
 tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/
 docs/           index.md SPEC.md ROADMAP.md architecture.md mcp-tools.md connect-claude-code.md
                 design/ adr/ reference/ getting-started/ how-to/ llms.txt PLAN.md (pointer)

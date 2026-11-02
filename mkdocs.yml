@@ -37,6 +37,8 @@ markdown_extensions:
       permalink: true
   - pymdownx.highlight
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
 
 validation:
   nav:
@@ -54,8 +56,8 @@ nav:
   - Home: index.md
   - Getting started:
       - Install and run: getting-started/install.md
-      - Connect Claude Code: connect-claude-code.md
       - Install with your coding agent: getting-started/agent-install.md
+      - Connect Claude Code: connect-claude-code.md
   - How-to guides:
       - Coordinate many projects: how-to/coordinator.md
       - Phone and LAN access: how-to/lan-access.md
@@ -63,7 +65,8 @@ nav:
       - Remove the integration: how-to/uninstall.md
   - Reference:
       - Specification: SPEC.md
-      - MCP tools: mcp-tools.md
+      - MCP tools guide: mcp-tools.md
+      - MCP reference: reference/mcp.md
       - CLI: reference/cli.md
       - Configuration: reference/configuration.md
       - Roadmap: ROADMAP.md

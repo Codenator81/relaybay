@@ -7,10 +7,12 @@ Stages are plan, dev, test, live, done. Every session should read `project_snaps
 ## Docs
 
 - [Specification](https://codenator81.github.io/relaybay/SPEC/): how relaybay behaves now: concepts, board, MCP contract, hooks, setup, working rules, security model, configuration, data model
-- [MCP tools](https://codenator81.github.io/relaybay/mcp-tools/): every tool and resource with parameters and results
+- [Install with your coding agent](https://codenator81.github.io/relaybay/getting-started/agent-install/): an idempotent install-and-connect procedure for an agent, dry run first, apply only after the user agrees
+- [MCP tools guide](https://codenator81.github.io/relaybay/mcp-tools/): how the tools and resources work together, with results and examples
+- [MCP reference](https://codenator81.github.io/relaybay/reference/mcp/): every tool and resource with its parameters, generated from the live registry
 - [Connect Claude Code](https://codenator81.github.io/relaybay/connect-claude-code/): MCP registration, the instruction snippet for CLAUDE.md / AGENTS.md, hooks with `relaybay setup`
-- [Install and run](https://codenator81.github.io/relaybay/getting-started/install/): run the server and sign in to the board
-- [CLI reference](https://codenator81.github.io/relaybay/reference/cli/): `serve`, `token`, `setup`, `hook`
+- [Install and run](https://codenator81.github.io/relaybay/getting-started/install/): `uv tool install relaybay`, `uvx`, `pipx` or Docker on Windows, macOS and Linux; first run and the token
+- [CLI reference](https://codenator81.github.io/relaybay/reference/cli/): `serve`, `token`, `setup`, `doctor`, `demo`, `hook`
 - [Configuration reference](https://codenator81.github.io/relaybay/reference/configuration/): `config.toml` keys, environment variables, flags
 
 ## Optional
@@ -18,5 +20,5 @@ Stages are plan, dev, test, live, done. Every session should read `project_snaps
 - [Architecture](https://codenator81.github.io/relaybay/architecture/): processes, modules, data model, transports, security layers
 - [Roadmap](https://codenator81.github.io/relaybay/ROADMAP/): versions and status
 - [Design documents](https://codenator81.github.io/relaybay/design/): upcoming steps
-- [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/)
+- [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/): `relaybay doctor --json` and what each failing item means
 - [Source code](https://github.com/Codenator81/relaybay)

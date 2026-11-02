@@ -1,6 +1,6 @@
 [project]
 name = "relaybay"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "A live board and MCP server for coordinating many Claude Code sessions across projects."
 readme = "README.md"
 license = "MIT"
@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Aleksandrs Poltarjonoks" }]
 requires-python = ">=3.12"
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: Web Environment",
     "Framework :: FastAPI",
     "Operating System :: OS Independent",
@@ -27,6 +27,12 @@ dependencies = [
     "python-multipart>=0.0.9",
     "uvicorn>=0.30",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Codenator81/relaybay"
+Documentation = "https://codenator81.github.io/relaybay/"
+Changelog = "https://github.com/Codenator81/relaybay/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Codenator81/relaybay/issues"
 
 [project.scripts]
 relaybay = "relaybay.cli:main"
@@ -48,6 +54,19 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/relaybay"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/relaybay",
+    "tests",
+    "docs",
+    "scripts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "mkdocs.yml",
+]
+exclude = ["docs/assets/*.gif"]
 
 [tool.ruff]
 line-length = 100

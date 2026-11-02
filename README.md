@@ -1,15 +1,39 @@
 # relaybay
 
+[![CI](https://github.com/Codenator81/relaybay/actions/workflows/ci.yml/badge.svg)](https://github.com/Codenator81/relaybay/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/relaybay)](https://pypi.org/project/relaybay/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Docs](https://github.com/Codenator81/relaybay/actions/workflows/docs.yml/badge.svg)](https://codenator81.github.io/relaybay/)
+
 A live board and MCP server for people who run many Claude Code sessions across many repositories.
 Sessions report their work through MCP tools; you watch **projects → tasks → stages → reports** update
 in the browser, on the desktop or on your phone.
 
-> **Status: early.** relaybay is built for my own workflow first and changes quickly. Expect rough
-> edges; issues and ideas are welcome.
+> **Status: early (0.1).** relaybay is built for my own workflow first and changes quickly. Expect
+> rough edges; issues and ideas are welcome.
+
+![The relaybay board updating live while sessions report their work](https://raw.githubusercontent.com/Codenator81/relaybay/main/docs/assets/board.gif)
+
+## Quick start
+
+```bash
+uv tool install relaybay      # or: pipx install relaybay  ·  or run it once: uvx relaybay
+relaybay serve                # prints the board's login link and the MCP URL
+relaybay setup                # shows how it connects Claude Code (then --apply --expect <hash>)
+```
+
+Open the login link once; the browser keeps a cookie. `relaybay token` prints the token again with
+the `claude mcp add …` command for Claude Code. Docker, Windows/macOS/Linux details and a procedure
+your coding agent can follow for you:
+[Install](https://codenator81.github.io/relaybay/getting-started/install/) ·
+[Install with your coding agent](https://codenator81.github.io/relaybay/getting-started/agent-install/).
+Something off? `relaybay doctor`.
 
 **Documentation:** [codenator81.github.io/relaybay](https://codenator81.github.io/relaybay/) ·
 [Specification](docs/SPEC.md) (how it behaves now) · [Roadmap](docs/ROADMAP.md) ·
 [Architecture](docs/architecture.md)
+
+## Features
 
 - **Board** — projects with per-stage counts; per project, columns `plan → dev → test → live → done`
   with cards showing only the essentials: key, tracker badge, an "open in desktop" icon when a
@@ -49,24 +73,11 @@ in the browser, on the desktop or on your phone.
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
   no outbound calls, no CDN.
 
-## Quick start
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+## Try it with demo data
 
 ```bash
-git clone https://github.com/Codenator81/relaybay.git
-cd relaybay
-uv run relaybay serve
-```
-
-The server prints a login link (`http://127.0.0.1:8765/login?token=…`). Open it once; the browser
-keeps an HttpOnly cookie and the token disappears from the address bar. Opening the board without
-it shows a sign-in page: paste the token there and you return to the page you asked for.
-
-`relaybay token` prints the token again together with the command that connects Claude Code:
-
-```bash
-uv run relaybay token
+relaybay demo --home ./relaybay-demo                 # acme-shop and demo-api, tasks in every stage
+relaybay serve --home ./relaybay-demo --port 8766
 ```
 
 ## Connect Claude Code
@@ -83,9 +94,9 @@ snippet for your project's `CLAUDE.md` / `AGENTS.md` that tells the agent when t
 ### Live session status (hooks)
 
 ```bash
-uv run relaybay setup                         # what it found, the exact diff and its hash
-uv run relaybay setup --apply --expect <hash> # adds relaybay's hooks to ~/.claude/settings.json
-uv run relaybay setup --check                 # end-to-end check, one ok/FAIL line per item
+relaybay setup                         # what it found, the exact diff and its hash
+relaybay setup --apply --expect <hash> # adds relaybay's hooks to ~/.claude/settings.json
+relaybay setup --check                 # end-to-end check, one ok/FAIL line per item
 ```
 
 The hooks let the board show whether each session is working, waiting for you, idle or gone, and
@@ -166,12 +177,13 @@ logged, the project falls back to the global rules, and `rules_get` and `project
 Each data folder has its own token. `relaybay serve` prints the folder it uses (`Data folder: …`);
 run `relaybay token` with the same `--home` (or `RELAYBAY_HOME`). `relaybay token` prints its folder
 and warns when the server on the port uses a different token (another folder, or a rotation without
-a restart). After `relaybay token --rotate`, restart the server.
+a restart). After `relaybay token --rotate`, restart the server. `relaybay doctor` checks this and
+everything else in one command ([troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/)).
 
 ## Roadmap
 
-- **0.1.0** — board, MCP tools, working rules, hooks and `relaybay setup` *(done)*; packaging
-  (`uv tool install`, `uvx`, Docker), `relaybay doctor`, docs site, demo workspace *(next)*.
+- **0.1.0** — board, MCP tools, working rules, hooks and `relaybay setup`, packaging
+  (`uv tool install`, `uvx`, `pipx`, Docker), `relaybay doctor`, docs site, demo workspace.
 - **0.2.0** — sidebar navigation and Inbox, comments to agents, project environments and access.
 - **0.3.0** — review checklist with screenshots, memory and documents.
 - **Later** — annotations, map and usage, rules versioning, intake, agents started from relaybay.
@@ -180,9 +192,15 @@ Details and status: [docs/ROADMAP.md](docs/ROADMAP.md). Designs of upcoming step
 [docs/design/](docs/design/index.md), decisions in [docs/adr/](docs/adr/). relaybay sends no
 telemetry.
 
-## Contributing
+## Contributing and feedback
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). AI coding tools: see [AGENTS.md](AGENTS.md).
+- Questions, ideas, show and tell: [Discussions](https://github.com/Codenator81/relaybay/discussions).
+- Bugs and feature requests: [issues](https://github.com/Codenator81/relaybay/issues/new/choose)
+  (include `relaybay doctor` output for bugs).
+- Security problems: report privately, see [SECURITY.md](SECURITY.md).
+- Code: [CONTRIBUTING.md](CONTRIBUTING.md); AI coding tools: [AGENTS.md](AGENTS.md). Everyone
+  follows the [Code of Conduct](CODE_OF_CONDUCT.md); how decisions are made:
+  [GOVERNANCE.md](GOVERNANCE.md).
 
 ## License
 

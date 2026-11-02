@@ -32,6 +32,9 @@ from relaybay.security import token_id
 # The hooks reference documents `http` hooks without the version that introduced them; this is
 # the release that added them according to the Claude Code changelog (unverified).
 HTTP_HOOKS_MIN_VERSION = (2, 1, 63)
+# Oldest Claude Code release relaybay is documented against: user-scope http MCP servers and the
+# hook events in HOOK_EVENTS are older than that (unverified for earlier releases).
+MIN_CLAUDE_CODE_VERSION = (2, 0, 0)
 TOKEN_ENV = "RELAYBAY_TOKEN"
 COMMAND_TIMEOUT = 3  # seconds; the command itself gives up after 0.3 s per network step
 HTTP_TIMEOUT = 2
@@ -692,9 +695,22 @@ def run_check(
     opener: OpenerDirector | None = None,
     run: Callable[..., Any] = subprocess.run,
 ) -> list[Check]:
-    """End-to-end checks, each green or red. Talks to the running server over HTTP."""
+    """End-to-end checks, each green or red: the running server over HTTP, then (when it
+    answers) the hook entries and the MCP registration in Claude Code's files."""
+    checks = server_checks(base_url=base_url, token=token, opener=opener)
+    if len(checks) == 1:  # nothing listens on base_url
+        return checks
+    return checks + config_checks(
+        base_url=base_url, token=token, paths=paths, environ=environ, run=run
+    )
+
+
+def server_checks(
+    *, base_url: str, token: str, opener: OpenerDirector | None = None
+) -> list[Check]:
+    """The server answers with the same token, accepts MCP `initialize` and a hook event. Stops
+    after the first item when nothing listens on `base_url`."""
     opener = opener or _opener()
-    hosts = owned_hosts(base_url)
     auth = {"Authorization": f"Bearer {token}"}
     checks: list[Check] = []
 
@@ -737,7 +753,22 @@ def run_check(
         checks.append(Check(200 <= status < 300, "hook endpoint", f"test event answered {status}"))
     except (URLError, OSError) as exc:
         checks.append(Check(False, "hook endpoint", str(exc)))
+    return checks
 
+
+def config_checks(
+    *,
+    base_url: str,
+    token: str | None,
+    paths: ClaudePaths,
+    environ: Mapping[str, str] = os.environ,
+    run: Callable[..., Any] = subprocess.run,
+) -> list[Check]:
+    """relaybay's hooks in the user settings (and what they need to run) and the MCP entry in
+    `~/.claude.json`. Reads files only; nothing is written. Without a token, http hooks count
+    as not usable here."""
+    hosts = owned_hosts(base_url)
+    checks: list[Check] = []
     try:
         _, data = read_json(paths.settings)
         mode = installed_mode(data, hosts)
@@ -751,7 +782,7 @@ def run_check(
             if mode == "command":
                 checks.append(_interpreter_check(first.get("command") or "", run))
             if mode == "http":
-                set_here = environ.get(TOKEN_ENV) == token
+                set_here = token is not None and environ.get(TOKEN_ENV) == token
                 checks.append(
                     Check(
                         set_here,

@@ -11,7 +11,7 @@ from relaybay.security import COOKIE_NAME, csrf_token, load_or_create_token, rot
 def test_healthz_is_public(client: TestClient) -> None:
     response = client.get("/healthz")
     assert response.status_code == 200 and response.json()["status"] == "ok"
-    assert set(response.json()) == {"status", "version", "token_id"}
+    assert set(response.json()) == {"status", "version", "token_id", "rules_hash"}
     assert len(response.json()["token_id"]) == 12
     assert "default-src 'self'" in response.headers["content-security-policy"]
 

@@ -17,14 +17,16 @@ live board.
 | Desktop session links and binding history, aliases, done window and archive, tracker mark and history, next-step freshness, `task_patch`, slimmer cards and task dialog | done | [SPEC §1–2](SPEC.md#spec-concepts) |
 | Working rules contract (1.5a): MCP instructions, rules as data, `rules_get`, warn and strict checks | done | [0002](design/0002-working-rules.md) |
 | Claude Code hooks and `relaybay setup` (1.6), Integrations page, `setup --check --json` | done | [0001](design/0001-hooks-and-setup.md) |
-| Documentation restructure: SPEC, ROADMAP, architecture, designs, docs site skeleton, `llms.txt` | in progress | this page |
-| Packaging: wheel and sdist, `uv tool install` / `uvx`, Docker image, tag-driven release with GitHub Release from CHANGELOG, PyPI by trusted publishing | next | [0003](design/0003-packaging-and-release.md) |
-| `relaybay doctor [--json]`: versions, data dir, server, MCP and hook registration, rules hash | next | [0003](design/0003-packaging-and-release.md) |
-| "Install relaybay with your coding agent" page (idempotent procedure, dry run first) | next | [0003](design/0003-packaging-and-release.md) |
-| `relaybay demo`: neutral demo workspace (`acme-shop`, `demo-api`) for screenshots and testing | next | [0003](design/0003-packaging-and-release.md) |
-| Community files: issue forms, PR template, labels, CODE_OF_CONDUCT, SECURITY, Discussions, GOVERNANCE note | next | [0003](design/0003-packaging-and-release.md) |
+| Documentation restructure: SPEC, ROADMAP, architecture, designs, docs site skeleton, `llms.txt` | done | this page |
+| Packaging: wheel and sdist, `uv tool install` / `uvx`, Docker image, tag-driven release with GitHub Release from CHANGELOG, PyPI by trusted publishing | done | [0003](design/0003-packaging-and-release.md) |
+| `relaybay doctor [--json]`: versions, data dir, server, MCP and hook registration, rules hash | done | [0003](design/0003-packaging-and-release.md) |
+| "Install relaybay with your coding agent" page (idempotent procedure, dry run first) | done | [0003](design/0003-packaging-and-release.md) |
+| `relaybay demo`: neutral demo workspace (`acme-shop`, `demo-api`) for screenshots and testing | done | [0003](design/0003-packaging-and-release.md) |
+| Community files: issue forms, PR template, CODE_OF_CONDUCT, SECURITY, GOVERNANCE note | done | [0003](design/0003-packaging-and-release.md) |
 | README GIF of the live board | next | [0003](design/0003-packaging-and-release.md) |
-| CI: smoke-start the server, docs drift checks (generated CLI/config/MCP reference, links, CHANGELOG touched) | next | [0003](design/0003-packaging-and-release.md) |
+| Repository settings: labels, Discussions (Ideas, Q&A, Show and tell), private vulnerability reporting | next | [0003](design/0003-packaging-and-release.md) |
+| CI: smoke-start the server from the wheel, generated CLI/config/MCP reference drift check, links (`mkdocs build --strict`) | done | [0003](design/0003-packaging-and-release.md) |
+| CI check that a user-visible change touches `CHANGELOG.md` | later | [0003](design/0003-packaging-and-release.md) |
 | `llms-full.txt` (SPEC + reference in one file) | later | deferred from the docs restructure |
 
 ## 0.2.0 — working with sessions

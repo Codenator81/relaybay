@@ -1,6 +1,8 @@
 # 0003 — Packaging and release 0.1.0
 
-- Status: **Accepted**. Next after the documentation restructure, before the 0.2.0 features.
+- Status: **Implemented in v0.1.0** (behaviour in [SPEC §5](../SPEC.md#spec-doctor) and
+  [§10](../SPEC.md#spec-distribution)), except the README GIF (recorded by the maintainer),
+  repository settings (labels, Discussions) and the "CHANGELOG touched" CI check (later).
 - Size: ~3–4 agent-days (packaging and release workflow ~1, `doctor` ~0.5, `demo` ~0.5, agent
   install page and Getting started ~0.5, community files ~0.5, generated reference and drift checks
   ~0.5–1, GIF ~0.25).

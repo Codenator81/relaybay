@@ -4,8 +4,8 @@ Take relaybay's hooks out of your Claude Code user settings (only relaybay's own
 of the file is written first):
 
 ```bash
-uv run relaybay setup --remove --dry-run        # preview the removal and its hash
-uv run relaybay setup --remove --expect <hash>  # write exactly that plan
+relaybay setup --remove --dry-run        # preview the removal and its hash
+relaybay setup --remove --expect <hash>  # write exactly that plan
 ```
 
 The same is the **Remove** button under **Integrations** on the board.

@@ -17,9 +17,12 @@ uv run ruff check            # lint
 uv run ruff format --check   # formatting (use `uv run ruff format` to fix)
 uv run pytest                # tests
 uv run relaybay serve --home ./.dev-data
+uv run relaybay demo --home ./.demo-data       # demo workspace in a separate folder
+uv run python scripts/gen_reference.py         # regenerate docs/reference/*.md
 ```
 
-All three checks must pass before you report a change as done.
+All three checks must pass before you report a change as done; after changing a command, a
+setting or an MCP tool, regenerate the reference pages (`--check` runs in CI).
 
 ## Rules
 

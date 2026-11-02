@@ -138,7 +138,12 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/healthz")
     async def healthz() -> dict[str, str]:
-        return {"status": "ok", "version": __version__, "token_id": token_id(token)}
+        return {
+            "status": "ok",
+            "version": __version__,
+            "token_id": token_id(token),
+            "rules_hash": service.global_rules.hash,
+        }
 
     def signed_in(request: Request, next_path: str) -> Response:
         response = RedirectResponse(safe_next(next_path), status_code=303)
