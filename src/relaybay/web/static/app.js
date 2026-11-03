@@ -762,3 +762,14 @@
   window.addEventListener("online", reconnect);
   window.setInterval(refreshAges, 60000);
 })();
+
+// The session picker in the task dialog closes on a click outside it or on Escape.
+document.addEventListener("click", (event) => {
+  for (const picker of document.querySelectorAll(".bind-picker[open]")) {
+    if (!picker.contains(event.target)) picker.removeAttribute("open");
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  for (const picker of document.querySelectorAll(".bind-picker[open]")) picker.removeAttribute("open");
+});

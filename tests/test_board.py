@@ -303,14 +303,15 @@ def test_unbind_from_the_board(board: TestClient, seeded: str, token: str) -> No
 def test_bind_a_session_from_the_board(board: TestClient, seeded: str, token: str) -> None:
     service: Service = board.app.state.service
     page = board.get(f"/t/{seeded}").text
-    assert "bind-form" not in page  # no session seen yet: nothing to pick
+    assert "bind-picker" not in page  # no session seen yet: nothing to pick
     run_in_app(board, service.upsert_project, "demo-api")
     other = run_in_app(board, service.create_task, "demo-api", "Other", session=DESKTOP)
     run_in_app(board, service.unbind_session, other.key)
     [desktop] = [r.session for r in run_in_app(board, service.list_sessions)]
 
     page = board.get(f"/t/{seeded}").text
-    assert "Bind a session" in page and f'<option value="{desktop.id}">' in page
+    assert "Bind a session" in page and f'name="session_id" value="{desktop.id}"' in page
+    assert "Untitled desktop session" in page and f"desktop · {DESKTOP}" in page
     assert "other project" in page
     url = f"/p/acme-shop/t/{seeded}/bind"
     refused = board.post(url, data={"session_id": str(desktop.id)}, headers=HTMX)

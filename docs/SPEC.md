@@ -276,7 +276,7 @@ dialog on its Plan tab.
 document path, updated time and version), description and progress in full, the latest reports
 with state and size badges, decisions, the bound session with its hook status and last activity,
 "Open in desktop" and "Copy link", the session binding history, the tracker history, an
-**Unbind session** button (with confirmation), a session picker (**Bind**: the project's sessions
+**Unbind session** button (with confirmation), a session picker (**Bind a session** menu, one click binds; title first, kind, id and status small: the project's sessions
 first, then the others, most recently seen first; the same binding history and
 `task.session_bound` event as `task_bind_session`, actor `board`), the comments and the edit form. A stage move that
 misses a rule shows the warning in the form (or the refusal in `strict` mode).
