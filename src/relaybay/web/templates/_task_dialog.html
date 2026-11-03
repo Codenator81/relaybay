@@ -1,23 +1,28 @@
 {#- Content of the board's task dialog. Expects: detail, values, waiting_values, optional tab
-    ("review" opens the Review tab). -#}
+    ("plan" or "review" opens that tab). -#}
 {%- set t = detail.task %}
 {%- set on_review = tab == "review" %}
+{%- set on_plan = tab == "plan" %}
 <div class="dialog-frame" data-key="{{ t.key }}">
   <header class="dialog-head">
     <a class="card-key" href="/t/{{ t.key }}" title="Task page">{{ t.key }}</a>
     <div class="dialog-tabs" role="tablist" aria-label="Task">
-      <button type="button" role="tab" class="dialog-tab" id="tab-overview-{{ t.key }}" aria-controls="panel-overview-{{ t.key }}" aria-selected="{{ 'false' if on_review else 'true' }}" data-tab="overview">Overview</button>
+      <button type="button" role="tab" class="dialog-tab" id="tab-overview-{{ t.key }}" aria-controls="panel-overview-{{ t.key }}" aria-selected="{{ 'false' if on_review or on_plan else 'true' }}" data-tab="overview">Overview</button>
+      <button type="button" role="tab" class="dialog-tab" id="tab-plan-{{ t.key }}" aria-controls="panel-plan-{{ t.key }}" aria-selected="{{ 'true' if on_plan else 'false' }}" data-tab="plan">Plan{% if t.plan_total %} <span class="col-count">{{ t.plan_done }}/{{ t.plan_total }}</span>{% endif %}</button>
       <button type="button" role="tab" class="dialog-tab" id="tab-review-{{ t.key }}" aria-controls="panel-review-{{ t.key }}" aria-selected="{{ 'true' if on_review else 'false' }}" data-tab="review">Review{% if t.review_total %} <span class="col-count">{{ t.review_accepted }}/{{ t.review_total }}</span>{% endif %}</button>
     </div>
     <button type="button" class="dialog-close" aria-label="Close">Close</button>
   </header>
-  <div class="dialog-body" role="tabpanel" id="panel-overview-{{ t.key }}" aria-labelledby="tab-overview-{{ t.key }}"{% if on_review %} hidden{% endif %}>
+  <div class="dialog-body" role="tabpanel" id="panel-overview-{{ t.key }}" aria-labelledby="tab-overview-{{ t.key }}"{% if on_review or on_plan %} hidden{% endif %}>
     {% include "_task_view.html" %}
     {% with t = detail.task, comments = detail.comments %}{% include "_comments.html" %}{% endwith %}
     <details class="panel dialog-edit">
       <summary>Edit task</summary>
       {% with t = detail.task %}{% include "_task_form.html" %}{% endwith %}
     </details>
+  </div>
+  <div class="dialog-body" role="tabpanel" id="panel-plan-{{ t.key }}" aria-labelledby="tab-plan-{{ t.key }}"{% if not on_plan %} hidden{% endif %}>
+    {% with plan = detail.plan, todo = detail.todo, history = detail.plan_history %}{% include "_plan.html" %}{% endwith %}
   </div>
   <div class="dialog-body" role="tabpanel" id="panel-review-{{ t.key }}" aria-labelledby="tab-review-{{ t.key }}"{% if not on_review %} hidden{% endif %}>
     {% with review = detail.review %}{% include "_review.html" %}{% endwith %}

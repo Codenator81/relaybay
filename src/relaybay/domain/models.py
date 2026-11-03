@@ -71,6 +71,15 @@ class Task:
     review_total: int = 0  # review checklist: steps in all, accepted, rejected
     review_accepted: int = 0
     review_rejected: int = 0
+    size: str | None = None  # S / M / L
+    plan_status: str | None = None  # None (no plan), draft or accepted
+    plan_accepted_at: str | None = None
+    plan_accepted_by: str | None = None
+    plan_total: int = 0  # plan steps in all, done, done with a deviation
+    plan_done: int = 0
+    plan_deviations: int = 0
+    plan_now: str | None = None  # title of the step in progress
+    plan_now_position: int | None = None
 
     @property
     def next_step_stale(self) -> bool:

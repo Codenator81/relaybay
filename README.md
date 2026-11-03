@@ -85,6 +85,10 @@ Something off? `relaybay doctor`.
 - **Docs & rules** — per project, versioned documents (spec, status, runbooks) with section
   anchors and diffs, decisions that supersede each other instead of being deleted, memory notes
   and blocks agents keep for the next session, full-text search over all of it, and the rules.
+- **Plan and checkpoints** — agents write the task's plan (`plan_set`) and mark each step done
+  with one line, `as planned` or `deviation: why`; you accept the plan in the task's Plan tab,
+  deviations stand out on the card, and the agent's own Claude Code todo shows under the current
+  step. By default a move to `dev` needs an accepted plan unless the task is size `S`.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
@@ -93,7 +97,8 @@ Something off? `relaybay doctor`.
 - **Working rules** — the server tells every connected session how to work with the board (MCP
   instructions: read the snapshot, pick a task, keep next step / waiting on / progress current,
   report as `state · size · gist`) and serves the rules as data: report format, what a stage move
-  needs (by default a report before `test`, `progress` before `done`), a description template and
+  needs (by default an accepted plan before `dev` unless the task is size `S`, a report before
+  `test`, `progress` before `done`), a description template and
   free-text guidance. Global rules come from `config.toml`, a project can override them; agents read
   them through `rules_get` or `relaybay://rules/<project>`, and `project_snapshot` starts with the
   rules hash. A stage move that misses a rule succeeds with a warning (or is refused with

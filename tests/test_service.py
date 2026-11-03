@@ -296,6 +296,7 @@ async def test_report_with_next_step_and_waiting_on_is_one_transaction(service: 
         "progress": "- cart",
         "next_step": "Test",
         "waiting_on": "qa",
+        "size": "S",  # the report's size sizes a task that has none
     }
     assert (saved.next_step, saved.waiting_on, saved.version) == ("Test", "qa", task.version + 1)
 

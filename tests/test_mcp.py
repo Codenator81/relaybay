@@ -99,7 +99,8 @@ async def test_full_flow(live_server: Callable[[], LiveServer]) -> None:
         listing = await call(client, "task_list", project="acme-shop", stage="dev")
         assert "acme-shop-1" in listing
         detail = await call(client, "task_get", task="acme-shop-1")
-        assert "Tests pass." in detail and "- version: 2" in detail
+        # The report's size M sized the task: version 3.
+        assert "Tests pass." in detail and "- version: 3" in detail
 
         events = await call(client, "events_since", since_id=0, project="acme-shop")
         assert "task.stage_changed acme-shop-1 plan → dev (checkout-dev)" in events

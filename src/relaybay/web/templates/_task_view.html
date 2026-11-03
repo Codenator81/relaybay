@@ -62,18 +62,30 @@
     <p class="muted">No session is bound to this task.</p>
     {% endif %}
     {% if detail.bind_choices %}
-    <form class="bind-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/bind"
-          hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/bind" hx-target="closest .task-view" hx-swap="outerHTML">
-      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-      <label>{{ "Bind another session" if t.session_name else "Bind a session" }}
-        <select name="session_id" required>
-          {% for s in detail.bind_choices %}
-          <option value="{{ s.id }}">{{ s.name }}{% if s.external_id and s.external_id != s.name %} · {{ s.external_id[:14] }}…{% endif %}{% if s.status %} · {{ s.status }}{% endif %}{% if s.project_id != t.project_id %} · other project{% endif %}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <button type="submit" class="btn">Bind</button>
-    </form>
+    <details class="bind-picker">
+      <summary class="btn">{{ "Bind another session" if t.session_name else "Bind a session" }}</summary>
+      <form class="bind-menu" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/bind"
+            hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/bind" hx-target="closest .task-view" hx-swap="outerHTML">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        {% for s in detail.bind_choices %}
+        {%- if s.external_id %}
+          {%- set label = s.name if s.name != s.external_id else "Untitled desktop session" %}
+          {%- set ref = s.external_id %}
+        {%- else %}
+          {%- set label = s.name.split(" · ")[0] if s.cc_session_id and " · " in s.name else s.name %}
+          {%- set ref = s.cc_session_id or "" %}
+        {%- endif %}
+        <button type="submit" name="session_id" value="{{ s.id }}" class="bind-option">
+          <span class="bind-option-head">
+            {% if s.status %}<span class="status-dot dot-{{ s.status }}" title="{{ s.status }}"></span>{% endif %}
+            <span class="bind-option-name">{{ label }}</span>
+            {% if s.project_id != t.project_id %}<span class="bind-option-tag">other project</span>{% endif %}
+          </span>
+          <span class="bind-option-meta mono">{{ "desktop" if s.external_id else ("terminal" if s.kind == "hook" else "named session") }}{% if ref %} · {{ ref }}{% endif %}{% if s.status %} · {{ s.status }}{% endif %}</span>
+        </button>
+        {% endfor %}
+      </form>
+    </details>
     {% endif %}
     {% if detail.bindings %}
     <h3>History</h3>

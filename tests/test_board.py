@@ -41,7 +41,8 @@ def test_fragments(board: TestClient, seeded: str) -> None:
     assert f'href="/p/acme-shop?task={seeded}"' in card.text  # the card opens the task dialog
     dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog")
     assert dialog.status_code == 200 and 'class="dialog-frame"' in dialog.text
-    assert 'name="csrf_token"' in dialog.text and 'name="version" value="1"' in dialog.text
+    # The report's size S sized the task: version 2.
+    assert 'name="csrf_token"' in dialog.text and 'name="version" value="2"' in dialog.text
     # The last report body is rendered as markdown with raw HTML escaped.
     assert "&lt;b&gt;bold&lt;/b&gt;" in dialog.text and "<b>bold</b>" not in dialog.text
     view = board.get(f"/p/acme-shop/t/{seeded}/view")
@@ -64,12 +65,12 @@ def test_edit_card_goes_through_the_service(board: TestClient, seeded: str, toke
         "branch": "feat/x",
         "description": "Build the **checkout** page.\r\nCards only.",
         "progress": "- cart\r\n- totals",
-        "version": "1",
+        "version": "2",
         "csrf_token": csrf_token(token),
     }
     response = board.post(f"/p/acme-shop/t/{seeded}", data=form, headers=HTMX)
     assert response.status_code == 200
-    assert 'class="form-ok"' in response.text and 'name="version" value="2"' in response.text
+    assert 'class="form-ok"' in response.text and 'name="version" value="3"' in response.text
 
     service: Service = board.app.state.service
     task = run_in_app(board, service.get_task, seeded)
@@ -77,15 +78,15 @@ def test_edit_card_goes_through_the_service(board: TestClient, seeded: str, toke
         "Checkout page v2",
         "test",
         "reviewer",
-        2,
+        3,
     )
     assert task.description == "Build the **checkout** page.\nCards only."
     assert task.progress == "- cart\n- totals"
 
     # Saving the same values again changes nothing (textarea CRLF is normalised).
-    form["version"] = "2"
+    form["version"] = "3"
     board.post(f"/p/acme-shop/t/{seeded}", data=form, headers=HTMX)
-    assert run_in_app(board, service.get_task, seeded).version == 2
+    assert run_in_app(board, service.get_task, seeded).version == 3
     events = run_in_app(board, service.events_since, 0)
     assert {e.kind for e in events} >= {"task.stage_changed", "task.updated"}
     assert events[-1].actor == "board"
@@ -96,7 +97,7 @@ def test_edit_conflict_returns_the_form_with_an_error(
 ) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.update_task, seeded, {"waiting_on": "owner"})
-    form = {"title": "Mine", "stage": "dev", "version": "1", "csrf_token": csrf_token(token)}
+    form = {"title": "Mine", "stage": "dev", "version": "2", "csrf_token": csrf_token(token)}
     response = board.post(f"/p/acme-shop/t/{seeded}", data=form, headers=HTMX)
     assert response.status_code == 200
     assert response.text.lstrip().startswith('<div class="task-form-box"')
@@ -106,9 +107,9 @@ def test_edit_conflict_returns_the_form_with_an_error(
     assert 'value="Mine"' in response.text  # the user's input is kept
     # Marked dirty, so the next live event does not replace the kept input.
     assert '<form class="task-form" data-dirty="1"' in response.text
-    assert 'name="version" value="2"' in response.text  # Save again overwrites
+    assert 'name="version" value="3"' in response.text  # Save again overwrites
 
-    invalid = dict(form, version="2", title="  ")
+    invalid = dict(form, version="3", title="  ")
     response = board.post(f"/p/acme-shop/t/{seeded}", data=invalid, headers=HTMX)
     assert "title must not be empty" in response.text and 'data-dirty="1"' in response.text
     assert "Someone else changed" not in response.text
@@ -302,14 +303,15 @@ def test_unbind_from_the_board(board: TestClient, seeded: str, token: str) -> No
 def test_bind_a_session_from_the_board(board: TestClient, seeded: str, token: str) -> None:
     service: Service = board.app.state.service
     page = board.get(f"/t/{seeded}").text
-    assert "bind-form" not in page  # no session seen yet: nothing to pick
+    assert "bind-picker" not in page  # no session seen yet: nothing to pick
     run_in_app(board, service.upsert_project, "demo-api")
     other = run_in_app(board, service.create_task, "demo-api", "Other", session=DESKTOP)
     run_in_app(board, service.unbind_session, other.key)
     [desktop] = [r.session for r in run_in_app(board, service.list_sessions)]
 
     page = board.get(f"/t/{seeded}").text
-    assert "Bind a session" in page and f'<option value="{desktop.id}">' in page
+    assert "Bind a session" in page and f'name="session_id" value="{desktop.id}"' in page
+    assert "Untitled desktop session" in page and f"desktop · {DESKTOP}" in page
     assert "other project" in page
     url = f"/p/acme-shop/t/{seeded}/bind"
     refused = board.post(url, data={"session_id": str(desktop.id)}, headers=HTMX)

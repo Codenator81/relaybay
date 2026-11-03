@@ -28,7 +28,12 @@ from relaybay.domain import comments as comment_text
 from relaybay.domain import environments as envs
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
-from relaybay.domain.comments import COMMENT_MAX, STOP_BLOCK_CAP, STOP_COMMENT_CAP
+from relaybay.domain.comments import (
+    COMMENT_MAX,
+    CONTEXT_MAX,
+    STOP_BLOCK_CAP,
+    STOP_COMMENT_CAP,
+)
 from relaybay.domain.environments import (
     DEFAULT_LEVELS,
     GUARD_MODES,
@@ -60,7 +65,29 @@ from relaybay.domain.models import (
     Task,
     TrackerEntry,
 )
-from relaybay.domain.reports import parse_report
+from relaybay.domain.plan import (
+    DEFAULT_REMINDER_EVERY,
+    NO_PLAN_HINT,
+    PLAN_STEPS_MAX,
+    REASON_MAX,
+    STEP_STATUSES,
+    TODO_ITEMS_MAX,
+    Plan,
+    PlanRevision,
+    PlanStep,
+    TodoChange,
+    TodoItem,
+    clean_conformance,
+    clean_outcome,
+    parse_todo,
+    plan_body,
+    reminder_line,
+    reminder_text,
+    title_diff,
+)
+from relaybay.domain.plan import STEP_DETAILS_MAX as PLAN_DETAILS_MAX
+from relaybay.domain.plan import clean_step_title as clean_plan_title
+from relaybay.domain.reports import REPORT_SIZES, parse_report
 from relaybay.domain.review import (
     CAPTION_MAX,
     DEFAULT_FILE_MAX_MB,
@@ -194,6 +221,9 @@ class TaskDetail:
     live_actions: list[Event] = field(default_factory=list)
     review: Review = field(default_factory=lambda: Review([], []))
     bind_choices: list[Session] = field(default_factory=list)  # for the board's session picker
+    plan: Plan = field(default_factory=lambda: Plan(None, None, None))
+    todo: list[TodoItem] = field(default_factory=list)  # the bound session's Claude Code todo
+    plan_history: list[tuple[PlanRevision, list[str]]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -307,6 +337,13 @@ def _clean_field(name: str, value: Any) -> Any:
         return parse_stage(value or "").value
     if spec.kind == "url":
         return _clean_url(value, name)
+    if spec.kind == "size":
+        size = (value or "").strip().upper()
+        if size and size not in REPORT_SIZES:
+            raise ValidationError(
+                f"{name} must be one of {', '.join(REPORT_SIZES)}, got {value!r}."
+            )
+        return size or None
     return _clean_text(value, name, spec.max_length or TEXT_MAX)
 
 
@@ -429,6 +466,8 @@ def _patch_summary(patch: dict[str, Any], prefix: str = "") -> list[str]:
 
 
 REVIEW_DECISIONS = ("accept", "reject", "reopen", "comment")
+NO_PLAN_STAGE_HINT = "Hint: {key} has no plan and no todo yet: " + NO_PLAN_HINT + "."
+PLAN_LINK_RE = re.compile(r"(?:report\s*[:#]?\s*|#)?(\d+)", re.IGNORECASE)
 EMPTY_CHECKLIST_HINT = (
     "Hint: the review checklist of {key} is empty. Write what the owner should check by eye"
     " with review_steps_set (and attach screenshots with attach_file)."
@@ -584,6 +623,7 @@ class Service:
         attachment_roots: list[Path] | None = None,
         attachment_max_bytes: int = DEFAULT_FILE_MAX_MB * MB,
         attachment_task_max_bytes: int = DEFAULT_TASK_MAX_MB * MB,
+        plan_reminder_every: int = DEFAULT_REMINDER_EVERY,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -626,6 +666,10 @@ class Service:
         self._waiter_seq = 0
         # FTS5 full-text search; False when this SQLite has no FTS5 (search uses LIKE then).
         self.search_fts = False
+        # Plan reminders per session: tool events since the session started, the last text sent.
+        self.plan_reminder_every = plan_reminder_every
+        self._tool_events: dict[int, int] = {}
+        self._reminded: dict[int, str] = {}
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -882,6 +926,7 @@ class Service:
             )
             return session
         if other is not None and other.id != session.id:
+            await repo.move_session_todo(tx.conn, other.id, session.id, cc_id)
             changes.update(
                 status=other.status,
                 activity=other.activity,
@@ -1041,7 +1086,7 @@ class Service:
     async def record_hook(self, payload: Any) -> Session | None:
         """Apply one Claude Code hook event to its session's status. Unknown events return None.
         Activity of a working session is written at most once per window; the latest one in
-        the window is written when it ends."""
+        the window is written when it ends. A todo tool's change is stored either way."""
         hook = parse_hook(payload)
         if hook is None:
             return None
@@ -1050,19 +1095,32 @@ class Service:
             and await repo.get_session_by_cc(self._r, hook.cc_session_id) is None
         ):
             return None  # e.g. after /clear the new id took the session over first: nothing ends
-        if hook.activity_only:
-            current = await repo.get_session_by_cc(self._r, hook.cc_session_id)
-            if current is not None and current.status == "working":
-                last = self._activity_written.get(current.id)
-                elapsed = time.monotonic() - last if last is not None else None
-                if elapsed is not None and elapsed < self.hook_activity_window:
-                    self._activity_pending[current.id] = hook
-                    if current.id not in self._activity_timers:
-                        self._activity_timers[current.id] = asyncio.get_running_loop().call_later(
-                            self.hook_activity_window - elapsed, self._flush_activity, current.id
-                        )
-                    return current
-        return await self._apply_hook(hook)
+        session = await self._held_back(hook) or await self._apply_hook(hook)
+        change = parse_todo(payload)
+        if change is not None:
+            try:
+                await self._record_todo(hook.cc_session_id, change)
+            except Exception:
+                logger.exception("Recording the session's todo failed; the hook goes on")
+        return session
+
+    async def _held_back(self, hook: HookEvent) -> Session | None:
+        """The session when this activity is coalesced into the current window, else None."""
+        if not hook.activity_only:
+            return None
+        current = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+        if current is None or current.status != "working":
+            return None
+        last = self._activity_written.get(current.id)
+        elapsed = time.monotonic() - last if last is not None else None
+        if elapsed is None or elapsed >= self.hook_activity_window:
+            return None
+        self._activity_pending[current.id] = hook
+        if current.id not in self._activity_timers:
+            self._activity_timers[current.id] = asyncio.get_running_loop().call_later(
+                self.hook_activity_window - elapsed, self._flush_activity, current.id
+            )
+        return current
 
     def _flush_activity(self, session_id: int) -> None:
         self._activity_timers.pop(session_id, None)
@@ -1160,14 +1218,16 @@ class Service:
                 session=session.name,
             )
 
-    async def _take_undelivered(self, session: Session) -> tuple[list[Comment], int]:
+    async def _take_undelivered(
+        self, session: Session, budget: int = CONTEXT_MAX
+    ) -> tuple[list[Comment], int]:
         """Mark the oldest undelivered owner comments that fit in one hook answer as delivered
         to `session`; returns them and how many were waiting."""
         if not await repo.undelivered_owner_comments(self._r, session.id):
             return [], 0  # the common case: no write transaction per tool call
         async with self._tx() as tx:
             waiting = await repo.undelivered_owner_comments(tx.conn, session.id)
-            shown = comment_text.fit(waiting)
+            shown = comment_text.fit(waiting, budget)
             if shown:
                 await self._deliver(tx, session, shown)
         return shown, len(waiting)
@@ -1184,6 +1244,13 @@ class Service:
             unread = await repo.unread_owner_count(self._r, session.id) if session else 0
             if unread:
                 context += " " + comment_text.unread_line(unread)
+            if session is not None:
+                # A new context: the agent has seen nothing yet.
+                self._tool_events[session.id] = 0
+                self._reminded.pop(session.id, None)
+                reminder = await self._plan_reminder(session)
+                if reminder:
+                    context += "\n" + reminder
             return _context("SessionStart", context)
         if hook.event == "PreToolUse":
             return await self._pre_tool_answer(payload, hook, session)
@@ -1192,10 +1259,16 @@ class Service:
         if hook.event == "UserPromptSubmit":
             self._stop_blocks.pop(session.id, None)  # a new turn
         if hook.event in DELIVERY_EVENTS:
-            shown, total = await self._take_undelivered(session)
-            if shown:
-                return _context(hook.event, comment_text.delivery_text(shown, total))
-            return None
+            reminder = None
+            due = self._reminder_due(session, payload) if hook.event == "PostToolUse" else None
+            if due is not None:
+                reminder = await self._plan_reminder(session, repeat=due == "periodic")
+            budget = CONTEXT_MAX - (len(reminder) + 1 if reminder else 0)
+            shown, total = await self._take_undelivered(session, budget)
+            parts = [comment_text.delivery_text(shown, total)] if shown else []
+            if reminder:
+                parts.append(reminder)
+            return _context(hook.event, "\n".join(parts)) if parts else None
         if hook.event == "Stop":
             return await self._stop_answer(session, hook.stop_hook_active)
         return None
@@ -1509,6 +1582,9 @@ class Service:
             live_actions=await repo.task_events(self._r, task.id, LIVE_ACTION, 20),
             review=await self._load_review(self._r, task.id),
             bind_choices=await self._bind_choices(task),
+            plan=await self._load_plan(self._r, task),
+            todo=await self._task_todo(self._r, task),
+            plan_history=await self._plan_history(task),
         )
 
     async def _bind_choices(self, task: Task, limit: int = 40) -> list[Session]:
@@ -1744,10 +1820,17 @@ class Service:
             await repo.has_report_since(tx.conn, task.id, task.stage_changed_at)
         )
         values = {name: getattr(task, name) for name in FIELD_NAMES} | diff
-        missing = unmet(rules, stage, report_since_stage_change=reported, values=values)
+        plan_status = task.plan_status if task.plan_total else None
+        missing = unmet(
+            rules,
+            stage,
+            report_since_stage_change=reported,
+            values=values,
+            plan_status=plan_status,
+        )
         if missing and self.rules_mode == "strict":
             raise ValidationError(refusal_text(stage, missing))
-        return [warning_text(stage, req) for req in missing]
+        return [warning_text(stage, req, plan_status) for req in missing]
 
     async def update_task_checked(
         self,
@@ -1782,6 +1865,9 @@ class Service:
             warnings = await self._stage_warnings(tx, task, diff)
             if diff.get("stage") in ACCEPTANCE_STAGES and not task.review_total:
                 _note(EMPTY_CHECKLIST_HINT.format(key=task.key))
+            no_plan = diff.get("stage") == Stage.DEV and not task.plan_total
+            if no_plan and not await self._task_todo(tx.conn, task):
+                _note(NO_PLAN_STAGE_HINT.format(key=task.key))
             # An explicit tracker_logged in the same write wins over the automatic unlog.
             unlog = (
                 _unlog_reason(task, diff)
@@ -2027,6 +2113,8 @@ class Service:
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
+            if size and not task.size:
+                clean["size"] = size  # the first report's size sizes a task that has none
             sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
@@ -3275,6 +3363,366 @@ class Service:
                 in_reply_to=None,
                 step_id=step.id,
             )
+
+    # --- plan: steps, checkpoints, history, and the agent's own todo --------------------
+
+    async def _load_plan(self, conn: aiosqlite.Connection, task: Task) -> Plan:
+        steps = await repo.list_plan_steps(conn, task.id)
+        if not steps:
+            return Plan(None, None, None)
+        return Plan(task.plan_status, task.plan_accepted_at, task.plan_accepted_by, steps)
+
+    async def _task_todo(self, conn: aiosqlite.Connection, task: Task) -> list[TodoItem]:
+        """The Claude Code todo of the session bound to `task` (its current Claude Code id)."""
+        if task.session_id is None:
+            return []
+        session = await repo.get_session_by_id(conn, task.session_id)
+        if session is None:
+            return []
+        return await repo.list_session_todo(conn, session.id, session.cc_session_id)
+
+    async def _plan_history(self, task: Task) -> list[tuple[PlanRevision, list[str]]]:
+        """Revisions newest first, each with the step titles it changed against the one before."""
+        revisions = await repo.list_plan_revisions(self._r, task.id)
+        out = []
+        for i, rev in enumerate(revisions):
+            before = revisions[i + 1].titles if i + 1 < len(revisions) else []
+            out.append((rev, title_diff(before, rev.titles)))
+        return out
+
+    async def plan(self, ref: str | int) -> tuple[Task, Plan, list[TodoItem]]:
+        """A task's plan and the bound session's todo (the agent's own list, not the plan)."""
+        task = await self.get_task(ref)
+        return task, await self._load_plan(self._r, task), await self._task_todo(self._r, task)
+
+    async def plan_history(
+        self, ref: str | int
+    ) -> tuple[Task, list[tuple[PlanRevision, list[str]]]]:
+        task = await self.get_task(ref)
+        return task, await self._plan_history(task)
+
+    async def _plan_event(
+        self, tx: _Tx, kind: str, task: Task, actor: str, session_id: int | None, **extra: Any
+    ) -> None:
+        await tx.event(
+            kind,
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=session_id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            **extra,
+        )
+
+    async def _plan_revision(self, tx: _Tx, task: Task, actor: str, reason: str) -> Plan:
+        """Keep the plan as it is now (after this write) as a new revision."""
+        fresh = await self.get_task(task.id, tx.conn)
+        plan = await self._load_plan(tx.conn, fresh)
+        body = plan_body(plan.status, plan.steps)
+        await repo.insert_plan_revision(tx.conn, task.id, body, actor, reason, tx.now)
+        return plan
+
+    async def set_plan(
+        self,
+        ref: str | int,
+        steps: Any,
+        *,
+        reason: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Task, Plan, bool]:
+        """Replace the plan. Step N keeps its status and checkpoint while its title stays the
+        same; a renamed step starts again as pending; steps past the new end are removed. A
+        change of the titles or their order turns an accepted plan back into a draft (the third
+        value says so). An empty list removes the plan; a write that changes nothing is not
+        kept."""
+        if not isinstance(steps, list):
+            raise ValidationError("steps must be a list of {title, details} objects.")
+        if len(steps) > PLAN_STEPS_MAX:
+            raise ValidationError(f"A plan has at most {PLAN_STEPS_MAX} steps.")
+        wanted: list[tuple[str, str | None]] = []
+        for i, item in enumerate(steps, 1):
+            if isinstance(item, str):
+                item = {"title": item}
+            if not isinstance(item, dict) or set(item) - {"title", "details"}:
+                raise ValidationError(f"Step {i} must be an object with title and details.")
+            details = clean_markdown(item.get("details"), f"Step {i} details", PLAN_DETAILS_MAX)
+            wanted.append((clean_plan_title(item.get("title")), details))
+        why = _clean_text(reason, "reason", REASON_MAX)
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            current = await repo.list_plan_steps(tx.conn, task.id)
+            titles_changed = [s.title for s in current] != [t for t, _ in wanted]
+            details_changed = [s.details_md for s in current] != [d for _, d in wanted]
+            if not titles_changed and not details_changed:
+                return task, await self._load_plan(tx.conn, task), False
+            for old in current[len(wanted) :]:
+                await repo.delete_plan_step(tx.conn, old.id)
+            for position, (title, details) in enumerate(wanted, 1):
+                old = current[position - 1] if position <= len(current) else None
+                if old is None:
+                    await repo.insert_plan_step(
+                        tx.conn, task.id, position, title, details, actor, tx.now
+                    )
+                elif old.title != title:
+                    restart = {"status": "pending", "done_at": None, "link": None}
+                    restart |= {"outcome": None, "conformance": None}
+                    changes = {"title": title, "details_md": details} | restart
+                    await repo.update_plan_step(tx.conn, old.id, changes, tx.now)
+                elif old.details_md != details:
+                    await repo.update_plan_step(tx.conn, old.id, {"details_md": details}, tx.now)
+            previous = task.plan_status if current else None
+            status = previous
+            if not wanted:
+                status = None
+            elif previous is None or (previous == "accepted" and titles_changed):
+                status = "draft"
+            reverted = previous == "accepted" and status == "draft"
+            if status != task.plan_status or not wanted:
+                await repo.set_plan_status(tx.conn, task.id, status, None, None)
+            default = (
+                "plan removed" if not wanted else "plan written" if not current else "plan changed"
+            )
+            plan = await self._plan_revision(tx, task, actor, why or default)
+            await self._plan_event(
+                tx,
+                "plan.set",
+                task,
+                actor,
+                sess.id if sess else None,
+                steps=len(wanted),
+                status=status,
+                previous=previous,
+                titles_changed=titles_changed,
+                reason=why,
+            )
+            return await self.get_task(task.id, tx.conn), plan, reverted
+
+    async def _plan_step_at(self, tx: _Tx, task: Task, step: Any) -> PlanStep:
+        """A plan step of `task` by its position (1, 2, …)."""
+        if isinstance(step, bool) or not isinstance(step, int | str):
+            raise ValidationError("step is the step's number in the plan: 1, 2, …")
+        text = str(step).strip()
+        if not text.isdigit():
+            raise ValidationError(f"step is the step's number in the plan, got {step!r}.")
+        for item in await repo.list_plan_steps(tx.conn, task.id):
+            if item.position == int(text):
+                return item
+        raise NotFoundError(f"{task.key} has no plan step {text}; see plan_get.")
+
+    async def _plan_link(self, tx: _Tx, task: Task, value: Any) -> str | None:
+        """A checkpoint link: a report of this task ('12', '#12', 'report:12') or an http(s)
+        link such as a pull request."""
+        if value is None or isinstance(value, bool):
+            return None
+        text = _clean_text(str(value), "link")
+        if text is None:
+            return None
+        match = PLAN_LINK_RE.fullmatch(text)
+        if match:
+            report_id = int(match.group(1))
+            if not await repo.report_of_task(tx.conn, report_id, task.id):
+                raise ValidationError(f"Report #{report_id} is not a report of {task.key}.")
+            return f"report:{report_id}"
+        if HTTP_URL_RE.fullmatch(text):
+            return text
+        raise ValidationError(
+            "link is a report of this task (12, '#12' or 'report:12') or an http(s) link such as"
+            f" a pull request, got {text!r}."
+        )
+
+    async def update_plan_step(
+        self,
+        ref: str | int,
+        step: Any,
+        status: str,
+        *,
+        outcome: str | None = None,
+        link: Any = None,
+        conformance: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Task, PlanStep]:
+        """Set a step's status. `done` is a checkpoint: it needs `conformance` ('as planned' or
+        'deviation: why') and may carry a one-line outcome and a link (report or PR). Leaving
+        done clears the checkpoint. Status changes never turn an accepted plan into a draft."""
+        if status not in STEP_STATUSES:
+            raise ValidationError(f"status must be one of: {', '.join(STEP_STATUSES)}.")
+        if status != "done" and (link is not None or conformance is not None):
+            raise ValidationError(
+                "link and conformance are the checkpoint of a done step; pass them with"
+                " status 'done'."
+            )
+        result = clean_outcome(outcome)
+        verdict = clean_conformance(conformance) if status == "done" else None
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            current = await self._plan_step_at(tx, task, step)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            if status == "done":
+                given = None if link is None else await self._plan_link(tx, task, link)
+                changes = {
+                    "status": "done",
+                    "done_at": current.done_at if current.status == "done" else tx.now,
+                    "outcome": result if outcome is not None else current.outcome,
+                    "link": current.link if link is None else given,
+                    "conformance": verdict,
+                }
+            else:
+                changes = {"status": status, "done_at": None, "link": None}
+                changes |= {"conformance": None, "outcome": result}
+            changes = {k: v for k, v in changes.items() if v != getattr(current, k)}
+            if not changes:
+                return task, current
+            await repo.update_plan_step(tx.conn, current.id, changes, tx.now)
+            label = f"step {current.position} {status}"
+            if verdict:
+                label += f" ({verdict})"
+            await self._plan_revision(tx, task, actor, label)
+            await self._plan_event(
+                tx,
+                "plan.step_updated",
+                task,
+                actor,
+                sess.id if sess else None,
+                position=current.position,
+                title=current.title,
+                status=status,
+                previous=current.status,
+                conformance=verdict,
+                outcome=changes.get("outcome", current.outcome),
+            )
+            steps = await repo.list_plan_steps(tx.conn, task.id)
+            updated = next(s for s in steps if s.id == current.id)
+            return await self.get_task(task.id, tx.conn), updated
+
+    async def accept_plan(
+        self,
+        ref: str | int,
+        *,
+        actor: str = "owner",
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Task, Plan, bool]:
+        """Accept the task's plan (the owner on the board, the coordinator over MCP). The third
+        value is False when it was accepted already (nothing written)."""
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            sess = await self._session(tx, session, session_title, hook_session)
+            if sess is not None and sess.id == task.session_id:
+                raise ValidationError(
+                    f"The session bound to {task.key} does not accept its own plan; the owner"
+                    " (on the board) or the coordinator does."
+                )
+            who = sess.name if sess else actor
+            plan = await self._load_plan(tx.conn, task)
+            if not plan.steps:
+                raise ValidationError(
+                    f"{task.key} has no plan to accept; the agent writes it with plan_set."
+                )
+            if plan.status == "accepted":
+                return task, plan, False
+            await repo.set_plan_status(tx.conn, task.id, "accepted", tx.now, who)
+            plan = await self._plan_revision(tx, task, who, "accepted")
+            await self._plan_event(
+                tx, "plan.accepted", task, who, sess.id if sess else None, steps=len(plan.steps)
+            )
+            return await self.get_task(task.id, tx.conn), plan, True
+
+    async def _record_todo(self, cc_id: str, change: TodoChange) -> None:
+        """Apply a todo tool call to the session's list. A new Claude Code id starts a fresh
+        list; an update of an item it never saw is ignored. The session is looked up again in
+        this transaction: an agent's write may have just moved the id to another session."""
+        async with self._tx() as tx:
+            session = await repo.get_session_by_cc(tx.conn, cc_id)
+            if session is None:
+                return
+            await repo.clear_session_todo(tx.conn, session.id, keep_cc=cc_id)
+            before = await repo.list_session_todo(tx.conn, session.id, cc_id)
+            by_id = {i.item_id: i for i in before}
+            if change.kind == "replace":
+                await repo.clear_session_todo(tx.conn, session.id)
+                for item in change.items:
+                    await repo.upsert_session_todo(tx.conn, session.id, cc_id, item, tx.now)
+            elif change.kind == "create" and change.item_id and change.subject:
+                old = by_id.get(change.item_id)
+                if old is not None or len(before) < TODO_ITEMS_MAX:
+                    position = (
+                        old.position if old else max((i.position for i in before), default=0) + 1
+                    )
+                    item = TodoItem(
+                        change.item_id, change.subject, "pending", change.active_form, position
+                    )
+                    await repo.upsert_session_todo(tx.conn, session.id, cc_id, item, tx.now)
+            elif change.kind == "update" and change.item_id in by_id:
+                old = by_id[change.item_id]
+                if change.status == "deleted":
+                    await repo.delete_session_todo_item(tx.conn, session.id, old.item_id)
+                else:
+                    item = TodoItem(
+                        old.item_id,
+                        change.subject or old.subject,
+                        change.status or old.status,
+                        change.active_form or old.active_form,
+                        old.position,
+                    )
+                    await repo.upsert_session_todo(tx.conn, session.id, cc_id, item, tx.now)
+            after = await repo.list_session_todo(tx.conn, session.id, cc_id)
+            shape = [(i.item_id, i.subject, i.status, i.active_form) for i in after]
+            if shape == [(i.item_id, i.subject, i.status, i.active_form) for i in before]:
+                return
+            for task in await repo.open_tasks_of_session(tx.conn, session.id):
+                await self._plan_event(
+                    tx,
+                    "session.todo_updated",
+                    task,
+                    session.name,
+                    session.id,
+                    items=len(after),
+                    completed=sum(1 for i in after if i.status == "completed"),
+                )
+
+    def _reminder_due(self, session: Session, payload: Any) -> str | None:
+        """PostToolUse: "todo" after a todo change, "periodic" every `plan_reminder_every`
+        tool events, else None."""
+        count = self._tool_events.get(session.id, 0) + 1
+        self._tool_events[session.id] = count
+        if parse_todo(payload) is not None:
+            return "todo"
+        every = self.plan_reminder_every
+        return "periodic" if every > 0 and count % every == 0 else None
+
+    async def _plan_reminder(self, session: Session, *, repeat: bool = False) -> str | None:
+        """The current plan step of each open task bound to `session`, with the todo item in
+        progress; None when there is nothing to say or (unless `repeat`, the periodic
+        reminder) it was the last text sent."""
+        tasks = [
+            t
+            for t in await repo.open_tasks_of_session(self._r, session.id)
+            if t.stage in OPEN_STAGES
+        ]
+        if not tasks:
+            return None
+        todo = await repo.list_session_todo(self._r, session.id, session.cc_session_id)
+        lines = []
+        for task in tasks:
+            plan = await self._load_plan(self._r, task)
+            line = reminder_line(task.key, task.stage.value, plan, todo)
+            if line:
+                lines.append(line)
+        text = reminder_text(lines)
+        if text is None or (not repeat and text == self._reminded.get(session.id)):
+            return None
+        self._reminded[session.id] = text
+        return text
 
     # Files: the bytes are checked and written outside the write transaction; the transaction
     # re-checks the limits and removes the new file again when it fails.

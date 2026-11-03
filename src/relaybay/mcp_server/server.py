@@ -55,6 +55,9 @@ def instructions(rules: Rules) -> str:
             "10. Before you move a task to review or test, write what the owner should check by"
             " eye with review_steps_set (title plus what, how and why) and attach screenshots with"
             " attach_file. The owner's decision on each step reaches you as an owner comment.",
+            "11. Start with a plan: plan_set from PLAN.md or your own 2-5 steps (S tasks: at least"
+            " a todo); mark steps in_progress/done with plan_step_update; done needs one line"
+            " 'as planned' or 'deviation: why'.",
         ]
     )
 
@@ -105,6 +108,11 @@ SOURCE_HELP = (
     " followed by display text ('comment:7 owner in the review thread'); or display text alone"
     " ('owner, chat')."
 )
+SIZE_HELP = (
+    "Task size: S, M or L. S tasks may go without an accepted plan; a task of unknown size needs"
+    " one."
+)
+PLAN_STEP_HELP = "The step's number in the plan (1, 2, …)."
 PROGRESS_HELP = (
     "Markdown summary of everything done so far on the task (not just the last step). Rewrite"
     " it as the work goes on and keep it current with every report."
@@ -288,6 +296,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         tracker_name: Annotated[str | None, Field(description=TRACKER_NAME_HELP + CLEARS)] = None,
         tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + CLEARS)] = None,
         tracker_logged: Annotated[bool | None, Field(description=TRACKER_LOGGED_HELP)] = None,
+        size: Annotated[str | None, Field(description=SIZE_HELP + CLEARS)] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -313,6 +322,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             "tracker_ref": tracker_ref,
             "tracker_name": tracker_name,
             "tracker_url": tracker_url,
+            "size": size,
         }
         changes: dict[str, object] = {
             k: (cleared(v) or None) for k, v in given.items() if v is not None
@@ -1032,6 +1042,114 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             )
         )
         return f"Step {updated.position} '{updated.title}' is {updated.status}."
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def plan_get(task: TaskRef) -> str:
+        """The task's plan: status (draft or accepted), each step with its status and, when done,
+        its checkpoint (time, conformance, outcome, link), plus your Claude Code todo as a
+        separate list. Call it when you pick up a task and before you change the plan."""
+        row, plan, todo = await run(service.plan(task))
+        return fmt.plan_text(row, plan, todo)
+
+    @write
+    async def plan_set(
+        task: TaskRef,
+        steps: Annotated[
+            list[dict[str, Any]],
+            Field(
+                description="The whole plan in order, 2-5 steps as a rule, e.g. [{'title':"
+                " 'Migration and model', 'details': 'What and why, 1-2 sentences (markdown)'}]."
+                " It replaces the current plan: step N keeps its status and checkpoint while"
+                " its title stays the same; a renamed step starts again as pending; steps past"
+                " the end are removed; an empty list removes the plan."
+            ),
+        ],
+        reason: Annotated[
+            str | None,
+            Field(description="Why the plan is written or changed, one line; kept in its history."),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Write the task's plan (from PLAN.md or your own 2-5 steps) before you start coding.
+        A new plan is a draft until the owner (board) or the coordinator (plan_accept) accepts
+        it; changing the titles or the order of an accepted plan makes it a draft again."""
+        row, plan, reverted = await run(
+            service.set_plan(
+                task,
+                steps,
+                reason=reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.plan_saved(row, plan, reverted)
+
+    @write
+    async def plan_step_update(
+        task: TaskRef,
+        step: Annotated[int, Field(ge=1, description=PLAN_STEP_HELP)],
+        status: Annotated[str, Field(description="One of: pending, in_progress, done, blocked.")],
+        outcome: Annotated[
+            str | None,
+            Field(description="One line: what came out of the step (or why it is blocked)."),
+        ] = None,
+        link: Annotated[
+            str | None,
+            Field(description="Done only: a report of this task ('12') or a PR link."),
+        ] = None,
+        conformance: Annotated[
+            str | None,
+            Field(
+                description="Required with done: 'as planned' or 'deviation: <why it went"
+                " otherwise>'."
+            ),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Mark a plan step in_progress when you start it and done when it is finished (a
+        checkpoint: one line 'as planned' or 'deviation: why', optionally an outcome and a link
+        to the report or PR). Status changes never turn an accepted plan back into a draft."""
+        _, updated = await run(
+            service.update_plan_step(
+                task,
+                step,
+                status,
+                outcome=outcome,
+                link=cleared(link) or None,
+                conformance=conformance,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.plan_step_saved(updated)
+
+    @write
+    async def plan_accept(
+        task: TaskRef,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Accept the task's plan as the coordinator (the owner accepts on the board). Agents do
+        not accept their own plans."""
+        row, plan, accepted = await run(
+            service.accept_plan(
+                task,
+                actor="mcp",
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        if not accepted:
+            return f"The plan of **{row.key}** is already accepted; nothing changed."
+        return f"Plan of **{row.key}** accepted: {len(plan.steps)} step(s)."
 
     @write
     async def attach_file(

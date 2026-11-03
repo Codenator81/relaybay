@@ -54,6 +54,13 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     assert any(d.superseded_by for d in board["decisions"])
     assert {n.scope for n in board["notes"]} == {"global", "project"}
     assert [b.label for b in board["blocks"]] == ["pulse"]
+    planned = next(d for d in board["details"] if d.plan.steps)
+    assert planned.task.size == "M" and planned.plan.status == "accepted"
+    assert [s.status for s in planned.plan.steps] == ["done", "done", "in_progress", "pending"]
+    assert planned.plan.steps[0].link and planned.plan.deviations == 1
+    small = next(d for d in board["details"] if d.todo)
+    assert small.task.size == "S" and not small.plan.steps
+    assert [i.status for i in small.todo] == ["completed", "in_progress", "pending"]
 
 
 def test_demo_refuses_a_board_unless_forced(tmp_path: Path) -> None:

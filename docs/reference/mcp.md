@@ -41,6 +41,10 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`review_get`](#review_get) | read |
 | [`review_steps_set`](#review_steps_set) | write |
 | [`review_step_update`](#review_step_update) | write |
+| [`plan_get`](#plan_get) | read |
+| [`plan_set`](#plan_set) | write |
+| [`plan_step_update`](#plan_step_update) | write |
+| [`plan_accept`](#plan_accept) | write |
 | [`attach_file`](#attach_file) | write |
 | [`attachment_caption`](#attachment_caption) | write |
 | [`environments_get`](#environments_get) | read |
@@ -140,6 +144,7 @@ Change task fields (waiting on, next step, branch, description, progress, the tr
 | `tracker_name` | string or null | no | Name of the external tracker, e.g. 'Linear'. '-' or '' clears it. |
 | `tracker_url` | string or null | no | Link to the issue (http:// or https:// only). '-' or '' clears it. |
 | `tracker_logged` | boolean or null | no | True once the work log is entered in the external tracker. New work clears it again (a report, a progress change, a move back from live or done). A new tracker_ref starts as not logged unless tracker_logged is passed in the same write. Done tasks without it stay on the board marked 'not logged'. |
+| `size` | string or null | no | Task size: S, M or L. S tasks may go without an accepted plan; a task of unknown size needs one. '-' or '' clears it. |
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
@@ -451,6 +456,54 @@ Change one review step: its text, or reopen it after you fixed what the owner re
 | `title` | string or null | no | New title. |
 | `details` | string or null | no | New 'what, how and why' text (markdown). |
 | `status` | string or null | no | Only 'open': ask the owner to look again after a fix. Accepting and rejecting is the owner's, on the board. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `plan_get`
+
+The task's plan: status (draft or accepted), each step with its status and, when done, its checkpoint (time, conformance, outcome, link), plus your Claude Code todo as a separate list. Call it when you pick up a task and before you change the plan.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+
+### `plan_set`
+
+Write the task's plan (from PLAN.md or your own 2-5 steps) before you start coding. A new plan is a draft until the owner (board) or the coordinator (plan_accept) accepts it; changing the titles or the order of an accepted plan makes it a draft again.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `steps` | list of object | yes | The whole plan in order, 2-5 steps as a rule, e.g. [{'title': 'Migration and model', 'details': 'What and why, 1-2 sentences (markdown)'}]. It replaces the current plan: step N keeps its status and checkpoint while its title stays the same; a renamed step starts again as pending; steps past the end are removed; an empty list removes the plan. |
+| `reason` | string or null | no | Why the plan is written or changed, one line; kept in its history. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `plan_step_update`
+
+Mark a plan step in_progress when you start it and done when it is finished (a checkpoint: one line 'as planned' or 'deviation: why', optionally an outcome and a link to the report or PR). Status changes never turn an accepted plan back into a draft.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `step` | integer | yes | The step's number in the plan (1, 2, …). |
+| `status` | string | yes | One of: pending, in_progress, done, blocked. |
+| `outcome` | string or null | no | One line: what came out of the step (or why it is blocked). |
+| `link` | string or null | no | Done only: a report of this task ('12') or a PR link. |
+| `conformance` | string or null | no | Required with done: 'as planned' or 'deviation: <why it went otherwise>'. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `plan_accept`
+
+Accept the task's plan as the coordinator (the owner accepts on the board). Agents do not accept their own plans.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

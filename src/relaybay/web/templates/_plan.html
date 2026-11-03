@@ -1,0 +1,84 @@
+{#- The Plan tab: the task's plan with its checkpoints, the bound agent's todo (a second layer,
+    never merged into the plan) and the plan's history. Expects: t (the task), plan, todo,
+    history, optional error. Refetched on live events. -#}
+{%- macro todo_items(items) -%}
+<ol class="todo-list">
+  {% for i in items %}
+  <li class="todo-item status-{{ i.status }}"><span class="todo-mark" aria-hidden="true">{% if i.status == "completed" %}&#10003;{% elif i.status == "in_progress" %}&#9656;{% else %}&#9675;{% endif %}</span> <span class="todo-subject">{{ i.subject }}</span> <span class="muted">{{ i.status|replace("_", " ") }}</span></li>
+  {% endfor %}
+</ol>
+{%- endmacro -%}
+{%- macro todo_block(items, open) -%}
+{%- set now = items|selectattr("status", "equalto", "in_progress")|first %}
+<div class="todo">
+  {% if now %}<p class="todo-now"><span class="muted">Now doing:</span> {{ now.active_form or now.subject }}</p>{% endif %}
+  <details class="todo-details"{% if open %} open{% endif %}>
+    <summary>Agent's todo {{ items|selectattr("status", "equalto", "completed")|list|length }}/{{ items|length }}</summary>
+    {{ todo_items(items) }}
+  </details>
+</div>
+{%- endmacro -%}
+{%- set accepted = plan.status == "accepted" %}
+{%- set current = plan.current %}
+<div class="plan" id="plan-{{ t.key }}" data-key="{{ t.key }}" data-count="{{ plan.done }}/{{ plan.steps|length }}"
+     hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/plan" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {% if plan.steps %}
+  <div class="plan-head">
+    <span class="plan-state state-{{ plan.status }}">{{ "Accepted" if accepted else "Draft" }}</span>
+    <span class="muted">{{ plan.done }} of {{ plan.steps|length }} done
+      {%- if plan.deviations %} · <span class="deviation-count">{{ plan.deviations }} deviation{{ "s" if plan.deviations > 1 else "" }}</span>{% endif %}
+      {%- if accepted and plan.accepted_by %} · accepted by {{ plan.accepted_by }}{% if plan.accepted_at %} <time datetime="{{ plan.accepted_at }}" data-age>{{ plan.accepted_at|age }}</time>{% endif %}{% endif %}</span>
+    {% if not accepted %}
+    <form class="plan-accept" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/plan/accept"
+          hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/plan/accept" hx-target="closest .plan" hx-swap="outerHTML">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <button type="submit" class="btn primary">Accept plan</button>
+    </form>
+    {% endif %}
+  </div>
+  <ol class="plan-steps">
+    {% for s in plan.steps %}
+    {%- set is_current = current is not none and s.id == current.id %}
+    <li class="plan-step status-{{ s.status }}{% if s.deviation %} is-deviation{% endif %}{% if is_current %} is-current{% endif %}" id="plan-step-{{ s.id }}">
+      <div class="plan-step-head">
+        <span class="plan-title"><span class="muted">{{ s.position }}.</span> {{ s.title }}</span>
+        <span class="plan-step-status status-{{ s.status }}">{{ s.status|replace("_", " ") }}</span>
+      </div>
+      {% if s.details_md %}<div class="markdown plan-why">{{ s.details_md|markdown }}</div>{% endif %}
+      {% if s.status == "done" %}
+      <p class="plan-checkpoint">
+        <span class="conformance{% if s.deviation %} is-deviation{% endif %}">{{ s.conformance or "done" }}</span>
+        {%- if s.outcome %} · {{ s.outcome }}{% endif %}
+        {%- if s.link %}{% set href = s.link|http_url %} · {% if href %}<a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ href }}</a>{% else %}report #{{ s.link[7:] }}{% endif %}{% endif %}
+        {%- if s.done_at %} · <time datetime="{{ s.done_at }}" data-age>{{ s.done_at|age }}</time>{% endif %}
+      </p>
+      {% elif s.outcome %}<p class="plan-checkpoint muted">{{ s.outcome }}</p>{% endif %}
+      {% if is_current and todo %}{{ todo_block(todo, false) }}{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% if todo and current is none %}{{ todo_block(todo, false) }}{% endif %}
+  {% elif todo %}
+  <div class="plan-head"><span class="plan-state state-agent">Agent's plan, not accepted</span>
+    <span class="muted">{{ t.session_name or "The bound session" }} keeps this todo in Claude Code; it is not the task's plan.</span></div>
+  {{ todo_block(todo, true) }}
+  {% else %}
+  <p class="muted">No plan yet. The agent writes 2-5 steps with <code>plan_set</code> and marks them with <code>plan_step_update</code>; a small (S) task may go with the agent's todo only.</p>
+  {% endif %}
+  {% if history %}
+  <details class="plan-history">
+    <summary>History ({{ history|length }})</summary>
+    <ol class="history">
+      {% for rev, diff in history %}
+      <li>
+        <span class="history-name">#{{ rev.revision }} {{ rev.reason }}</span>
+        <span class="muted">· {{ rev.author }} · <time datetime="{{ rev.created_at }}" data-age>{{ rev.created_at|age }}</time></span>
+        {% if diff %}<pre class="plan-diff">{% for line in diff %}<span class="{{ 'diff-add' if line.startswith('+') else 'diff-del' }}">{{ line }}</span>
+{% endfor %}</pre>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+</div>

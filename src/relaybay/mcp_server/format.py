@@ -29,6 +29,7 @@ from relaybay.domain.models import (
     Task,
     TrackerEntry,
 )
+from relaybay.domain.plan import Plan, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, Review, ReviewStep
 from relaybay.domain.rules import Rules, requirement_label, requirement_short
 from relaybay.domain.stages import STAGES, Stage
@@ -120,6 +121,10 @@ def task_line(
         extras.append(f"tracker: {tracker}")
     if task.review_total:
         extras.append(f"review {task.review_accepted}/{task.review_total}")
+    if task.size:
+        extras.append(f"size {task.size}")
+    if task.plan_total:
+        extras.append(plan_label(task))
     extras.append(f"v{task.version}")
     line = f"- {parts[0]} — " + " · ".join(extras)
     if task.stage_note:
@@ -131,6 +136,92 @@ def task_line(
     if last:
         line += f"\n  last report: {report_line(last)}"
     return line
+
+
+def plan_label(task: Task) -> str:
+    """`plan 2/5 (draft) · now: 3 Payment step` for a task line."""
+    text = f"plan {task.plan_done}/{task.plan_total}"
+    if task.plan_status != "accepted":
+        text += " (draft)"
+    if task.plan_deviations:
+        text += f", {task.plan_deviations} deviation(s)"
+    if task.plan_now:
+        text += f" · now: {task.plan_now_position} {task.plan_now}"
+    return text
+
+
+def plan_step_line(step: PlanStep) -> str:
+    line = f"{step.position}. [{step.status}] {step.title}"
+    if step.status == "done":
+        when = f"done {step.done_at[:16]}Z" if step.done_at else "done"
+        bits = [when, step.conformance, step.outcome, step.link]
+        line += " — " + " · ".join(b for b in bits if b)
+    elif step.outcome:
+        line += f" — {step.outcome}"
+    if step.details_md:
+        line += f"\n   what and why: {short(step.details_md, 400)}"
+    return line
+
+
+def todo_line(item: TodoItem) -> str:
+    now = f" (now: {item.active_form})" if item.status == "in_progress" and item.active_form else ""
+    return f"- [{item.status}] {item.subject}{now}"
+
+
+def plan_text(task: Task, plan: Plan, todo: list[TodoItem]) -> str:
+    """A task's plan for `plan_get`, with the bound session's todo as a separate list."""
+    todo_lines = [
+        "",
+        "Your todo (Claude Code's own list; a second layer, not the plan):",
+        *map(todo_line, todo),
+    ]
+    if not plan.steps:
+        lines = [
+            f"**{task.key}** has no plan yet. Write 2-5 steps with plan_set (S tasks: at least"
+            " a todo)."
+        ]
+        if todo:
+            lines += [*todo_lines, "It shows on the board as the agent's plan, not accepted."]
+        return "\n".join(lines)
+    if plan.status == "accepted":
+        state = "accepted" + (f" by {plan.accepted_by}" if plan.accepted_by else "")
+        state += f" {plan.accepted_at[:16]}Z" if plan.accepted_at else ""
+    else:
+        state = "draft (not accepted yet: the owner on the board, the coordinator with plan_accept)"
+    summary = f"{plan.done}/{len(plan.steps)} done"
+    if plan.deviations:
+        summary += f", {plan.deviations} deviation(s)"
+    lines = [
+        f"# Plan of {task.key} — {task.title}",
+        f"Status: {state}; {summary}.",
+        *map(plan_step_line, plan.steps),
+    ]
+    if todo:
+        lines += todo_lines
+    return "\n".join(lines)
+
+
+def plan_saved(task: Task, plan: Plan, reverted: bool) -> str:
+    if not plan.steps:
+        return f"Plan of **{task.key}** removed."
+    text = (
+        f"Plan of **{task.key}** saved: {len(plan.steps)} step(s), {plan.done} done, {plan.status}."
+    )
+    if reverted:
+        text += (
+            " The steps changed, so the accepted plan is a draft again: the owner accepts it on"
+            " the board, the coordinator with plan_accept."
+        )
+    elif plan.status == "draft":
+        text += " The owner accepts it on the board, the coordinator with plan_accept."
+    return text
+
+
+def plan_step_saved(step: PlanStep) -> str:
+    text = f"Step {step.position} '{step.title}' is {step.status}"
+    if step.status == "done" and step.conformance:
+        text += f" ({step.conformance})"
+    return text + "."
 
 
 def attachment_line(item: Attachment) -> str:
@@ -626,6 +717,8 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
         ("session", session_label(t)),
         ("open in desktop", t.session_link),
         ("tracker", tracker_label(t, require_log)),
+        ("size", t.size),
+        ("plan", plan_label(t) if t.plan_total else None),
     ):
         if value:
             lines.append(f"- {label}: {value}")
@@ -754,6 +847,14 @@ def event_detail(e: Event) -> str:
         return f"#{p.get('comment_id')} → {p.get('session')}"
     if e.kind == "comment.read":
         return f"#{p.get('comment_id')} read"
+    if e.kind == "plan.set":
+        return f"{p.get('steps')} step(s), {p.get('status') or 'removed'}"
+    if e.kind == "plan.step_updated":
+        return f"step {p.get('position')} {p.get('previous')} → {p.get('status')}"
+    if e.kind == "plan.accepted":
+        return f"{p.get('steps')} step(s) accepted"
+    if e.kind == "session.todo_updated":
+        return f"todo {p.get('completed')}/{p.get('items')} done"
     if e.kind == "live.action":
         return f"{p.get('environment')} · {p.get('decision')} · {p.get('command') or ''}".rstrip()
     if e.kind in ("environment.created", "environment.deleted"):

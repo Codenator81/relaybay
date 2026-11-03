@@ -17,6 +17,7 @@
     "live.action",
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
+    "plan.set", "plan.step_updated", "plan.accepted", "session.todo_updated",
     "document.updated", "memory.added", "memory.updated", "block.updated"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
@@ -122,6 +123,9 @@
     return kind.indexOf("review.") === 0 || kind.indexOf("attachment.") === 0;
   }
   function reviewPanel(key) { return key ? document.getElementById("review-" + key) : null; }
+  // Plan events and the bound agent's todo changes refetch the Plan panel.
+  function isPlan(kind) { return kind.indexOf("plan.") === 0 || kind === "session.todo_updated"; }
+  function planPanel(key) { return key ? document.getElementById("plan-" + key) : null; }
   // A review panel is refetched only while none of its comment boxes holds text.
   function queueReview(key) {
     var panel = reviewPanel(key);
@@ -154,6 +158,8 @@
         queue(thread(data.key));
       } else if (isReview(data.kind)) {
         queueReview(data.key);
+      } else if (isPlan(data.kind)) {
+        queue(planPanel(data.key));
       } else if (commentDraft(document)) {
         queue(document.querySelector(".task-view"));
         queue(thread(data.key));
@@ -207,10 +213,12 @@
     if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) {
       if (isComment(data.kind)) queue(thread(data.key));
       else if (isReview(data.kind)) queueReview(data.key);
+      else if (isPlan(data.kind)) queue(planPanel(data.key));
       else refreshDialog();
     }
-    if (isReview(data.kind)) {
-      queue(card(data.key) || column(data.stage));
+    if (isReview(data.kind) || isPlan(data.kind)) {
+      // The card shows the plan's steps, not the agent's todo.
+      if (data.kind !== "session.todo_updated") queue(card(data.key) || column(data.stage));
       return;
     }
 
@@ -286,7 +294,7 @@
     params.delete("task");
     params.delete("tab");
     if (key) params.set("task", key);
-    if (key && tab === "review") params.set("tab", "review");
+    if (key && (tab === "review" || tab === "plan")) params.set("tab", tab);
     var query = params.toString();
     return projectPath() + (query ? "?" + query : "");
   }
@@ -298,9 +306,10 @@
       dialog.dataset.key = key;
       dialog.replaceChildren(loadingNote("Loading " + key + "…"));
       htmx.ajax("GET", projectPath() + "/t/" + encodeURIComponent(key) + "/dialog" +
-        (tab === "review" ? "?tab=review" : ""), { target: dialog, swap: "innerHTML" });
+        (tab === "review" || tab === "plan" ? "?tab=" + tab : ""),
+        { target: dialog, swap: "innerHTML" });
     } else {
-      showTab(dialog, tab === "review" ? "review" : "overview");
+      showTab(dialog, tab === "review" || tab === "plan" ? tab : "overview");
     }
     if (!dialog.open) dialog.showModal();
     if (!push) return;
@@ -313,7 +322,7 @@
     }
   }
 
-  // Overview | Review tabs of the task dialog; the open tab is in the URL (?tab=review).
+  // Overview | Plan | Review tabs of the task dialog; the open tab is in the URL (?tab=plan).
   function showTab(root, name) {
     var tabs = root.querySelectorAll(".dialog-tab");
     if (!tabs.length) return;
@@ -464,7 +473,8 @@
     }
     var plain = event.button === 0 &&
       !(event.ctrlKey || event.metaKey || event.shiftKey || event.altKey);
-    var open = event.target.closest("a.card-open[data-task], a.review-chip[data-task]");
+    var open = event.target.closest(
+      "a.card-open[data-task], a.review-chip[data-task], a.plan-chip[data-task]");
     if (open && dialog && plain) {
       event.preventDefault();
       openTask(open.dataset.task, true, open.dataset.tab);
@@ -503,11 +513,14 @@
     if (reload) queue(reload.closest(".task-form-box"));
   });
 
-  // The Review tab's "accepted / all" follows its refreshed panel.
+  // The Review tab's "accepted / all" and the Plan tab's "done / all" follow their panels.
   document.addEventListener("htmx:load", function (event) {
     var panel = event.detail.elt;
-    if (!panel.matches || !panel.matches(".review[data-count]") || !dialog) return;
-    var count = dialog.querySelector(".dialog-tab[data-tab=review] .col-count");
+    if (!panel.matches || !dialog) return;
+    var name = panel.matches(".review[data-count]") ? "review" :
+      panel.matches(".plan[data-count]") ? "plan" : null;
+    if (!name) return;
+    var count = dialog.querySelector(".dialog-tab[data-tab=" + name + "] .col-count");
     if (count) count.textContent = panel.dataset.count;
   });
 
@@ -749,3 +762,14 @@
   window.addEventListener("online", reconnect);
   window.setInterval(refreshAges, 60000);
 })();
+
+// The session picker in the task dialog closes on a click outside it or on Escape.
+document.addEventListener("click", (event) => {
+  for (const picker of document.querySelectorAll(".bind-picker[open]")) {
+    if (!picker.contains(event.target)) picker.removeAttribute("open");
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  for (const picker of document.querySelectorAll(".bind-picker[open]")) picker.removeAttribute("open");
+});
