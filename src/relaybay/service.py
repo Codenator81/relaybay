@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -27,6 +27,7 @@ from relaybay.db.connection import connect, migrate
 from relaybay.domain import comments as comment_text
 from relaybay.domain import environments as envs
 from relaybay.domain import guard
+from relaybay.domain import memory as mem
 from relaybay.domain.comments import COMMENT_MAX, STOP_BLOCK_CAP, STOP_COMMENT_CAP
 from relaybay.domain.environments import (
     DEFAULT_LEVELS,
@@ -239,6 +240,15 @@ class BindResult(NamedTuple):
     task: Task
     kept: Session | None  # the desktop session a plain name did not replace
     alias_recorded: bool  # the name now resolves to `kept`
+
+
+class NoteResult(NamedTuple):
+    """What memory_add did: `candidates` (nothing written, similar notes with their title
+    similarity), `add`, `update`, `supersede` or `noop`."""
+
+    op: str
+    note: mem.MemoryNote | None
+    candidates: list[tuple[mem.MemoryNote, float]]
 
 
 @dataclass(slots=True)
@@ -484,6 +494,69 @@ def _sweep(root: Path, keep: set[tuple[str, str, str]]) -> int:
     return removed
 
 
+def _clean_doc_slug(value: Any) -> str:
+    slug = str(value or "").strip().lower()
+    if not mem.DOC_SLUG_RE.match(slug):
+        raise ValidationError(
+            f"Invalid document name {value!r}: use lowercase letters, digits and dashes,"
+            " e.g. 'spec'."
+        )
+    return slug
+
+
+def _clean_block_label(value: Any) -> str:
+    label = str(value or "").strip().lower()
+    if not mem.BLOCK_LABEL_RE.match(label):
+        raise ValidationError(
+            f"Invalid block label {value!r}: use lowercase letters, digits, '-' and '_',"
+            " e.g. 'owner-preferences'."
+        )
+    return label
+
+
+def _clean_version(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        raise ValidationError("base_version must be a whole number (0 creates).")
+    try:
+        number = int(value)
+    except ValueError:
+        raise ValidationError(f"base_version must be a whole number, got {value!r}.") from None
+    if number < 0:
+        raise ValidationError("base_version must not be negative.")
+    return number
+
+
+def _clean_tags(value: Any) -> str | None:
+    """Comma or space separated tags, lowercased, each once: 'ui, Billing ui' -> 'ui, billing'."""
+    text = _clean_text(value, "tags", mem.TAGS_MAX)
+    if not text:
+        return None
+    tags = dict.fromkeys(t.lower() for t in re.split(r"[,\s]+", text) if t)
+    return ", ".join(tags) or None
+
+
+def _clean_date(value: Any, name: str) -> str | None:
+    text = _clean_text(value, name, 40)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        raise ValidationError(f"{name} must be a date like 2026-12-31, got {text!r}.") from None
+
+
+def _scan(rules: SecretRules, **texts: str | None) -> None:
+    """Refuse text that holds a secret value; the error names the field and the detector."""
+    for name, text in texts.items():
+        if text:
+            envs.check_secret(name, text, rules)
+
+
+def _first_words(text: str, limit: int = 80) -> str:
+    line = " ".join(text.split())
+    return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
 def _clean_slug(value: str) -> str:
     slug = value.strip().lower()
     if not SLUG_RE.match(slug):
@@ -551,12 +624,19 @@ class Service:
         self._stop_blocks: dict[int, int] = {}
         self._waiters: dict[int, int] = {}
         self._waiter_seq = 0
+        # FTS5 full-text search; False when this SQLite has no FTS5 (search uses LIKE then).
+        self.search_fts = False
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_conn = await connect(self.db_path)
         await migrate(self._write_conn)
         self._read_conn = await connect(self.db_path)
+        self.search_fts = await repo.ensure_search_index(self._write_conn)
+        if self.search_fts and await repo.search_index_stale(self._write_conn):
+            async with self._tx() as tx:
+                count = await repo.rebuild_search_index(tx.conn)
+            logger.info("Search index rebuilt: %d item(s).", count)
         # A broken project override is reported now; it never stops the server or the project.
         for slug, body in await repo.list_project_rules(self._read_conn):
             self._merged_rules(slug, body)
@@ -1991,6 +2071,7 @@ class Service:
                 state=state,
                 size=size,
             )
+            await self._index(tx, "report", report_id)
             report = (await repo.list_reports(tx.conn, task.id, 1))[0]
             task = await self.get_task(task.id, tx.conn)
         return task, report
@@ -2002,26 +2083,64 @@ class Service:
         *,
         task: str | int | None = None,
         decided_by: str | None = None,
+        source: str | None = None,
+        supersedes: int | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
     ) -> Decision:
+        """Record a decision of a project (scope `task` when a task is given). `supersedes`
+        marks a current decision of the same project as replaced by this one; nothing is
+        deleted, and a decision that is already superseded cannot be superseded again."""
         clean = _clean_text(text, "text")
         if not clean:
             raise ValidationError("Decision text must not be empty.")
         decided_by = _clean_text(decided_by, "decided_by", NAME_MAX)
+        origin = mem.parse_source(source)
         default_actor = decided_by or "mcp"
         async with self._tx() as tx:
             proj = await self.get_project(project, tx.conn)
             task_row = await self.get_task(task, tx.conn) if task is not None else None
             if task_row is not None and task_row.project_id != proj.id:
                 raise ValidationError(f"Task {task_row.key} does not belong to {proj.slug}.")
+            secrets = await self._secret_rules(tx.conn, proj)
+            _scan(
+                secrets,
+                text=clean,
+                source=origin.text,
+                source_ref=origin.ref,
+                decided_by=decided_by,
+            )
+            await self._check_source(tx.conn, origin, proj)
+            old = None
+            if supersedes is not None:
+                old = await repo.get_decision(tx.conn, int(supersedes))
+                if old is None:
+                    raise NotFoundError(f"Decision #{supersedes} not found.")
+                if old.project_id != proj.id:
+                    raise ValidationError(
+                        f"Decision #{old.id} belongs to {old.project_slug}, not {proj.slug}."
+                    )
+                if old.superseded_by is not None:
+                    raise ConflictError(
+                        f"Decision #{old.id} is already superseded by #{old.superseded_by};"
+                        f" supersede #{old.superseded_by} instead."
+                    )
             sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
             decision_id = await repo.insert_decision(
-                tx.conn, proj.id, task_row.id if task_row else None, clean, decided_by, tx.now
+                tx.conn,
+                proj.id,
+                task_row.id if task_row else None,
+                clean,
+                decided_by,
+                tx.now,
+                origin,
             )
+            if old is not None:
+                await repo.supersede_decision(tx.conn, old.id, decision_id, tx.now)
+            await self._index(tx, "decision", decision_id)
             await tx.event(
                 "decision.added",
                 actor,
@@ -2033,9 +2152,741 @@ class Service:
                 stage=task_row.stage.value if task_row else None,
                 decision_id=decision_id,
                 text=clean[:200],
+                **({"supersedes": old.id} if old else {}),
             )
-            decisions = await repo.list_decisions(tx.conn, project_id=proj.id, limit=1)
-        return decisions[0]
+            decision = await repo.get_decision(tx.conn, decision_id)
+        assert decision is not None
+        return decision
+
+    async def list_decisions(
+        self,
+        project: str,
+        *,
+        task: str | int | None = None,
+        query: str | None = None,
+        include_superseded: bool = False,
+        limit: int = 20,
+    ) -> tuple[Project, list[Decision]]:
+        """Decisions of a project (or of one task), newest first; with `query`, the best
+        search matches first."""
+        limit = max(1, min(int(limit), 200))
+        proj = await self.get_project(project)
+        task_row = await self.get_task(task) if task is not None else None
+        if task_row is not None and task_row.project_id != proj.id:
+            raise ValidationError(f"Task {task_row.key} does not belong to {proj.slug}.")
+        task_id = task_row.id if task_row else None
+        if not (query or "").strip():
+            items = await repo.list_decisions(
+                self._r,
+                project_id=proj.id,
+                task_id=task_id,
+                include_superseded=include_superseded,
+                limit=limit,
+            )
+            return proj, items
+        words = mem.query_words(query or "")
+        found = await self._search_ids(self._r, words, ("decision",), proj.id, limit * 5)
+        ids = [item_id for _, item_id in found]
+        by_id = {
+            d.id: d
+            for d in await repo.list_decisions(
+                self._r,
+                ids=ids,
+                task_id=task_id,
+                include_superseded=include_superseded,
+                limit=len(ids) or 1,
+            )
+        }
+        return proj, [by_id[i] for i in ids if i in by_id][:limit]
+
+    # --- memory and documents ----------------------------------------------------------
+
+    async def _index(self, tx: _Tx, kind: str, item_id: int) -> None:
+        if self.search_fts:
+            await repo.index_item(tx.conn, kind, item_id)
+
+    async def _secret_rules(self, conn: aiosqlite.Connection, project: Project | None) -> Any:
+        if project is None:
+            return self.global_policy().secret_rules
+        return (await self._policy_of(conn, project, None)).secret_rules
+
+    async def _check_source(
+        self, conn: aiosqlite.Connection, source: mem.Source, project: Project | None
+    ) -> None:
+        """A report, comment or event named as the source exists (in the same project, when
+        both have one)."""
+        if source.kind in (None, "message"):
+            return
+        number = int(source.ref or 0)
+        if source.kind == "event":
+            found = await repo.events_after(conn, number - 1, None, 1)
+            owner = found[0].project_id if found and found[0].id == number else -1
+        else:
+            rows = await repo.search_rows(conn, source.kind, [number])
+            owner = rows[0]["project_id"] if rows else -1
+        if owner == -1:
+            raise NotFoundError(f"source: {source.kind} #{number} not found.")
+        if project is not None and owner is not None and owner != project.id:
+            raise ValidationError(
+                f"source: {source.kind} #{number} belongs to another project than {project.slug}."
+            )
+
+    async def _search_ids(
+        self,
+        conn: aiosqlite.Connection,
+        words: list[str],
+        kinds: tuple[str, ...],
+        project_id: int | None,
+        limit: int,
+        any_word: bool = False,
+    ) -> list[tuple[str, int]]:
+        if self.search_fts:
+            match = mem.fts_query(words, any_word)
+            return await repo.fts_search(conn, match, kinds, project_id, limit)
+        return await repo.like_search(conn, words, kinds, project_id, limit, any_word)
+
+    async def search(
+        self,
+        query: str,
+        *,
+        project: str | None = None,
+        kinds: list[str] | None = None,
+        scope: str | None = None,
+        note_kinds: list[str] | None = None,
+        include_superseded: bool = False,
+        limit: int = 10,
+    ) -> list[mem.SearchHit]:
+        """Full-text search over documents (current versions), decisions, memory notes,
+        reports and comments. With `project`, that project's items plus global and role notes.
+        `scope` and `note_kinds` narrow the notes (and, without `kinds`, search notes only)."""
+        words = mem.query_words(query)
+        limit = max(1, min(int(limit), mem.SEARCH_LIMIT_MAX))
+        if scope is not None and scope not in mem.NOTE_SCOPES:
+            raise ValidationError(f"scope must be one of: {', '.join(mem.NOTE_SCOPES)}.")
+        for kind in note_kinds or []:
+            if kind not in mem.NOTE_KINDS:
+                raise ValidationError(f"kinds of notes are: {', '.join(mem.NOTE_KINDS)}.")
+        wanted = tuple(kinds or (["note"] if scope or note_kinds else mem.SEARCH_KINDS))
+        for kind in wanted:
+            if kind not in mem.SEARCH_KINDS:
+                raise ValidationError(
+                    f"Unknown kind {kind!r}; search covers: {', '.join(mem.SEARCH_KINDS)}."
+                )
+        project_id = (await self.get_project(project)).id if project else None
+        found = await self._search_ids(self._r, words, wanted, project_id, limit * 5)
+        rows: dict[tuple[str, int], Any] = {}
+        for kind in wanted:
+            ids = [item_id for k, item_id in found if k == kind]
+            for row in await repo.search_rows(self._r, kind, ids):
+                rows[(kind, row["id"])] = row
+        hits = []
+        for ref in found:
+            row = rows.get(ref)
+            if row is None or (row["superseded_at"] and not include_superseded):
+                continue
+            if row["kind"] == "note" and (
+                (scope and row["note_scope"] != scope)
+                or (note_kinds and row["note_kind"] not in note_kinds)
+            ):
+                continue
+            line, snippet = mem.matching_line(row["body"] or "", words)
+            hits.append(
+                mem.SearchHit(
+                    kind=row["kind"],
+                    id=row["id"],
+                    project_slug=row["project_slug"],
+                    task_key=row["task_key"],
+                    name=row["name"],
+                    title=row["title"] or _first_words(row["body"] or ""),
+                    line=line,
+                    snippet=snippet,
+                )
+            )
+            if len(hits) == limit:
+                break
+        return hits
+
+    # Documents
+
+    async def list_documents(self, project: str) -> tuple[Project, list[mem.Document]]:
+        proj = await self.get_project(project)
+        return proj, await repo.list_documents(self._r, proj.id)
+
+    async def _document(
+        self, conn: aiosqlite.Connection, project: str, doc: str
+    ) -> tuple[Project, mem.Document]:
+        proj = await self.get_project(project, conn)
+        slug = _clean_doc_slug(doc)
+        found = await repo.get_document(conn, proj.id, slug)
+        if found is None:
+            names = ", ".join(d.slug for d in await repo.list_documents(conn, proj.id)) or "none"
+            raise NotFoundError(f"{proj.slug} has no document {slug!r}; documents: {names}.")
+        return proj, found
+
+    async def get_document(
+        self,
+        project: str,
+        doc: str,
+        *,
+        version: int | None = None,
+        section: str | None = None,
+    ) -> tuple[mem.Document, str]:
+        """A document with the text of `version` (the current one by default) and that text,
+        or only one section of it (the heading up to the next heading of its level)."""
+        _, found = await self._document(self._r, project, doc)
+        wanted = found.version if version is None else int(version)
+        row = await repo.get_document_version(self._r, found.id, wanted)
+        if row is None:
+            raise NotFoundError(
+                f"{found.slug} has no version {wanted}; versions are 1 to {found.version}."
+            )
+        found.body, found.shown_version, found.author = row.body, row.version, row.author
+        text = mem.section_text(row.body, section) if section else row.body
+        return found, text
+
+    async def document_history(
+        self, project: str, doc: str
+    ) -> tuple[mem.Document, list[mem.DocumentVersion]]:
+        _, found = await self._document(self._r, project, doc)
+        return found, await repo.list_document_versions(self._r, found.id)
+
+    async def document_diff(
+        self, project: str, doc: str, from_version: int, to_version: int
+    ) -> tuple[mem.Document, list[str]]:
+        """The unified diff between two versions of a document (any order)."""
+        _, found = await self._document(self._r, project, doc)
+        texts = []
+        for number in (int(from_version), int(to_version)):
+            row = await repo.get_document_version(self._r, found.id, number)
+            if row is None:
+                raise NotFoundError(
+                    f"{found.slug} has no version {number}; versions are 1 to {found.version}."
+                )
+            texts.append(row.body)
+        lines = mem.diff_lines(
+            texts[0], texts[1], f"{found.slug} v{from_version}", f"{found.slug} v{to_version}"
+        )
+        return found, lines
+
+    async def update_document(
+        self,
+        project: str,
+        doc: str,
+        body: str,
+        reason: str,
+        base_version: int,
+        *,
+        section: str | None = None,
+        title: str | None = None,
+        kind: str | None = None,
+        author: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> mem.Document:
+        """Write a new version of a document; `base_version` 0 creates it. With `section`, the
+        text replaces only that section. A `base_version` other than the current version is a
+        conflict whose message holds the current text to merge."""
+        slug = _clean_doc_slug(doc)
+        text = _clean_text(body, "body", mem.DOC_BODY_MAX)
+        if not text:
+            raise ValidationError("body must not be empty.")
+        why = _clean_text(reason, "reason", mem.REASON_MAX)
+        if not why:
+            raise ValidationError("reason must say what changed and why.")
+        new_title = _clean_text(title, "title", mem.TITLE_MAX)
+        new_kind = _clean_text(kind, "kind", mem.DOC_KIND_MAX)
+        base = _clean_version(base_version)
+        default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
+        async with self._tx() as tx:
+            proj = await self.get_project(project, tx.conn)
+            _scan(
+                await self._secret_rules(tx.conn, proj),
+                body=text,
+                title=new_title,
+                kind=new_kind,
+                reason=why,
+            )
+            found = await repo.get_document(tx.conn, proj.id, slug)
+            current = ""
+            if found is None:
+                if base != 0:
+                    raise NotFoundError(
+                        f"{proj.slug} has no document {slug!r}; create it with base_version 0."
+                    )
+                if section:
+                    raise ValidationError("A new document is written whole, without section.")
+                heading = next((s.title for s in mem.sections(text) if s.level == 1), None)
+                doc_id = await repo.insert_document(
+                    tx.conn, proj.id, slug, new_title or heading or slug, new_kind or "doc", tx.now
+                )
+                found = await repo.get_document(tx.conn, proj.id, slug)
+                assert found is not None and found.id == doc_id
+            else:
+                latest = await repo.get_document_version(tx.conn, found.id, found.version)
+                assert latest is not None
+                current = latest.body
+                if base != found.version:
+                    shown = current
+                    if section and any(
+                        s.anchor == section.strip().lstrip("#").casefold()
+                        for s in mem.sections(current)
+                    ):
+                        shown = mem.section_text(current, section)
+                    raise ConflictError(
+                        f"{found.slug} is at version {found.version}, not {base}: someone"
+                        f" changed it since you read it. Merge your change into the current"
+                        f" {'section' if shown is not current else 'text'} below and send it"
+                        f" again with base_version {found.version}.\n\n{shown}"
+                    )
+            new_body = mem.replace_section(current, section, text) if section else text
+            if len(new_body) > mem.DOC_BODY_MAX:
+                raise ValidationError(f"The document would exceed {mem.DOC_BODY_MAX} characters.")
+            final_title = new_title or found.title
+            final_kind = new_kind or found.kind
+            if found.version and (new_body, final_title, final_kind) == (
+                current,
+                found.title,
+                found.kind,
+            ):
+                _note(f"{found.slug} is unchanged; it stays at version {found.version}.")
+                return found
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            version = found.version + 1
+            anchor = mem.find_section(current, section).anchor if section else None
+            await repo.add_document_version(
+                tx.conn,
+                found.id,
+                version=version,
+                body=new_body,
+                author=actor,
+                reason=why,
+                base_version=base,
+                section=anchor,
+                title=final_title,
+                kind=final_kind,
+                now=tx.now,
+            )
+            await self._index(tx, "doc", found.id)
+            await tx.event(
+                "document.updated",
+                actor,
+                project_id=proj.id,
+                session_id=sess.id if sess else None,
+                project=proj.slug,
+                doc=found.slug,
+                version=version,
+                reason=why[:200],
+                **({"section": anchor} if anchor else {}),
+                **({"created": True} if version == 1 else {}),
+            )
+            saved = await repo.get_document(tx.conn, proj.id, slug)
+        assert saved is not None
+        saved.body, saved.shown_version, saved.author = new_body, version, actor
+        return saved
+
+    # Memory notes
+
+    async def _note_or_404(self, conn: aiosqlite.Connection, note_id: Any) -> mem.MemoryNote:
+        try:
+            number = int(note_id)
+        except (TypeError, ValueError):
+            raise ValidationError(f"A note id is a number, got {note_id!r}.") from None
+        found = await repo.get_note(conn, number)
+        if found is None:
+            raise NotFoundError(f"Memory note #{number} not found.")
+        return found
+
+    async def get_note(self, note_id: int) -> mem.MemoryNote:
+        """A note; reading it counts (`last_read_at`, `read_count`)."""
+        async with self._tx() as tx:
+            found = await self._note_or_404(tx.conn, note_id)
+            await repo.mark_note_read(tx.conn, found.id, tx.now)
+            return await self._note_or_404(tx.conn, found.id)
+
+    async def list_notes(
+        self, project: str | None = None, *, include_superseded: bool = False
+    ) -> list[mem.MemoryNote]:
+        """A project's notes plus the global and role notes (only those without a project)."""
+        project_id = (await self.get_project(project)).id if project else None
+        return await repo.list_notes(self._r, project_id, include_superseded=include_superseded)
+
+    async def _note_candidates(
+        self,
+        conn: aiosqlite.Connection,
+        title: str,
+        scope: str,
+        project_id: int | None,
+        role: str | None,
+    ) -> list[tuple[mem.MemoryNote, float]]:
+        """Current notes of the same scope whose title or body shares a word with `title`,
+        most similar title first."""
+        words = mem.candidate_words(title)
+        if not words:
+            return []
+        # Filtered by scope after the search: a wide limit keeps a duplicate of a global or
+        # role note from dropping out behind many project notes.
+        found = await self._search_ids(conn, words, ("note",), project_id, 1000, any_word=True)
+        notes = await repo.get_notes(conn, [item_id for _, item_id in found])
+        order = {item_id: n for n, (_, item_id) in enumerate(found)}
+        same = [
+            n
+            for n in notes
+            if n.current and n.scope == scope and n.project_id == project_id and n.role == role
+        ]
+        scored = [(n, mem.title_similarity(title, n.title)) for n in same]
+        scored.sort(key=lambda pair: (-pair[1], order[pair[0].id]))
+        return scored[: mem.CANDIDATES_MAX]
+
+    async def add_note(
+        self,
+        scope: str,
+        kind: str,
+        title: str,
+        body: str,
+        *,
+        project: str | None = None,
+        role: str | None = None,
+        tags: str | None = None,
+        source: str | None = None,
+        review_at: str | None = None,
+        op: str | None = None,
+        target: int | None = None,
+        base_version: int | None = None,
+        force_new: bool = False,
+        author: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> NoteResult:
+        """Add a memory note in two steps. Without `op`, notes like it are looked up first:
+        if there are any, nothing is written and they come back as candidates; the caller
+        answers with `op` add / update / supersede / noop (`target` = the candidate's id for
+        update and supersede). Adding next to a strong match needs `force_new`."""
+        scope = str(scope or "").strip().lower()
+        if scope not in mem.NOTE_SCOPES:
+            raise ValidationError(f"scope must be one of: {', '.join(mem.NOTE_SCOPES)}.")
+        kind = str(kind or "").strip().lower()
+        if kind not in mem.NOTE_KINDS:
+            raise ValidationError(f"kind must be one of: {', '.join(mem.NOTE_KINDS)}.")
+        op = (op or "").strip().lower() or None
+        if op is not None and op not in mem.NOTE_OPS:
+            raise ValidationError(f"op must be one of: {', '.join(mem.NOTE_OPS)}.")
+        if op in ("update", "supersede") and target is None:
+            raise ValidationError(f"op={op} needs target: the id of the note to {op}.")
+        if op == "update" and base_version is None:
+            raise ValidationError(
+                "op=update needs base_version: the candidate's version (shown as v<n>)."
+            )
+        clean_title = _clean_text(title, "title", mem.TITLE_MAX)
+        clean_body = _clean_text(body, "body", mem.NOTE_BODY_MAX)
+        if not clean_title or not clean_body:
+            raise ValidationError("A note needs a title and a body (fact, why, how to apply).")
+        clean_role = _clean_text(role, "role", mem.ROLE_MAX)
+        clean_role = clean_role.lower() if clean_role else None
+        if scope == "role" and not clean_role:
+            raise ValidationError("A role note needs role, e.g. 'coordinator' or 'manager'.")
+        if scope != "role" and clean_role:
+            raise ValidationError("role is set only on scope 'role'.")
+        if scope == "project" and not project:
+            raise ValidationError("A project note needs project.")
+        if scope != "project" and project:
+            raise ValidationError(
+                f"A {scope} note has no project; use scope 'project' for a project's note."
+            )
+        clean_tags = _clean_tags(tags)
+        review = _clean_date(review_at, "review_at")
+        origin = mem.parse_source(source)
+        default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
+        async with self._tx() as tx:
+            proj = await self.get_project(project, tx.conn) if project else None
+            project_id = proj.id if proj else None
+            _scan(
+                await self._secret_rules(tx.conn, proj),
+                title=clean_title,
+                body=clean_body,
+                tags=clean_tags,
+                role=clean_role,
+                source=origin.text,
+                source_ref=origin.ref,
+            )
+            await self._check_source(tx.conn, origin, proj)
+            old = await self._note_or_404(tx.conn, target) if target is not None else None
+            if op == "noop":
+                return NoteResult("noop", old, [])
+            if old is not None and not old.current:
+                raise ConflictError(
+                    f"Note #{old.id} is already superseded by #{old.superseded_by}; use"
+                    f" #{old.superseded_by} as target."
+                )
+            if old is not None and (old.scope, old.project_id, old.role) != (
+                scope,
+                project_id,
+                clean_role,
+            ):
+                raise ValidationError(
+                    f"Note #{old.id} is a {old.scope} note"
+                    f" ({old.project_slug or old.role or 'global'}); the target must have the"
+                    " same scope."
+                )
+            if op in (None, "add"):
+                candidates = await self._note_candidates(
+                    tx.conn, clean_title, scope, project_id, clean_role
+                )
+                if op is None and candidates:
+                    return NoteResult("candidates", None, candidates)
+                strong = [(n, s) for n, s in candidates if s >= mem.STRONG_MATCH]
+                if strong and not force_new:
+                    names = ", ".join(f"#{n.id} {n.title!r}" for n, _ in strong)
+                    raise ConflictError(
+                        f"A note like this exists ({names}): update or supersede it, or pass"
+                        " force_new=true to add a separate note anyway."
+                    )
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            session_id = sess.id if sess else None
+            if op == "update":
+                assert old is not None
+                base = _clean_version(base_version)
+                if base != old.version:
+                    raise ConflictError(
+                        f"Note #{old.id} is at version {old.version}, not {base}: someone changed"
+                        f" it since you read it. Merge into the current note below and send it"
+                        f" again with base_version {old.version}.\n\n# {old.title}\n{old.body}"
+                    )
+                changes = {"title": clean_title, "body": clean_body}
+                if tags is not None:
+                    changes["tags"] = clean_tags
+                if review_at is not None:
+                    changes["review_at"] = review
+                await repo.update_note(tx.conn, old.id, changes, tx.now)
+                await self._index(tx, "note", old.id)
+                saved = await self._note_or_404(tx.conn, old.id)
+                await self._note_event(tx, "memory.updated", saved, actor, session_id)
+                return NoteResult("update", saved, [])
+            note_id = await repo.insert_note(
+                tx.conn,
+                scope=scope,
+                project_id=project_id,
+                role=clean_role,
+                kind=kind,
+                title=clean_title,
+                body=clean_body,
+                tags=clean_tags,
+                source=origin,
+                review_at=review,
+                author=actor,
+                now=tx.now,
+            )
+            if op == "supersede":
+                assert old is not None
+                await repo.supersede_note(tx.conn, old.id, note_id, tx.now)
+            await self._index(tx, "note", note_id)
+            saved = await self._note_or_404(tx.conn, note_id)
+            await self._note_event(
+                tx, "memory.added", saved, actor, session_id, supersedes=old.id if old else None
+            )
+            return NoteResult("supersede" if op == "supersede" else "add", saved, [])
+
+    async def _note_event(
+        self,
+        tx: _Tx,
+        kind: str,
+        note: mem.MemoryNote,
+        actor: str,
+        session_id: int | None,
+        **extra: Any,
+    ) -> None:
+        await tx.event(
+            kind,
+            actor,
+            project_id=note.project_id,
+            session_id=session_id,
+            project=note.project_slug,
+            note_id=note.id,
+            scope=note.scope,
+            title=note.title[:200],
+            version=note.version,
+            **{k: v for k, v in extra.items() if v is not None},
+        )
+
+    async def update_note(
+        self,
+        note_id: int,
+        base_version: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        tags: str | None = None,
+        review_at: str | None = None,
+        author: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> mem.MemoryNote:
+        """Change a note's title, body, tags or review date ('' clears tags and the review
+        date). A `base_version` other than the note's version is a conflict that returns the
+        current note to merge."""
+        changes: dict[str, Any] = {}
+        if title is not None:
+            changes["title"] = _clean_text(title, "title", mem.TITLE_MAX)
+            if not changes["title"]:
+                raise ValidationError("title must not be empty.")
+        if body is not None:
+            changes["body"] = _clean_text(body, "body", mem.NOTE_BODY_MAX)
+            if not changes["body"]:
+                raise ValidationError("body must not be empty.")
+        if tags is not None:
+            changes["tags"] = _clean_tags(tags)
+        if review_at is not None:
+            changes["review_at"] = _clean_date(review_at, "review_at")
+        if not changes:
+            raise ValidationError("Nothing to change: pass title, body, tags or review_at.")
+        base = _clean_version(base_version)
+        default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
+        async with self._tx() as tx:
+            found = await self._note_or_404(tx.conn, note_id)
+            if not found.current:
+                raise ConflictError(
+                    f"Note #{found.id} is superseded by #{found.superseded_by}; change that one."
+                )
+            if base != found.version:
+                raise ConflictError(
+                    f"Note #{found.id} is at version {found.version}, not {base}: someone changed"
+                    f" it since you read it. Merge into the current note below and send it again"
+                    f" with base_version {found.version}.\n\n# {found.title}\n{found.body}"
+                )
+            proj = (
+                await self.get_project(found.project_slug, tx.conn) if found.project_slug else None
+            )
+            _scan(await self._secret_rules(tx.conn, proj), **changes)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            await repo.update_note(tx.conn, found.id, changes, tx.now)
+            await self._index(tx, "note", found.id)
+            saved = await self._note_or_404(tx.conn, found.id)
+            await self._note_event(tx, "memory.updated", saved, actor, sess.id if sess else None)
+            return saved
+
+    # Blocks
+
+    async def list_blocks(self, project: str | None = None) -> list[mem.MemoryBlock]:
+        """The blocks of a project, or the global ones."""
+        project_id = (await self.get_project(project)).id if project else None
+        return await repo.list_blocks(self._r, project_id)
+
+    async def get_block(self, label: str, project: str | None = None) -> mem.MemoryBlock:
+        clean = _clean_block_label(label)
+        proj = await self.get_project(project) if project else None
+        found = await repo.get_block(self._r, proj.id if proj else None, clean)
+        if found is None:
+            where = proj.slug if proj else "global scope"
+            labels = ", ".join(
+                b.label for b in await repo.list_blocks(self._r, proj.id if proj else None)
+            )
+            raise NotFoundError(
+                f"No block {clean!r} in {where}; blocks: {labels or 'none'}."
+                " block_set with base_version 0 creates one."
+            )
+        return found
+
+    async def set_block(
+        self,
+        label: str,
+        body: str,
+        base_version: int,
+        *,
+        project: str | None = None,
+        description: str | None = None,
+        char_limit: int | None = None,
+        owner_only: bool | None = None,
+        by_owner: bool = False,
+        author: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> mem.MemoryBlock:
+        """Write a block (`base_version` 0 creates it). The body must fit the block's character
+        limit. Blocks marked owner-only, and that mark itself, change only from the board."""
+        clean = _clean_block_label(label)
+        text = _clean_text(body, "body", mem.BLOCK_LIMIT_MAX) or ""
+        about = _clean_text(description, "description", mem.TITLE_MAX)
+        base = _clean_version(base_version)
+        if owner_only is not None and not by_owner:
+            raise ValidationError("Only the owner marks a block owner-only, on the board.")
+        limit = None
+        if char_limit is not None:
+            if isinstance(char_limit, bool) or not 1 <= int(char_limit) <= mem.BLOCK_LIMIT_MAX:
+                raise ValidationError(f"char_limit must be 1 to {mem.BLOCK_LIMIT_MAX}.")
+            limit = int(char_limit)
+        default_actor = "owner" if by_owner else _clean_text(author, "author", NAME_MAX) or "mcp"
+        async with self._tx() as tx:
+            proj = await self.get_project(project, tx.conn) if project else None
+            project_id = proj.id if proj else None
+            found = await repo.get_block(tx.conn, project_id, clean)
+            if found is not None and found.owner_only and not by_owner:
+                raise ValidationError(
+                    f"Block {clean!r} is owner-only: the owner edits it on the board."
+                )
+            if base != (found.version if found else 0):
+                if found is None:
+                    raise NotFoundError(f"No block {clean!r} yet; create it with base_version 0.")
+                raise ConflictError(
+                    f"Block {clean!r} is at version {found.version}, not {base}. Merge your"
+                    f" change into the current text below and send it again with base_version"
+                    f" {found.version}.\n\n{found.body}"
+                )
+            final_limit = limit or (found.char_limit if found else mem.BLOCK_LIMIT_DEFAULT)
+            if len(text) > final_limit:
+                raise ValidationError(
+                    f"Block {clean!r} takes at most {final_limit} characters; this text has"
+                    f" {len(text)}. Shorten it (or raise char_limit)."
+                )
+            _scan(await self._secret_rules(tx.conn, proj), body=text, description=about)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            final_about = (
+                about if description is not None else (found.description if found else None)
+            )
+            final_owner = owner_only if owner_only is not None else bool(found and found.owner_only)
+            if found is None:
+                await repo.insert_block(
+                    tx.conn,
+                    project_id=project_id,
+                    label=clean,
+                    description=final_about,
+                    body=text,
+                    char_limit=final_limit,
+                    owner_only=final_owner,
+                    actor=actor,
+                    now=tx.now,
+                )
+            else:
+                await repo.update_block(
+                    tx.conn,
+                    found.id,
+                    description=final_about,
+                    body=text,
+                    char_limit=final_limit,
+                    owner_only=final_owner,
+                    actor=actor,
+                    now=tx.now,
+                )
+            saved = await repo.get_block(tx.conn, project_id, clean)
+            assert saved is not None
+            await tx.event(
+                "block.updated",
+                actor,
+                project_id=project_id,
+                session_id=sess.id if sess else None,
+                project=proj.slug if proj else None,
+                label=clean,
+                scope=saved.scope,
+                version=saved.version,
+                **({"created": True} if found is None else {}),
+            )
+            return saved
 
     # --- comments ----------------------------------------------------------
 
@@ -2103,6 +2954,7 @@ class Service:
             excerpt=" ".join(body.split())[:200],
             **({"step_id": step_id} if step_id else {}),
         )
+        await self._index(tx, "comment", comment_id)
         comment = await repo.get_comment(tx.conn, comment_id)
         assert comment is not None
         return comment

@@ -1,0 +1,82 @@
+{#- Docs & rules, the live part: documents, decisions, memory notes. Expects: project,
+    documents, decisions (current), superseded, notes (current), old_notes. Refetched on
+    document.*, decision.*, memory.* events. -#}
+<div id="docs-live" hx-get="/p/{{ project.slug }}/docs-live" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  <section class="panel" id="documents">
+    <h2>Documents <span class="col-count">{{ documents|length }}</span></h2>
+    {% if documents %}
+    <ul class="inbox-list doc-list">
+      {% for d in documents %}
+      <li class="inbox-row doc-row">
+        <a class="inbox-title doc-title" href="/p/{{ project.slug }}/docs/{{ d.slug }}"><strong>{{ d.title }}</strong></a>
+        <span class="muted doc-meta"><code>{{ d.slug }}</code> · {{ d.kind }} · version {{ d.version }} · updated <time datetime="{{ d.updated_at }}" data-age title="{{ d.updated_at[:19] }}Z">{{ d.updated_at|age }}</time></span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No documents yet. Agents write them with <code>doc_update</code> (base_version 0 creates one).</p>
+    {% endif %}
+  </section>
+
+  <section class="panel" id="decisions">
+    <h2>Decisions <span class="col-count">{{ decisions|length }}</span></h2>
+    {% if decisions %}
+    <ul class="inbox-list">
+      {% for d in decisions %}
+      <li class="inbox-row decision-row" id="decision-{{ d.id }}">
+        <span class="inbox-title"><strong>#{{ d.id }}</strong> {{ d.text }}</span>
+        <span class="muted decision-meta">{{ d.recorded_at[:10] }}{% if d.task_key %} · <a href="/t/{{ d.task_key }}">{{ d.task_key }}</a>{% endif %}{% if d.decided_by %} · {{ d.decided_by }}{% endif %}{% if d.source_kind or d.source_text %} · source: {% if d.source_kind %}{{ d.source_kind }} {{ d.source_ref }}{% endif %}{% if d.source_kind and d.source_text %} · {% endif %}{{ d.source_text or "" }}{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No decisions yet. Agents record them with <code>decision_add</code>.</p>
+    {% endif %}
+    {% if superseded %}
+    <details class="superseded">
+      <summary>Superseded <span class="col-count">{{ superseded|length }}</span></summary>
+      <ul class="inbox-list">
+        {% for d in superseded %}
+        <li class="inbox-row decision-row is-superseded" id="decision-{{ d.id }}">
+          <span class="inbox-title"><strong>#{{ d.id }}</strong> <s>{{ d.text }}</s></span>
+          <span class="muted decision-meta">{{ d.recorded_at[:10] }} · superseded by <a href="#decision-{{ d.superseded_by }}">#{{ d.superseded_by }}</a> on {{ (d.superseded_at or "")[:10] }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </section>
+
+  <section class="panel" id="notes">
+    <h2>Memory notes <span class="col-count">{{ notes|length }}</span></h2>
+    <p class="muted inbox-hint">This project's notes and the global and role notes.</p>
+    {% if notes %}
+    <ul class="inbox-list">
+      {% for n in notes %}
+      <li class="inbox-row note-row" id="note-{{ n.id }}">
+        <details>
+          <summary><strong>#{{ n.id }}</strong> {{ n.title }} <span class="note-scope">{{ n.scope }}{% if n.role %}: {{ n.role }}{% endif %} · {{ n.kind }}</span></summary>
+          <div class="markdown">{{ n.body|markdown }}</div>
+          <p class="muted note-meta">version {{ n.version }} · by {{ n.author }} · recorded {{ n.recorded_at[:10] }} · read {{ n.read_count }}×{% if n.tags %} · tags: {{ n.tags }}{% endif %}{% if n.review_at %} · review at {{ n.review_at }}{% endif %}</p>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No memory notes yet. Agents add them with <code>memory_add</code>.</p>
+    {% endif %}
+    {% if old_notes %}
+    <details class="superseded">
+      <summary>Superseded <span class="col-count">{{ old_notes|length }}</span></summary>
+      <ul class="inbox-list">
+        {% for n in old_notes %}
+        <li class="inbox-row note-row is-superseded" id="note-{{ n.id }}">
+          <span class="inbox-title"><strong>#{{ n.id }}</strong> <s>{{ n.title }}</s></span>
+          <span class="muted note-meta">superseded by <a href="#note-{{ n.superseded_by }}">#{{ n.superseded_by }}</a> on {{ (n.superseded_at or "")[:10] }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </section>
+</div>

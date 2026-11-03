@@ -26,12 +26,20 @@ from starlette.responses import StreamingResponse
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
 from relaybay.domain import environments as env_domain
+from relaybay.domain import memory as mem
 from relaybay.domain.comments import COMMENT_MAX
-from relaybay.domain.errors import ConfirmationNeeded, ConflictError, DomainError, NotFoundError
+from relaybay.domain.errors import (
+    ConfirmationNeeded,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    ValidationError,
+)
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
 from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage
 from relaybay.domain.tasks import is_archived
+from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
 from relaybay.security import (
@@ -46,7 +54,7 @@ from relaybay.security import (
     token_id,
 )
 from relaybay.service import HTTP_URL_RE, Inbox, Service
-from relaybay.web.markdown import render_markdown
+from relaybay.web.markdown import render_document, render_markdown
 from relaybay.web.sse import event_stream
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -123,6 +131,10 @@ EVENT_KINDS = (
     "attachment.added",
     "attachment.updated",
     "attachment.removed",
+    "document.updated",
+    "memory.added",
+    "memory.updated",
+    "block.updated",
 )
 CSRF_HEADER = "x-relaybay-csrf"
 BOARD_ONLY = (
@@ -131,6 +143,7 @@ BOARD_ONLY = (
 )
 ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "level")
 JOURNAL_LIMIT = 20
+DOCS_DECISIONS = 200
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
@@ -238,8 +251,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `activity`, `settings`, `sessions`; `board`, `sessions` or `environments`
-        with `project`)."""
+        `boards`, `activity`, `settings`, `sessions`; `board`, `sessions`, `environments` or
+        `docs` with `project`)."""
         nav = {
             "active": active,
             "project": nav_project,
@@ -1100,6 +1113,157 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await environment_write(
             request, slug, csrf, "", write, message=f"Proposal #{proposal_id} {decision}ed."
+        )
+
+    # --- Docs & rules: documents, decisions, memory notes, blocks, rules, search --------------
+
+    async def docs_context(slug: str) -> dict[str, Any]:
+        """The live part of the page: documents, decisions and notes."""
+        project, documents = await service.list_documents(slug)
+        _, decisions = await service.list_decisions(
+            project.slug, include_superseded=True, limit=DOCS_DECISIONS
+        )
+        notes = await service.list_notes(project.slug, include_superseded=True)
+        return {
+            "project": project,
+            "documents": documents,
+            "decisions": [d for d in decisions if d.current],
+            "superseded": [d for d in decisions if not d.current],
+            "notes": [n for n in notes if n.current],
+            "old_notes": [n for n in notes if not n.current],
+        }
+
+    async def docs_page(
+        request: Request,
+        slug: str,
+        *,
+        q: str = "",
+        error: str | None = None,
+        error_target: str = "",
+        draft: dict[str, str] | None = None,
+        message: str | None = None,
+        status: int = 200,
+    ) -> HTMLResponse:
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        context = await docs_context(slug)
+        project = context["project"]
+        q = q.strip()[:SEARCH_MAX]
+        hits, search_error = [], None
+        if q:
+            try:
+                hits = await service.search(q, project=project.slug, limit=30)
+            except ValidationError as exc:
+                search_error = str(exc)
+        return await page(
+            request,
+            "docs.html",
+            "docs",
+            project.slug,
+            status=status,
+            **context,
+            blocks=await service.list_blocks(project.slug),
+            global_blocks=await service.list_blocks(None),
+            rules=fmt.rules_text(await service.rules(project.slug)),
+            q=q,
+            hits=hits,
+            search_error=search_error,
+            error=error,
+            error_target=error_target,
+            draft=draft or {},
+            message=message,
+            last_event_id=last_event_id,
+        )
+
+    @router.get("/p/{slug}/docs", response_class=HTMLResponse)
+    async def docs(request: Request, slug: str, q: str = ""):
+        flash = take_flash(request)
+        response = await docs_page(request, slug, q=q, message=flash.get("message"))
+        return shown_once(request, response)
+
+    @router.get("/p/{slug}/docs-live", response_class=HTMLResponse)
+    async def docs_live(request: Request, slug: str):
+        return render(request, "_docs_live.html", **await docs_context(slug))
+
+    @router.post("/p/{slug}/docs/blocks")
+    async def save_block(
+        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        board_only(request, csrf)
+        form = await request.form()
+        label = str(form.get("label") or "").strip().lower()
+        scope = str(form.get("scope") or "project")
+        body = str(form.get("body") or "")
+        limit_text = str(form.get("char_limit") or "").strip()
+        version_text = str(form.get("base_version") or "0").strip()
+        target = "block-new" if version_text == "0" else f"block-{scope}-{label}"
+        try:
+            saved = await service.set_block(
+                label,
+                body,
+                int(version_text) if version_text.isdigit() else -1,
+                project=slug if scope == "project" else None,
+                description=str(form.get("description") or ""),
+                char_limit=int(limit_text) if limit_text.isdigit() else None,
+                owner_only=form.get("owner_only") == "1",
+                by_owner=True,
+            )
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return await docs_page(
+                request,
+                slug,
+                error=str(exc),
+                error_target=target,
+                draft={target: body},
+                status=400,
+            )
+        anchor = f"#block-{saved.scope}-{saved.label}"
+        return flash_redirect(
+            request, f"/p/{slug}/docs{anchor}", message=f"Block {saved.label} saved."
+        )
+
+    @router.get("/p/{slug}/docs/{doc}", response_class=HTMLResponse)
+    async def document_page(request: Request, slug: str, doc: str, version: int | None = None):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        found, text = await service.get_document(slug, doc, version=version)
+        _, versions = await service.document_history(slug, doc)
+        return await page(
+            request,
+            "document.html",
+            "docs",
+            found.project_slug,
+            project=await service.get_project(slug),
+            doc=found,
+            body_html=render_document(text),
+            sections=mem.sections(text),
+            versions=versions,
+            last_event_id=last_event_id,
+        )
+
+    @router.get("/p/{slug}/docs/{doc}/diff", response_class=HTMLResponse)
+    async def document_diff(
+        request: Request,
+        slug: str,
+        doc: str,
+        from_version: Annotated[int, Query(alias="from")],
+        to_version: Annotated[int, Query(alias="to")],
+    ):
+        last_event_id = await service.last_event_id()
+        found, lines = await service.document_diff(slug, doc, from_version, to_version)
+        _, versions = await service.document_history(slug, doc)
+        return await page(
+            request,
+            "document_diff.html",
+            "docs",
+            found.project_slug,
+            project=await service.get_project(slug),
+            doc=found,
+            lines=lines,
+            versions=versions,
+            from_version=from_version,
+            to_version=to_version,
+            last_event_id=last_event_id,
         )
 
     @router.get("/events")

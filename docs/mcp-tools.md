@@ -120,7 +120,7 @@ Conventions:
 | `task_bind_session` | `task`, `session`, `session_title?`, `hook_session?` (ignored: never linked here, a note says so) | Shows the session in the task dialog as the one working on the task (a desktop session also gets an "open in desktop" icon on the card). The previous binding is closed and kept in the task's history (event `task.session_bound`). A plain name on a task bound to a desktop session keeps that binding and becomes its alias (see *Session aliases*). |
 | `task_unbind_session` | `task`, `session?` | Removes the bound session from the task; the binding is closed and kept in the history (event `task.session_unbound`). With `session` (desktop id or name), fails without changes if another session is bound. Nothing bound: says so, changes nothing. |
 | `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`). `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
-| `decision_add` | `project`, `text`, `task?`, `decided_by?`, `session?`, `session_title?`, `hook_session?` | Records a decision; it appears in the project snapshot. |
+| `decision_add` | `project`, `text`, `task?`, `decided_by?`, `source?`, `supersedes?`, `session?`, `session_title?`, `hook_session?` | Records a decision of the project (scope `task` with `task`); it appears in the project snapshot and `decision_list`. `source`: `report:12`, `comment:7`, `event:301` or `message:<id>`, optionally followed by display text, or display text alone; a named report, comment or event must exist in the project. `supersedes`: the id of a current decision of the same project this one replaces (see *Memory and documents*). |
 | `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
 | `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
 | `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a proposal for the owner and changes nothing (`environment.proposed`); it shows in the owner's Inbox and on the Stands & access page, where the owner accepts or rejects it. `change`: `environment` (name) plus any of `kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`none` / `read` / `ask` / `full` / `default`), `overrides` (`{"ssh": "ask"}`; capabilities `sign_in`, `ssh`, `kubectl`, `db`, `deploy`), `access` (`[{"kind": "ssh", "fields": {"alias": "acme-live"}}]` to add). A new environment needs `kind`. Secret values are refused (a tool error naming the field); test secrets are never accepted from agents. |
@@ -269,6 +269,34 @@ layer set each; `policy_propose` asks the owner for a change. Test secrets (harm
 on local and test stands, only when the policy allows them) are never sent to you unless the
 policy sets `expose_test_secrets_to_agents`. Keys and presets: [policy reference](reference/policy.md).
 
+## Memory and documents
+
+Project documents (spec, status, brief, runbooks, ADRs), decisions, memory notes and blocks live in
+the database; the board shows them on **Docs & rules** (`/p/<project>/docs`). Every write that
+holds a secret value (a key, a token, `password: …`) is refused with the detector's name, never
+the value. Who may read what (coordinator everything, a manager its project, a session its task)
+is not enforced yet: every client with the token sees everything.
+
+| Tool | Arguments | Returns or does |
+|---|---|---|
+| `doc_list` | `project` | The project's documents: name, title, kind, version, last change, resource URI. |
+| `doc_get` | `project`, `doc`, `section?`, `version?` | The markdown (or one section: its heading and everything up to the next heading of the same or a higher level), after a header line with the current version to pass as `base_version`, and the section anchors. Anchors come from `#` headings: `## Gift cards` → `gift-cards`, a repeat → `gift-cards-2`. |
+| `doc_update` | `project`, `doc`, `body`, `reason`, `base_version`, `section?`, `title?`, `kind?`, `session?`, `session_title?`, `hook_session?` | Writes a new version (`document.updated`). `base_version` 0 creates the document (title: `title`, else its first `# ` heading, else the name; kind default `doc`). With `section`, `body` replaces that section: starting with a heading it replaces the heading too, otherwise only the text under it. A `base_version` that is not the current version saves nothing and fails with the current version number and the current text (or section) to merge. The same text again writes no version. |
+| `doc_history` | `project`, `doc`, `from_version?`, `to_version?` | The versions newest first (author, time, section, reason, size, base version); with both versions also their unified diff. |
+| `decision_list` | `project`, `task?`, `query?`, `include_superseded?`, `limit?` (default 20) | Decisions newest first (with `query`, best matches first), with source and `superseded by #n`. Current ones only unless `include_superseded`. |
+| `memory_add` | `scope` (`global` / `role` / `project`), `kind` (`user` / `feedback` / `project` / `reference`), `title`, `body`, `project?`, `role?`, `tags?`, `source?`, `review_at?`, `op?`, `target?`, `base_version?`, `force_new?`, `session?`, `session_title?`, `hook_session?` | Without `op`: looks for current notes of the same scope sharing a word with the title; if there are any, writes nothing and lists them (id, title, first line, title similarity). Call again with `op` = `add`, `update` (rewrites `target`; needs `base_version` = the candidate's `v<n>`, a newer version is a conflict), `supersede` (a new note replaces `target`, which stays in history) or `noop`. With no candidates it adds directly. A **strong match** is a candidate whose stemmed title words overlap the new title's by at least 0.6 (shared / all, stop words left out); `op=add` next to one needs `force_new=true`. `memory.added` / `memory.updated`. |
+| `memory_update` | `id`, `base_version`, `title?`, `body?`, `tags?`, `review_at?` (`"-"` clears tags and the date), `session?`, `session_title?`, `hook_session?` | Changes a note (`memory.updated`); a stale `base_version` fails with the current note to merge. A superseded note cannot be changed. |
+| `memory_get` | `id` | The note in full (scope, kind, version, author, time axes, source, tags, review date, read count); reading it counts (`last_read_at`, `read_count`). |
+| `memory_search` | `query`, `scope?`, `project?`, `kinds?`, `limit?` (default 10) | Hits over notes, decisions, documents (current versions), reports and comments: kind, id, project and task, title, and the line that holds most query words (`line 14: …`). `kinds` picks among `note`, `decision`, `doc`, `report`, `comment`; `scope` narrows to notes of that scope. With `project`: its items plus global and role notes. Superseded notes and decisions are left out. |
+| `block_get` | `label?`, `project?` | A block (label, version, characters used and limit, owner-only mark, text), or the list of blocks of the project or the global scope. |
+| `block_set` | `label`, `body`, `base_version`, `project?`, `description?`, `char_limit?`, `session?`, `session_title?`, `hook_session?` | Writes a block (`block.updated`); `base_version` 0 creates it (limit 2000 characters unless `char_limit`). Over the limit it fails with the count; a stale `base_version` fails with the current text. Owner-only blocks are read-only here: the owner edits them on the board. |
+
+Search uses SQLite FTS5 when the SQLite build has it: words match by prefix and by their Snowball
+stem (English, or Russian for Cyrillic words), diacritics are ignored, a title hit ranks highest.
+User text is turned into quoted words, so `"`, `(`, `AND`, `*` never cause a syntax error. Without
+FTS5 the same search runs as `LIKE` substring matches of each word or its stem (case-insensitive
+for ASCII letters only).
+
 ## Resources
 
 `relaybay://project/{slug}` — the same markdown as `project_snapshot`, so a session can attach a
@@ -281,6 +309,8 @@ project snapshot as context.
 
 `relaybay://rules/{project}` — a project's working rules, merged (same as
 `rules_get(project=…)`).
+
+`relaybay://doc/{project}/{doc}` — a project document's current markdown (same as `doc_get`).
 
 `relaybay://schema/task` — the editable task fields as a markdown table (field, type, description,
 how to clear it), generated from the same list the server validates writes against.

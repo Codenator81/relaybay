@@ -259,6 +259,8 @@ async def seed(service: Service) -> int:
         next_step="Announce the removal date.",
     )
 
+    await seed_memory(service)
+
     # The desktop session of the checkout task is "working": as if its hook had reported. One
     # event only, so no coalescing timer outlives the service.
     await service.record_hook(
@@ -270,6 +272,77 @@ async def seed(service: Service) -> int:
         }
     )
     return count
+
+
+DEMO_SPEC = """# Acme Shop specification
+
+## Checkout
+One page: address, delivery and payment, validated inline.
+
+## Gift cards
+A gift card pays part of an order; the rest goes on the card.
+
+## Search
+Suggestions while typing, at most 8 products.
+"""
+
+
+async def seed_memory(service: Service) -> None:
+    """Docs & rules of acme-shop: a spec with two versions, a superseded decision, two notes
+    and a project block."""
+    await service.update_document(
+        "acme-shop", "spec", DEMO_SPEC, "First draft", 0, kind="spec", author="demo"
+    )
+    await service.update_document(
+        "acme-shop",
+        "spec",
+        "A gift card pays part of an order; the rest goes on the card. Refunds go back to the"
+        " gift card first.",
+        "Partial refunds decided",
+        1,
+        section="gift-cards",
+        author="demo",
+    )
+    first = await service.add_decision(
+        "acme-shop",
+        "Partial refunds of gift-card orders go back to the card.",
+        decided_by="owner",
+        source="message:demo-chat-1 owner in chat",
+    )
+    await service.add_decision(
+        "acme-shop",
+        "Partial refunds go back to the gift card first, the rest to the card.",
+        decided_by="owner",
+        source="message:demo-chat-2 owner in chat",
+        supersedes=first.id,
+    )
+    await service.add_note(
+        "global",
+        "user",
+        "The owner reads reports on a phone",
+        "Keep the first line of a report short.\nWhy: the owner reads the board on a phone.\n"
+        "How: one line of state, size and gist; details below.",
+        author="demo",
+    )
+    await service.add_note(
+        "project",
+        "reference",
+        "Payment provider test cards",
+        "The payment provider's published test card numbers are in its docs; never real"
+        " cards.\nHow: use them on the local stand only.",
+        project="acme-shop",
+        tags="payments, testing",
+        author="demo",
+    )
+    await service.set_block(
+        "pulse",
+        "Checkout is in dev, search suggestions wait for the owner's test, gift cards wait for"
+        " a refund decision.",
+        0,
+        project="acme-shop",
+        description="Where the project stands, in three lines",
+        author="demo",
+    )
 
 
 async def _seed_new(db_path: Path) -> tuple[int, int]:

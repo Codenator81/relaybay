@@ -127,6 +127,16 @@ writes documents, decisions and notes back to the same layout (optionally daily)
 backup and grep. After acceptance a coordinator's own instructions shrink to "start with
 `portfolio_digest`", and the markdown folder becomes the export target.
 
+## As built in 11.6a
+
+- Decisions have scope `project` or `task` only: `decision.project_id` stays NOT NULL (the migration
+  is additive), so global facts are global memory notes. A global decision scope needs a table
+  rebuild later.
+- Search is one FTS5 table kept in sync by the service in the write's transaction (stems computed
+  in Python with `snowballstemmer`), not external-content tables with triggers; no trigram index
+  yet. Without FTS5 search falls back to `LIKE`.
+- Visibility per role is not enforced yet.
+
 ## Order
 
 1. **11.6a** — `document` / `document_version`, decision scopes and supersede, `memory` and blocks,

@@ -80,7 +80,22 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
               next_step_at, stage_changed_at, created_at, updated_at, closed_at
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
-decision      id, task_id, project_id, text, decided_by, created_at
+decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
+              source_kind (report|event|comment|message), source_ref, source_text, valid_from,
+              valid_to, recorded_at, superseded_at, superseded_by (decision.id)
+document      id, project_id, slug (UNIQUE per project), title, kind, version, created_at,
+              updated_at
+document_version  id, document_id, version (UNIQUE per document), body, author, reason,
+              base_version, section, created_at
+memory        id, scope (global|role|project), project_id, role, kind
+              (user|feedback|project|reference), title, body, tags, source_kind, source_ref,
+              source_text, links, review_at, valid_from, valid_to, recorded_at, updated_at,
+              superseded_at, superseded_by (memory.id), last_read_at, read_count, version, author
+memory_block  id, scope (global|project), project_id, label, description, body, char_limit,
+              owner_only, version, updated_by, updated_at, created_at
+              -- UNIQUE (COALESCE(project_id, 0), label)
+search_index  FTS5 (kind, ref, project_id, title, body, stems), created at start when SQLite has
+              FTS5; rebuilt from the tables when its row count is off
 session       id, external_id UNIQUE (local_<uuid>), name (unique among rows without external_id),
               project_id, cwd, kind, desktop_link, status (working|idle|waiting|ended), activity,
               cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, last_seen_at,

@@ -82,6 +82,9 @@ Something off? `relaybay doctor`.
   Policy, `policy_get`). A trusted machine can give agents full access with the guard only
   journaling and keep harmless test passwords on local and test stands (masked, not sent to agents
   unless you say so, never on live). Agents propose changes with `policy_propose`.
+- **Docs & rules** — per project, versioned documents (spec, status, runbooks) with section
+  anchors and diffs, decisions that supersede each other instead of being deleted, memory notes
+  and blocks agents keep for the next session, full-text search over all of it, and the rules.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
