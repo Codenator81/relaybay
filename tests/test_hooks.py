@@ -55,20 +55,35 @@ def test_parse_hook_keeps_no_prompt_or_tool_input() -> None:
     assert folder_name("/home/dev/demo-api") == "demo-api"
 
 
-async def test_status_follows_the_events_and_session_end_unbinds(service: Service) -> None:
+async def test_status_follows_the_events_and_desktop_session_end_keeps_tasks(
+    service: Service,
+) -> None:
     task = await bound_task(service)
     for event, status in (
         ("SessionStart", "working"),
         ("Notification", "waiting"),
         ("Stop", "idle"),
         ("UserPromptSubmit", "working"),
+        ("SessionEnd", "ended"),
     ):
         await service.record_hook(hook(event))
         current = await service.get_task(task.key)
         assert (current.session_external_id, current.session_status) == (DESKTOP_A, status)
+    # A desktop session outlives its Claude Code process: the next SessionStart links the new one.
+    assert (await service.task_detail(task.key)).bindings[0].unbound_at is None
+
+
+async def test_session_end_unbinds_a_plain_session_unless_it_goes_on(service: Service) -> None:
+    task = await bound_task(service, session="acme-shop")  # the folder name: hooks reuse it
+    await service.record_hook(hook("SessionStart"))
+    assert (await service.get_task(task.key)).session_status == "working"
+    await service.record_hook(hook("SessionEnd", reason="clear"))  # /clear: same window goes on
+    assert (await service.get_task(task.key)).session_name == "acme-shop"
+    await service.record_hook(hook("SessionStart", CC_B, source="clear"))
+    assert (await service.get_task(task.key)).session_status == "working"
 
     with service.bus.subscribe() as sub:
-        await service.record_hook(hook("SessionEnd"))
+        await service.record_hook(hook("SessionEnd", CC_B))
         events = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
     after = await service.get_task(task.key)
     assert after.session_id is None
@@ -77,6 +92,113 @@ async def test_status_follows_the_events_and_session_end_unbinds(service: Servic
     assert unbound[0].payload["end_reason"] == "prompt_input_exit"
     detail = await service.task_detail(task.key)
     assert detail.bindings[0].unbound_at is not None  # history kept
+
+
+async def test_desktop_session_relinks_its_new_claude_code_id(service: Service) -> None:
+    """/clear or a restart gives the desktop session a new Claude Code id: the SessionStart
+    names the desktop session (from the hook's environment) and the link moves by itself."""
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    task = await service.create_task(
+        "acme-shop", "Checkout", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    await service.record_hook(hook("SessionEnd", reason="clear"))
+    linked = await service.record_hook(
+        hook("SessionStart", CC_B, source="clear", relaybay_host_session=DESKTOP_A.upper())
+    )
+    assert linked is not None and linked.external_id == DESKTOP_A
+    assert (linked.cc_session_id, linked.cc_exact) == (CC_B, True)
+    assert (await service.get_task(task.key)).session_status == "working"
+    await service.add_owner_comment(task.key, "Check the totals")
+    answer = await service.hook_answer(hook("UserPromptSubmit", CC_B))
+    assert answer is not None
+    assert "Check the totals" in answer["hookSpecificOutput"]["additionalContext"]
+    assert [s.name for s in await service.unlinked_hook_sessions()] == []
+
+
+async def test_ended_desktop_session_is_not_guessed_and_late_end_is_dropped(
+    service: Service,
+) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    task = await service.create_task(
+        "acme-shop", "Checkout", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    await service.record_hook(hook("SessionEnd"))
+    # A terminal `claude` in the same folder (no desktop id) is not guessed onto it ...
+    terminal = await service.record_hook(hook("SessionStart", CC_B))
+    assert terminal is not None and terminal.external_id is None
+    assert (await service.get_task(task.key)).session_status == "ended"
+    # ... so the reopened window links itself, even on a plain startup.
+    reopened = "3c1e2d4f-0000-4000-8000-000000000003"
+    linked = await service.record_hook(
+        hook("SessionStart", reopened, relaybay_host_session=DESKTOP_A)
+    )
+    assert linked is not None and linked.external_id == DESKTOP_A
+    # A SessionEnd for an id nobody holds (it arrived after the new id took over) adds nothing.
+    before = await service.list_sessions()
+    assert (
+        await service.record_hook(hook("SessionEnd", "8b0c1f6e-0000-4000-8000-000000000004"))
+        is None
+    )
+    assert len(await service.list_sessions()) == len(before)
+
+
+async def test_host_session_never_takes_a_live_link(service: Service) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    task = await service.create_task(
+        "acme-shop", "Checkout", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    await service.record_hook(hook("SessionStart"))
+    # A `claude` started from the desktop session's own tools inherits its id: a plain startup
+    # does not move a link that is still live.
+    nested = "3c1e2d4f-0000-4000-8000-000000000001"
+    other = await service.record_hook(
+        hook("SessionStart", nested, cwd="/tmp/elsewhere", relaybay_host_session=DESKTOP_A)
+    )
+    assert other is not None and other.external_id is None
+    current = await service.get_task(task.key)
+    assert (current.session_external_id, current.session_status) == (DESKTOP_A, "working")
+
+    # Nor does the nested process's own compaction or a `claude -c -p` resume: it runs unattended.
+    for source in ("compact", "resume"):
+        await service.record_hook(
+            hook("SessionStart", nested, source=source, relaybay_host_session=DESKTOP_A)
+        )
+    await service.add_owner_comment(task.key, "For the window only")
+    assert await service.hook_answer(hook("PreToolUse", nested)) is None
+    answer = await service.hook_answer(hook("PreToolUse"))
+    assert answer is not None and "For the window only" in str(answer)
+    # The window itself resuming after a restart (its old process sent no SessionEnd) moves it.
+    restarted = "3c1e2d4f-0000-4000-8000-000000000002"
+    moved = await service.record_hook(
+        hook(
+            "SessionStart",
+            restarted,
+            source="resume",
+            relaybay_host_session=DESKTOP_A,
+            relaybay_host_attended="1",
+        )
+    )
+    assert moved is not None and (moved.external_id, moved.cc_session_id) == (DESKTOP_A, restarted)
+
+    # An id another session's agent linked itself is never taken.
+    await service.create_task("acme-shop", "Payment", session=DESKTOP_B, hook_session=CC_B)
+    await service.record_hook(hook("SessionStart", CC_B))
+    taken = await service.record_hook(
+        hook(
+            "SessionStart",
+            CC_B,
+            source="resume",
+            relaybay_host_session=DESKTOP_A,
+            relaybay_host_attended="1",
+        )
+    )
+    assert taken is not None and taken.external_id == DESKTOP_B
+    # Unknown or malformed desktop ids change nothing.
+    for host in (DESKTOP_B.replace("2", "9"), "local_nope", 7):
+        assert parse_hook(hook("SessionStart", relaybay_host_session=host)).host_session in (
+            None,
+            DESKTOP_B.replace("2", "9"),
+        )
 
 
 async def test_unknown_events_change_nothing(service: Service) -> None:
@@ -305,6 +427,30 @@ def test_hook_command_against_stopped_and_running_server(live_server, tmp_path: 
     assert result.returncode == 0
     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert CC_A in context
+
+
+def test_hook_client_adds_the_desktop_session_to_session_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_HOST_SESSION_ID", DESKTOP_A)
+    start = json.dumps(RECORDED["SessionStart"]).encode()
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
+    sent = json.loads(hook_client.with_host_session(start))
+    assert (sent["relaybay_host_session"], sent["relaybay_host_attended"]) == (DESKTOP_A, "1")
+    stop = json.dumps(RECORDED["Stop"]).encode()
+    assert hook_client.with_host_session(stop) is stop  # other events are not even parsed
+    monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID")
+    assert hook_client.with_host_session(start) is start
+
+
+def test_http_hook_sends_the_desktop_session_as_a_header(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, bound_task, service)
+    token = board.app.state.settings.token_path.read_text(encoding="utf-8").strip()
+    headers = {"Authorization": f"Bearer {token}", "X-Relaybay-Host-Session": DESKTOP_A}
+    board.post("/hooks/claude-code", json=hook("SessionStart", CC_B), headers=headers)
+    [row] = [r.session for r in run_in_app(board, service.list_sessions)]
+    assert (row.external_id, row.cc_session_id, row.cc_exact) == (DESKTOP_A, CC_B, True)
 
 
 def test_relaybay_hook_command_is_silent_when_down(

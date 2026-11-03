@@ -35,6 +35,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (test environments only), Android `adb`, iOS simulator, then `attach_file`; the owner pastes as
   a fallback.
 - `relaybay demo` adds a task in review with a three-step checklist and two generated screenshots.
+- Session picker in the task dialog: **Bind** a session next to Unbind (the project's sessions
+  first); the same binding history and `task.session_bound` event as `task_bind_session`.
+- Desktop sessions relink by themselves: the hook passes the Claude desktop app's session id
+  (`CLAUDE_CODE_HOST_SESSION_ID`) with `SessionStart`, so after `/clear` or a restart the new Claude
+  Code id is linked exactly to the same desktop session and owner comments keep arriving without a
+  `task_bind_session`. A live link of another session is never taken. http hooks send it as the
+  `X-Relaybay-Host-Session` header (re-run `relaybay setup --apply` to update them).
+
+### Changed
+
+- `SessionEnd` no longer unbinds desktop sessions, nor any session after `/clear` or `/resume`.
+- The wake-up hook is verified with Claude Code 2.1.309: `relaybay setup --wake` works there without
+  `--force-wake`, which is now needed only on older or unknown versions.
 
 ### Fixed
 

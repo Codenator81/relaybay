@@ -6,7 +6,15 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from relaybay.domain.hooks import HOOK_PATH, WAKE_HOLD_SECONDS, WAKE_PATH
+from relaybay.domain.hooks import (
+    ATTENDED_FIELD,
+    ATTENDED_HEADER,
+    HOOK_PATH,
+    HOST_SESSION_FIELD,
+    HOST_SESSION_HEADER,
+    WAKE_HOLD_SECONDS,
+    WAKE_PATH,
+)
 from relaybay.service import Service
 
 # Hook input can carry a tool's whole input (a file being written); relaybay needs a few fields.
@@ -52,6 +60,11 @@ def build_hooks_router(
             return Response(status_code=204)
         if payload is _INVALID:
             return Response("Body must be the hook's JSON input.", status_code=400)
+        host = request.headers.get(HOST_SESSION_HEADER)
+        if host and isinstance(payload, dict):
+            # http hooks: the desktop session id comes as a header (command hooks: in the body).
+            payload.setdefault(HOST_SESSION_FIELD, host)
+            payload.setdefault(ATTENDED_FIELD, request.headers.get(ATTENDED_HEADER, ""))
         await service.record_hook(payload)
         # SessionStart: the agent's exact id to pass as `hook_session` on writes. Prompt, tool
         # and Stop events: owner comments for the exactly linked session, if there are any.

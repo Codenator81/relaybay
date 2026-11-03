@@ -49,6 +49,7 @@ Ships when a coordinator runs its daily work from relaybay.
 | Memory and documents: decisions with scopes, memory notes and blocks, full-text search (11.6a) | later | [0008](design/0008-memory-and-context.md) |
 | Digests per level with cursors and budgets, SessionStart context injection (11.6b) | later | [0008](design/0008-memory-and-context.md) |
 | Markdown import and export of the memory layout, dry-run diff (11.6c) | later | [0008](design/0008-memory-and-context.md) |
+| Task plan and checkpoints: ordered steps with status and checkpoint, draft / accepted plan, the agent's todo list shown under the current step, "work by plan" rule (M/L need an accepted plan before dev, S may go with the agent's todo), the current step reminded through hooks (11.7) | later | design to come |
 
 ## 0.4.0 — insight
 

@@ -61,6 +61,20 @@
     {% else %}
     <p class="muted">No session is bound to this task.</p>
     {% endif %}
+    {% if detail.bind_choices %}
+    <form class="bind-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/bind"
+          hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/bind" hx-target="closest .task-view" hx-swap="outerHTML">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <label>{{ "Bind another session" if t.session_name else "Bind a session" }}
+        <select name="session_id" required>
+          {% for s in detail.bind_choices %}
+          <option value="{{ s.id }}">{{ s.name }}{% if s.external_id and s.external_id != s.name %} · {{ s.external_id[:14] }}…{% endif %}{% if s.status %} · {{ s.status }}{% endif %}{% if s.project_id != t.project_id %} · other project{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn">Bind</button>
+    </form>
+    {% endif %}
     {% if detail.bindings %}
     <h3>History</h3>
     <ol class="history">

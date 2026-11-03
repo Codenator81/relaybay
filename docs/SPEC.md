@@ -230,7 +230,9 @@ red-tinted while one is rejected), which opens the dialog on its Review tab.
 document path, updated time and version), description and progress in full, the latest reports
 with state and size badges, decisions, the bound session with its hook status and last activity,
 "Open in desktop" and "Copy link", the session binding history, the tracker history, an
-**Unbind session** button (with confirmation), the comments and the edit form. A stage move that
+**Unbind session** button (with confirmation), a session picker (**Bind**: the project's sessions
+first, then the others, most recently seen first; the same binding history and
+`task.session_bound` event as `task_bind_session`, actor `board`), the comments and the edit form. A stage move that
 misses a rule shows the warning in the form (or the refusal in `strict` mode).
 
 <a id="spec-board-review"></a>
@@ -431,7 +433,7 @@ waiting on anything else.
 | `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is never stored; `PreToolUse` is also checked by the guard, and a call that touches live leaves a redacted summary in the journal, [§7](#spec-guard)) |
 | `Notification` | waiting | the notification message |
 | `Stop` | idle | `turn finished` |
-| `SessionEnd` | ended | the session is unbound from every task it is bound to (history kept, `task.session_unbound` with `reason: "session_end"`), for every session kind and end reason |
+| `SessionEnd` | ended | the session is unbound from every task it is bound to (history kept, `task.session_unbound` with `reason: "session_end"`), except after `/clear` or `/resume` (end reason `clear` or `resume`) and for desktop sessions, whose `local_…` id outlives the Claude Code process: the next `SessionStart` links the new Claude Code id to them ([below](#spec-hooks-linking)) |
 
 Other events are ignored. Activity of a working session is written at most once per 5 s per session
 (the latest wins); status changes are written at once, as `session.status_changed` per bound task.
@@ -440,14 +442,26 @@ Other events are ignored. Activity of a working session is written at most once 
 
 **Linking a hook session to a relaybay session**, in this order:
 
+0. Desktop session from the environment: the Claude desktop app runs Claude Code with its own
+   session id in `CLAUDE_CODE_HOST_SESSION_ID`. The command hook adds it to `SessionStart` as
+   `relaybay_host_session`, with `CLAUDE_CODE_SESSION_ATTENDED` as `relaybay_host_attended`; an
+   http hook sends them as the `X-Relaybay-Host-Session` and `X-Relaybay-Host-Attended` headers
+   (`allowedEnvVars`). When a desktop session with that id is known, the new Claude Code id is
+   linked to it exactly (comments are delivered at once). While the desktop session is exactly
+   linked to another live (not ended) Claude Code id, only the window itself moves it: an
+   attended (`"1"`) `resume`, `clear` or `compact` start, e.g. after a restart whose old process
+   sent no `SessionEnd`. A `claude -p` started from one of its tools inherits the desktop id but
+   runs unattended, and a plain `startup` never moves a live link. An id another session's agent
+   linked itself is never taken. Unknown or malformed ids are ignored.
 1. Exact: a write passing `hook_session` (with `session`) links that Claude Code session id to the
    calling session; a row the hooks had created for it by guess hands over its status and is
    removed. An id that another live (not ended) session already linked exactly is not moved: the
    write succeeds and its response gets `Warning: hook_session <id> belongs to another session
    (<name>); not relinked.` `task_bind_session` never links a hook id (the caller may be binding
    another session); it answers with a note when one is passed.
-2. Fallback on first sight: the one desktop session bound to a task in the project whose
-   `repo_path` contains the hook's `cwd`.
+2. Fallback on first sight: the one desktop session (not ended) bound to a task in the project
+   whose `repo_path` contains the hook's `cwd`. A `SessionEnd` for an id no session holds is
+   dropped.
 3. Ambiguous (several candidates, the folder in several projects, or candidates already linked to
    other live hook sessions): nothing is guessed; the hook session stays **unlinked** with a reason
    and is listed on the Integrations page.
@@ -492,7 +506,7 @@ After the upgrade to `0008` no session gets comment text until its agent writes 
 
 <a id="spec-hooks-wake"></a>
 
-**Wake-up hook (opt-in, experimental; not verified against a live Claude Code).** With
+**Wake-up hook (opt-in; verified with Claude Code 2.1.309).** With
 `relaybay setup --apply --wake`, `Stop` also runs `<python> -I -m relaybay.hook_client --url
 <base>/hooks/claude-code/wait --token-file <data dir>/token --wait` as a command hook with
 `"asyncRewake": true` and a 1800 s timeout. Claude Code runs it in the background; it posts the
@@ -506,9 +520,10 @@ turn starts one), or the hook process gone. relaybay down: exit 0 at once.
 
 **Fallback risk:** a Claude Code build that ignored `asyncRewake` would run this hook in the
 foreground and hold the end of every turn for up to 30 minutes. The hooks reference names no
-version that supports it, so `--wake` is refused unless `--force-wake` is given too
-(`MIN_ASYNC_REWAKE_VERSION` is unset); `setup --check` and `doctor` show the installed hook as
-`UNVERIFIED`. If turns end only after a long wait, run `relaybay setup --apply --no-wake`.
+version; Claude Code 2.1.309 was checked live (the turn ends at once, exit 2 starts a new turn), so
+`MIN_ASYNC_REWAKE_VERSION` is 2.1.309 and `--wake` on an older or unknown version is refused unless
+`--force-wake` is given too. `setup --check` and `doctor` name the verified version. If turns end
+only after a long wait, run `relaybay setup --apply --no-wake`.
 
 <a id="spec-setup"></a>
 
@@ -523,7 +538,7 @@ explicit command or button.
 | Command | Effect |
 |---|---|
 | `relaybay setup` (`--dry-run`) | Detection (`claude` on `PATH` and its version, the desktop app, whether http hooks are supported), the exact diff of the settings file and its plan hash. Writes nothing. |
-| `relaybay setup --apply [--expect <hash>] [--mode command\|http] [--wake [--force-wake] \| --no-wake]` | Backs the file up, then adds relaybay's hook entries. `--wake` also adds the wake-up hook ([§4](#spec-hooks-wake); command mode only; refused without `--force-wake` while no Claude Code version is known to support `asyncRewake`), `--no-wake` removes it; without either an existing wake-up hook is kept. |
+| `relaybay setup --apply [--expect <hash>] [--mode command\|http] [--wake [--force-wake] \| --no-wake]` | Backs the file up, then adds relaybay's hook entries. `--wake` also adds the wake-up hook ([§4](#spec-hooks-wake); command mode only; refused without `--force-wake` on a Claude Code older than 2.1.309 or of unknown version), `--no-wake` removes it; without either an existing wake-up hook is kept. |
 | `relaybay setup --remove [--dry-run] [--expect <hash>]` | Backs the file up, then removes only relaybay's entries. |
 | `relaybay setup --check [--json]` | End-to-end check, one ok/FAIL line per item; `--json` prints a list of `{ok, name, detail}` and the exit code is non-zero when an item fails. |
 
@@ -572,7 +587,7 @@ check until apply runs again. With `--wake`, one more group in `Stop` for the wa
 `initialize` accepted with the token; a synthetic hook event accepted; relaybay's hooks present in
 the user settings for this base URL; in command mode, the hook's interpreter imports
 `relaybay.hook_client`; in http mode, `RELAYBAY_TOKEN` set to the token in this environment; the
-wake-up hook (an ok line starting with `UNVERIFIED` and the fallback risk, only when installed;
+wake-up hook (an ok line naming the verified Claude Code version and the fallback risk, only when installed;
 also in `doctor`); the MCP server registered for Claude Code.
 
 <a id="spec-doctor"></a>
