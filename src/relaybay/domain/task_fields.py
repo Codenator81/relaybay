@@ -17,7 +17,7 @@ TEXT_CLEARS = "'-', '' or null clears it"
 @dataclass(frozen=True, slots=True)
 class TaskField:
     name: str
-    kind: str  # title, stage, text, markdown, url, bool, integer
+    kind: str  # title, stage, text, markdown, url, bool, integer, size
     description: str
     clear: str
     max_length: int | None = None
@@ -57,6 +57,13 @@ TASK_FIELDS: tuple[TaskField, ...] = (
         MARKDOWN_MAX,
     ),
     TaskField("priority", "integer", "Higher sorts first; default 0.", "0 resets it"),
+    TaskField(
+        "size",
+        "size",
+        "Task size: S, M or L. A report whose first line names a size sets it when the task has"
+        " none. S tasks may go without an accepted plan.",
+        TEXT_CLEARS,
+    ),
     TaskField(
         "tracker_ref",
         "text",

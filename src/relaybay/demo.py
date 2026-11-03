@@ -15,6 +15,7 @@ DEMO_DESKTOP_SESSION = "local_0d3e4a5b-6c7d-4e8f-9a0b-1c2d3e4f5a6b"
 DEMO_HOOK_SESSION = "demo-hook-session"
 ACME_REPO = "/home/demo/src/acme-shop"
 DEMO_REVIEW_HOOK = "demo-review-hook-session"
+DEMO_TODO_HOOK = "demo-todo-hook-session"
 
 
 def mock_screen(width: int, height: int, accent: tuple[int, int, int], rows: int) -> bytes:
@@ -257,6 +258,97 @@ async def seed(service: Service) -> int:
         "Remove the v0 endpoints",
         description="v0 has had no traffic for 90 days; remove it and its tests.",
         next_step="Announce the removal date.",
+    )
+
+    # A plan with checkpoints: one step as planned, one with a deviation, one in progress.
+    addresses = await task(
+        "acme-shop",
+        "Saved addresses",
+        stage="dev",
+        branch="feat/saved-addresses",
+        description="Signed-in shoppers pick a saved address at checkout instead of typing it.",
+        waiting_on="agent",
+        next_step="Show the saved addresses as a picker on the checkout page.",
+        session="addresses-agent",
+    )
+    await service.update_task(addresses, {"size": "M"}, actor="demo")
+    await service.set_plan(
+        addresses,
+        [
+            {"title": "Address table and model", "details": "Store addresses per account."},
+            {
+                "title": "Address book page",
+                "details": "Shoppers add, edit and remove addresses in their account.",
+            },
+            {
+                "title": "Picker at checkout",
+                "details": "Pick a saved address instead of typing it; typing still works.",
+            },
+            {"title": "Tests and review steps", "details": "So the owner can accept it by eye."},
+        ],
+        reason="from the task description",
+        session="addresses-agent",
+    )
+    await service.accept_plan(addresses, actor="owner")
+    _, first = await service.add_report(
+        addresses,
+        "changed · M · address table and model\n\nMigration and model with tests.",
+        session="addresses-agent",
+    )
+    await service.update_plan_step(
+        addresses,
+        1,
+        "done",
+        outcome="Migration and model with tests",
+        link=first.id,
+        conformance="as planned",
+        session="addresses-agent",
+    )
+    await service.update_plan_step(
+        addresses,
+        2,
+        "done",
+        outcome="Add and remove only",
+        conformance="deviation: editing waits for the shared form component",
+        session="addresses-agent",
+    )
+    await service.update_plan_step(addresses, 3, "in_progress", session="addresses-agent")
+
+    # A small task without a plan: the agent's own todo stands in, marked not accepted.
+    errors = await task(
+        "demo-api",
+        "JSON body for 404 errors",
+        stage="dev",
+        description="Unknown routes answer with the same JSON error body as other errors.",
+        session="errors-agent",
+        hook_session=DEMO_TODO_HOOK,
+    )
+    await service.update_task(errors, {"size": "S"}, actor="demo")
+    await service.record_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": DEMO_TODO_HOOK,
+            "tool_name": "TodoWrite",
+            "tool_input": {
+                "todos": [
+                    {
+                        "content": "Find where 404s are answered",
+                        "status": "completed",
+                        "activeForm": "Finding where 404s are answered",
+                    },
+                    {
+                        "content": "Return the JSON error body",
+                        "status": "in_progress",
+                        "activeForm": "Returning the JSON error body",
+                    },
+                    {
+                        "content": "Add a test for an unknown route",
+                        "status": "pending",
+                        "activeForm": "Adding a test for an unknown route",
+                    },
+                ]
+            },
+        }
     )
 
     await seed_memory(service)

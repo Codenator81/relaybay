@@ -65,11 +65,12 @@ def test_defaults_require_a_report_before_test_and_progress_before_done() -> Non
     rules = Rules(DEFAULT_RULES)
     assert rules.requirements("test") == [{"kind": "report_since_stage_change"}]
     assert rules.requirements("done") == [{"kind": "field_present", "field": "progress"}]
-    assert rules.requirements("dev") == []
+    assert rules.requirements("dev") == [{"kind": "plan_accepted", "unless_size": ["S"]}]
     fmt_rules = DEFAULT_RULES["report_format"]
     assert fmt_rules["states"][0] == "inspected" and fmt_rules["sizes"] == ["S", "M", "L"]
     assert fmt.rules_line(rules) == (
-        f"Rules {rules.hash}: report before test, progress before done (read relaybay://rules)"
+        f"Rules {rules.hash}: accepted plan before dev, report before test, progress before done"
+        " (read relaybay://rules)"
     )
 
 
@@ -181,7 +182,8 @@ async def test_project_override_is_merged(service: Service) -> None:
     demo = await service.rules("demo-api")
     assert demo.hash == service.global_rules.hash and demo.requirements("test")
     assert fmt.rules_line(acme) == (
-        f"Rules {acme.hash}: progress before done (read relaybay://rules/acme-shop)"
+        f"Rules {acme.hash}: accepted plan before dev, progress before done"
+        " (read relaybay://rules/acme-shop)"
     )
 
     task = await service.create_task("acme-shop", "Checkout", stage="dev")
@@ -275,6 +277,7 @@ async def test_strict_mode_refuses_the_move(tmp_path: Path) -> None:
             await svc.set_stage(task.key, "done")
         fresh = await svc.get_task(task.key)
         assert (fresh.stage, fresh.version) == ("live", 1)
+        await svc.update_task(task.key, {"size": "S"})  # S tasks need no accepted plan
         back = await svc.set_stage_checked(task.key, "dev")
         assert back.warnings == []
     finally:
@@ -286,8 +289,8 @@ async def test_snapshot_starts_with_the_rules_line(service: Service) -> None:
     text = fmt.snapshot(await service.snapshot("acme-shop"))
     first, second = text.splitlines()[:2]
     assert first == (
-        f"Rules {service.global_rules.hash}: report before test, progress before done"
-        " (read relaybay://rules/acme-shop)"
+        f"Rules {service.global_rules.hash}: accepted plan before dev, report before test,"
+        " progress before done (read relaybay://rules/acme-shop)"
     )
     assert second == "# acme-shop — Acme Shop"
 

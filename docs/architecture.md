@@ -78,7 +78,8 @@ project       id, slug UNIQUE, name, repo_path, description, task_seq, created_a
 task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
               waiting_on, next_step, branch, doc_path, description, progress, session_id,
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
-              next_step_at, stage_changed_at, created_at, updated_at, closed_at
+              next_step_at, stage_changed_at, created_at, updated_at, closed_at, size (S|M|L),
+              plan_status (draft|accepted), plan_accepted_at, plan_accepted_by
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
 decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
@@ -108,6 +109,13 @@ review_step   id, task_id, position (UNIQUE per task), title, details_md,
 attachment    id, task_id, step_id, kind (image), stored_name UNIQUE, original_name, mime, size,
               sha256, caption_md, created_by, created_at
               -- the file: <data dir>/attachments/<project>/<task key>/<stored_name>
+plan_step     id, task_id, position (UNIQUE per task), title, details_md,
+              status (pending|in_progress|done|blocked), done_at, link, outcome, conformance,
+              created_by, created_at, updated_at
+plan_revision id, task_id, revision (UNIQUE per task), body (JSON: status and steps), author,
+              reason, created_at
+session_todo  session_id, cc_session_id, item_id, subject, status (pending|in_progress|completed),
+              active_form, position, updated_at   -- PK (session_id, item_id)
 task_session  id, task_id, session_id, bound_at, unbound_at, bound_by   -- one open row per task
 session_alias name PK, session_id, created_at
 tracker_entry id, task_id, tracker_name, tracker_ref, tracker_url, logged_at, unlogged_at, created_at

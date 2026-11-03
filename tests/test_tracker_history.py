@@ -103,8 +103,13 @@ async def test_report_unlogs(service: Service) -> None:
     since = await service.last_event_id()
     task, _ = await service.add_report(key, "changed · S · hotfix")
     assert not task.tracker_logged
-    assert await kinds_after(service, since) == ["task.tracker_unlogged", "report.added"]
-    assert (await service.events_since(since))[0].payload["reason"] == "report added"
+    # The report's size sizes the task (task.updated) and clears the mark.
+    assert await kinds_after(service, since) == [
+        "task.updated",
+        "task.tracker_unlogged",
+        "report.added",
+    ]
+    assert (await service.events_since(since))[1].payload["reason"] == "report added"
 
     await service.update_task(key, {"tracker_logged": True})
     task, _ = await service.add_report(key, "verified · S · again", progress="Hotfix shipped")

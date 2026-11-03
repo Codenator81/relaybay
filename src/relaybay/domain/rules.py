@@ -19,7 +19,8 @@ from relaybay.domain.task_fields import FIELD_NAMES, MARKDOWN_MAX
 RULES_MODES = ("warn", "strict")
 REPORT_SINCE_STAGE_CHANGE = "report_since_stage_change"
 FIELD_PRESENT = "field_present"
-REQUIREMENT_KINDS = (REPORT_SINCE_STAGE_CHANGE, FIELD_PRESENT)
+PLAN_ACCEPTED = "plan_accepted"
+REQUIREMENT_KINDS = (REPORT_SINCE_STAGE_CHANGE, FIELD_PRESENT, PLAN_ACCEPTED)
 TOP_KEYS = ("report_format", "stage_requirements", "description_template", "guidance")
 REPORT_FORMAT_KEYS = ("first_line", "states", "sizes")
 
@@ -30,6 +31,7 @@ DEFAULT_RULES: dict[str, Any] = {
         "sizes": list(REPORT_SIZES),
     },
     "stage_requirements": {
+        "dev": [{"kind": PLAN_ACCEPTED, "unless_size": ["S"]}],
         "test": [{"kind": REPORT_SINCE_STAGE_CHANGE}],
         "done": [{"kind": FIELD_PRESENT, "field": "progress"}],
     },
@@ -58,10 +60,21 @@ def _requirement(value: Any, where: str) -> dict[str, Any]:
     kind = value.get("kind")
     if kind not in REQUIREMENT_KINDS:
         raise ValueError(f"{where}.kind must be one of: {', '.join(REQUIREMENT_KINDS)}.")
-    allowed = {"kind", "field"} if kind == FIELD_PRESENT else {"kind"}
-    extra = set(value) - allowed
+    allowed = {FIELD_PRESENT: {"kind", "field"}, PLAN_ACCEPTED: {"kind", "unless_size"}}
+    extra = set(value) - allowed.get(kind, {"kind"})
     if extra:
         raise ValueError(f"{where}: unknown key(s) for {kind}: {', '.join(sorted(extra))}.")
+    if kind == PLAN_ACCEPTED:
+        sizes = value.get("unless_size", [])
+        if not isinstance(sizes, list) or not all(isinstance(v, str) for v in sizes):
+            raise ValueError(f"{where}.unless_size must be a list of sizes (may be empty).")
+        unknown = [v for v in sizes if v not in REPORT_SIZES]
+        if unknown:
+            raise ValueError(
+                f"{where}.unless_size: unknown size(s) {', '.join(unknown)};"
+                f" allowed: {', '.join(REPORT_SIZES)}."
+            )
+        return {"kind": kind, "unless_size": list(dict.fromkeys(sizes))}
     if kind == FIELD_PRESENT:
         field = value.get("field")
         if field not in FIELD_NAMES:
@@ -180,22 +193,36 @@ class Rules:
 def requirement_label(req: dict[str, Any]) -> str:
     if req["kind"] == REPORT_SINCE_STAGE_CHANGE:
         return "a report since the last stage change"
+    if req["kind"] == PLAN_ACCEPTED:
+        unless = req.get("unless_size") or []
+        return "an accepted plan" + (
+            f" (not needed for size {' or '.join(unless)})" if unless else ""
+        )
     return f"the {req['field']} field"
 
 
 def requirement_short(req: dict[str, Any]) -> str:
+    if req["kind"] == PLAN_ACCEPTED:
+        return "accepted plan"
     return "report" if req["kind"] == REPORT_SINCE_STAGE_CHANGE else req["field"]
 
 
 def unmet(
-    rules: Rules, stage: str, *, report_since_stage_change: bool, values: dict[str, Any]
+    rules: Rules,
+    stage: str,
+    *,
+    report_since_stage_change: bool,
+    values: dict[str, Any],
+    plan_status: str | None = None,
 ) -> list[dict[str, Any]]:
     """Requirements of moving to `stage` that the task does not meet; `values` are the task's
-    fields as they will be after the write."""
+    fields as they will be after the write. A task of unknown size needs a plan."""
     missing = []
     for req in rules.requirements(stage):
         if req["kind"] == REPORT_SINCE_STAGE_CHANGE:
             ok = report_since_stage_change
+        elif req["kind"] == PLAN_ACCEPTED:
+            ok = plan_status == "accepted" or values.get("size") in req.get("unless_size", [])
         else:
             value = values.get(req["field"])
             ok = bool(value.strip()) if isinstance(value, str) else bool(value)
@@ -204,8 +231,17 @@ def unmet(
     return missing
 
 
-def warning_text(stage: str, req: dict[str, Any]) -> str:
-    return f"Warning (rules): moving to {stage} usually needs {requirement_label(req)}."
+def warning_text(stage: str, req: dict[str, Any], plan_status: str | None = None) -> str:
+    text = f"Warning (rules): moving to {stage} usually needs {requirement_label(req)}."
+    if req["kind"] == PLAN_ACCEPTED:
+        if plan_status == "draft":
+            text += (
+                " The plan is not accepted yet: the owner accepts it on the board, the"
+                " coordinator with plan_accept."
+            )
+        else:
+            text += " Write it with plan_set (2-5 steps), then ask for acceptance."
+    return text
 
 
 def refusal_text(stage: str, missing: list[dict[str, Any]]) -> str:

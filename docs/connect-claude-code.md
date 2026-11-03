@@ -163,6 +163,18 @@ build that ignored `asyncRewake` would run the hook in the foreground and every 
 after up to 30 minutes. If you see that, remove it with `--no-wake`. Details:
 [MCP tools → Owner comments through hooks](mcp-tools.md#owner-comments-through-hooks).
 
+**Plan reminders and the todo list.** An agent that linked its hook session is reminded of its
+task's current plan step through the same hooks, and relaybay shows its Claude Code todo under that
+step. The todo tools are off by default (Claude Code 2.1.309); to turn them on, add this to your
+Claude Code settings (`~/.claude/settings.json`). `relaybay setup` does not write it; it is your
+choice:
+
+```json
+{ "env": { "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1" } }
+```
+
+Details: [MCP tools → Plan](mcp-tools.md#plan).
+
 For tests or a second machine profile, `--claude-home <folder>` (and `relaybay serve
 --claude-home <folder>` for the board page) points setup at another folder holding
 `.claude/settings.json` and `.claude.json`.

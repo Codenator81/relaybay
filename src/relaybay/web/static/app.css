@@ -1095,6 +1095,60 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .review-comment .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .paste-note { font-size: 13px; }
 
+.plan-chip { text-decoration: none; background: var(--surface-2); color: var(--muted); }
+.plan-chip.is-done { background: var(--tracker-bg); color: var(--tracker-text); }
+.plan-chip .deviation-mark { color: var(--warn); font-weight: 600; }
+.card .plan-chip {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; }
+.plan-state { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.plan-state.state-accepted { color: var(--ok); }
+.plan-state.state-draft, .plan-state.state-agent { color: var(--warn); }
+.plan-accept { margin-left: auto; }
+.deviation-count { color: var(--warn); font-weight: 600; }
+.plan-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.plan-step {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius);
+}
+.plan-step.status-in_progress { border-left-color: var(--accent); }
+.plan-step.status-done { border-left-color: var(--ok); }
+.plan-step.status-blocked { border-left-color: var(--bad); }
+.plan-step.is-deviation { border-left-color: var(--warn); }
+.plan-step-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.plan-title { font-weight: 600; overflow-wrap: anywhere; }
+.plan-step-status { flex: none; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.plan-step-status.status-in_progress { color: var(--accent); }
+.plan-step-status.status-done { color: var(--ok); }
+.plan-step-status.status-blocked { color: var(--bad); }
+.plan-why { margin-top: 4px; font-size: 14px; color: var(--muted); }
+.plan-why p { margin: 0; }
+.plan-checkpoint { margin: 6px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+.conformance { color: var(--ok); }
+.conformance.is-deviation { color: var(--warn); font-weight: 600; }
+.todo { margin-top: 8px; font-size: 13px; }
+.todo-now { margin: 0 0 4px; }
+.todo-details > summary { cursor: pointer; color: var(--accent); }
+.todo-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; }
+.todo-item.status-completed .todo-subject { color: var(--muted); text-decoration: line-through; }
+.todo-item.status-in_progress .todo-subject { font-weight: 600; }
+.todo-mark { display: inline-block; width: 1em; color: var(--muted); }
+.plan-history { margin-top: 12px; font-size: 13px; }
+.plan-history > summary { cursor: pointer; color: var(--accent); }
+.plan-diff { margin: 4px 0 0; padding: 6px 8px; font-size: 12px; white-space: pre-wrap; background: var(--surface-2); border-radius: 6px; }
+.diff-add { color: var(--ok); }
+.diff-del { color: var(--bad); }
+
 .thumbs { list-style: none; margin: 8px 0 0 24px; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
 .thumb { width: 160px; display: grid; gap: 4px; }
 .thumb-link { display: block; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--surface-2); }

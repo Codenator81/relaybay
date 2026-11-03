@@ -17,6 +17,7 @@ from relaybay.domain.environments import (
     LEVELS,
 )
 from relaybay.domain.hooks import WAKE_HOLD_SECONDS
+from relaybay.domain.plan import DEFAULT_REMINDER_EVERY
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.review import DEFAULT_FILE_MAX_MB, DEFAULT_TASK_MAX_MB
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
@@ -200,6 +201,16 @@ class Settings:
             env="RELAYBAY_ATTACHMENTS_TASK_MAX_MB",
         ),
     )
+    plan_reminder_every: int = field(
+        default=DEFAULT_REMINDER_EVERY,
+        metadata=_doc(
+            "Remind a linked agent of its current plan step every this many tool calls"
+            " (PostToolUse events); 0 turns the periodic reminder off (session start and todo"
+            " changes still remind).",
+            key="plan_reminder_every",
+            env="RELAYBAY_PLAN_REMINDER_EVERY",
+        ),
+    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
@@ -309,6 +320,15 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{source}: {key} must be a whole number >= 1, got {value!r}")
             setattr(settings, key, value)
+    if "plan_reminder_every" in data:
+        value = data["plan_reminder_every"]
+        if isinstance(value, str) and value.strip().isdigit():
+            value = int(value)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(
+                f"{source}: plan_reminder_every must be a whole number >= 0, got {value!r}"
+            )
+        settings.plan_reminder_every = value
     if "attachment_roots" in data:
         value = data["attachment_roots"]
         roots = _split_list(value) if isinstance(value, str) else value

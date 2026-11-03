@@ -9,6 +9,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Task plan and checkpoints (step 11.7, design 0014, migration `0013_plan`, additive): ordered
+  plan steps with "what and why" and a status; a done step is a checkpoint with its time, an
+  outcome, a link (report or PR) and a required conformance line (`as planned` or `deviation:
+  why`). Plans are drafts until the owner (board) or the coordinator (`plan_accept`) accepts
+  them; renaming or reordering steps makes an accepted plan a draft again. Every plan write is
+  kept as a revision. MCP tools `plan_get`, `plan_set`, `plan_step_update`, `plan_accept`;
+  events `plan.set`, `plan.step_updated`, `plan.accepted`, `session.todo_updated`.
+- Board: a **Plan** tab in the task dialog (and a Plan section on the task page) with **Accept
+  plan**, deviations highlighted, the agent's todo under the current step and the plan's history
+  with title diffs; cards show `Plan 2/5 · now: <step>`.
+- Task `size` (`S` / `M` / `L`) in `task_update`, `task_patch` and the board form; the first
+  report's size sets it when the task has none.
+- Rule kind `plan_accepted` (`unless_size`), in the default rules for moves to `dev` (S tasks
+  excepted); a move to dev without a plan or todo adds a hint.
+- The agent's Claude Code todo (`TaskCreate` / `TaskUpdate`, or `TodoWrite`) is read from
+  `PostToolUse` hooks and shown as a second layer, never merged into the plan; plan reminders go
+  to exactly linked sessions on start, after a todo change and every `plan_reminder_every` tool
+  calls (default 30). The server instructions gain point 11 (start with a plan).
+- `relaybay demo` adds an M task with an accepted plan (a deviation included) and an S task with
+  an agent todo.
 - Memory and documents (step 11.6a of design 0008, migration `0012_memory`, additive): project
   documents with versions, section anchors from headings, section-level writes, optimistic
   locking (a conflict returns the current text to merge) and diffs; decisions with a scope, a
@@ -63,6 +83,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `X-Relaybay-Host-Session` header (re-run `relaybay setup --apply` to update them).
 
 ### Changed
+
+- **Upgrade note:** the default rules now require an accepted plan before a task moves to dev
+  (`plan_accepted`, size S exempt). In `warn` mode this is a warning; in `strict` mode moves to dev
+  are refused until the plan is accepted or the task's size is S. Opt out per project or globally
+  with `stage_requirements.dev = []`.
 
 - `SessionEnd` no longer unbinds desktop sessions, nor any session after `/clear` or `/resume`.
 - The wake-up hook is verified with Claude Code 2.1.309: `relaybay setup --wake` works there without

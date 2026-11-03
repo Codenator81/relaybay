@@ -118,10 +118,10 @@ async def test_session_start_counts_unread_comments(service: Service) -> None:
     task = await linked_task(service)
     answer = await fire(service, "SessionStart")
     assert CC_A in context_of(answer) and "unread owner comment" not in context_of(answer)
-    await service.add_owner_comment(task.key, "one")
-    await service.add_owner_comment(task.key, "two")
+    await service.add_owner_comment(task.key, "first remark")
+    await service.add_owner_comment(task.key, "second remark")
     text = context_of(await fire(service, "SessionStart"))
-    assert "You have 2 unread owner comment(s)" in text and "one" not in text
+    assert "You have 2 unread owner comment(s)" in text and "first remark" not in text
     _, items = await service.list_comments(task.key)
     assert all(c.delivered_at is None for c in items)  # a count is not a delivery
 

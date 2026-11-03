@@ -7,6 +7,10 @@
       data-last-event-id="{{ last_event_id }}" data-project="{{ t.project_slug }}" data-task="{{ t.key }}">
   {% include "_task_view.html" %}
   <section class="panel">
+    <h2>Plan</h2>
+    {% with t = detail.task, plan = detail.plan, todo = detail.todo, history = detail.plan_history %}{% include "_plan.html" %}{% endwith %}
+  </section>
+  <section class="panel">
     <h2>Review</h2>
     {% with t = detail.task, review = detail.review %}{% include "_review.html" %}{% endwith %}
   </section>

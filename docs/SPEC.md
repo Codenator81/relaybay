@@ -33,7 +33,8 @@ Contents:
 
 **Task.** Belongs to a project and has a key `<slug>-<n>` (`acme-shop-12`), numbered per project.
 Fields: title, stage, stage note, waiting on, next step, branch, document path, description,
-progress, priority, the external tracker fields and a `version` that grows with every write. The
+progress, priority, size (`S` / `M` / `L`, [below](#spec-plan-size)), the external tracker fields
+and a `version` that grows with every write. The
 editable fields come from one list (`domain/task_fields.py`) that drives write validation, the
 `relaybay://schema/task` resource and the "Editable fields" line of `task_get`.
 
@@ -62,6 +63,44 @@ nothing. Moving a task to
 `review` or `test` while its checklist is empty adds a hint line to the MCP answer (not a rule
 warning). Events: `review.step_added`, `review.step_updated`, `review.step_removed`,
 `review.step_accepted`, `review.step_rejected`.
+
+<a id="spec-plan"></a>
+
+**Plan and checkpoints.** A task can carry an ordered plan ([design 0014](design/0014-task-plan.md)):
+each step has a title, an optional "what and why" (markdown, up to 2000 characters) and a status
+`pending`, `in_progress`, `done` or `blocked`. Agents write it with `plan_set` (it replaces the
+list: step N keeps its status and checkpoint while its title stays the same, a renamed step is
+`pending` again, steps past the new end are removed, `[]` removes the plan; a write that changes
+nothing is not kept) and move one step with `plan_step_update`. A **done** step is a checkpoint:
+`done_at`, an optional one-line outcome, an optional link (a report of the same task, given as
+`12`, `#12` or `report:12` and stored as `report:12`, or an http(s) URL such as a pull request) and
+a required **conformance** line, `as planned` or `deviation: <why>`. Leaving `done` clears the
+checkpoint; marking a done step done again keeps its `done_at`. An outcome may also say why a step
+is `blocked`.
+
+<a id="spec-plan-status"></a>
+
+**Plan status** lives on the task: none while there are no steps, `draft` once written,
+`accepted` (with who and when) after the owner accepts it on the board or the coordinator calls
+`plan_accept` (refused for the session bound to the task). A change of the step titles or their order turns an accepted plan back to `draft`
+(the `plan_set` answer says so); step statuses and "what and why" edits do not. Every plan write
+(set, step update, acceptance) adds a `plan_revision` row with the whole plan as JSON, its author
+and a reason. Events: `plan.set` (steps, status, previous status, whether the titles changed,
+reason), `plan.step_updated` (position, title, status, previous, conformance, outcome),
+`plan.accepted`.
+
+<a id="spec-plan-size"></a>
+
+**Task size.** `size` is an optional field (`S`, `M`, `L`; `task_update`, `task_patch`, the board
+form; `-` clears it). A report whose first line names a size sets it when the task has none (a
+`task.updated` in the same transaction); a size already set is kept. `S` tasks may go without an
+accepted plan ([§6](#spec-plan-rule)).
+
+<a id="spec-plan-todo"></a>
+
+**The agent's todo (second layer).** The Claude Code todo list of the session bound to a task is
+read from its hooks ([§4](#spec-plan-hooks)) and shown under the current plan step; it is never
+merged into the plan. A task with no plan steps shows the todo as "Agent's plan, not accepted".
 
 <a id="spec-attachments"></a>
 
@@ -226,7 +265,10 @@ a URL is set, ✓ when logged, "not logged" with `require_tracker_log`) and an i
 desktop" link with the session's hook status dot in the top row; then title, waiting on, branch and
 the next step (two lines, muted with "stale" when stale). Done cards hide waiting on and the next
 step. A task with a checklist shows **Review 2/5** (accepted / all; green when all are accepted,
-red-tinted while one is rejected), which opens the dialog on its Review tab.
+red-tinted while one is rejected), which opens the dialog on its Review tab. A task with a plan
+shows **Plan 2/5** (done / all) with `· draft` while it is not accepted, the number of deviations
+highlighted and `· now: <step in progress>` (one line, cut with an ellipsis), which opens the
+dialog on its Plan tab.
 
 <a id="spec-board-dialog"></a>
 
@@ -238,6 +280,19 @@ with state and size badges, decisions, the bound session with its hook status an
 first, then the others, most recently seen first; the same binding history and
 `task.session_bound` event as `task_bind_session`, actor `board`), the comments and the edit form. A stage move that
 misses a rule shows the warning in the form (or the refusal in `strict` mode).
+
+<a id="spec-plan-board"></a>
+
+**Plan tab** (task dialog, `?tab=plan`; a Plan section on the task page; tabs Overview | Plan |
+Review): the plan state (**Accepted** with who and when, or **Draft** with an **Accept plan**
+button: board-only, cookie and CSRF, refused with a Bearer token; actor `owner`), "2 of 5 done ·
+1 deviation", then the steps with their status, "what and why" and checkpoint (conformance,
+outcome, link, time); a deviation is highlighted. Under the current step (in progress, else the
+first one not done): "Now doing: <activeForm of the todo item in progress>" and the agent's todo
+collapsed. Without plan steps: the todo marked **Agent's plan, not accepted**, or a note on how
+the agent writes a plan. **History (n)** lists every revision, newest first, with its reason,
+author and time and the titles it changed (`- 2. old` / `+ 2. new`). The tab refreshes live on
+`plan.*` and `session.todo_updated` events of its task; the card on `plan.*`.
 
 <a id="spec-board-review"></a>
 
@@ -359,7 +414,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, ten numbered points: read
+**Server instructions** (sent on connect) are the working contract, eleven numbered points: read
 `project_snapshot` first (its first line names the rules); pick or create a task and pass `session`
 (desktop id with `session_title`, else a name; `hook_session` if the session start gave one; don't
 rebind without your `local_` id); update `next_step`, `waiting_on` and `progress` on every stage
@@ -371,7 +426,9 @@ with `comment_add`); before touching a server, cluster or database read `environ
 level says what is allowed unasked; live is read-only unless the owner set otherwise), never paste
 secrets, propose changes with `environment_propose`; before moving a task to review or test,
 write the Owner check with `review_steps_set` and attach screenshots with `attach_file` (the
-owner's decisions arrive as owner comments).
+owner's decisions arrive as owner comments); start with a plan: `plan_set` from PLAN.md or your own
+2-5 steps (S tasks: at least a todo), mark steps `in_progress` / `done` with `plan_step_update`,
+done needs one line `as planned` or `deviation: why`.
 
 <a id="spec-mcp-tools"></a>
 
@@ -385,6 +442,7 @@ owner's decisions arrive as owner comments).
 | Reports and decisions | `report_add`, `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption` |
+| Plan | `plan_get`, `plan_set`, `plan_step_update`, `plan_accept` |
 | Environments | `environments_get`, `environment_propose` |
 | Catch-up and rules | `events_since`, `rules_get` |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
@@ -510,6 +568,35 @@ After the upgrade to `0008` no session gets comment text until its agent writes 
 - An idle session receives the comment with its next prompt. The coordinator sees `comment.added`
   (with a 200-character excerpt) in `events_since` and can forward it.
 
+<a id="spec-plan-hooks"></a>
+
+**Todo capture.** `PostToolUse` of Claude Code's todo tools updates the session's todo
+(`session_todo`): `TaskCreate` (tool_input `subject`, `activeForm`; the id from
+`tool_response.task.id`) adds an item, `TaskUpdate` (`taskId`, `status`, or the status from
+`tool_response.statusChange.to`; `subject` / `activeForm` if given) changes one (`deleted` removes
+it; an id never seen is ignored), `TodoWrite` (older builds, `todos: [{content, status,
+activeForm}]`) replaces the list. It is stored before the activity coalescing, so a change is never
+lost. Unknown shapes are ignored; at most 50 items of 200 characters. The list belongs to the
+session and its current Claude Code id: a new id (after `/clear`) starts a fresh one, and a list
+written before the agent linked its hook session moves with the exact link. A change emits
+`session.todo_updated` for each task bound to the session. The todo tools are off by default in
+Claude Code 2.1.309 (desktop and CLI); the env `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` turns them on.
+`relaybay setup` does not write it.
+
+<a id="spec-plan-reminders"></a>
+
+**Plan reminders.** For an exactly linked session (`cc_exact`), per open task bound to it: the
+current step (`Plan of <key> (accepted | draft, not accepted yet): step N/M '<title>' — <what and
+why>.`, or `next step` when none is in progress, `all N steps done`), plus `Now doing:
+<activeForm>.` for the todo item in progress; without plan steps the todo summary or, for a task
+in dev with neither, the hint to write down what the agent is going to do. At most three tasks,
+then one line on `plan_step_update`. Sent in `additionalContext` on `SessionStart` (after the
+hook session line), on the `PostToolUse` of a todo change and every `plan_reminder_every`
+`PostToolUse` events (default 30, `0` turns this one off; it repeats the current text). A todo
+change never sends the same text twice in a row for a session (`SessionStart` is a new context and
+resets it). Owner comments in the same answer get
+the rest of the 8000-character budget.
+
 <a id="spec-hooks-wake"></a>
 
 **Wake-up hook (opt-in; verified with Claude Code 2.1.309).** With
@@ -615,12 +702,15 @@ settings come out as one failed `settings` item.
 <a id="spec-demo"></a>
 
 **`relaybay demo --home <dir> [--force]`** seeds a made-up workspace into the data folder: projects
-`acme-shop` (with a repository path) and `demo-api`, nine tasks across all six stages with
+`acme-shop` (with a repository path) and `demo-api`, eleven tasks across all six stages with
 descriptions, progress and reports, tracker badges (one logged done task), a stale next step, a
 decision, a desktop session bound to a dev task and shown as working (one synthetic hook event),
 and a task in review with a three-step checklist and two generated PNG screenshots, bound to a
 session whose hook id `demo-review-hook-session` is linked exactly (so a simulated hook event
-receives the owner's decisions).
+receives the owner's decisions); an M task in dev with an accepted plan (one step done as
+planned with a report link, one done with a deviation, one in progress, one pending) and an S task
+in dev without a plan whose session (`demo-todo-hook-session`, linked exactly) reported a
+three-item todo.
 `--home` is required. A database that already has a project or an event is refused (exit `1`);
 with `--force` it is renamed to `relaybay.sqlite.before-demo-<YYYYMMDD-HHMMSS>` (with its WAL files)
 and a new one is seeded. The token is not created; `relaybay serve --home <dir>` does that.
@@ -641,9 +731,20 @@ One structured document with a fixed set of keys:
 | Key | Meaning | Default |
 |---|---|---|
 | `report_format` | `first_line` (pattern shown to agents), `states`, `sizes` (subsets of the built-in ones) | `state · size · gist`, all states, `S`/`M`/`L` |
-| `stage_requirements` | per target stage, a list of `{kind = "report_since_stage_change"}` or `{kind = "field_present", field = "<task field>"}` | `test`: a report since the last stage change; `done`: `progress` |
+| `stage_requirements` | per target stage, a list of `{kind = "report_since_stage_change"}`, `{kind = "field_present", field = "<task field>"}` or `{kind = "plan_accepted", unless_size = ["S"]}` | `dev`: an accepted plan unless size `S`; `test`: a report since the last stage change; `done`: `progress` |
 | `description_template` | markdown template for new task descriptions | none |
 | `guidance` | free-text markdown for agents | one short paragraph |
+
+<a id="spec-plan-rule"></a>
+
+**Work by plan.** `plan_accepted` is met when the task's plan is `accepted` or its size is in
+`unless_size` (default `["S"]`; a task without a size needs the plan). In `warn` mode a move to dev
+without it carries `Warning (rules): moving to dev usually needs an accepted plan (not needed for
+size S).` plus `Write it with plan_set (2-5 steps), then ask for acceptance.` or, for a draft,
+`The plan is not accepted yet: the owner accepts it on the board, the coordinator with
+plan_accept.`; `strict` refuses the move. A move to dev of a task with no plan steps and no todo
+also adds the MCP hint line `Hint: <key> has no plan and no todo yet: write down what you are
+going to do (todo or 2-3 steps with plan_set).` (any size, not a rule warning).
 
 <a id="spec-rules-merge"></a>
 
@@ -661,7 +762,8 @@ ignored: <error>". There is no write tool for project overrides yet; the row is 
 
 **Identity:** no version numbers yet. The rules hash is the first 8 hex digits of SHA-256 over the
 canonical JSON of the merged document plus `rules_mode`. `project_snapshot` starts with
-`Rules <hash>: report before test, progress before done (read relaybay://rules/<project>)`.
+`Rules <hash>: accepted plan before dev, report before test, progress before done (read
+relaybay://rules/<project>)`.
 
 <a id="spec-rules-modes"></a>
 
@@ -1170,6 +1272,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0010_policy` | `policy_layer` (project, environment or none for the project layer, body JSON, changed at / by; one per scope), `policy_proposal` (scope, project, patch JSON, reason, proposed by, session, status, decided at / by) |
 | `0011_review` | the `review` stage (the `task` table rebuilt with the wider stage check, rows and ids kept), `review_step` (task, position, title, details, status, decided at / by, created by), `attachment` (task, step, kind, stored name, original name, type, size, SHA-256, caption, created by / at), `comment.step_id`, `comment.attachment_id` |
 | `0012_memory` | `decision.scope`, `source_kind` / `source_ref` / `source_text`, `valid_from`, `valid_to`, `recorded_at`, `superseded_at`, `superseded_by` (backfilled: scope from `task_id`, `recorded_at` and `valid_from` from `created_at`); `document`, `document_version`, `memory`, `memory_block`. Additive only. The FTS5 table `search_index` is created by the service at start, not by the migration ([§8](#spec-memory-search)) |
+| `0013_plan` | `task.size`, `task.plan_status`, `task.plan_accepted_at`, `task.plan_accepted_by`; `plan_step` (task, position, title, details, status, done at, link, outcome, conformance, created by), `plan_revision` (task, revision, body JSON, author, reason), `session_todo` (session, Claude Code id, item id, subject, status, active form, position). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

@@ -20,7 +20,9 @@ server, cluster or database, read `environments_get` — the level there says wh
 unasked, live is read-only unless the owner set otherwise — never paste secrets into relaybay and
 propose changes with `environment_propose`; before moving a task to review or test, write what the
 owner should check with `review_steps_set` and attach screenshots with `attach_file` (the owner's
-decisions arrive as owner comments). The details live in the rules below.
+decisions arrive as owner comments); start with a plan — `plan_set` from PLAN.md or your own 2-5
+steps (S tasks: at least a todo) — and mark steps `in_progress` / `done` with `plan_step_update`
+(done needs one line `as planned` or `deviation: why`). The details live in the rules below.
 
 Conventions:
 
@@ -105,6 +107,7 @@ Conventions:
 | `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
 | `environments_get` | `project` | The project's environments (see *Environments and access* below): the preset and guard mode, per environment kind, base URL, agents' level (`(default)` when it comes from the default preset, `(policy: <layer>)` from another policy layer) and per-capability overrides, sign-in flag and login-state path, access entries (references only; test secrets by name only unless the policy exposes them), notes, last change. |
 | `policy_get` | `project?`, `environment?` | The effective policy (see *Policy* below) of the global scope, a project or one of its environments: the layer chain, then one line per value with the layer that set it, e.g. `- levels.live.default = "read"  (preset:default)`, and any ignored broken layer. |
+| `plan_get` | `task` | The plan (see *Plan* below): status (`accepted by … <time>` or draft), `2/4 done, 1 deviation(s)`, each step as `1. [done] Title — done <time> · as planned · outcome · report:12` with its "what and why", then your Claude Code todo as a separate list. Without steps: how to write one, and the todo if any. |
 | `review_get` | `task` | The checklist (`1. [accepted] Sign in — accepted by owner …`) with each step's what / how / why, its screenshots (`screenshot #7 (image/png, 41 KB): caption`), the owner's comments on the step, then screenshots of no step. |
 | `rules_get` | `project?` | The working rules as markdown: hash, scope, mode, report format, stage requirements, description template, guidance. Without `project`, the global rules; with it, the project's merged rules. |
 
@@ -114,12 +117,12 @@ Conventions:
 |---|---|---|
 | `project_upsert` | `slug`, `name?`, `repo_path?`, `description?`, `session?`, `session_title?`, `hook_session?` | Creates the project, or updates the given fields. Slugs: lowercase letters, digits, dashes. |
 | `task_create` | `project`, `title`, `stage?` (default `plan`), `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?` (default false), `session?`, `session_title?`, `hook_session?` | Creates a task with the next key of the project (`acme-shop-1`, `acme-shop-2`, …). With `session`, the task is bound to it. |
-| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage_note?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `expected_version?`, `session?`, `session_title?`, `hook_session?` | Patches fields; `"-"` or `""` clears a text field. With `expected_version`, fails instead of overwriting when the task changed meanwhile. |
+| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage_note?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `size?` (`S`, `M`, `L`), `expected_version?`, `session?`, `session_title?`, `hook_session?` | Patches fields; `"-"` or `""` clears a text field. With `expected_version`, fails instead of overwriting when the task changed meanwhile. |
 | `task_patch` | `task`, `fields` (JSON object), `expected_version?`, `session?`, `session_title?`, `hook_session?` | Changes any editable task fields with the same validation as `task_update` / `task_set_stage` (a `stage` value moves the task, auto-unlog applies). Unknown names fail with the list of allowed ones; `"-"`, `""` or `null` clears an optional text field. The allowed fields: the end of `task_get` or `relaybay://schema/task`. |
 | `task_set_stage` | `task`, `stage`, `note?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Moves the task; `note` is shown next to the stage. Moving to `done` sets the closed time. `next_step` and `waiting_on` are saved in the same transaction (`task.stage_changed` + `task.updated`, one version bump); `"-"` clears them. |
 | `task_bind_session` | `task`, `session`, `session_title?`, `hook_session?` (ignored: never linked here, a note says so) | Shows the session in the task dialog as the one working on the task (a desktop session also gets an "open in desktop" icon on the card). The previous binding is closed and kept in the task's history (event `task.session_bound`). A plain name on a task bound to a desktop session keeps that binding and becomes its alias (see *Session aliases*). |
 | `task_unbind_session` | `task`, `session?` | Removes the bound session from the task; the binding is closed and kept in the history (event `task.session_unbound`). With `session` (desktop id or name), fails without changes if another session is bound. Nothing bound: says so, changes nothing. |
-| `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`). `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
+| `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`); that size also becomes the task's `size` when it has none. `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `source?`, `supersedes?`, `session?`, `session_title?`, `hook_session?` | Records a decision of the project (scope `task` with `task`); it appears in the project snapshot and `decision_list`. `source`: `report:12`, `comment:7`, `event:301` or `message:<id>`, optionally followed by display text, or display text alone; a named report, comment or event must exist in the project. `supersedes`: the id of a current decision of the same project this one replaces (see *Memory and documents*). |
 | `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
 | `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
@@ -130,6 +133,9 @@ Conventions:
 | `review_step_update` | `task`, `step` (number), `title?`, `details?`, `status?` (only `open`), `session?`, `session_title?`, `hook_session?` | Changes one step's text (which reopens it) or reopens it after a fix. Accepting and rejecting is the owner's, on the board. |
 | `attach_file` | `task`, `path?` or `content_base64?`, `filename?`, `step?` (number), `caption?` (markdown), `session?`, `session_title?`, `hook_session?` | Copies a PNG, JPEG, WebP or GIF (checked by content; SVG and others refused) to the task, optionally to a step. `path` is absolute and inside the project's `repo_path`, the temp folder or `attachment_roots`. Limits `attachments_max_mb` per file and `attachments_task_max_mb` per task. The same image on the same task is stored once (the answer says so). How to produce the file: [Screenshots for review](how-to/screenshots-for-review.md). |
 | `attachment_caption` | `attachment_id`, `caption` (`"-"` clears), `session?`, `session_title?`, `hook_session?` | Changes a screenshot's caption. |
+| `plan_set` | `task`, `steps` (`[{"title", "details?"}]`, up to 30), `reason?`, `session?`, `session_title?`, `hook_session?` | Replaces the plan (see *Plan*). Step N keeps its status and checkpoint while its title stays the same; a renamed step is pending again; steps past the new end are removed; `[]` removes the plan. A new plan is a draft; changing the titles or their order makes an accepted plan a draft again (the answer says so). Every write is kept in the plan's history with `reason`. |
+| `plan_step_update` | `task`, `step` (number), `status` (`pending`, `in_progress`, `done`, `blocked`), `outcome?` (one line), `link?` (done only: a report of the task such as `12`, or a PR URL), `conformance?` (required with done: `as planned` or `deviation: <why>`), `session?`, `session_title?`, `hook_session?` | Moves one step. Done is a checkpoint with its time; leaving done clears it. Never turns an accepted plan back into a draft. |
+| `plan_accept` | `task`, `session?`, `session_title?`, `hook_session?` | The coordinator accepts the plan (the owner uses the board). Already accepted: says so, changes nothing. A task without plan steps, or a call from the session bound to the task (an agent does not accept its own plan): a tool error. |
 
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
@@ -161,6 +167,49 @@ continue with step 2`, `Step 2 'Cart badge' rejected: the badge shows 1`, or a p
 step 2 'Cart badge': …`. Acknowledge it with `comment_ack`; after a fix, reopen the step with
 `review_step_update(status="open")` or change its text. The card shows "Review 1/2"; tasks in
 review or test with a checklist are listed in the owner's Inbox (Review queue).
+
+## Plan
+
+Every task should be worked by a plan the owner can see. Write it before you start coding, from
+PLAN.md or as your own 2-5 steps, and keep it current:
+
+```text
+plan_set(task="acme-shop-12", steps=[
+  {"title": "Address table and model", "details": "Store addresses per account."},
+  {"title": "Address book page", "details": "Shoppers add, edit and remove addresses."},
+  {"title": "Picker at checkout", "details": "Pick a saved address instead of typing it."}],
+  reason="from PLAN.md")
+plan_step_update(task="acme-shop-12", step=1, status="in_progress")
+plan_step_update(task="acme-shop-12", step=1, status="done", outcome="Migration and model",
+  link="12", conformance="as planned")
+plan_step_update(task="acme-shop-12", step=2, status="done",
+  conformance="deviation: editing waits for the shared form component")
+```
+
+The plan is a draft until the owner accepts it in the task's **Plan** tab or the coordinator calls
+`plan_accept`. Renaming or reordering steps of an accepted plan makes it a draft again; marking
+steps does not. The card shows `Plan 1/3 · now: Address book page`, deviations highlighted.
+
+**Work by plan (rule).** By default a move to `dev` needs an accepted plan unless the task's
+`size` is `S` (`{kind = "plan_accepted", unless_size = ["S"]}`); a task without a size needs one.
+In `warn` mode the move gets a `Warning (rules)` line, in `strict` mode it is refused. Moving a
+task with no plan and no todo to `dev` also adds `Hint: … write down what you are going to do
+(todo or 2-3 steps with plan_set).`
+
+**Your todo is the second layer.** Claude Code's own todo list (`TaskCreate` / `TaskUpdate`, or
+`TodoWrite` in older builds) is read from the `PostToolUse` hook of your session and shown under
+the current plan step ("Now doing: …"), never merged into the plan. An S task without plan steps
+shows the todo as "Agent's plan, not accepted". The todo tools are off by default (Claude Code
+2.1.309); turn them on in Claude Code's settings (relaybay setup does not write this):
+
+```json
+{ "env": { "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1" } }
+```
+
+**Reminders.** When you linked your hook session (`hook_session`), the hooks remind you of the
+current step ("Plan of acme-shop-12 (accepted): step 2/3 'Address book page' — … Now doing: …") on
+session start, after a todo change (only when the text changed) and every `plan_reminder_every`
+tool calls (default 30).
 
 ## Session status from hooks
 
@@ -322,7 +371,7 @@ One structured document with a fixed set of rule kinds:
 | Key | Meaning | Default |
 |---|---|---|
 | `report_format` | `first_line` (the pattern shown to agents), `states`, `sizes` (subsets of the built-in states and sizes) | `state · size · gist`, all states, `S`/`M`/`L` |
-| `stage_requirements` | per target stage, a list of requirements: `{kind = "report_since_stage_change"}` (a report added since the task's last stage change) or `{kind = "field_present", field = "<task field>"}` | `test`: a report since the last stage change; `done`: `progress` |
+| `stage_requirements` | per target stage, a list of requirements: `{kind = "report_since_stage_change"}` (a report added since the task's last stage change), `{kind = "field_present", field = "<task field>"}` or `{kind = "plan_accepted", unless_size = ["S"]}` (an accepted plan unless the task's size is listed; see *Plan*) | `dev`: an accepted plan unless size `S`; `test`: a report since the last stage change; `done`: `progress` |
 | `description_template` | markdown template for new task descriptions (shown in the rules) | none |
 | `guidance` | free-text markdown shown to agents | one short paragraph |
 
@@ -347,7 +396,8 @@ line of `project_snapshot` add "project override ignored: <error>".
 The rules hash is the first 8 hex digits of the SHA-256 of the merged document plus `rules_mode`
 (canonical JSON), so it changes exactly when the rules an agent reads change, including a switch
 between `warn` and `strict`. `project_snapshot` starts with
-`Rules <hash>: report before test, progress before done (read relaybay://rules/<project>)`.
+`Rules <hash>: accepted plan before dev, report before test, progress before done (read
+relaybay://rules/<project>)`.
 
 `rules_mode` (config, default `warn`) decides what an unmet stage requirement does: `warn` lets the
 write through with a warning, `strict` refuses it.

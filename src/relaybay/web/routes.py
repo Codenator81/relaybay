@@ -83,6 +83,7 @@ EDITABLE_FIELDS = (
     "tracker_name",
     "tracker_url",
     "tracker_logged",
+    "size",
 )
 TASK_PAGE_REPORTS = 10
 SAVE_CONFLICT = (
@@ -128,6 +129,10 @@ EVENT_KINDS = (
     "review.step_removed",
     "review.step_accepted",
     "review.step_rejected",
+    "plan.set",
+    "plan.step_updated",
+    "plan.accepted",
+    "session.todo_updated",
     "attachment.added",
     "attachment.updated",
     "attachment.removed",
@@ -841,6 +846,39 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if "hx-request" not in request.headers:
             return RedirectResponse(f"/p/{slug}?task={task.key}&tab=review", status_code=303)
         return await review_panel(request, task)
+
+    # --- Plan: the owner accepts it; the agent writes it over MCP --------------------------
+
+    async def plan_panel(request: Request, task: Task, error: str | None = None) -> HTMLResponse:
+        fresh, plan, todo = await service.plan(task.key)
+        _, history = await service.plan_history(task.key)
+        return render(
+            request, "_plan.html", t=fresh, plan=plan, todo=todo, history=history, error=error
+        )
+
+    @router.get("/p/{slug}/t/{key}/plan", response_class=HTMLResponse)
+    async def plan_fragment(request: Request, slug: str, key: str):
+        return await plan_panel(request, await find_task(slug, key))
+
+    @router.post("/p/{slug}/t/{key}/plan/accept", response_class=HTMLResponse)
+    async def accept_plan(
+        request: Request,
+        slug: str,
+        key: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        board_only(request, csrf)
+        task = await find_task(slug, key)
+        htmx = "hx-request" in request.headers
+        try:
+            await service.accept_plan(task.key, actor="owner")
+        except DomainError as exc:
+            if not htmx:
+                raise
+            return await plan_panel(request, task, error=str(exc))  # 200: htmx swaps it
+        if not htmx:
+            return RedirectResponse(f"/p/{slug}?task={task.key}&tab=plan", status_code=303)
+        return await plan_panel(request, task)
 
     @router.get("/files/{attachment_id}")
     async def attachment_file(attachment_id: int) -> Response:

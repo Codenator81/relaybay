@@ -29,6 +29,7 @@ stops `relaybay serve` with a message that names the key.
 | `attachment_roots` | `[]` | `RELAYBAY_ATTACHMENT_ROOTS` | — | Extra folders `attach_file` may read screenshots from, besides the project's `repo_path` and the temp folder (for example a screenshots folder). The environment variable is comma-separated. |
 | `attachments_max_mb` | `10` | `RELAYBAY_ATTACHMENTS_MAX_MB` | — | Largest screenshot in MB (whole number >= 1). |
 | `attachments_task_max_mb` | `200` | `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — | Screenshots of one task in all, in MB (whole number >= 1). |
+| `plan_reminder_every` | `30` | `RELAYBAY_PLAN_REMINDER_EVERY` | — | Remind a linked agent of its current plan step every this many tool calls (PostToolUse events); 0 turns the periodic reminder off (session start and todo changes still remind). |
 | `claude_home` | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` | Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor, Integrations). |
 
 ## Example `config.toml`

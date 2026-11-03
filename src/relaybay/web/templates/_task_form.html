@@ -24,6 +24,13 @@
           {% endfor %}
         </select>
       </label>
+      <label class="field"><span>Size</span>
+        {%- set size = values.get('size', t.size or '') %}
+        <select name="size">
+          <option value=""{% if not size %} selected{% endif %}>not set</option>
+          {% for s in ("S", "M", "L") %}<option value="{{ s }}"{% if s == size %} selected{% endif %}>{{ s }}</option>{% endfor %}
+        </select>
+      </label>
       <label class="field"><span>Waiting on</span>
         <input name="waiting_on" list="waiting-values-{{ t.key }}" value="{{ values.get('waiting_on', t.waiting_on or '') }}">
         <datalist id="waiting-values-{{ t.key }}">

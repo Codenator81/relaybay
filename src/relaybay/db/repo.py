@@ -35,6 +35,7 @@ from relaybay.domain.models import (
     Task,
     TrackerEntry,
 )
+from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 
@@ -48,7 +49,16 @@ SELECT t.*, p.slug AS project_slug, s.name AS session_name, s.external_id AS ses
        (SELECT COUNT(*) FROM review_step r WHERE r.task_id = t.id AND r.status = 'accepted')
            AS review_accepted,
        (SELECT COUNT(*) FROM review_step r WHERE r.task_id = t.id AND r.status = 'rejected')
-           AS review_rejected
+           AS review_rejected,
+       (SELECT COUNT(*) FROM plan_step ps WHERE ps.task_id = t.id) AS plan_total,
+       (SELECT COUNT(*) FROM plan_step ps WHERE ps.task_id = t.id AND ps.status = 'done')
+           AS plan_done,
+       (SELECT COUNT(*) FROM plan_step ps WHERE ps.task_id = t.id
+           AND ps.conformance LIKE 'deviation:%') AS plan_deviations,
+       (SELECT ps.title FROM plan_step ps WHERE ps.task_id = t.id AND ps.status = 'in_progress'
+           ORDER BY ps.position LIMIT 1) AS plan_now,
+       (SELECT ps.position FROM plan_step ps WHERE ps.task_id = t.id
+           AND ps.status = 'in_progress' ORDER BY ps.position LIMIT 1) AS plan_now_position
 FROM task t
 JOIN project p ON p.id = t.project_id
 LEFT JOIN session s ON s.id = t.session_id
@@ -104,6 +114,15 @@ def _task(row: aiosqlite.Row) -> Task:
         review_total=row["review_total"],
         review_accepted=row["review_accepted"],
         review_rejected=row["review_rejected"],
+        size=row["size"],
+        plan_status=row["plan_status"],
+        plan_accepted_at=row["plan_accepted_at"],
+        plan_accepted_by=row["plan_accepted_by"],
+        plan_total=row["plan_total"],
+        plan_done=row["plan_done"],
+        plan_deviations=row["plan_deviations"],
+        plan_now=row["plan_now"],
+        plan_now_position=row["plan_now_position"],
     )
 
 
@@ -947,6 +966,208 @@ async def update_review_step(
 
 async def delete_review_step(conn: aiosqlite.Connection, step_id: int) -> None:
     await conn.execute("DELETE FROM review_step WHERE id = ?", (step_id,))
+
+
+# --- plan ------------------------------------------------------------------
+
+
+def _plan_step(row: aiosqlite.Row) -> PlanStep:
+    return PlanStep(
+        id=row["id"],
+        task_id=row["task_id"],
+        position=row["position"],
+        title=row["title"],
+        details_md=row["details_md"],
+        status=row["status"],
+        done_at=row["done_at"],
+        link=row["link"],
+        outcome=row["outcome"],
+        conformance=row["conformance"],
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def list_plan_steps(conn: aiosqlite.Connection, task_id: int) -> list[PlanStep]:
+    rows = await _all(
+        conn, "SELECT * FROM plan_step WHERE task_id = ? ORDER BY position", (task_id,)
+    )
+    return [_plan_step(r) for r in rows]
+
+
+async def insert_plan_step(
+    conn: aiosqlite.Connection,
+    task_id: int,
+    position: int,
+    title: str,
+    details_md: str | None,
+    created_by: str,
+    now: str,
+) -> None:
+    await conn.execute(
+        "INSERT INTO plan_step (task_id, position, title, details_md, created_by, created_at,"
+        " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (task_id, position, title, details_md, created_by, now, now),
+    )
+
+
+async def update_plan_step(
+    conn: aiosqlite.Connection, step_id: int, changes: dict[str, Any], now: str
+) -> None:
+    sets = [f"{k} = ?" for k in changes]
+    await conn.execute(
+        f"UPDATE plan_step SET {', '.join(sets)}, updated_at = ? WHERE id = ?",
+        (*changes.values(), now, step_id),
+    )
+
+
+async def delete_plan_step(conn: aiosqlite.Connection, step_id: int) -> None:
+    await conn.execute("DELETE FROM plan_step WHERE id = ?", (step_id,))
+
+
+async def report_of_task(conn: aiosqlite.Connection, report_id: int, task_id: int) -> bool:
+    row = await _one(
+        conn, "SELECT 1 FROM report WHERE id = ? AND task_id = ?", (report_id, task_id)
+    )
+    return row is not None
+
+
+async def set_plan_status(
+    conn: aiosqlite.Connection,
+    task_id: int,
+    status: str | None,
+    accepted_at: str | None,
+    accepted_by: str | None,
+) -> None:
+    """The plan's status lives on the task row; it is not a task field edit (no version bump)."""
+    await conn.execute(
+        "UPDATE task SET plan_status = ?, plan_accepted_at = ?, plan_accepted_by = ? WHERE id = ?",
+        (status, accepted_at, accepted_by, task_id),
+    )
+
+
+async def insert_plan_revision(
+    conn: aiosqlite.Connection,
+    task_id: int,
+    body: dict[str, Any],
+    author: str,
+    reason: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO plan_revision (task_id, revision, body, author, reason, created_at)"
+        " VALUES (?, (SELECT COALESCE(MAX(revision), 0) + 1 FROM plan_revision"
+        " WHERE task_id = ?), ?, ?, ?, ?)",
+        (task_id, task_id, json.dumps(body, ensure_ascii=False), author, reason, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def list_plan_revisions(
+    conn: aiosqlite.Connection, task_id: int, limit: int = 100
+) -> list[PlanRevision]:
+    """Newest first."""
+    rows = await _all(
+        conn,
+        "SELECT * FROM plan_revision WHERE task_id = ? ORDER BY revision DESC LIMIT ?",
+        (task_id, limit),
+    )
+    return [
+        PlanRevision(
+            id=r["id"],
+            task_id=r["task_id"],
+            revision=r["revision"],
+            body=json.loads(r["body"]),
+            author=r["author"],
+            reason=r["reason"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+# --- session todo (Claude Code's own list, from hooks) ---------------------
+
+
+async def list_session_todo(
+    conn: aiosqlite.Connection, session_id: int, cc_session_id: str | None
+) -> list[TodoItem]:
+    """The todo of the session's current Claude Code id; an older id's list is not shown."""
+    if cc_session_id is None:
+        return []
+    rows = await _all(
+        conn,
+        "SELECT * FROM session_todo WHERE session_id = ? AND cc_session_id = ?"
+        " ORDER BY position, item_id",
+        (session_id, cc_session_id),
+    )
+    return [
+        TodoItem(
+            item_id=r["item_id"],
+            subject=r["subject"],
+            status=r["status"],
+            active_form=r["active_form"],
+            position=r["position"],
+            updated_at=r["updated_at"],
+        )
+        for r in rows
+    ]
+
+
+async def clear_session_todo(
+    conn: aiosqlite.Connection, session_id: int, keep_cc: str | None = None
+) -> None:
+    """Remove the session's todo; with `keep_cc`, only the lists of other Claude Code ids."""
+    if keep_cc is None:
+        await conn.execute("DELETE FROM session_todo WHERE session_id = ?", (session_id,))
+    else:
+        await conn.execute(
+            "DELETE FROM session_todo WHERE session_id = ? AND cc_session_id != ?",
+            (session_id, keep_cc),
+        )
+
+
+async def upsert_session_todo(
+    conn: aiosqlite.Connection, session_id: int, cc_session_id: str, item: TodoItem, now: str
+) -> None:
+    await conn.execute(
+        "INSERT INTO session_todo (session_id, cc_session_id, item_id, subject, status,"
+        " active_form, position, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT (session_id, item_id) DO UPDATE SET cc_session_id = excluded.cc_session_id,"
+        " subject = excluded.subject, status = excluded.status,"
+        " active_form = excluded.active_form, position = excluded.position,"
+        " updated_at = excluded.updated_at",
+        (
+            session_id,
+            cc_session_id,
+            item.item_id,
+            item.subject,
+            item.status,
+            item.active_form,
+            item.position,
+            now,
+        ),
+    )
+
+
+async def move_session_todo(
+    conn: aiosqlite.Connection, from_session: int, to_session: int, cc_session_id: str
+) -> None:
+    """Hand the todo of a Claude Code id to the session it is now linked to."""
+    await conn.execute("DELETE FROM session_todo WHERE session_id = ?", (to_session,))
+    await conn.execute(
+        "UPDATE session_todo SET session_id = ? WHERE session_id = ? AND cc_session_id = ?",
+        (to_session, from_session, cc_session_id),
+    )
+
+
+async def delete_session_todo_item(
+    conn: aiosqlite.Connection, session_id: int, item_id: str
+) -> None:
+    await conn.execute(
+        "DELETE FROM session_todo WHERE session_id = ? AND item_id = ?", (session_id, item_id)
+    )
 
 
 _ATTACHMENT_SELECT = """

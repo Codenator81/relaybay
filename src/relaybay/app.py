@@ -32,6 +32,7 @@ def create_app(settings: Settings) -> FastAPI:
         attachment_roots=settings.attachment_roots,
         attachment_max_bytes=settings.attachments_max_mb * MB,
         attachment_task_max_bytes=settings.attachments_task_max_mb * MB,
+        plan_reminder_every=settings.plan_reminder_every,
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 
