@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{#- Project → Docs & rules. Expects: project, documents, decisions, superseded, notes,
+    old_notes, blocks, global_blocks, rules (markdown), q, hits, search_error, optional error +
+    error_target (the block form it belongs to), draft (block body by target), message.
+    Block edits are plain form posts from a browser (cookie + CSRF). -#}
+{%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
+{%- macro block_form(b, scope) -%}
+{%- set target = ("block-" ~ scope ~ "-" ~ b.label) if b else "block-new" %}
+<form class="task-form block-form" method="post" action="/p/{{ project.slug }}/docs/blocks">
+  {{ hidden_csrf() }}
+  <input type="hidden" name="base_version" value="{{ b.version if b else 0 }}">
+  {% if b %}
+  <input type="hidden" name="label" value="{{ b.label }}">
+  <input type="hidden" name="scope" value="{{ scope }}">
+  {% else %}
+  <div class="field-row">
+    <label class="field"><span>Label</span>
+      <input name="label" required maxlength="63" pattern="[a-z0-9][a-z0-9_\-]*" placeholder="owner-preferences" spellcheck="false">
+    </label>
+    <label class="field"><span>Scope</span>
+      <select name="scope"><option value="project">{{ project.name }}</option><option value="global">global (all projects)</option></select>
+    </label>
+  </div>
+  {% endif %}
+  {% if error and error_target == target %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  <label class="field"><span>Description</span>
+    <input name="description" maxlength="200" value="{{ (b.description or '') if b else '' }}" placeholder="What the block is for">
+  </label>
+  <label class="field"><span>Text <span class="muted">· markdown, at most {{ b.char_limit if b else 2000 }} characters</span></span>
+    <textarea name="body" rows="5">{{ draft.get(target, b.body if b else '') }}</textarea>
+  </label>
+  <div class="field-row">
+    <label class="field"><span>Character limit</span>
+      <input name="char_limit" type="number" min="1" max="20000" value="{{ b.char_limit if b else 2000 }}">
+    </label>
+    <label class="field field-check">
+      <input type="checkbox" name="owner_only" value="1"{% if b and b.owner_only %} checked{% endif %}>
+      <span>Owner only (agents read it, cannot change it)</span>
+    </label>
+  </div>
+  <div class="form-actions"><button type="submit" class="btn primary">{{ "Save" if b else "Add block" }}</button></div>
+</form>
+{%- endmacro %}
+{%- macro block_panel(b, scope) -%}
+<li class="inbox-row block-row" id="block-{{ scope }}-{{ b.label }}">
+  <span class="inbox-title"><strong>{{ b.label }}</strong>{% if b.owner_only %} <span class="note-scope">owner only</span>{% endif %}{% if b.description %} <span class="muted">— {{ b.description }}</span>{% endif %}</span>
+  <div class="markdown block-body">{{ b.body|markdown }}</div>
+  <span class="muted block-meta">version {{ b.version }} · {{ b.body|length }}/{{ b.char_limit }} characters · <time datetime="{{ b.updated_at }}" data-age title="{{ b.updated_at[:19] }}Z">{{ b.updated_at|age }}</time> by {{ b.updated_by }}</span>
+  <details class="block-edit"{% if error and error_target == "block-" ~ scope ~ "-" ~ b.label %} open{% endif %}>
+    <summary>Edit</summary>
+    {{ block_form(b, scope) }}
+  </details>
+</li>
+{%- endmacro %}
+{% block title %}Docs &amp; rules · {{ project.name }} · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ project.slug }}">{{ project.name }}</a><span class="crumb-sep">/</span><span class="crumb">Docs &amp; rules</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}" data-project="{{ project.slug }}">
+  <div class="page-head">
+    <h1>Docs &amp; rules · {{ project.name }}</h1>
+  </div>
+  <form class="docs-search" method="get" action="/p/{{ project.slug }}/docs" role="search">
+    <input type="search" name="q" value="{{ q }}" maxlength="200" placeholder="Search documents, decisions, notes, reports, comments" aria-label="Search">
+    <button type="submit" class="btn">Search</button>
+  </form>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error and not error_target %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+  {% if q %}
+  <section class="panel" id="search">
+    <h2>Search: {{ q }} <span class="col-count">{{ hits|length }}</span> <a class="action" href="/p/{{ project.slug }}/docs">Clear</a></h2>
+    {% if search_error %}
+    <p class="form-error" role="alert">{{ search_error }}</p>
+    {% elif hits %}
+    <ul class="inbox-list">
+      {% for h in hits %}
+      <li class="inbox-row hit-row">
+        <span class="inbox-title"><span class="note-scope">{{ h.kind }}</span>
+          {% if h.kind == "doc" %}<a href="/p/{{ h.project_slug }}/docs/{{ h.name }}">{{ h.title }}</a>
+          {% elif h.kind == "decision" %}<a href="#decision-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
+          {% elif h.kind == "note" %}<a href="#note-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
+          {% elif h.task_key %}<a href="/t/{{ h.task_key }}">{{ h.task_key }}</a> {{ h.title }}
+          {% else %}{{ h.title }}{% endif %}</span>
+        <span class="muted hit-line">line {{ h.line }}: {{ h.snippet }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Nothing found.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% include "_docs_live.html" %}
+
+  <section class="panel" id="blocks">
+    <h2>Blocks</h2>
+    <p class="muted inbox-hint">Short texts every session of this level sees. Agents change them with <code>block_set</code>, except owner-only ones.</p>
+    {% if blocks %}
+    <h3>{{ project.name }}</h3>
+    <ul class="inbox-list">{% for b in blocks %}{{ block_panel(b, "project") }}{% endfor %}</ul>
+    {% endif %}
+    {% if global_blocks %}
+    <h3>Global</h3>
+    <ul class="inbox-list">{% for b in global_blocks %}{{ block_panel(b, "global") }}{% endfor %}</ul>
+    {% endif %}
+    <details class="block-add"{% if error and error_target == "block-new" %} open{% endif %}>
+      <summary>Add a block</summary>
+      {{ block_form(None, "project") }}
+    </details>
+  </section>
+
+  <section class="panel" id="rules">
+    <h2>Rules</h2>
+    <p class="muted inbox-hint">The effective working rules of this project (<code>rules_get</code>).</p>
+    <div class="markdown">{{ rules|markdown }}</div>
+  </section>
+</main>
+{% endblock %}

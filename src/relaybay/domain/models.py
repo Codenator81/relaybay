@@ -136,6 +136,20 @@ class Decision:
     decided_by: str | None
     created_at: str
     task_key: str | None = None
+    scope: str = "project"  # 'task' when task_id is set
+    source_kind: str | None = None  # report / event / comment / message
+    source_ref: str | None = None
+    source_text: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
+    recorded_at: str | None = None
+    superseded_at: str | None = None
+    superseded_by: int | None = None
+    project_slug: str | None = None
+
+    @property
+    def current(self) -> bool:
+        return self.superseded_at is None
 
 
 @dataclass(slots=True)

@@ -126,8 +126,10 @@ reason. Metadata edits keep the mark; an explicit `tracker_logged` in the same w
 
 <a id="spec-decision"></a>
 
-**Decision.** A short text recorded for a project (optionally a task) with `decided_by`; shown in
-the project snapshot and in `task_get`.
+**Decision.** A short text recorded for a project (scope `project`) or one of its tasks (scope
+`task`) with `decided_by`, a structured source and two time axes; shown in the project snapshot
+and in `task_get` (current ones only), listed and searched with `decision_list`. A newer decision
+can supersede an older one, which stays in history ([§8](#spec-memory-decisions)).
 
 <a id="spec-rules-concept"></a>
 
@@ -149,7 +151,8 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `comment.read`, `environment.created`, `environment.updated`, `environment.deleted`,
 `environment.access_added`, `environment.access_updated`, `environment.access_removed`,
 `environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`,
-`live.action`. A stage change that misses a rule carries the warnings in its payload.
+`live.action`, `document.updated`, `memory.added`, `memory.updated`, `block.updated`
+(`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
 
@@ -181,7 +184,7 @@ breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`).
 **Navigation.** Every signed-in page has a left sidebar ([design 0004](design/0004-navigation.md)):
 **Inbox** with a live count badge, **All boards**, **Activity**, **Settings** (the Integrations
 page), then **Projects**, each expandable (the current one is open) with **Board** and
-**Sessions** and **Stands & access**. The current item is highlighted (`aria-current="page"`). The header button hides or
+**Sessions**, **Stands & access** and **Docs & rules**. The current item is highlighted (`aria-current="page"`). The header button hides or
 shows the sidebar on wide screens; the choice is remembered in the browser (`localStorage`, the
 sidebar is shown when storage is unavailable). Below 760 px the sidebar is a drawer opened by the
 same button and closed by Esc, a click outside or following a link. Items whose feature does not
@@ -199,6 +202,7 @@ exist yet are not shown.
 | Sessions | `/p/<slug>/sessions`, `/sessions` | The sessions of a project, or all sessions ([below](#spec-board-sessions)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
+| Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Notifications | `/settings/notifications` | Browser notifications: state and the button that asks for the permission ([below](#spec-board-notify)). |
 | Screenshot | `/files/<id>` | One stored image behind the board cookie ([§9](#spec-security)). |
@@ -383,6 +387,7 @@ owner's decisions arrive as owner comments).
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption` |
 | Environments | `environments_get`, `environment_propose` |
 | Catch-up and rules | `events_since`, `rules_get` |
+| Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 
 Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay.
 Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (or `""`) clears an
@@ -394,7 +399,8 @@ last write wins.
 
 **Resources.** `relaybay://project/{slug}` (same markdown as `project_snapshot`),
 `relaybay://project/{slug}/environments` (same as `environments_get`),
-`relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`), `relaybay://schema/task`
+`relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`),
+`relaybay://doc/{project}/{doc}` (a document's current markdown), `relaybay://schema/task`
 (the editable task fields as a table: name, type, description, how to clear). No MCP prompts yet.
 
 <a id="spec-mcp-warnings"></a>
@@ -954,8 +960,94 @@ is shown) instead of overwriting it; the editor replaces it. Every saved layer r
 
 ## 8. Memory and context
 
-Not part of this release beyond decisions ([§1](#spec-decision)) and `events_since` for catch-up.
-Design: [Memory and context](design/0008-memory-and-context.md).
+Step 11.6a of [Memory and context](design/0008-memory-and-context.md): documents, decisions with
+supersede chains, memory notes, blocks, full-text search and the Docs & rules page. Digests,
+reader cursors, budgets and SessionStart injection (11.6b) and markdown import / export (11.6c)
+are not built yet. **Visibility per role** (coordinator everything, a manager its project, a
+session its task) is not enforced: every client with the token reads and writes everything.
+Tools and arguments: [MCP tools](mcp-tools.md#memory-and-documents).
+
+<a id="spec-memory-docs"></a>
+
+**Documents.** A project document (`document`: name unique per project, title, kind as free text
+such as `spec`, `status`, `brief`, `runbook`, `adr`, current version) keeps every version
+(`document_version`: markdown body, author, reason, base version, the section a write replaced).
+`doc_update` with `base_version` 0 creates it; a `base_version` other than the current version is
+a conflict whose message holds the current version number and the current text (or section) to
+merge. Writing the same text again writes no version. Section anchors come from ATX headings
+(`#` … `######`) outside fenced code: lowercase, punctuation dropped, spaces and dashes collapsed
+(`## Gift cards` → `gift-cards`, empty → `section`), a repeat numbered `-2`, `-3`. A section is
+its heading and everything until the next heading of the same or a higher level. With `section`,
+the new text replaces that section: starting with a heading it replaces the heading too,
+otherwise only the text under it. A diff between any two versions is `difflib.unified_diff`.
+
+<a id="spec-memory-decisions"></a>
+
+**Decisions** carry `scope` (`task` when a task is set, else `project`), a source (`report`,
+`event` or `comment` with its id, which must exist in the project, or `message` with an external
+id, plus display text; or display text alone), `valid_from` / `valid_to` (when the fact held) and
+`recorded_at` / `superseded_at` / `superseded_by` (when it was recorded or replaced; for decisions
+from before 0.3.0 `recorded_at` and `valid_from` are their creation time). `supersedes` on
+`decision_add` marks a current decision of the same project as replaced (it gets `superseded_at`,
+`superseded_by` and `valid_to`); nothing is deleted. A decision that is already superseded cannot
+be superseded again (the error names the newer one), so chains have no cycles. `decision.project_id`
+stays required: facts for all projects are global memory notes.
+
+<a id="spec-memory-notes"></a>
+
+**Memory notes** (`memory`): scope `global`, `role` (with a role name such as `coordinator`) or
+`project`; kind `user`, `feedback`, `project` or `reference`; title, body (fact, why, how to
+apply), tags (lowercased, comma separated, each once), source as decisions, `review_at`, the two
+time axes, `last_read_at` / `read_count` (bumped by `memory_get`), a `version` and the author.
+`memory_add` without `op` first looks for current notes of the same scope (and project or role)
+that share a title word (stop words and words of one or two letters left out): if there are any it
+writes nothing and returns them with their title similarity; the caller answers with `op` `add`,
+`update` (rewrites the target; needs `base_version`, the candidate's version, a newer one is a
+conflict), `supersede` (a new note replaces the target, which keeps
+`superseded_by` and `valid_to`) or `noop`. A **strong match** has a title similarity of at least
+0.6 (Jaccard of the stemmed title words); `op=add` next to one needs `force_new`. `memory_update`
+uses optimistic locking like documents; a superseded note cannot change.
+
+<a id="spec-memory-blocks"></a>
+
+**Blocks** (`memory_block`): a label unique per scope (global or one project), description, body,
+`char_limit` (default 2000, at most 20000), `owner_only`, version. `block_set` with `base_version`
+0 creates one; over the limit the write is refused with the count; a stale version is a conflict
+with the current text. Owner-only blocks (and the mark itself) change only on the board.
+
+<a id="spec-memory-secrets"></a>
+
+**Secret scan.** Notes, decisions, blocks and documents (and their titles, tags, reasons and
+sources) are checked with the secret value detectors of [§7](#spec-environments) under the
+effective policy of the project (the global one for global notes and blocks); a match is refused
+with the field and the detector id, never the value.
+
+<a id="spec-memory-search"></a>
+
+**Search.** One FTS5 table `search_index` (columns kind, ref, project, title, body and a stemmed
+shadow column; tokenizer `unicode61 remove_diacritics 2`) covers current document versions,
+decisions, notes, reports and comments. The service creates it at start when SQLite has FTS5 and
+keeps it in step in the same transaction as each write; at start it is rebuilt when its row count
+differs from the items it covers (a new index, an upgrade). Query words become quoted prefix terms
+OR'ed with their Snowball stem (English, or Russian for words with Cyrillic letters), all words
+required; ranking is bm25 with a title hit weighing most. Without FTS5 (the table cannot be
+created) nothing fails: search runs as `LIKE` substring matches of each word or its stem over the
+same columns (case-insensitive for ASCII letters only). A hit names its line: the line holding the
+most query words. Search with a project covers its items plus global and role notes; superseded
+notes and decisions are left out unless asked for.
+
+<a id="spec-memory-page"></a>
+
+**Docs & rules page** (`/p/<slug>/docs`): a search box over the index; the project's documents
+(title, name, kind, version, last change); decisions (current, superseded ones collapsed with
+"superseded by #n"); memory notes of the project plus global and role notes (superseded ones
+collapsed); blocks of the project and global ones, each with an edit form for the owner (text,
+description, limit, owner-only; CSRF and the board cookie like other forms, a refused write keeps
+the typed text); the effective rules (`rules_get` rendered). Documents, decisions and notes
+refresh live on `document.updated`, `decision.added`, `memory.*`; blocks and search results stay as
+the owner left them. A document page renders the markdown safely with heading anchors, a list of
+sections, the history with a link per version and a diff between any two versions (escaped lines,
+added and removed lines marked).
 
 <a id="spec-security"></a>
 
@@ -1077,6 +1169,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0009_environments` | `environment` (project, name, kind, base URL, sign-in flag — never on live, login state path, notes, level, overrides JSON, position, changed at / by), `environment_access` (environment, kind, fields JSON), `environment_proposal` (project, change JSON, reason, proposed by, session, status, decided at / by) |
 | `0010_policy` | `policy_layer` (project, environment or none for the project layer, body JSON, changed at / by; one per scope), `policy_proposal` (scope, project, patch JSON, reason, proposed by, session, status, decided at / by) |
 | `0011_review` | the `review` stage (the `task` table rebuilt with the wider stage check, rows and ids kept), `review_step` (task, position, title, details, status, decided at / by, created by), `attachment` (task, step, kind, stored name, original name, type, size, SHA-256, caption, created by / at), `comment.step_id`, `comment.attachment_id` |
+| `0012_memory` | `decision.scope`, `source_kind` / `source_ref` / `source_text`, `valid_from`, `valid_to`, `recorded_at`, `superseded_at`, `superseded_by` (backfilled: scope from `task_id`, `recorded_at` and `valid_from` from `created_at`); `document`, `document_version`, `memory`, `memory_block`. Additive only. The FTS5 table `search_index` is created by the service at start, not by the migration ([§8](#spec-memory-search)) |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

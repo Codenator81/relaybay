@@ -100,6 +100,11 @@ NEXT_STEP_HELP = (
     " change shows as stale. Omit to keep it;"
 )
 WAITING_ON_HELP = "Who acts next; saved in the same write. Omit to keep it;"
+SOURCE_HELP = (
+    "Where it came from: 'report:12', 'comment:7', 'event:301' or 'message:<id>', optionally"
+    " followed by display text ('comment:7 owner in the review thread'); or display text alone"
+    " ('owner, chat')."
+)
 PROGRESS_HELP = (
     "Markdown summary of everything done so far on the task (not just the last step). Rewrite"
     " it as the work goes on and keep it current with every report."
@@ -510,26 +515,349 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     async def decision_add(
         project: ProjectSlug,
         text: Annotated[str, Field(description="The decision, one or two sentences.")],
-        task: Annotated[str | None, Field(description="Related task key, optional.")] = None,
+        task: Annotated[
+            str | None, Field(description="Related task key; makes the decision task-scoped.")
+        ] = None,
         decided_by: Annotated[str | None, Field(description="Who decided.")] = None,
+        source: Annotated[str | None, Field(description=SOURCE_HELP)] = None,
+        supersedes: Annotated[
+            int | None,
+            Field(
+                description="Id of a current decision of the same project this one replaces;"
+                " the old one stays in history marked superseded."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
         """Record a decision the user or the team made (scope, approach, trade-off), so later
-        sessions find it in the project snapshot."""
+        sessions find it in the project snapshot and decision_list. Decisions belong to a
+        project (or one of its tasks); a fact for all projects goes to memory_add with scope
+        'global'. To change a decision, add the new one with `supersedes`."""
         decision = await run(
             service.add_decision(
                 project,
                 text,
                 task=task or None,
                 decided_by=decided_by,
+                source=source,
+                supersedes=supersedes,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
             )
         )
-        return f"Decision #{decision.id} recorded for {project}."
+        return fmt.decision_saved(decision)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def decision_list(
+        project: ProjectSlug,
+        task: Annotated[str | None, Field(description="Only this task's decisions.")] = None,
+        query: Annotated[
+            str | None, Field(description="Words to search for; best matches first.")
+        ] = None,
+        include_superseded: Annotated[
+            bool, Field(description="Also list replaced decisions (marked superseded by #n).")
+        ] = False,
+        limit: Annotated[int, Field(ge=1, le=200, description="How many.")] = 20,
+    ) -> str:
+        """Decisions of a project, newest first (or the best matches of `query`), with their
+        source and supersede links. Current decisions only unless include_superseded."""
+        proj, items = await run(
+            service.list_decisions(
+                project,
+                task=task or None,
+                query=query,
+                include_superseded=include_superseded,
+                limit=limit,
+            )
+        )
+        return fmt.decisions(proj, items, query)
+
+    @write
+    async def memory_add(
+        scope: Annotated[
+            str,
+            Field(
+                description="global (every project), role (one role, e.g. coordinator) or"
+                " project (one project)."
+            ),
+        ],
+        kind: Annotated[
+            str,
+            Field(
+                description="user (the owner's preferences), feedback (a lesson from a"
+                " correction), project (a fact about a project) or reference (where to find"
+                " something)."
+            ),
+        ],
+        title: Annotated[str, Field(description="One line that names the fact.")],
+        body: Annotated[
+            str, Field(description="Markdown: the fact, why it holds, how to apply it.")
+        ],
+        project: Annotated[
+            str | None, Field(description="Project slug, for scope project.")
+        ] = None,
+        role: Annotated[str | None, Field(description="Role name, for scope role.")] = None,
+        tags: Annotated[str | None, Field(description="Comma separated tags.")] = None,
+        source: Annotated[str | None, Field(description=SOURCE_HELP)] = None,
+        review_at: Annotated[
+            str | None, Field(description="Date to verify the note again, e.g. 2026-12-31.")
+        ] = None,
+        op: Annotated[
+            str | None,
+            Field(
+                description="Leave empty on the first call. After candidates came back: add,"
+                " update (rewrite target), supersede (replace target, which stays in history)"
+                " or noop."
+            ),
+        ] = None,
+        target: Annotated[
+            int | None, Field(description="The candidate's id, for op update or supersede.")
+        ] = None,
+        base_version: Annotated[
+            int | None, Field(description="With op=update: the candidate's version (v<n>).")
+        ] = None,
+        force_new: Annotated[
+            bool, Field(description="With op=add: add even next to a strong match.")
+        ] = False,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Save a memory note: an owner preference, feedback, a project fact or a reference.
+        First call without `op`: if similar notes exist, nothing is written and they are
+        listed; call again with op add / update / supersede / noop. Never put secrets here
+        (a write that looks like one is refused). Visibility per role is not enforced yet."""
+        result = await run(
+            service.add_note(
+                scope,
+                kind,
+                title,
+                body,
+                project=project or None,
+                role=role or None,
+                tags=tags,
+                source=source,
+                review_at=review_at,
+                op=op or None,
+                target=target,
+                base_version=base_version,
+                force_new=force_new,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.note_result(result)
+
+    @write
+    async def memory_update(
+        id: Annotated[int, Field(description="The note's id.")],
+        base_version: Annotated[
+            int, Field(description="The note's version you read (memory_get shows it).")
+        ],
+        title: Annotated[str | None, Field(description="New title.")] = None,
+        body: Annotated[str | None, Field(description="New body (the whole text).")] = None,
+        tags: Annotated[str | None, Field(description="New tags." + CLEARS)] = None,
+        review_at: Annotated[str | None, Field(description="New review date." + CLEARS)] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Change a memory note. If someone changed it after you read it, nothing is saved and
+        the current note comes back to merge; send it again with its version."""
+        saved = await run(
+            service.update_note(
+                id,
+                base_version,
+                title=title,
+                body=body,
+                tags=cleared(tags),
+                review_at=cleared(review_at),
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.note_updated(saved)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def memory_search(
+        query: Annotated[str, Field(description="Words to look for (word forms match).")],
+        scope: Annotated[
+            str | None,
+            Field(description="Only notes of this scope: global, role or project."),
+        ] = None,
+        project: Annotated[
+            str | None,
+            Field(description="Only this project's items plus global and role notes."),
+        ] = None,
+        kinds: Annotated[
+            list[str] | None,
+            Field(
+                description="What to search: note, decision, doc, report, comment (default"
+                " all; only notes when scope is given)."
+            ),
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=50, description="How many hits.")] = 10,
+    ) -> str:
+        """Search memory notes, decisions, documents, reports and comments. Each hit has its
+        id and the matching line; open a note with memory_get and a document with doc_get."""
+        hits = await run(
+            service.search(query, project=project or None, kinds=kinds, scope=scope, limit=limit)
+        )
+        return fmt.search_hits(hits, query)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def memory_get(id: Annotated[int, Field(description="The note's id.")]) -> str:
+        """A memory note in full: body, scope, source, dates, version (for memory_update)."""
+        return fmt.note(await run(service.get_note(id)))
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def doc_list(project: ProjectSlug) -> str:
+        """The documents of a project (spec, status, brief, runbooks, ADRs) with versions."""
+        proj, items = await run(service.list_documents(project))
+        return fmt.documents(proj, items)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def doc_get(
+        project: ProjectSlug,
+        doc: Annotated[str, Field(description="Document name, e.g. 'spec'.")],
+        section: Annotated[
+            str | None,
+            Field(
+                description="Section anchor from a heading ('## Gift cards' → gift-cards):"
+                " returns that heading and its text only."
+            ),
+        ] = None,
+        version: Annotated[int | None, Field(description="An older version.")] = None,
+    ) -> str:
+        """A project document as markdown (or one section of it), with its current version to
+        pass as base_version to doc_update."""
+        found, text = await run(
+            service.get_document(project, doc, version=version, section=section or None)
+        )
+        return fmt.document(found, text, section or None)
+
+    @write
+    async def doc_update(
+        project: ProjectSlug,
+        doc: Annotated[str, Field(description="Document name: lowercase letters, digits, dashes.")],
+        body: Annotated[
+            str,
+            Field(
+                description="Markdown: the whole document, or with `section` that section"
+                " (starting with its heading to rename it, or just the text under it)."
+            ),
+        ],
+        reason: Annotated[str, Field(description="What changed and why, one line.")],
+        base_version: Annotated[
+            int,
+            Field(description="The version you read (doc_get shows it); 0 creates the document."),
+        ],
+        section: Annotated[
+            str | None, Field(description="Replace only this section (its anchor).")
+        ] = None,
+        title: Annotated[
+            str | None, Field(description="Title; default: the first '# ' heading.")
+        ] = None,
+        kind: Annotated[
+            str | None,
+            Field(description="spec, status, brief, runbook, adr… (default doc)."),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Write a new version of a project document (base_version 0 creates it). If it changed
+        since you read it, nothing is saved and the current text comes back to merge."""
+        saved = await run(
+            service.update_document(
+                project,
+                doc,
+                body,
+                reason,
+                base_version,
+                section=section or None,
+                title=title or None,
+                kind=kind or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.document_saved(saved)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def doc_history(
+        project: ProjectSlug,
+        doc: Annotated[str, Field(description="Document name.")],
+        from_version: Annotated[
+            int | None, Field(description="With to_version: show the diff between them.")
+        ] = None,
+        to_version: Annotated[int | None, Field(description="See from_version.")] = None,
+    ) -> str:
+        """The versions of a document (author, reason, section, size), newest first; with
+        from_version and to_version also the unified diff between those two."""
+        found, versions = await run(service.document_history(project, doc))
+        diff: list[str] = []
+        if from_version is not None and to_version is not None:
+            _, diff = await run(service.document_diff(project, doc, from_version, to_version))
+        return fmt.document_history(found, versions, diff)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def block_get(
+        label: Annotated[
+            str | None, Field(description="Block label; omit to list the blocks.")
+        ] = None,
+        project: Annotated[
+            str | None, Field(description="Project slug; omit for global blocks.")
+        ] = None,
+    ) -> str:
+        """A memory block (a short labelled text shown at its level, e.g. 'owner-preferences')
+        with its version and character limit, or the list of blocks."""
+        if not label:
+            return fmt.blocks(await run(service.list_blocks(project or None)), project)
+        return fmt.block(await run(service.get_block(label, project or None)))
+
+    @write
+    async def block_set(
+        label: Annotated[str, Field(description="Block label, e.g. 'owner-preferences'.")],
+        body: Annotated[str, Field(description="The whole new text; must fit the limit.")],
+        base_version: Annotated[
+            int, Field(description="The version you read (block_get); 0 creates the block.")
+        ],
+        project: Annotated[
+            str | None, Field(description="Project slug; omit for a global block.")
+        ] = None,
+        description: Annotated[
+            str | None, Field(description="What the block is for, one line.")
+        ] = None,
+        char_limit: Annotated[
+            int | None, Field(description="Character limit (default 2000 for a new block).")
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Write a memory block. Over its character limit the write is refused with the count.
+        Owner-only blocks are read-only here (the owner edits them on the board)."""
+        saved = await run(
+            service.set_block(
+                label,
+                body,
+                base_version,
+                project=project or None,
+                description=description,
+                char_limit=char_limit,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.block_saved(saved)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def comments_list(
@@ -899,6 +1227,19 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             return fmt.snapshot(await service.snapshot(slug), require_tracker_log)
         except NotFoundError as exc:
             raise ResourceNotFoundError(str(exc)) from exc
+
+    @mcp.resource(
+        "relaybay://doc/{project}/{doc}",
+        name="project-document",
+        description="A project document's current markdown (same as doc_get).",
+        mime_type="text/markdown",
+    )
+    async def document_resource(project: str, doc: str) -> str:
+        try:
+            _, text = await service.get_document(project, doc)
+        except NotFoundError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+        return text
 
     @mcp.resource(
         "relaybay://rules",

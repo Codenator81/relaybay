@@ -16,7 +16,8 @@
     "policy.proposal_reopened",
     "live.action",
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
-    "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed"
+    "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
+    "document.updated", "memory.added", "memory.updated", "block.updated"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -32,6 +33,7 @@
     "session.seen", "session.status_changed", "session.alias_added",
     "task.session_bound", "task.session_unbound"
   ];
+  var DOCS_KINDS = ["document.updated", "decision.added", "memory.added", "memory.updated"];
   var live = null;
   var lastId = 0;
   var source = null;
@@ -181,6 +183,16 @@
     if (proposals) {
       if (data.kind.indexOf("environment.propos") === 0 && data.project === live.dataset.project) {
         queue(proposals);
+      }
+      return;
+    }
+    // Docs & rules: documents, decisions and notes are live; block forms and search results
+    // stay as the user left them. Global notes and blocks carry no project.
+    var docsLive = document.getElementById("docs-live");
+    if (docsLive) {
+      if (DOCS_KINDS.indexOf(data.kind) !== -1 &&
+          (!data.project || data.project === live.dataset.project)) {
+        queue(docsLive);
       }
       return;
     }

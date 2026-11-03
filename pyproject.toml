@@ -27,6 +27,7 @@ dependencies = [
     "platformdirs>=4.2",
     "python-multipart>=0.0.9",
     "regex>=2024.11.6",
+    "snowballstemmer>=2.2",
     "uvicorn>=0.30",
 ]
 

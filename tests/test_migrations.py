@@ -18,8 +18,9 @@ MIGRATIONS = (
     "0008_comments.sql",
     "0009_environments.sql",
     "0010_policy.sql",
+    "0011_review.sql",
 )
-LATEST = 11
+LATEST = 12
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:

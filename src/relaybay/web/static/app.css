@@ -1141,3 +1141,49 @@ body:has(.task-dialog[open]) { overflow: hidden; }
   .viewer[open] { grid-template-columns: 0 minmax(0, 1fr) 0; }
   .viewer-nav { display: none; }
 }
+
+/* --- docs & rules ----------------------------------------------------------- */
+
+.docs-search { display: flex; gap: 8px; margin: 0 0 16px; }
+.docs-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.doc-meta, .decision-meta, .note-meta, .block-meta, .hit-line { font-size: 13px; overflow-wrap: anywhere; }
+.note-scope {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.note-row summary, .superseded summary, .block-edit summary, .block-add summary { cursor: pointer; }
+.superseded { margin-top: 10px; font-size: 14px; }
+.is-superseded s { color: var(--muted); }
+.block-body { font-size: 14px; }
+.block-form { margin-top: 8px; }
+.doc-toc ul { margin: 0; padding-left: 0; list-style: none; display: grid; gap: 2px; font-size: 14px; }
+.doc-toc .toc-2 { padding-left: 12px; }
+.doc-toc .toc-3, .doc-toc .toc-4, .doc-toc .toc-5, .doc-toc .toc-6 { padding-left: 24px; }
+.doc-body h1, .doc-body h2, .doc-body h3 { scroll-margin-top: 12px; }
+.version-row.is-shown { background: var(--surface-2); }
+.doc-diff-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
+.diff {
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.diff span { display: block; min-height: 1.5em; padding: 0 4px; }
+.diff .diff-add { background: rgb(43 138 62 / 14%); }
+.diff .diff-del { background: rgb(201 42 42 / 14%); }
+.diff .diff-hunk { color: var(--muted); }
+.diff .diff-file { color: var(--muted); font-weight: 600; }

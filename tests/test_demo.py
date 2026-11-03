@@ -18,6 +18,12 @@ async def _board(db_path: Path) -> dict:
             "tasks": tasks,
             "details": [await service.task_detail(t.key) for t in tasks],
             "snapshot": await service.snapshot("acme-shop"),
+            "spec": await service.document_history("acme-shop", "spec"),
+            "decisions": (
+                await service.list_decisions("acme-shop", include_superseded=True, limit=50)
+            )[1],
+            "notes": await service.list_notes("acme-shop"),
+            "blocks": await service.list_blocks("acme-shop"),
         }
     finally:
         await service.close()
@@ -43,6 +49,11 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     review = next(d for d in board["details"] if d.task.stage == "review")
     assert len(review.review.steps) == 3 and len(review.review.images()) == 2
     assert all(a.mime == "image/png" for a in review.review.images())
+    _, versions = board["spec"]
+    assert [v.version for v in versions] == [2, 1] and versions[0].section == "gift-cards"
+    assert any(d.superseded_by for d in board["decisions"])
+    assert {n.scope for n in board["notes"]} == {"global", "project"}
+    assert [b.label for b in board["blocks"]] == ["pulse"]
 
 
 def test_demo_refuses_a_board_unless_forced(tmp_path: Path) -> None:

@@ -9,6 +9,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Memory and documents (step 11.6a of design 0008, migration `0012_memory`, additive): project
+  documents with versions, section anchors from headings, section-level writes, optimistic
+  locking (a conflict returns the current text to merge) and diffs; decisions with a scope, a
+  structured source, time axes and supersede chains (never deleted, no cycles); memory notes
+  (global, role or project; user, feedback, project or reference) whose `memory_add` first
+  returns similar notes and asks for add / update / supersede / noop; blocks with a character
+  limit and an owner-only flag. Writes that hold a secret value are refused, naming the detector.
+- Full-text search over documents, decisions, notes, reports and comments: SQLite FTS5 with
+  Snowball stems (English, Russian) and diacritics folded, ranked by bm25; without FTS5 it falls
+  back to `LIKE`. The index is built at start and rebuilt when it is out of step.
+- MCP tools `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`,
+  `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set`; `decision_add`
+  takes `source` and `supersedes`; resource `relaybay://doc/{project}/{doc}`; events
+  `document.updated`, `memory.added`, `memory.updated`, `block.updated`.
+- Board: a **Docs & rules** page per project (sidebar, `/p/<slug>/docs`) with search, documents
+  (rendered with heading anchors, history, diff between any two versions), decisions with the
+  superseded ones collapsed, memory notes, blocks the owner can edit, and the effective rules.
+- `relaybay demo` adds a spec with two versions, a superseded decision, two notes and a block.
+
 - Review stage between dev and test: `plan → dev → review → test → live → done` (migration
   `0011_review` rebuilds the `task` table with the wider stage check, keeping every row). The
   board has six columns on two pages on wide screens (plan, dev, review, test | live, done),

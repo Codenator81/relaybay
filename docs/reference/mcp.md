@@ -22,6 +22,17 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`task_unbind_session`](#task_unbind_session) | write |
 | [`report_add`](#report_add) | write |
 | [`decision_add`](#decision_add) | write |
+| [`decision_list`](#decision_list) | read |
+| [`memory_add`](#memory_add) | write |
+| [`memory_update`](#memory_update) | write |
+| [`memory_search`](#memory_search) | read |
+| [`memory_get`](#memory_get) | read |
+| [`doc_list`](#doc_list) | read |
+| [`doc_get`](#doc_get) | read |
+| [`doc_update`](#doc_update) | write |
+| [`doc_history`](#doc_history) | read |
+| [`block_get`](#block_get) | read |
+| [`block_set`](#block_set) | write |
 | [`comments_list`](#comments_list) | read |
 | [`comment_ack`](#comment_ack) | write |
 | [`comment_add`](#comment_add) | write |
@@ -199,14 +210,160 @@ Add a report to a task. Call it at the end of every stage with your final report
 
 ### `decision_add`
 
-Record a decision the user or the team made (scope, approach, trade-off), so later sessions find it in the project snapshot.
+Record a decision the user or the team made (scope, approach, trade-off), so later sessions find it in the project snapshot and decision_list. Decisions belong to a project (or one of its tasks); a fact for all projects goes to memory_add with scope 'global'. To change a decision, add the new one with `supersedes`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | string | yes | Project slug such as 'acme-shop'. |
 | `text` | string | yes | The decision, one or two sentences. |
-| `task` | string or null | no | Related task key, optional. |
+| `task` | string or null | no | Related task key; makes the decision task-scoped. |
 | `decided_by` | string or null | no | Who decided. |
+| `source` | string or null | no | Where it came from: 'report:12', 'comment:7', 'event:301' or 'message:<id>', optionally followed by display text ('comment:7 owner in the review thread'); or display text alone ('owner, chat'). |
+| `supersedes` | integer or null | no | Id of a current decision of the same project this one replaces; the old one stays in history marked superseded. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `decision_list`
+
+Decisions of a project, newest first (or the best matches of `query`), with their source and supersede links. Current decisions only unless include_superseded.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `task` | string or null | no | Only this task's decisions. |
+| `query` | string or null | no | Words to search for; best matches first. |
+| `include_superseded` | boolean | no | Also list replaced decisions (marked superseded by #n). Default: `False`. |
+| `limit` | integer | no | How many. Default: `20`. |
+
+### `memory_add`
+
+Save a memory note: an owner preference, feedback, a project fact or a reference. First call without `op`: if similar notes exist, nothing is written and they are listed; call again with op add / update / supersede / noop. Never put secrets here (a write that looks like one is refused). Visibility per role is not enforced yet.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `scope` | string | yes | global (every project), role (one role, e.g. coordinator) or project (one project). |
+| `kind` | string | yes | user (the owner's preferences), feedback (a lesson from a correction), project (a fact about a project) or reference (where to find something). |
+| `title` | string | yes | One line that names the fact. |
+| `body` | string | yes | Markdown: the fact, why it holds, how to apply it. |
+| `project` | string or null | no | Project slug, for scope project. |
+| `role` | string or null | no | Role name, for scope role. |
+| `tags` | string or null | no | Comma separated tags. |
+| `source` | string or null | no | Where it came from: 'report:12', 'comment:7', 'event:301' or 'message:<id>', optionally followed by display text ('comment:7 owner in the review thread'); or display text alone ('owner, chat'). |
+| `review_at` | string or null | no | Date to verify the note again, e.g. 2026-12-31. |
+| `op` | string or null | no | Leave empty on the first call. After candidates came back: add, update (rewrite target), supersede (replace target, which stays in history) or noop. |
+| `target` | integer or null | no | The candidate's id, for op update or supersede. |
+| `base_version` | integer or null | no | With op=update: the candidate's version (v<n>). |
+| `force_new` | boolean | no | With op=add: add even next to a strong match. Default: `False`. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `memory_update`
+
+Change a memory note. If someone changed it after you read it, nothing is saved and the current note comes back to merge; send it again with its version.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | integer | yes | The note's id. |
+| `base_version` | integer | yes | The note's version you read (memory_get shows it). |
+| `title` | string or null | no | New title. |
+| `body` | string or null | no | New body (the whole text). |
+| `tags` | string or null | no | New tags. '-' or '' clears it. |
+| `review_at` | string or null | no | New review date. '-' or '' clears it. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `memory_search`
+
+Search memory notes, decisions, documents, reports and comments. Each hit has its id and the matching line; open a note with memory_get and a document with doc_get.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `query` | string | yes | Words to look for (word forms match). |
+| `scope` | string or null | no | Only notes of this scope: global, role or project. |
+| `project` | string or null | no | Only this project's items plus global and role notes. |
+| `kinds` | list of string or null | no | What to search: note, decision, doc, report, comment (default all; only notes when scope is given). |
+| `limit` | integer | no | How many hits. Default: `10`. |
+
+### `memory_get`
+
+A memory note in full: body, scope, source, dates, version (for memory_update).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | integer | yes | The note's id. |
+
+### `doc_list`
+
+The documents of a project (spec, status, brief, runbooks, ADRs) with versions.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+
+### `doc_get`
+
+A project document as markdown (or one section of it), with its current version to pass as base_version to doc_update.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `doc` | string | yes | Document name, e.g. 'spec'. |
+| `section` | string or null | no | Section anchor from a heading ('## Gift cards' → gift-cards): returns that heading and its text only. |
+| `version` | integer or null | no | An older version. |
+
+### `doc_update`
+
+Write a new version of a project document (base_version 0 creates it). If it changed since you read it, nothing is saved and the current text comes back to merge.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `doc` | string | yes | Document name: lowercase letters, digits, dashes. |
+| `body` | string | yes | Markdown: the whole document, or with `section` that section (starting with its heading to rename it, or just the text under it). |
+| `reason` | string | yes | What changed and why, one line. |
+| `base_version` | integer | yes | The version you read (doc_get shows it); 0 creates the document. |
+| `section` | string or null | no | Replace only this section (its anchor). |
+| `title` | string or null | no | Title; default: the first '# ' heading. |
+| `kind` | string or null | no | spec, status, brief, runbook, adr… (default doc). |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `doc_history`
+
+The versions of a document (author, reason, section, size), newest first; with from_version and to_version also the unified diff between those two.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `doc` | string | yes | Document name. |
+| `from_version` | integer or null | no | With to_version: show the diff between them. |
+| `to_version` | integer or null | no | See from_version. |
+
+### `block_get`
+
+A memory block (a short labelled text shown at its level, e.g. 'owner-preferences') with its version and character limit, or the list of blocks.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `label` | string or null | no | Block label; omit to list the blocks. |
+| `project` | string or null | no | Project slug; omit for global blocks. |
+
+### `block_set`
+
+Write a memory block. Over its character limit the write is refused with the count. Owner-only blocks are read-only here (the owner edits them on the board).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes | Block label, e.g. 'owner-preferences'. |
+| `body` | string | yes | The whole new text; must fit the limit. |
+| `base_version` | integer | yes | The version you read (block_get); 0 creates the block. |
+| `project` | string or null | no | Project slug; omit for a global block. |
+| `description` | string or null | no | What the block is for, one line. |
+| `char_limit` | integer or null | no | Character limit (default 2000 for a new block). |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -373,6 +530,7 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 
 | URI | Name | Type | Description |
 |---|---|---|---|
+| `relaybay://doc/{project}/{doc}` | project-document | text/markdown | A project document's current markdown (same as doc_get). |
 | `relaybay://project/{slug}` | project-snapshot | text/markdown | Markdown snapshot of a project (same as project_snapshot). |
 | `relaybay://project/{slug}/environments` | project-environments | text/markdown | A project's environments, access map (no secrets) and permission levels. |
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |

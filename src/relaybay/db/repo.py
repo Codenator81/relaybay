@@ -1,6 +1,8 @@
 """SQL for every table. Functions take an open connection; transactions belong to the service."""
 
 import json
+import logging
+import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +14,15 @@ from relaybay.domain.environments import (
     PolicyProposal,
     Proposal,
     split_test_secrets,
+)
+from relaybay.domain.memory import (
+    Document,
+    DocumentVersion,
+    MemoryBlock,
+    MemoryNote,
+    Source,
+    stem,
+    stem_text,
 )
 from relaybay.domain.models import (
     Binding,
@@ -26,6 +37,8 @@ from relaybay.domain.models import (
 )
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
+
+logger = logging.getLogger("relaybay")
 
 _TASK_SELECT = """
 SELECT t.*, p.slug AS project_slug, s.name AS session_name, s.external_id AS session_external_id,
@@ -631,13 +644,64 @@ async def insert_decision(
     text: str,
     decided_by: str | None,
     now: str,
+    source: Source | None = None,
 ) -> int:
+    source = source or Source()
     cur = await conn.execute(
-        "INSERT INTO decision (project_id, task_id, text, decided_by, created_at)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (project_id, task_id, text, decided_by, now),
+        "INSERT INTO decision (project_id, task_id, text, decided_by, created_at, scope,"
+        " source_kind, source_ref, source_text, valid_from, recorded_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            project_id,
+            task_id,
+            text,
+            decided_by,
+            now,
+            "project" if task_id is None else "task",
+            source.kind,
+            source.ref,
+            source.text,
+            now,
+            now,
+        ),
     )
     return int(cur.lastrowid or 0)
+
+
+async def supersede_decision(
+    conn: aiosqlite.Connection, old_id: int, new_id: int, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE decision SET superseded_at = ?, superseded_by = ?, valid_to = ? WHERE id = ?",
+        (now, new_id, now, old_id),
+    )
+
+
+def _decision(r: aiosqlite.Row) -> Decision:
+    return Decision(
+        id=r["id"],
+        task_id=r["task_id"],
+        project_id=r["project_id"],
+        text=r["text"],
+        decided_by=r["decided_by"],
+        created_at=r["created_at"],
+        task_key=r["task_key"],
+        scope=r["scope"],
+        source_kind=r["source_kind"],
+        source_ref=r["source_ref"],
+        source_text=r["source_text"],
+        valid_from=r["valid_from"],
+        valid_to=r["valid_to"],
+        recorded_at=r["recorded_at"],
+        superseded_at=r["superseded_at"],
+        superseded_by=r["superseded_by"],
+        project_slug=r["project_slug"],
+    )
+
+
+async def get_decision(conn: aiosqlite.Connection, decision_id: int) -> Decision | None:
+    rows = await list_decisions(conn, ids=[decision_id], include_superseded=True)
+    return rows[0] if rows else None
 
 
 async def list_decisions(
@@ -645,8 +709,11 @@ async def list_decisions(
     *,
     project_id: int | None = None,
     task_id: int | None = None,
+    ids: list[int] | None = None,
+    include_superseded: bool = False,
     limit: int = 10,
 ) -> list[Decision]:
+    """Newest first; superseded decisions only with `include_superseded`."""
     where, params = [], []
     if project_id is not None:
         where.append("d.project_id = ?")
@@ -654,23 +721,20 @@ async def list_decisions(
     if task_id is not None:
         where.append("d.task_id = ?")
         params.append(task_id)
-    sql = "SELECT d.*, t.key AS task_key FROM decision d LEFT JOIN task t ON t.id = d.task_id"
+    if ids is not None:
+        where.append(f"d.id IN ({', '.join('?' for _ in ids) or 'NULL'})")
+        params.extend(ids)
+    if not include_superseded:
+        where.append("d.superseded_at IS NULL")
+    sql = (
+        "SELECT d.*, t.key AS task_key, p.slug AS project_slug FROM decision d"
+        " JOIN project p ON p.id = d.project_id LEFT JOIN task t ON t.id = d.task_id"
+    )
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY d.id DESC LIMIT ?"
     rows = await _all(conn, sql, (*params, limit))
-    return [
-        Decision(
-            id=r["id"],
-            task_id=r["task_id"],
-            project_id=r["project_id"],
-            text=r["text"],
-            decided_by=r["decided_by"],
-            created_at=r["created_at"],
-            task_key=r["task_key"],
-        )
-        for r in rows
-    ]
+    return [_decision(r) for r in rows]
 
 
 # --- comment ---------------------------------------------------------------
@@ -1534,3 +1598,525 @@ async def task_events(
         (task_id, kind, limit),
     )
     return [_event(r) for r in rows]
+
+
+# --- documents -------------------------------------------------------------
+
+_DOCUMENT_SELECT = """
+SELECT d.*, p.slug AS project_slug FROM document d JOIN project p ON p.id = d.project_id
+"""
+
+
+def _document(row: aiosqlite.Row) -> Document:
+    return Document(
+        id=row["id"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"],
+        slug=row["slug"],
+        title=row["title"],
+        kind=row["kind"],
+        version=row["version"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _document_version(row: aiosqlite.Row, with_body: bool) -> DocumentVersion:
+    return DocumentVersion(
+        version=row["version"],
+        author=row["author"],
+        reason=row["reason"],
+        base_version=row["base_version"],
+        section=row["section"],
+        created_at=row["created_at"],
+        size=row["size"],
+        body=row["body"] if with_body else "",
+    )
+
+
+async def get_document(conn: aiosqlite.Connection, project_id: int, slug: str) -> Document | None:
+    row = await _one(
+        conn, _DOCUMENT_SELECT + " WHERE d.project_id = ? AND d.slug = ?", (project_id, slug)
+    )
+    return _document(row) if row else None
+
+
+async def list_documents(conn: aiosqlite.Connection, project_id: int) -> list[Document]:
+    rows = await _all(
+        conn, _DOCUMENT_SELECT + " WHERE d.project_id = ? ORDER BY d.slug", (project_id,)
+    )
+    return [_document(r) for r in rows]
+
+
+async def get_document_version(
+    conn: aiosqlite.Connection, document_id: int, version: int
+) -> DocumentVersion | None:
+    row = await _one(
+        conn,
+        "SELECT *, length(body) AS size FROM document_version"
+        " WHERE document_id = ? AND version = ?",
+        (document_id, version),
+    )
+    return _document_version(row, True) if row else None
+
+
+async def list_document_versions(
+    conn: aiosqlite.Connection, document_id: int
+) -> list[DocumentVersion]:
+    """Newest first, without the texts."""
+    rows = await _all(
+        conn,
+        "SELECT version, author, reason, base_version, section, created_at, length(body) AS size"
+        " FROM document_version WHERE document_id = ? ORDER BY version DESC",
+        (document_id,),
+    )
+    return [_document_version(r, False) for r in rows]
+
+
+async def insert_document(
+    conn: aiosqlite.Connection, project_id: int, slug: str, title: str, kind: str, now: str
+) -> int:
+    """A document without versions yet (version 0); `add_document_version` gives it text."""
+    cur = await conn.execute(
+        "INSERT INTO document (project_id, slug, title, kind, version, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, 0, ?, ?)",
+        (project_id, slug, title, kind, now, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def add_document_version(
+    conn: aiosqlite.Connection,
+    document_id: int,
+    *,
+    version: int,
+    body: str,
+    author: str,
+    reason: str,
+    base_version: int,
+    section: str | None,
+    title: str,
+    kind: str,
+    now: str,
+) -> None:
+    await conn.execute(
+        "INSERT INTO document_version (document_id, version, body, author, reason, base_version,"
+        " section, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (document_id, version, body, author, reason, base_version, section, now),
+    )
+    await conn.execute(
+        "UPDATE document SET version = ?, title = ?, kind = ?, updated_at = ? WHERE id = ?",
+        (version, title, kind, now, document_id),
+    )
+
+
+# --- memory notes and blocks -----------------------------------------------
+
+_NOTE_SELECT = """
+SELECT m.*, p.slug AS project_slug FROM memory m LEFT JOIN project p ON p.id = m.project_id
+"""
+NOTE_FIELDS = ("title", "body", "tags", "review_at")
+
+
+def _note(row: aiosqlite.Row) -> MemoryNote:
+    return MemoryNote(
+        id=row["id"],
+        scope=row["scope"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"],
+        role=row["role"],
+        kind=row["kind"],
+        title=row["title"],
+        body=row["body"],
+        tags=row["tags"],
+        source_kind=row["source_kind"],
+        source_ref=row["source_ref"],
+        source_text=row["source_text"],
+        links=row["links"],
+        review_at=row["review_at"],
+        valid_from=row["valid_from"],
+        valid_to=row["valid_to"],
+        recorded_at=row["recorded_at"],
+        updated_at=row["updated_at"],
+        superseded_at=row["superseded_at"],
+        superseded_by=row["superseded_by"],
+        last_read_at=row["last_read_at"],
+        read_count=row["read_count"],
+        version=row["version"],
+        author=row["author"],
+    )
+
+
+async def insert_note(
+    conn: aiosqlite.Connection,
+    *,
+    scope: str,
+    project_id: int | None,
+    role: str | None,
+    kind: str,
+    title: str,
+    body: str,
+    tags: str | None,
+    source: Source,
+    review_at: str | None,
+    author: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO memory (scope, project_id, role, kind, title, body, tags, source_kind,"
+        " source_ref, source_text, review_at, valid_from, recorded_at, updated_at, author)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            scope,
+            project_id,
+            role,
+            kind,
+            title,
+            body,
+            tags,
+            source.kind,
+            source.ref,
+            source.text,
+            review_at,
+            now,
+            now,
+            now,
+            author,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_note(conn: aiosqlite.Connection, note_id: int) -> MemoryNote | None:
+    row = await _one(conn, _NOTE_SELECT + " WHERE m.id = ?", (note_id,))
+    return _note(row) if row else None
+
+
+async def get_notes(conn: aiosqlite.Connection, ids: list[int]) -> list[MemoryNote]:
+    if not ids:
+        return []
+    marks = ", ".join("?" for _ in ids)
+    rows = await _all(conn, _NOTE_SELECT + f" WHERE m.id IN ({marks})", tuple(ids))
+    return [_note(r) for r in rows]
+
+
+async def update_note(
+    conn: aiosqlite.Connection, note_id: int, changes: dict[str, Any], now: str
+) -> None:
+    """Change NOTE_FIELDS; the version grows by one."""
+    assert changes and set(changes) <= set(NOTE_FIELDS)
+    sets = ", ".join(f"{name} = ?" for name in changes)
+    await conn.execute(
+        f"UPDATE memory SET {sets}, version = version + 1, updated_at = ? WHERE id = ?",
+        (*changes.values(), now, note_id),
+    )
+
+
+async def supersede_note(conn: aiosqlite.Connection, old_id: int, new_id: int, now: str) -> None:
+    await conn.execute(
+        "UPDATE memory SET superseded_at = ?, superseded_by = ?, valid_to = ?,"
+        " version = version + 1, updated_at = ? WHERE id = ?",
+        (now, new_id, now, now, old_id),
+    )
+
+
+async def mark_note_read(conn: aiosqlite.Connection, note_id: int, now: str) -> None:
+    await conn.execute(
+        "UPDATE memory SET last_read_at = ?, read_count = read_count + 1 WHERE id = ?",
+        (now, note_id),
+    )
+
+
+async def list_notes(
+    conn: aiosqlite.Connection,
+    project_id: int | None,
+    *,
+    include_superseded: bool = False,
+    limit: int = 200,
+) -> list[MemoryNote]:
+    """Notes of a project plus the global and role notes (only those when `project_id` is
+    None), newest first."""
+    sql = _NOTE_SELECT + " WHERE (m.project_id IS NULL OR m.project_id = ?)"
+    if not include_superseded:
+        sql += " AND m.superseded_at IS NULL"
+    rows = await _all(conn, sql + " ORDER BY m.id DESC LIMIT ?", (project_id, limit))
+    return [_note(r) for r in rows]
+
+
+_BLOCK_SELECT = """
+SELECT b.*, p.slug AS project_slug FROM memory_block b LEFT JOIN project p ON p.id = b.project_id
+"""
+
+
+def _block(row: aiosqlite.Row) -> MemoryBlock:
+    return MemoryBlock(
+        id=row["id"],
+        scope=row["scope"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"],
+        label=row["label"],
+        description=row["description"],
+        body=row["body"],
+        char_limit=row["char_limit"],
+        owner_only=bool(row["owner_only"]),
+        version=row["version"],
+        updated_by=row["updated_by"],
+        updated_at=row["updated_at"],
+        created_at=row["created_at"],
+    )
+
+
+async def get_block(
+    conn: aiosqlite.Connection, project_id: int | None, label: str
+) -> MemoryBlock | None:
+    row = await _one(
+        conn, _BLOCK_SELECT + " WHERE b.project_id IS ? AND b.label = ?", (project_id, label)
+    )
+    return _block(row) if row else None
+
+
+async def list_blocks(conn: aiosqlite.Connection, project_id: int | None) -> list[MemoryBlock]:
+    """The blocks of one scope: a project's, or the global ones when `project_id` is None."""
+    rows = await _all(
+        conn, _BLOCK_SELECT + " WHERE b.project_id IS ? ORDER BY b.label", (project_id,)
+    )
+    return [_block(r) for r in rows]
+
+
+async def insert_block(
+    conn: aiosqlite.Connection,
+    *,
+    project_id: int | None,
+    label: str,
+    description: str | None,
+    body: str,
+    char_limit: int,
+    owner_only: bool,
+    actor: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO memory_block (scope, project_id, label, description, body, char_limit,"
+        " owner_only, updated_by, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "global" if project_id is None else "project",
+            project_id,
+            label,
+            description,
+            body,
+            char_limit,
+            int(owner_only),
+            actor,
+            now,
+            now,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_block(
+    conn: aiosqlite.Connection,
+    block_id: int,
+    *,
+    description: str | None,
+    body: str,
+    char_limit: int,
+    owner_only: bool,
+    actor: str,
+    now: str,
+) -> None:
+    await conn.execute(
+        "UPDATE memory_block SET description = ?, body = ?, char_limit = ?, owner_only = ?,"
+        " version = version + 1, updated_by = ?, updated_at = ? WHERE id = ?",
+        (description, body, char_limit, int(owner_only), actor, now, block_id),
+    )
+
+
+# --- search ----------------------------------------------------------------
+
+# Everything search covers, one uniform row per item: kind, id, project_id, project_slug,
+# task_key, name (a document's slug), title, body, superseded_at, note_scope, note_kind.
+_SEARCH_SOURCES = {
+    "doc": (
+        "SELECT 'doc' AS kind, d.id AS id, d.project_id AS project_id, p.slug AS project_slug,"
+        " NULL AS task_key, d.slug AS name, d.title AS title, v.body AS body,"
+        " NULL AS superseded_at, NULL AS note_scope, NULL AS note_kind"
+        " FROM document d JOIN project p ON p.id = d.project_id"
+        " JOIN document_version v ON v.document_id = d.id AND v.version = d.version"
+    ),
+    "decision": (
+        "SELECT 'decision' AS kind, x.id AS id, x.project_id AS project_id,"
+        " p.slug AS project_slug, t.key AS task_key, NULL AS name, '' AS title, x.text AS body,"
+        " x.superseded_at AS superseded_at, NULL AS note_scope, NULL AS note_kind"
+        " FROM decision x JOIN project p ON p.id = x.project_id"
+        " LEFT JOIN task t ON t.id = x.task_id"
+    ),
+    "note": (
+        "SELECT 'note' AS kind, m.id AS id, m.project_id AS project_id, p.slug AS project_slug,"
+        " NULL AS task_key, NULL AS name, m.title AS title, m.body AS body,"
+        " m.superseded_at AS superseded_at, m.scope AS note_scope, m.kind AS note_kind"
+        " FROM memory m LEFT JOIN project p ON p.id = m.project_id"
+    ),
+    "report": (
+        "SELECT 'report' AS kind, r.id AS id, t.project_id AS project_id,"
+        " p.slug AS project_slug, t.key AS task_key, NULL AS name, r.summary AS title,"
+        " r.body_md AS body, NULL AS superseded_at, NULL AS note_scope, NULL AS note_kind"
+        " FROM report r JOIN task t ON t.id = r.task_id JOIN project p ON p.id = t.project_id"
+    ),
+    "comment": (
+        "SELECT 'comment' AS kind, c.id AS id, t.project_id AS project_id,"
+        " p.slug AS project_slug, t.key AS task_key, NULL AS name, '' AS title,"
+        " c.body_md AS body, NULL AS superseded_at, NULL AS note_scope, NULL AS note_kind"
+        " FROM comment c JOIN task t ON t.id = c.task_id JOIN project p ON p.id = t.project_id"
+    ),
+}
+_KIND_CODE = {kind: n for n, kind in enumerate(_SEARCH_SOURCES, 1)}
+_SEARCH_TABLE = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(kind UNINDEXED, ref UNINDEXED,"
+    " project_id UNINDEXED, title, body, stems, tokenize = 'unicode61 remove_diacritics 2')"
+)
+# bm25 weights per column (kind, ref, project_id, title, body, stems): a title hit counts most.
+_RANK = "bm25(search_index, 0, 0, 0, 10.0, 1.0, 0.5)"
+
+
+def _search_rowid(kind: str, item_id: int) -> int:
+    return item_id * 8 + _KIND_CODE[kind]
+
+
+async def ensure_search_index(conn: aiosqlite.Connection) -> bool:
+    """Create the FTS5 index if this SQLite has FTS5; False when it does not (search then
+    falls back to LIKE)."""
+    try:
+        await conn.execute(_SEARCH_TABLE)
+        # An index made by an SQLite with FTS5, opened by one without: CREATE ... IF NOT EXISTS
+        # passes, the first read fails.
+        await conn.execute("SELECT 1 FROM search_index LIMIT 0")
+    except sqlite3.OperationalError as exc:
+        logger.warning("Full-text search is off (%s); search uses LIKE.", exc)
+        return False
+    return True
+
+
+async def search_rows(
+    conn: aiosqlite.Connection, kind: str, ids: list[int] | None = None
+) -> list[aiosqlite.Row]:
+    sql = f"SELECT * FROM ({_SEARCH_SOURCES[kind]})"
+    if ids is None:
+        return await _all(conn, sql)
+    if not ids:
+        return []
+    marks = ", ".join("?" for _ in ids)
+    return await _all(conn, sql + f" WHERE id IN ({marks})", tuple(ids))
+
+
+async def _index(conn: aiosqlite.Connection, rows: list[aiosqlite.Row]) -> None:
+    await conn.executemany(
+        "INSERT OR REPLACE INTO search_index (rowid, kind, ref, project_id, title, body, stems)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                _search_rowid(r["kind"], r["id"]),
+                r["kind"],
+                r["id"],
+                r["project_id"],
+                r["title"] or "",
+                r["body"] or "",
+                stem_text(f"{r['title'] or ''} {r['body'] or ''}"),
+            )
+            for r in rows
+        ],
+    )
+
+
+async def index_item(conn: aiosqlite.Connection, kind: str, item_id: int) -> None:
+    """(Re)index one item in the caller's transaction."""
+    await conn.execute("DELETE FROM search_index WHERE rowid = ?", (_search_rowid(kind, item_id),))
+    await _index(conn, await search_rows(conn, kind, [item_id]))
+
+
+async def search_index_stale(conn: aiosqlite.Connection) -> bool:
+    """The index does not hold one row per searchable item (a new index, an upgrade, rows
+    written while full-text search was off)."""
+    total = 0
+    for sql in _SEARCH_SOURCES.values():
+        row = await _one(conn, f"SELECT count(*) FROM ({sql})", ())
+        total += row[0]
+    row = await _one(conn, "SELECT count(*) FROM search_index", ())
+    return bool(row[0] != total)
+
+
+async def rebuild_search_index(conn: aiosqlite.Connection) -> int:
+    """Refill the index from the tables, in the caller's transaction; returns the row count."""
+    await conn.execute("DELETE FROM search_index")
+    count = 0
+    for kind in _SEARCH_SOURCES:
+        rows = await search_rows(conn, kind)
+        await _index(conn, rows)
+        count += len(rows)
+    return count
+
+
+def _project_filter(project_id: int | None) -> tuple[str, tuple[Any, ...]]:
+    """Items of the project plus notes without one (global and role notes)."""
+    if project_id is None:
+        return "", ()
+    return " AND (project_id = ? OR (kind = 'note' AND project_id IS NULL))", (project_id,)
+
+
+async def fts_search(
+    conn: aiosqlite.Connection,
+    match: str,
+    kinds: tuple[str, ...],
+    project_id: int | None,
+    limit: int,
+) -> list[tuple[str, int]]:
+    """(kind, id) of the best matches, best first."""
+    marks = ", ".join("?" for _ in kinds)
+    where, params = _project_filter(project_id)
+    rows = await _all(
+        conn,
+        f"SELECT kind, ref FROM search_index WHERE search_index MATCH ? AND kind IN ({marks})"
+        f"{where} ORDER BY {_RANK} LIMIT ?",
+        (match, *kinds, *params, limit),
+    )
+    return [(r["kind"], int(r["ref"])) for r in rows]
+
+
+def _like(word: str) -> str:
+    escaped = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+async def like_search(
+    conn: aiosqlite.Connection,
+    words: list[str],
+    kinds: tuple[str, ...],
+    project_id: int | None,
+    limit: int,
+    any_word: bool = False,
+) -> list[tuple[str, int]]:
+    """The fallback without FTS5: every word (any word, with `any_word`) or its stem is a
+    substring of the title or the body (case-insensitive for ASCII only); ranked by title
+    hits, then newest."""
+    needles = [(w, stem(w)) for w in words]
+    one = "(title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')"
+    cond = (" OR " if any_word else " AND ").join(f"({one} OR {one})" for _ in words)
+    params = tuple(p for pair in needles for n in pair for p in (_like(n), _like(n)))
+    where, extra = _project_filter(project_id)
+    scored: list[tuple[int, int, str]] = []
+    for kind in kinds:
+        rows = await _all(
+            conn,
+            f"SELECT kind, id, title, body FROM ({_SEARCH_SOURCES[kind]}) WHERE ({cond}){where}"
+            " ORDER BY id DESC LIMIT ?",
+            (*params, *extra, limit),
+        )
+        for r in rows:
+            title = (r["title"] or "").casefold()
+            body = (r["body"] or "").casefold()
+            hits = sum(
+                10 * (w in title or s in title) + (w in body or s in body) for w, s in needles
+            )
+            scored.append((hits, r["id"], r["kind"]))
+    scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    return [(kind, item_id) for _, item_id, kind in scored[:limit]]

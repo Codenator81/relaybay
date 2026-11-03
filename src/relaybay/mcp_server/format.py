@@ -10,6 +10,16 @@ from relaybay.domain.environments import (
     Proposal,
     change_summary,
 )
+from relaybay.domain.memory import (
+    STRONG_MATCH,
+    Document,
+    DocumentVersion,
+    MemoryBlock,
+    MemoryNote,
+    SearchHit,
+    Source,
+    sections,
+)
 from relaybay.domain.models import (
     Comment,
     Decision,
@@ -24,7 +34,7 @@ from relaybay.domain.rules import Rules, requirement_label, requirement_short
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
 from relaybay.policy import EffectivePolicy
-from relaybay.service import ProjectSummary, Snapshot, TaskDetail
+from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
 
 
 def age(ts: str, now: datetime | None = None) -> str:
@@ -401,7 +411,197 @@ def proposal_saved(p: Proposal) -> str:
 def decision_line(d: Decision) -> str:
     who = f" — {d.decided_by}" if d.decided_by else ""
     task = f" [{d.task_key}]" if d.task_key else ""
-    return f"- {d.created_at[:10]}{task}: {d.text}{who}"
+    return f"- #{d.id} {d.created_at[:10]}{task}: {d.text}{who}"
+
+
+def source_label(kind: str | None, ref: str | None, text: str | None) -> str:
+    return Source(kind, ref, text).label()
+
+
+def decision_entry(d: Decision) -> str:
+    """A decision_list line: the decision plus its source and supersede links."""
+    extra = []
+    source = source_label(d.source_kind, d.source_ref, d.source_text)
+    if source:
+        extra.append(f"source: {source}")
+    if d.superseded_by is not None:
+        extra.append(f"superseded by #{d.superseded_by} on {(d.superseded_at or '')[:10]}")
+    return decision_line(d) + (f" ({'; '.join(extra)})" if extra else "")
+
+
+def decisions(project: Project, items: list[Decision], query: str | None) -> str:
+    if not items:
+        what = f" matching {query!r}" if query else ""
+        return f"No decisions{what} in {project.slug}."
+    head = f"# Decisions of {project.slug}" + (f" matching {query!r}" if query else "")
+    return "\n".join([head, *(decision_entry(d) for d in items)])
+
+
+def decision_saved(d: Decision) -> str:
+    text = f"Decision #{d.id} recorded for {d.project_slug} (scope {d.scope})."
+    if d.source_kind is None and not d.source_text:
+        text += " Tip: pass source (e.g. 'comment:12 owner in chat') so later readers see why."
+    return text
+
+
+# --- documents, notes, blocks, search -------------------------------------------------------
+
+
+def documents(project: Project, items: list[Document]) -> str:
+    if not items:
+        return f"{project.slug} has no documents yet. Create one with doc_update(base_version=0)."
+    lines = [f"# Documents of {project.slug}"]
+    lines.extend(
+        f"- {d.slug} — {d.title} ({d.kind}, version {d.version},"
+        f" updated {d.updated_at[:16]}Z) relaybay://doc/{project.slug}/{d.slug}"
+        for d in items
+    )
+    return "\n".join(lines)
+
+
+def document(doc: Document, text: str, section: str | None) -> str:
+    """doc_get: a header line with the version to pass back as base_version, then the text."""
+    part = f" section #{section}" if section else ""
+    current = (
+        f"current version {doc.version}"
+        if doc.shown_version == doc.version
+        else f"version {doc.shown_version} (current is {doc.version})"
+    )
+    head = (
+        f"<!-- {doc.project_slug}/{doc.slug}{part} · {doc.kind} · {current} · by"
+        f" {doc.author} · pass base_version={doc.version} to doc_update -->"
+    )
+    anchors = [s.anchor for s in sections(doc.body)] if not section else []
+    tail = [f"\n<!-- sections: {', '.join(anchors)} -->"] if anchors else []
+    return "\n".join([head, text, *tail])
+
+
+def document_saved(doc: Document) -> str:
+    return (
+        f"{doc.project_slug}/{doc.slug} saved as version {doc.version} ({doc.title})."
+        f" Next base_version: {doc.version}."
+    )
+
+
+def document_history(doc: Document, versions: list[DocumentVersion], diff: list[str]) -> str:
+    lines = [f"# History of {doc.project_slug}/{doc.slug} (current version {doc.version})"]
+    for v in versions:
+        part = f" #{v.section}" if v.section else ""
+        lines.append(
+            f"- v{v.version} {v.created_at[:16]}Z by {v.author}{part}: {v.reason}"
+            f" ({v.size} chars, from v{v.base_version})"
+        )
+    if diff:
+        lines += ["", "```diff", *diff, "```"]
+    return "\n".join(lines)
+
+
+def note_line(n: MemoryNote, similarity: float | None = None) -> str:
+    where = n.project_slug or n.role or "global"
+    score = f" · similarity {similarity:.2f}" if similarity is not None else ""
+    return f"- #{n.id} v{n.version} [{n.scope}: {where} · {n.kind}] {n.title} — {n.hook}{score}"
+
+
+def note(n: MemoryNote) -> str:
+    where = n.project_slug or n.role or "all projects"
+    valid_to = f" to {n.valid_to[:10]}" if n.valid_to else ""
+    lines = [
+        f"# Note #{n.id}: {n.title}",
+        f"- scope: {n.scope} ({where}) · kind: {n.kind} · version {n.version} · by {n.author}",
+        f"- recorded {n.recorded_at[:16]}Z · valid from {n.valid_from[:10]}{valid_to}",
+    ]
+    if n.superseded_by is not None:
+        lines.append(f"- superseded by #{n.superseded_by} on {(n.superseded_at or '')[:10]}")
+    if n.tags:
+        lines.append(f"- tags: {n.tags}")
+    source = source_label(n.source_kind, n.source_ref, n.source_text)
+    if source:
+        lines.append(f"- source: {source}")
+    if n.review_at:
+        lines.append(f"- review at: {n.review_at}")
+    lines.append(f"- read {n.read_count} time(s)")
+    lines += ["", n.body]
+    return "\n".join(lines)
+
+
+def note_result(result: NoteResult) -> str:
+    if result.op == "candidates":
+        lines = [
+            "Nothing written yet: notes like this exist. Call memory_add again with the same"
+            " fields and op = add (a separate note), update or supersede (with target = the id),"
+            " or noop (keep what is there); op=update also needs base_version = the"
+            " candidate's v<n>:",
+            *(note_line(n, s) for n, s in result.candidates),
+        ]
+        strong = [n for n, s in result.candidates if s >= STRONG_MATCH]
+        if strong:
+            lines.append(
+                f"#{strong[0].id} is a strong match (title similarity at least {STRONG_MATCH}):"
+                " op=add next to it needs force_new=true."
+            )
+        return "\n".join(lines)
+    if result.note is None:
+        return "Nothing written (noop)."
+    n = result.note
+    verb = {
+        "add": "added",
+        "update": "updated",
+        "supersede": "added; it supersedes the target",
+        "noop": "kept as it is (noop)",
+    }[result.op]
+    return f"Note #{n.id} {verb} (version {n.version}): {n.title}"
+
+
+def note_updated(n: MemoryNote) -> str:
+    return f"Note #{n.id} updated to version {n.version}: {n.title}"
+
+
+def search_hits(hits: list[SearchHit], query: str) -> str:
+    if not hits:
+        return f"Nothing found for {query!r}."
+    lines = [f"# Search: {query}"]
+    for h in hits:
+        where = " · ".join(x for x in (h.project_slug, h.task_key) if x)
+        if h.kind == "doc":
+            ref = f"doc {h.name} (doc_get project={h.project_slug} doc={h.name})"
+        elif h.kind == "note":
+            ref = f"note #{h.id} (memory_get)"
+        else:
+            ref = f"{h.kind} #{h.id}"
+        lines.append(f"- {ref} [{where or 'global'}] {h.title}")
+        lines.append(f"  line {h.line}: {h.snippet}")
+    return "\n".join(lines)
+
+
+def block(b: MemoryBlock) -> str:
+    where = b.project_slug or "global"
+    flags = " · owner-only (read-only here)" if b.owner_only else ""
+    head = (
+        f"<!-- block {b.label} ({where}) · version {b.version} · {len(b.body)}/{b.char_limit}"
+        f" chars{flags} · pass base_version={b.version} to block_set -->"
+    )
+    about = [f"<!-- {b.description} -->"] if b.description else []
+    return "\n".join([head, *about, b.body])
+
+
+def blocks(items: list[MemoryBlock], project: str | None) -> str:
+    where = project or "global scope"
+    if not items:
+        return f"No blocks in {where}. block_set(label, body, base_version=0) creates one."
+    lines = [f"# Blocks of {where}"]
+    for b in items:
+        about = f" — {b.description}" if b.description else ""
+        flags = ", owner-only" if b.owner_only else ""
+        size = f"{len(b.body)}/{b.char_limit}"
+        lines.append(f"- {b.label}{about} (version {b.version}, {size}{flags})")
+    return "\n".join(lines)
+
+
+def block_saved(b: MemoryBlock) -> str:
+    return (
+        f"Block {b.label} ({b.project_slug or 'global'}) saved as version {b.version}"
+        f" ({len(b.body)}/{b.char_limit} chars)."
+    )
 
 
 def task_list(tasks: list[Task], require_log: bool = False) -> str:
@@ -535,7 +735,16 @@ def event_detail(e: Event) -> str:
     if e.kind == "task.tracker_unlogged":
         return f"{p.get('tracker_ref') or ''} ({p.get('reason')})".strip()
     if e.kind == "decision.added":
-        return str(p.get("text", ""))
+        supersedes = f" (supersedes #{p['supersedes']})" if p.get("supersedes") else ""
+        return f"#{p.get('decision_id')} {p.get('text', '')}{supersedes}"
+    if e.kind == "document.updated":
+        part = f" #{p['section']}" if p.get("section") else ""
+        return f"{p.get('doc')} v{p.get('version')}{part}: {p.get('reason') or ''}".rstrip()
+    if e.kind in ("memory.added", "memory.updated"):
+        supersedes = f" (supersedes #{p['supersedes']})" if p.get("supersedes") else ""
+        return f"#{p.get('note_id')} {p.get('title') or ''}{supersedes}"
+    if e.kind == "block.updated":
+        return f"{p.get('label')} v{p.get('version')}"
     if e.kind == "session.status_changed":
         change = f"{p['previous']} → {p.get('status')}" if p.get("previous") else p.get("status")
         return f"{p.get('session')}: {change}"

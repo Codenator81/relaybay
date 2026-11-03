@@ -61,7 +61,9 @@ This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
   `state · size · gist`, e.g. `verified · M · checkout works`, and pass `progress`: the updated
   summary of everything done on the task so far.
 - When you stop working on a task and nobody takes over, call `task_unbind_session`.
-- Record decisions the user makes with `decision_add`.
+- Record decisions the user makes with `decision_add` (with `source`; `supersedes` when one
+  replaces an earlier decision). Keep lasting facts with `memory_add` and project documents with
+  `doc_get` / `doc_update`; look things up with `memory_search`.
 - Pass `session` on every write: your own desktop session id (`local_…`) if you know it, with
   `session_title=<your session title>`; otherwise your session name. If the session start told
   you "Your relaybay hook session: <id>", also pass `hook_session=<id>`.
