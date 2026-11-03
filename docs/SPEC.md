@@ -288,7 +288,7 @@ Review): the plan state (**Accepted** with who and when, or **Draft** with an **
 button: board-only, cookie and CSRF, refused with a Bearer token; actor `owner`), "2 of 5 done ·
 1 deviation", then the steps with their status, "what and why" and checkpoint (conformance,
 outcome, link, time); a deviation is highlighted. Under the current step (in progress, else the
-first one not done): "Now doing: <activeForm of the todo item in progress>" and the agent's todo
+first one not done): `Now doing: <activeForm of the todo item in progress>` and the agent's todo
 collapsed. Without plan steps: the todo marked **Agent's plan, not accepted**, or a note on how
 the agent writes a plan. **History (n)** lists every revision, newest first, with its reason,
 author and time and the titles it changed (`- 2. old` / `+ 2. new`). The tab refreshes live on
@@ -586,9 +586,10 @@ Claude Code 2.1.309 (desktop and CLI); the env `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`
 <a id="spec-plan-reminders"></a>
 
 **Plan reminders.** For an exactly linked session (`cc_exact`), per open task bound to it: the
-current step (`Plan of <key> (accepted | draft, not accepted yet): step N/M '<title>' — <what and
-why>.`, or `next step` when none is in progress, `all N steps done`), plus `Now doing:
-<activeForm>.` for the todo item in progress; without plan steps the todo summary or, for a task
+current step ("Plan of acme-shop-12 (accepted): step 2/3 'Address book page' — Add, edit and remove
+addresses.", or the next step when none is in progress, or "all N steps done"; a draft plan says
+"draft, not accepted yet"), plus "Now doing:" and the active form of the todo item in progress;
+without plan steps the todo summary or, for a task
 in dev with neither, the hint to write down what the agent is going to do. At most three tasks,
 then one line on `plan_step_update`. Sent in `additionalContext` on `SessionStart` (after the
 hook session line), on the `PostToolUse` of a todo change and every `plan_reminder_every`
