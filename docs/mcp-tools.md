@@ -175,15 +175,18 @@ with the hook's input JSON. `relaybay setup` writes the hook entries (see
 | `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is not stored) |
 | `Notification` | waiting | the notification message |
 | `Stop` | idle | `turn finished` |
-| `SessionEnd` | ended | the session is unbound from its tasks (history kept, `task.session_unbound` with `reason: "session_end"`) |
+| `SessionEnd` | ended | the session is unbound from its tasks (history kept, `task.session_unbound` with `reason: "session_end"`), except after `/clear` or `/resume` and for desktop sessions |
 
 Other events are ignored (`204`); an event with nothing to say also gets an empty `204`. Activity of a working session is written at most once per 5 s per
 session (the latest one wins); status changes are written at once. Each change is a
 `session.status_changed` event per task the session is bound to.
 
-A hook session is matched to a relaybay session in this order: the exact link from a write with
-`hook_session`; otherwise, on first sight, the one desktop session bound to a task in the project
-whose `repo_path` contains the hook's `cwd`. When more than one could match (or the folder belongs
+A hook session is matched to a relaybay session in this order: on `SessionStart`, the desktop
+session named by `CLAUDE_CODE_HOST_SESSION_ID` (set by the Claude desktop app; after `/clear` or a
+restart the new Claude Code id moves to it by itself; a `claude -p` started from the window's tools
+runs unattended and never takes the window's link, nor an id another live session's agent
+linked); the exact link from a write with `hook_session`; otherwise, on first sight, the one desktop session bound to a task in the project
+(not ended) whose `repo_path` contains the hook's `cwd`. When more than one could match (or the folder belongs
 to several projects, or the bound desktop sessions are linked to other live hook sessions), nothing
 is guessed: the hook session stays unlinked and is listed on the board under Integrations until the
 agent passes its `hook_session`. With no desktop session in the project (or no project), it becomes
@@ -215,7 +218,7 @@ link guessed from the folder, an unlinked or ended session never gets comment te
 The command hook prints the server's answer only when it is a `200` with a JSON object, and still
 exits 0 within 0.3 s per network step; http hooks get the same JSON body.
 
-**Wake-up hook (opt-in, experimental).** `relaybay setup --apply --wake --force-wake` adds a separate command hook
+**Wake-up hook (opt-in).** `relaybay setup --apply --wake` adds a separate command hook
 to `Stop` with `"asyncRewake": true` and a 1800 s `timeout`:
 `<python> -I -m relaybay.hook_client --url …/hooks/claude-code/wait --token-file <path> --wait`.
 Claude Code runs it in the background after every turn; it long-polls `POST /hooks/claude-code/wait`
@@ -223,14 +226,12 @@ for up to 25 minutes. When an owner comment arrives for the idle, exactly linked
 marks it delivered and answers `{"wake": text}`; the hook prints the text to stderr and exits 2,
 which wakes the session with the text as a system reminder. In every other case (nothing arrived,
 relaybay down, the session started working, a newer wait for the same session) it exits 0 silently.
-Following the hooks reference, this was not verified against a live Claude Code; `--no-wake` removes
-only this hook, a plain `--apply` keeps it.
+Checked live with Claude Code 2.1.309; `--no-wake` removes only this hook, a plain `--apply` keeps
+it.
 
 **Fallback risk:** a Claude Code build that ignored `asyncRewake` would run this hook in the
-foreground and hold the end of every turn for up to 30 minutes. The hooks reference names no
-version that supports it, so `--wake` is refused unless `--force-wake` is given too
-(`MIN_ASYNC_REWAKE_VERSION` is unset); `setup --check` and `doctor` show the installed hook as
-`UNVERIFIED`. If turns end only after a long wait, run `relaybay setup --apply --no-wake`.
+foreground and hold the end of every turn for up to 30 minutes, so `--wake` on a Claude Code older
+than 2.1.309 (or of unknown version) is refused unless `--force-wake` is given too. If turns end only after a long wait, run `relaybay setup --apply --no-wake`.
 
 ## Environments and access
 

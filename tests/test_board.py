@@ -153,7 +153,8 @@ def test_card_and_task_page_show_the_desktop_session(board: TestClient, seeded: 
     text = page.text
     assert "Checkout work" in text and DESKTOP in text and f'href="{link}"' in text
     assert f'data-link="{link}"' in text and "copy-link" in text  # Copy link stays here
-    assert text.index("Checkout work", text.index("History")) < text.index("first-session")
+    history = text.index("History")  # the picker above it offers first-session again
+    assert text.index("Checkout work", history) < text.index("first-session", history)
     assert "· current" in text and "· until" in text
     # Report bodies are markdown with raw HTML escaped.
     assert "&lt;b&gt;bold&lt;/b&gt;" in text and "<b>bold</b>" not in text
@@ -294,6 +295,35 @@ def test_unbind_from_the_board(board: TestClient, seeded: str, token: str) -> No
 
     # A plain form post (no JavaScript) returns to the task page.
     run_in_app(board, service.bind_session, seeded, "checkout-dev")
+    plain = board.post(url, data=form, headers={"Origin": BASE}, follow_redirects=False)
+    assert plain.status_code == 303 and plain.headers["location"] == f"/t/{seeded}"
+
+
+def test_bind_a_session_from_the_board(board: TestClient, seeded: str, token: str) -> None:
+    service: Service = board.app.state.service
+    page = board.get(f"/t/{seeded}").text
+    assert "bind-form" not in page  # no session seen yet: nothing to pick
+    run_in_app(board, service.upsert_project, "demo-api")
+    other = run_in_app(board, service.create_task, "demo-api", "Other", session=DESKTOP)
+    run_in_app(board, service.unbind_session, other.key)
+    [desktop] = [r.session for r in run_in_app(board, service.list_sessions)]
+
+    page = board.get(f"/t/{seeded}").text
+    assert "Bind a session" in page and f'<option value="{desktop.id}">' in page
+    assert "other project" in page
+    url = f"/p/acme-shop/t/{seeded}/bind"
+    refused = board.post(url, data={"session_id": str(desktop.id)}, headers=HTMX)
+    assert refused.status_code == 403
+    form = {"session_id": str(desktop.id), "csrf_token": csrf_token(token)}
+    done = board.post(url, data=form, headers=HTMX)
+    assert done.status_code == 200 and done.text.lstrip().startswith('<div class="task-view"')
+    assert "Unbind session" in done.text and "· current" in done.text
+    assert run_in_app(board, service.get_task, seeded).session_external_id == DESKTOP
+    events = run_in_app(board, service.events_since, 0)
+    assert events[-1].kind == "task.session_bound" and events[-1].actor == "board"
+
+    missing = board.post(url, data=form | {"session_id": "9999"}, headers=HTMX)
+    assert missing.status_code == 200 and "Session #9999 not found." in missing.text
     plain = board.post(url, data=form, headers={"Origin": BASE}, follow_redirects=False)
     assert plain.status_code == 303 and plain.headers["location"] == f"/t/{seeded}"
 

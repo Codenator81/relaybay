@@ -12,11 +12,18 @@ wakes the session; it exits 0 silently in every other case.
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from urllib.request import ProxyHandler, Request, build_opener
 
-from relaybay.domain.hooks import WAKE_HOLD_SECONDS
+from relaybay.domain.hooks import (
+    ATTENDED_ENV,
+    ATTENDED_FIELD,
+    HOST_SESSION_ENV,
+    HOST_SESSION_FIELD,
+    WAKE_HOLD_SECONDS,
+)
 
 TIMEOUT_SECONDS = 0.3
 # The server answers the long poll within WAKE_HOLD_SECONDS; a little longer than that.
@@ -41,6 +48,20 @@ def forward(url: str, token_file: Path, body: bytes, timeout: float = TIMEOUT_SE
     return answer if isinstance(json.loads(answer), dict) else b""
 
 
+def with_host_session(body: bytes) -> bytes:
+    """SessionStart gets the desktop session id from the environment Claude Code runs hooks in;
+    any other body is forwarded as it is (it is not even parsed)."""
+    host = os.environ.get(HOST_SESSION_ENV)
+    if not host or b'"SessionStart"' not in body:
+        return body
+    payload = json.loads(body)
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
+        return body
+    payload[HOST_SESSION_FIELD] = host
+    payload[ATTENDED_FIELD] = os.environ.get(ATTENDED_ENV, "")
+    return json.dumps(payload).encode("utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="relaybay hook", description=__doc__)
     parser.add_argument("--url", required=True, help="relaybay hook URL (…/hooks/claude-code).")
@@ -62,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.flush()
                 return WAKE_EXIT_CODE
             return 0
-        answer = forward(args.url, args.token_file, body)
+        answer = forward(args.url, args.token_file, with_host_session(body))
         if answer:
             sys.stdout.buffer.write(answer)
             sys.stdout.flush()

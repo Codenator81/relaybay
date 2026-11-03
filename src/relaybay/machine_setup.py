@@ -26,7 +26,15 @@ from urllib.parse import urlsplit
 from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
 from relaybay import __version__
-from relaybay.domain.hooks import HOOK_EVENTS, HOOK_PATH, WAKE_PATH
+from relaybay.domain.hooks import (
+    ATTENDED_ENV,
+    ATTENDED_HEADER,
+    HOOK_EVENTS,
+    HOOK_PATH,
+    HOST_SESSION_ENV,
+    HOST_SESSION_HEADER,
+    WAKE_PATH,
+)
 from relaybay.security import token_id
 
 # The hooks reference documents `http` hooks without the version that introduced them; this is
@@ -42,10 +50,10 @@ HTTP_TIMEOUT = 2
 # `timeout` on an asyncRewake hook, so it must be longer than that.
 WAKE_TIMEOUT = 1800
 # The first Claude Code release known to run `asyncRewake` hooks in the background. The hooks
-# reference names none, so it is unknown: a build that ignored the field would run the wake-up
-# hook in the foreground and hold every turn's Stop for up to WAKE_TIMEOUT. Until a version is
-# known, --wake needs --force-wake.
-MIN_ASYNC_REWAKE_VERSION: tuple[int, int, int] | None = None
+# reference names none; 2.1.309 was checked live (the turn ends at once, exit 2 starts a new
+# turn). A build that ignored the field would run the wake-up hook in the foreground and hold
+# every turn's Stop for up to WAKE_TIMEOUT, so older or unknown versions need --force-wake.
+MIN_ASYNC_REWAKE_VERSION: tuple[int, int, int] | None = (2, 1, 309)
 WAKE_EVENT = "Stop"
 TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 MODES = ("command", "http")
@@ -226,8 +234,12 @@ def hook_handler(mode: str, base_url: str, token_path: Path, python: str | None 
         return {
             "type": "http",
             "url": base_url + HOOK_PATH,
-            "headers": {"Authorization": f"Bearer ${{{TOKEN_ENV}}}"},
-            "allowedEnvVars": [TOKEN_ENV],
+            "headers": {
+                "Authorization": f"Bearer ${{{TOKEN_ENV}}}",
+                HOST_SESSION_HEADER: f"${{{HOST_SESSION_ENV}}}",
+                ATTENDED_HEADER: f"${{{ATTENDED_ENV}}}",
+            },
+            "allowedEnvVars": [TOKEN_ENV, HOST_SESSION_ENV, ATTENDED_ENV],
             "timeout": HTTP_TIMEOUT,
         }
     return {
@@ -702,12 +714,13 @@ WAKE_RISK = (
     "a Claude Code that ignores asyncRewake would run it in the foreground and hold the end of"
     " every turn for up to 30 minutes"
 )
+_WAKE_VERIFIED = ".".join(map(str, MIN_ASYNC_REWAKE_VERSION or ()))
 WAKE_REFUSAL = (
-    "--wake: no Claude Code version is documented to run asyncRewake hooks, and the wake-up hook"
-    f" is not verified; {WAKE_RISK}. Add --force-wake to install it anyway"
+    f"--wake: asyncRewake hooks are verified from Claude Code {_WAKE_VERIFIED}; the version here"
+    f" is older or unknown, and {WAKE_RISK}. Add --force-wake to install it anyway"
 )
 WAKE_NOTE = (
-    "The wake-up hook (experimental, not verified against a live Claude Code) runs in the"
+    f"The wake-up hook (opt-in, verified with Claude Code {_WAKE_VERIFIED}) runs in the"
     " background after every turn for up to 25 minutes and wakes the idle session when an owner"
     f" comment arrives; the agent then spends a turn on it. Risk: {WAKE_RISK}. If a turn ends"
     " only after a long wait, remove it with --no-wake."
@@ -912,7 +925,8 @@ def config_checks(
                 Check(
                     True,
                     "wake-up hook",
-                    f"UNVERIFIED: asyncRewake hook at {WAKE_EVENT} (opt-in); {WAKE_RISK}."
+                    f"asyncRewake hook at {WAKE_EVENT} (opt-in, verified from Claude Code"
+                    f" {_WAKE_VERIFIED}); {WAKE_RISK}."
                     " Remove it with 'relaybay setup --apply --no-wake' if turns end slowly",
                 )
             )

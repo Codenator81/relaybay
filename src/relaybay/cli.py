@@ -92,15 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
     wake.add_argument(
         "--wake",
         action="store_true",
-        help="Also add the opt-in wake-up hook (command mode, experimental): an asyncRewake hook"
-        " that wakes an idle session when an owner comment arrives.",
+        help="Also add the opt-in wake-up hook (command mode): an asyncRewake hook that wakes an"
+        " idle session when an owner comment arrives (Claude Code 2.1.309 or later).",
     )
     wake.add_argument("--no-wake", action="store_true", help="Remove the wake-up hook.")
     setup.add_argument(
         "--force-wake",
         action="store_true",
-        help="With --wake: install it although no Claude Code version is known to run asyncRewake"
-        " hooks in the background (one that does not would hold every turn's end).",
+        help="With --wake: install it although this Claude Code is older than 2.1.309 or its"
+        " version is unknown (one that ignores asyncRewake would hold every turn's end).",
     )
 
     doctor = sub.add_parser(

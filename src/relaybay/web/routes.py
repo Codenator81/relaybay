@@ -680,6 +680,30 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
         return render(request, "_task_view.html", detail=detail, error=error)
 
+    @router.post("/p/{slug}/t/{key}/bind")
+    async def bind_task_session(
+        request: Request,
+        slug: str,
+        key: str,
+        session_id: Annotated[int, Form()],
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if not same_secret(csrf, csrf_token(token)):
+            raise HTTPException(status_code=403, detail="Missing CSRF token")
+        task = await find_task(slug, key)
+        htmx = "hx-request" in request.headers
+        error = None
+        try:
+            await service.bind_session_row(task.key, session_id, actor="board")
+        except DomainError as exc:
+            if not htmx:
+                raise  # plain form post: the app's DomainError handler answers
+            error = str(exc)
+        if not htmx:
+            return RedirectResponse(f"/t/{task.key}", status_code=303)
+        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+        return render(request, "_task_view.html", detail=detail, error=error)
+
     async def comment_thread(
         request: Request, task: Task, error: str | None = None, saved: bool = False
     ) -> HTMLResponse:

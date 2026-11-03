@@ -41,6 +41,7 @@ from relaybay.domain.environments import (
 from relaybay.domain.errors import ConfirmationNeeded, ConflictError, NotFoundError, ValidationError
 from relaybay.domain.hooks import (
     CC_ID_MAX,
+    CONTINUED_END_REASONS,
     DELIVERY_EVENTS,
     HookEvent,
     folder_name,
@@ -191,6 +192,7 @@ class TaskDetail:
     comments: list[Comment] = field(default_factory=list)
     live_actions: list[Event] = field(default_factory=list)
     review: Review = field(default_factory=lambda: Review([], []))
+    bind_choices: list[Session] = field(default_factory=list)  # for the board's session picker
 
 
 @dataclass(slots=True)
@@ -897,18 +899,50 @@ class Service:
         assert found is not None
         return found
 
+    async def _host_desktop(
+        self, tx: _Tx, hook: HookEvent, found: Session | None
+    ) -> Session | None:
+        """The desktop session a SessionStart reports it runs in (the desktop app's id in the
+        hook's environment), when the new Claude Code id may be linked to it exactly. While
+        the desktop session is exactly linked to another live Claude Code id, only the window
+        itself moves it: an attended /clear, resume or compaction (a restart whose old process
+        sent no SessionEnd). A `claude` started from one of its tools inherits the id but runs
+        unattended, and a plain startup is never the same window. An id another session's
+        agent linked itself is never taken."""
+        if hook.host_session is None:
+            return None
+        desktop = await repo.get_session_by_external_id(tx.conn, hook.host_session)
+        if desktop is None or (found is not None and found.id == desktop.id and found.cc_exact):
+            return None
+        if found is not None and found.id != desktop.id and found.cc_exact:
+            return None
+        live = (
+            desktop.cc_exact
+            and desktop.cc_session_id not in (None, hook.cc_session_id)
+            and desktop.status not in (None, "ended")
+        )
+        if live and (hook.source == "startup" or not hook.attended):
+            return None
+        return desktop
+
     async def _hook_session(self, tx: _Tx, hook: HookEvent) -> Session:
         """The relaybay session of a hook event. First sight without an exact link: the one
         desktop session bound in the project of `cwd`; several possible ones (or a folder of
         several projects) stay unlinked; none, a plain session named after the folder."""
         found = await repo.get_session_by_cc(tx.conn, hook.cc_session_id)
+        desktop = await self._host_desktop(tx, hook, found)
+        if desktop is not None:
+            return await self._link_hook_session(tx, desktop, hook.cc_session_id)
         if found is not None:
             return found
         projects = await repo.projects_with_repo_path(tx.conn)
         project, reason = self._project_for_cwd(projects, hook.cwd)
         if project is not None:
             bound = await repo.bound_desktop_sessions(tx.conn, project.id)
-            free = [s for s in bound if s.cc_session_id is None or s.status == "ended"]
+            # An ended desktop session links its next Claude Code id itself (host id), so a
+            # terminal `claude` in the same folder is not guessed onto it.
+            bound = [s for s in bound if s.status != "ended"]
+            free = [s for s in bound if s.cc_session_id is None]
             if len(free) == 1:
                 session = free[0]
                 changes = {"cc_session_id": hook.cc_session_id, "cc_exact": 0, "cwd": hook.cwd}
@@ -931,6 +965,11 @@ class Service:
         hook = parse_hook(payload)
         if hook is None:
             return None
+        if (
+            hook.event == "SessionEnd"
+            and await repo.get_session_by_cc(self._r, hook.cc_session_id) is None
+        ):
+            return None  # e.g. after /clear the new id took the session over first: nothing ends
         if hook.activity_only:
             current = await repo.get_session_by_cc(self._r, hook.cc_session_id)
             if current is not None and current.status == "working":
@@ -987,6 +1026,7 @@ class Service:
                 )
             if hook.event == "SessionEnd":
                 self._activity_written.pop(session.id, None)
+            if hook.event == "SessionEnd" and not self._continues(updated, hook):
                 for task in await repo.open_tasks_of_session(tx.conn, session.id):
                     await repo.unbind(tx.conn, task.id, tx.now)
                     await repo.update_task(tx.conn, task.id, {"session_id": None}, tx.now)
@@ -1005,6 +1045,13 @@ class Service:
                         end_reason=hook.end_reason,
                     )
             return updated
+
+    @staticmethod
+    def _continues(session: Session, hook: HookEvent) -> bool:
+        """A SessionEnd after which the session goes on under a new Claude Code id keeps its
+        tasks: /clear and /resume in any session, and every end of a desktop session (its id
+        outlives the Claude Code processes; the next SessionStart links the new one)."""
+        return session.external_id is not None or hook.end_reason in CONTINUED_END_REASONS
 
     # --- comment delivery through hooks ------------------------------------
 
@@ -1381,7 +1428,16 @@ class Service:
             comments=await repo.list_comments(self._r, task.id),
             live_actions=await repo.task_events(self._r, task.id, LIVE_ACTION, 20),
             review=await self._load_review(self._r, task.id),
+            bind_choices=await self._bind_choices(task),
         )
+
+    async def _bind_choices(self, task: Task, limit: int = 40) -> list[Session]:
+        """Sessions the board offers to bind: the project's first, then the others, most
+        recently seen first; the bound one is left out."""
+        own = await repo.list_sessions(self._r, task.project_id, limit)
+        seen = {s.id for s in own}
+        others = [s for s in await repo.list_sessions(self._r, None, limit) if s.id not in seen]
+        return [s for s in [*own, *others] if s.id != task.session_id][:limit]
 
     def _merged_rules(self, slug: str, body: str | None) -> Rules:
         """The global rules with the project's override on top; a broken override is logged
@@ -1786,6 +1842,17 @@ class Service:
                 raise ValidationError("session must not be empty.")
             await self._bind(tx, task, sess, sess.name)
             return BindResult(await self.get_task(task.id, tx.conn), None, alias_recorded=False)
+
+    async def bind_session_row(self, ref: str | int, session_id: int, *, actor: str) -> Task:
+        """Bind the session row the board's picker names (no name or alias resolving); the
+        same binding history and `task.session_bound` event as `bind_session`."""
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            session = await repo.get_session_by_id(tx.conn, session_id)
+            if session is None:
+                raise NotFoundError(f"Session #{session_id} not found.")
+            await self._bind(tx, task, session, actor)
+            return await self.get_task(task.id, tx.conn)
 
     async def _add_alias(self, tx: _Tx, task: Task, session: Session, name: str) -> None:
         previous = await repo.get_session_by_alias(tx.conn, name)

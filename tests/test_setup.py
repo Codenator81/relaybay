@@ -148,8 +148,16 @@ def test_changed_port_updates_relaybay_entries_in_place(tmp_path: Path) -> None:
 
 def test_http_handler_references_the_token_by_env_var(tmp_path: Path) -> None:
     handler = hook_handler("http", BASE, tmp_path / "token")
-    assert handler["headers"] == {"Authorization": "Bearer ${RELAYBAY_TOKEN}"}
-    assert handler["allowedEnvVars"] == ["RELAYBAY_TOKEN"]
+    assert handler["headers"] == {
+        "Authorization": "Bearer ${RELAYBAY_TOKEN}",
+        "X-Relaybay-Host-Session": "${CLAUDE_CODE_HOST_SESSION_ID}",
+        "X-Relaybay-Host-Attended": "${CLAUDE_CODE_SESSION_ATTENDED}",
+    }
+    assert handler["allowedEnvVars"] == [
+        "RELAYBAY_TOKEN",
+        "CLAUDE_CODE_HOST_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+    ]
     assert handler["url"] == f"{BASE}/hooks/claude-code" and is_ours(handler)
     assert handler["timeout"] <= 5
     assert not is_ours({"type": "http", "url": "http://localhost:9000/audit"})
@@ -695,7 +703,10 @@ def test_failed_replace_leaves_no_temp_file(
 
 
 def test_wake_hook_is_opt_in_marked_and_removable(
-    tmp_path: Path, claude_home: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    claude_home: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = tmp_path / "data"
     path = claude_home / ".claude" / "settings.json"
@@ -707,14 +718,19 @@ def test_wake_hook_is_opt_in_marked_and_removable(
     assert not machine_setup.our_handlers(applied, "Stop", role="wake")  # default: off
 
     assert run_cli(*common) == 0 and "--wake" not in capsys.readouterr().out
-    # No Claude Code version is known to run asyncRewake: refused without --force-wake.
-    assert machine_setup.MIN_ASYNC_REWAKE_VERSION is None
+    # This Claude Code (2.1.300) is older than the release verified to run asyncRewake.
+    assert machine_setup.MIN_ASYNC_REWAKE_VERSION == (2, 1, 309)
     assert run_cli(*common, "--apply", "--wake") == 1
     assert "Add --force-wake" in capsys.readouterr().out
     assert json.loads(path.read_text(encoding="utf-8")) == applied
+    with monkeypatch.context() as m:
+        verified = Detection(claude_path="/usr/bin/claude", claude_version="2.1.309 (Claude Code)")
+        m.setattr(cli, "detect", lambda **_: verified)
+        assert run_cli(*common, "--wake") == 0
+        assert "--apply --mode command --wake --expect" in capsys.readouterr().out
     assert run_cli(*common, "--wake", "--force-wake") == 0
     out = capsys.readouterr().out
-    assert "experimental, not verified" in out and "hold the end of every turn" in out
+    assert "verified with Claude Code 2.1.309" in out and "hold the end of every turn" in out
     assert "--apply --mode command --wake --force-wake" in out
     assert run_cli(*common, "--apply", "--wake", "--force-wake") == 0
     data_wake = json.loads(path.read_text(encoding="utf-8"))
@@ -744,7 +760,7 @@ def test_wake_hook_is_opt_in_marked_and_removable(
         run=lambda *a, **k: SimpleNamespace(returncode=0, stderr=""),
     )
     [wake_check] = [c for c in checks if c.name == "wake-up hook"]
-    assert wake_check.detail.startswith("UNVERIFIED")
+    assert wake_check.detail.startswith("asyncRewake hook at Stop (opt-in, verified from")
     assert run_cli(*common, "--remove") == 0
     assert json.loads(path.read_text(encoding="utf-8")) == FOREIGN
 

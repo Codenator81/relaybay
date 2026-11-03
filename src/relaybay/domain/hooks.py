@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from pathlib import PureWindowsPath
 from typing import Any
 
+from relaybay.domain.errors import ValidationError
+from relaybay.domain.sessions import parse_session_id
+
 HOOK_PATH = "/hooks/claude-code"
 # Opt-in wake-up hook (`relaybay setup --wake`): an `asyncRewake` command hook started at Stop
 # that long-polls this path and exits 2 when an owner comment arrives for the idle session.
@@ -25,6 +28,20 @@ HOOK_EVENTS = tuple(HOOK_STATUS)
 DELIVERY_EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse")
 CC_ID_MAX = 200
 ACTIVITY_MAX = 200
+# The Claude desktop app runs Claude Code with its own session id (`local_<uuid>`) in this
+# variable; hooks inherit it. The forwarder adds it to SessionStart as HOST_SESSION_FIELD (http
+# hooks send it as HOST_SESSION_HEADER), so a new Claude Code id after /clear or a restart is
+# linked to the desktop session it belongs to.
+HOST_SESSION_ENV = "CLAUDE_CODE_HOST_SESSION_ID"
+HOST_SESSION_FIELD = "relaybay_host_session"
+HOST_SESSION_HEADER = "X-Relaybay-Host-Session"
+# "1" in the desktop window's own Claude Code; a `claude -p` started from one of its tools
+# inherits HOST_SESSION_ENV but runs with "0" here, so it never takes the window's link.
+ATTENDED_ENV = "CLAUDE_CODE_SESSION_ATTENDED"
+ATTENDED_FIELD = "relaybay_host_attended"
+ATTENDED_HEADER = "X-Relaybay-Host-Attended"
+# SessionEnd reasons after which the same window goes on with a new Claude Code id.
+CONTINUED_END_REASONS = ("clear", "resume")
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +53,9 @@ class HookEvent:
     activity: str | None
     end_reason: str | None = None
     stop_hook_active: bool = False  # Stop: Claude Code is already continuing for a stop hook
+    source: str | None = None  # SessionStart: startup, resume, clear or compact
+    host_session: str | None = None  # SessionStart: the desktop session id (`local_<uuid>`)
+    attended: bool = False  # SessionStart: Claude Code runs attended (the desktop window itself)
 
     @property
     def activity_only(self) -> bool:
@@ -50,6 +70,15 @@ def _text(value: Any, limit: int) -> str | None:
     return text[:limit] or None
 
 
+def _host_session(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return parse_session_id(value)
+    except ValidationError:
+        return None
+
+
 def parse_hook(payload: Any) -> HookEvent | None:
     """The part of a hook's input JSON relaybay uses, or None for an event it ignores. The
     prompt text and tool input are never kept."""
@@ -59,8 +88,9 @@ def parse_hook(payload: Any) -> HookEvent | None:
     cc_id = _text(payload.get("session_id"), CC_ID_MAX)
     if event not in HOOK_STATUS or cc_id is None:
         return None
+    source = _text(payload.get("source"), 40) if event == "SessionStart" else None
     if event == "SessionStart":
-        activity = f"started ({_text(payload.get('source'), 40) or 'startup'})"
+        activity = f"started ({source or 'startup'})"
     elif event == "UserPromptSubmit":
         activity = "prompt"
     elif event in ("PreToolUse", "PostToolUse"):
@@ -79,6 +109,11 @@ def parse_hook(payload: Any) -> HookEvent | None:
         activity=activity,
         end_reason=_text(payload.get("reason"), 40) if event == "SessionEnd" else None,
         stop_hook_active=event == "Stop" and payload.get("stop_hook_active") is True,
+        source=source,
+        host_session=(
+            _host_session(payload.get(HOST_SESSION_FIELD)) if event == "SessionStart" else None
+        ),
+        attended=event == "SessionStart" and payload.get(ATTENDED_FIELD) == "1",
     )
 
 

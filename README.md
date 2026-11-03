@@ -66,8 +66,8 @@ Something off? `relaybay doctor`.
 - **Comments to agents** — write a comment on a task (dialog or task page) and the agent of the
   bound session gets it through its hooks with its next prompt or tool call; the thread shows
   "sent / delivered / read" live, `Stop` reminds the agent (at most twice) until it acknowledges,
-  and agents answer with `comment_add` (their replies land in your Inbox). An opt-in, experimental
-  wake-up hook (`relaybay setup --apply --wake --force-wake`) wakes an idle session for a new
+  and agents answer with `comment_add` (their replies land in your Inbox). An opt-in
+  wake-up hook (`relaybay setup --apply --wake`, Claude Code 2.1.309+) wakes an idle session for a new
   comment.
 - **Stands & access** — per project, the local, test and live environments with their base URL and
   how agents reach them (ssh alias, kube context, database host, GitOps repository, log links),
