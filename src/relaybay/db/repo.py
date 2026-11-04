@@ -29,6 +29,7 @@ from relaybay.domain.models import (
     Comment,
     Decision,
     Event,
+    ImportItem,
     Project,
     Report,
     Session,
@@ -2050,7 +2051,7 @@ async def add_document_version(
 _NOTE_SELECT = """
 SELECT m.*, p.slug AS project_slug FROM memory m LEFT JOIN project p ON p.id = m.project_id
 """
-NOTE_FIELDS = ("title", "body", "tags", "review_at")
+NOTE_FIELDS = ("title", "body", "tags", "links", "review_at")
 
 
 def _note(row: aiosqlite.Row) -> MemoryNote:
@@ -2096,11 +2097,12 @@ async def insert_note(
     review_at: str | None,
     author: str,
     now: str,
+    links: str | None = None,
 ) -> int:
     cur = await conn.execute(
         "INSERT INTO memory (scope, project_id, role, kind, title, body, tags, source_kind,"
-        " source_ref, source_text, review_at, valid_from, recorded_at, updated_at, author)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " source_ref, source_text, links, review_at, valid_from, recorded_at, updated_at, author)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             scope,
             project_id,
@@ -2112,6 +2114,7 @@ async def insert_note(
             source.kind,
             source.ref,
             source.text,
+            links,
             review_at,
             now,
             now,
@@ -2176,6 +2179,36 @@ async def list_notes(
         sql += " AND m.superseded_at IS NULL"
     rows = await _all(conn, sql + " ORDER BY m.id DESC LIMIT ?", (project_id, limit))
     return [_note(r) for r in rows]
+
+
+async def list_all_notes(conn: aiosqlite.Connection) -> list[MemoryNote]:
+    rows = await _all(conn, _NOTE_SELECT + " WHERE m.superseded_at IS NULL ORDER BY m.id")
+    return [_note(r) for r in rows]
+
+
+async def list_import_items(conn: aiosqlite.Connection) -> list[ImportItem]:
+    rows = await _all(conn, "SELECT * FROM import_item ORDER BY kind, item")
+    return [ImportItem(**dict(r)) for r in rows]
+
+
+async def save_import_item(conn: aiosqlite.Connection, item: ImportItem) -> None:
+    await conn.execute(
+        "INSERT OR REPLACE INTO import_item (kind, item, source_path, target_id, content_hash,"
+        " target_hash, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            item.kind,
+            item.item,
+            item.source_path,
+            item.target_id,
+            item.content_hash,
+            item.target_hash,
+            item.imported_at,
+        ),
+    )
+
+
+async def delete_import_item(conn: aiosqlite.Connection, kind: str, item: str) -> None:
+    await conn.execute("DELETE FROM import_item WHERE kind = ? AND item = ?", (kind, item))
 
 
 _BLOCK_SELECT = """

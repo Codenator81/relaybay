@@ -1,7 +1,7 @@
 # 0008 — Memory and context
 
 - Status: **Accepted** (step 11.6), planned for 0.3.0 together with Review
-  ([0007](0007-review.md)). 11.6a and 11.6b are built: [SPEC §8](../SPEC.md#spec-memory).
+  ([0007](0007-review.md)). 11.6a, 11.6b and 11.6c are built: [SPEC §8](../SPEC.md#spec-memory).
 - Size: 11.6a ~3 agent-days, 11.6b ~2, 11.6c ~1.5 (includes the revision after research: time axes,
   candidate operations, blocks, stemmed search, secret scan, SessionStart injection); optional
   semantic search ~1.5 later.
@@ -153,7 +153,23 @@ backup and grep. After acceptance a coordinator's own instructions shrink to "st
   session row), unlike `memory_get`, whose read tracking changes nothing a caller depends on.
 - Relevant notes are ranked by search on the task's title, without tags.
 - Blocks show one clipped line per block in a digest; `block_get` has the rest.
-- Not built: visibility per role, markdown import and export (11.6c), vectors.
+- Not built: visibility per role, vectors.
+
+## As built in 11.6c
+
+- `import_item` is keyed by kind and a stable item name (`document` + `acme-shop/spec`), not by the
+  source path, so a task keeps its identity whether a registry row or a task folder describes it.
+- A dry run and an export read a copy made with SQLite's backup API, so neither migrates nor writes the
+  real database. Apply plans again on the real one and compares the hash.
+- The service used by these commands has a private empty attachments folder: its start sweeps files no
+  row names, and a server on the same data may be writing one.
+- A target changed on the board is a conflict also when the file did not change, as designed; the
+  exception is a task's description, which export cannot write back.
+- `relaybay` has no contacts table, so contacts stay in the brief document.
+- Beyond the layout of the design: project notes under `projects/<slug>/memory/`, an optional `ref`
+  column, heading aliases, `metadata.role` and `metadata.tags` in a note's frontmatter. Import does not
+  read the exported `decisions.md`.
+- "Optionally daily" is left to the user's scheduler.
 
 ## Order
 

@@ -207,6 +207,23 @@ def _secret_found(text: str, rules: SecretRules) -> str | None:
     return None
 
 
+def find_secrets(text: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> list[tuple[int, str]]:
+    """(1-based line, detector id) for every line of `text` holding a secret, never the value.
+    What only the whole text shows (a flag and its value on two lines, a command named elsewhere)
+    is reported at the line that completes it, so this finds all that `check_secret` refuses."""
+    lines = text.split("\n")
+    found = [(n, name) for n, line in enumerate(lines, 1) if (name := _secret_found(line, rules))]
+    if found:
+        return found
+    whole = _secret_found(text, rules)
+    if not whole:
+        return []
+    for n in range(1, len(lines) + 1):
+        if _secret_found("\n".join(lines[:n]), rules):
+            return [(n, whole)]
+    return [(1, whole)]
+
+
 def check_secret(name: str, value: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> None:
     """Refuse an obvious secret value in field `name`; references and values the policy allows
     pass. The refusal names the field and the detector, never the value."""

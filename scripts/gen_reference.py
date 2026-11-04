@@ -81,8 +81,9 @@ def cli_page() -> str:
         "| Code | Meaning |",
         "|---|---|",
         "| `0` | Success. |",
-        "| `1` | A failed setup write, a failed check item (`setup --check`, `doctor`), or `demo`"
-        " refused a data folder that already holds a board. |",
+        "| `1` | A failed setup write, a failed check item (`setup --check`, `doctor`), `demo`"
+        " refused a data folder that already holds a board, or `import` / `export` has an item"
+        " refused, in conflict or failed. |",
         "| `2` | Invalid settings or arguments. |",
         "",
         "`relaybay hook` always exits `0`, so a hook never fails a Claude Code session.",

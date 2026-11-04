@@ -1,8 +1,11 @@
-"""Command line: `relaybay serve`, `token`, `setup`, `doctor`, `demo` and `hook`."""
+"""Command line: `relaybay serve`, `token`, `setup`, `doctor`, `demo`, `import`, `export` and
+`hook`."""
 
 import argparse
+import asyncio
 import json
 import os
+import sqlite3
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -11,6 +14,7 @@ from urllib.request import ProxyHandler, build_opener
 
 from relaybay import __version__
 from relaybay.config import Settings, load_settings
+from relaybay.domain.errors import DomainError
 from relaybay.domain.hooks import HOOK_PATH
 from relaybay.machine_setup import (
     DEFAULT_MODE,
@@ -126,6 +130,63 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="If the folder already holds a board, rename its database aside and start over.",
     )
+
+    importer = sub.add_parser(
+        "import",
+        help="Bring a markdown setup (project briefs, task registry, task notes, memory notes)"
+        " into relaybay. Prints the plan; writes nothing without --apply.",
+    )
+    importer.add_argument("root", type=Path, help="The folder holding the layout.")
+    importer.add_argument(
+        "--apply", action="store_true", help="Write the plan (default: a dry run, nothing written)."
+    )
+    importer.add_argument(
+        "--expect",
+        metavar="HASH",
+        help="With --apply: write only if the plan still has this hash (printed by the dry run)."
+        " Without it, you write whatever the plan is at that moment.",
+    )
+    importer.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Take the file's text over a target changed on the board since its import (as a new"
+        " version; old versions stay).",
+    )
+    importer.add_argument(
+        "--aliases",
+        type=Path,
+        metavar="FILE",
+        help="JSON file with more column, stage and heading names, in any language.",
+    )
+    importer.add_argument(
+        "--retro-project",
+        metavar="SLUG",
+        help="The project whose document 'retro' receives retro.md (skipped without it).",
+    )
+    importer.add_argument("--home", type=Path, help="relaybay data directory.")
+
+    exporter = sub.add_parser(
+        "export",
+        help="Write documents, decisions, notes and the task registry back to the markdown layout."
+        " Prints what would change; writes nothing without --apply.",
+    )
+    exporter.add_argument("root", type=Path, help="The folder to write to.")
+    exporter.add_argument(
+        "--apply", action="store_true", help="Write the files (default: a dry run)."
+    )
+    exporter.add_argument(
+        "--force",
+        action="store_true",
+        help="Also overwrite or remove files changed by hand since the last export.",
+    )
+    exporter.add_argument(
+        "--aliases",
+        type=Path,
+        metavar="FILE",
+        help="The aliases of the import: a hand-written registry that says the same stays as it"
+        " is.",
+    )
+    exporter.add_argument("--home", type=Path, help="relaybay data directory.")
 
     hook = sub.add_parser("hook", help="Forward one hook event from stdin (command hook).")
     hook.add_argument("--home", type=Path, help="Data directory.")
@@ -255,6 +316,61 @@ def cmd_demo(settings: Settings, force: bool) -> int:
     return 0
 
 
+def cmd_import(settings: Settings, args: argparse.Namespace) -> int:
+    from relaybay import markdown_import as importer
+
+    if args.expect and not args.apply:
+        print("relaybay import: --expect goes with --apply.", file=sys.stderr)
+        return 2
+    try:
+        root = importer.resolve_root(args.root)
+        aliases = importer.read_aliases(args.aliases)
+    except importer.ImportProblem as exc:
+        print(f"relaybay import: {exc}", file=sys.stderr)
+        return 2
+    try:
+        code, lines = asyncio.run(
+            importer.run_import(
+                settings,
+                root,
+                aliases=aliases,
+                retro_project=args.retro_project,
+                overwrite=args.overwrite,
+                apply=args.apply,
+                expect=args.expect,
+            )
+        )
+    except (DomainError, ValueError, OSError, sqlite3.Error) as exc:
+        print(f"relaybay import: {exc}", file=sys.stderr)
+        return 1
+    print("\n".join(lines))
+    return code
+
+
+def cmd_export(settings: Settings, args: argparse.Namespace) -> int:
+    from relaybay import markdown_export as exporter
+    from relaybay import markdown_import as importer
+
+    try:
+        aliases = importer.read_aliases(args.aliases)
+    except importer.ImportProblem as exc:
+        print(f"relaybay export: {exc}", file=sys.stderr)
+        return 2
+    root = args.root.expanduser().resolve()
+    if root.exists() and not root.is_dir():
+        print(f"relaybay export: {args.root} is not a folder", file=sys.stderr)
+        return 2
+    try:
+        code, lines = asyncio.run(
+            exporter.run_export(settings, root, aliases=aliases, apply=args.apply, force=args.force)
+        )
+    except (exporter.ExportProblem, DomainError, ValueError, OSError, sqlite3.Error) as exc:
+        print(f"relaybay export: {exc}", file=sys.stderr)
+        return 1
+    print("\n".join(lines))
+    return code
+
+
 def cmd_hook(settings: Settings) -> int:
     from relaybay import hook_client
 
@@ -333,6 +449,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(settings, args.json)
     if command == "demo":
         return cmd_demo(settings, args.force)
+    if command == "import":
+        return cmd_import(settings, args)
+    if command == "export":
+        return cmd_export(settings, args)
     if command == "token":
         return cmd_token(settings, args.rotate)
     return cmd_serve(settings, getattr(args, "reload", False))

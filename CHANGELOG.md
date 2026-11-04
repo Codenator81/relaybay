@@ -9,6 +9,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Markdown import and export (step 11.6c of design 0008, migration `0015_import`, additive):
+  `relaybay import <root>` brings a markdown layout onto the board (project briefs with their
+  decisions, further documents, a task registry with column and stage aliases, per-task notes, memory
+  notes, a retro registry). A dry run is the default and prints what would be added, updated,
+  unchanged, skipped, in conflict or refused, with diffs and a plan hash; `--apply --expect <hash>`
+  writes exactly that plan. A re-run with no changes writes nothing. A target changed on the board
+  since its import is a `conflict` (`--overwrite` takes the file as a new version); an edited decision
+  bullet supersedes the old decision; an item with a secret is refused by file, line and detector.
+  `relaybay export <root>` writes documents, decisions, notes and the registry back, deterministic, with
+  a manifest that protects files changed by hand (`--force`). Guide:
+  [Import and export a markdown setup](docs/how-to/markdown-import-export.md).
 - Digests per level (step 11.6b of design 0008, migration `0014_digests`, additive): MCP tools
   `portfolio_digest`, `project_digest` and `task_context` give markdown index lines with the tool to
   drill down, within a size budget (`digest_budget_chars`, default 12000; per call `budget`, 500 to
