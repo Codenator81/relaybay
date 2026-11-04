@@ -193,6 +193,19 @@ class Comment:
 
 
 @dataclass(slots=True)
+class ImportItem:
+    """One thing `relaybay import` wrote (`import_item` row)."""
+
+    kind: str  # document, task, task_note, decision, note
+    item: str  # stable name of the thing, e.g. 'acme-shop/spec'
+    source_path: str  # relative to the import root
+    target_id: int
+    content_hash: str  # the file's value at the import
+    target_hash: str  # the target's value right after the import
+    imported_at: str
+
+
+@dataclass(slots=True)
 class Event:
     id: int
     ts: str

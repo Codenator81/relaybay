@@ -12,6 +12,8 @@
 | [`setup`](#setup) | Connect Claude Code on this machine: hooks in user settings, MCP check. |
 | [`doctor`](#doctor) | Diagnose the installation: versions, data folder, server, Claude Code. |
 | [`demo`](#demo) | Seed a demo workspace (acme-shop, demo-api) into a data directory. |
+| [`import`](#import) | Bring a markdown setup (project briefs, task registry, task notes, memory notes) into relaybay. Prints the plan; writes nothing without --apply. |
+| [`export`](#export) | Write documents, decisions, notes and the task registry back to the markdown layout. Prints what would change; writes nothing without --apply. |
 | [`hook`](#hook) | Forward one hook event from stdin (command hook). |
 
 ## `serve`
@@ -75,6 +77,32 @@ Seed a demo workspace (acme-shop, demo-api) into a data directory.
 | `--home` | `HOME` | Data directory for the demo (required). Required. |
 | `--force` |  | If the folder already holds a board, rename its database aside and start over. |
 
+## `import`
+
+Bring a markdown setup (project briefs, task registry, task notes, memory notes) into relaybay. Prints the plan; writes nothing without --apply.
+
+| Option | Value | Meaning |
+|---|---|---|
+| `root` | `ROOT` | The folder holding the layout. Required. |
+| `--apply` |  | Write the plan (default: a dry run, nothing written). |
+| `--expect` | `HASH` | With --apply: write only if the plan still has this hash (printed by the dry run). Without it, you write whatever the plan is at that moment. |
+| `--overwrite` |  | Take the file's text over a target changed on the board since its import (as a new version; old versions stay). |
+| `--aliases` | `FILE` | JSON file with more column, stage and heading names, in any language. |
+| `--retro-project` | `SLUG` | The project whose document 'retro' receives retro.md (skipped without it). |
+| `--home` | `HOME` | relaybay data directory. |
+
+## `export`
+
+Write documents, decisions, notes and the task registry back to the markdown layout. Prints what would change; writes nothing without --apply.
+
+| Option | Value | Meaning |
+|---|---|---|
+| `root` | `ROOT` | The folder to write to. Required. |
+| `--apply` |  | Write the files (default: a dry run). |
+| `--force` |  | Also overwrite or remove files changed by hand since the last export. |
+| `--aliases` | `FILE` | The aliases of the import: a hand-written registry that says the same stays as it is. |
+| `--home` | `HOME` | relaybay data directory. |
+
 ## `hook`
 
 Forward one hook event from stdin (command hook).
@@ -89,7 +117,7 @@ Forward one hook event from stdin (command hook).
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | A failed setup write, a failed check item (`setup --check`, `doctor`), or `demo` refused a data folder that already holds a board. |
+| `1` | A failed setup write, a failed check item (`setup --check`, `doctor`), `demo` refused a data folder that already holds a board, or `import` / `export` has an item refused, in conflict or failed. |
 | `2` | Invalid settings or arguments. |
 
 `relaybay hook` always exits `0`, so a hook never fails a Claude Code session.

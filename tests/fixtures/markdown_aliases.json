@@ -1,0 +1,18 @@
+{
+  "columns": {
+    "Projekt": "project",
+    "Aufgabe": "task",
+    "Phase": "stage",
+    "Wartet auf": "waiting_on",
+    "Schritt": "next_step",
+    "Dokument": "document"
+  },
+  "stages": {
+    "Entwicklung": "dev",
+    "geplant": "plan"
+  },
+  "headings": {
+    "Entscheidungen": "decisions",
+    "Aufgabe": "task"
+  }
+}

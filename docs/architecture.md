@@ -52,7 +52,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 | Module | Responsibility |
 |---|---|
-| `__main__.py`, `cli.py` | `relaybay [serve]`, `token`, `setup`, `doctor`, `demo`, `hook`; standard-library `argparse` |
+| `__main__.py`, `cli.py` | `relaybay [serve]`, `token`, `setup`, `doctor`, `demo`, `import`, `export`, `hook`; standard-library `argparse` |
 | `config.py` | `Settings`: defaults → `config.toml` → `RELAYBAY_*` → flags; data dir via `platformdirs` |
 | `app.py` | FastAPI app: lifespan (service start, MCP session manager), routers, static files, middleware; OpenAPI and docs UI disabled |
 | `security.py` | Token file, cookie and CSRF values (HMAC of the token), `token_id`, `SecurityMiddleware` (pure ASGI, so streams pass through) |
@@ -65,6 +65,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
 | `doctor.py` | `relaybay doctor`: read-only diagnosis built from the setup checks plus versions, data folder, token and rules hash |
 | `demo.py` | `relaybay demo`: seeds the demo workspace through the service layer |
+| `markdown_import.py`, `markdown_export.py`, `domain/markdown_layout.py` | `relaybay import` and `export`: the markdown layout, a plan with a hash on a copy of the database, writes through the service, the export manifest |
 | `hook_client.py` | The command hook: stdin → POST with 0.3 s timeouts → stdout (a 200 JSON answer only), always exit 0; with `--wait` the wake-up hook (long poll, exit 2 with the comment on stderr) |
 | `logs.py` | uvicorn log config that redacts the `/login` query string |
 
@@ -134,6 +135,8 @@ policy_layer  id, project_id, environment_id (NULL = the project layer), body (J
 policy_proposal       id, scope (global|<project>|<project>/<environment>), project_id, patch
               (JSON), reason, proposed_by, session_id, status, created_at, decided_at, decided_by
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
+import_item   kind (document|task|task_note|decision|note), item, source_path, target_id,
+              content_hash, target_hash, imported_at
 reader_cursor reader, level (portfolio|project|task), ref_id (0 = portfolio), last_event_id,
               read_at   -- PRIMARY KEY (reader, level, ref_id)
 ```
@@ -224,7 +227,8 @@ CODE_OF_CONDUCT.md  SECURITY.md  GOVERNANCE.md
 pyproject.toml  uv.lock  .github/workflows/{ci.yml, docs.yml, release.yml}  .github/ISSUE_TEMPLATE/
 scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py record_gif.md
 src/relaybay/   cli.py config.py app.py security.py service.py events.py machine_setup.py
-                doctor.py demo.py hook_client.py logs.py  db/  domain/  mcp_server/  web/
+                doctor.py demo.py markdown_import.py markdown_export.py hook_client.py logs.py
+                db/  domain/  mcp_server/  web/
 tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/
 docs/           index.md SPEC.md ROADMAP.md architecture.md mcp-tools.md connect-claude-code.md
                 design/ adr/ reference/ getting-started/ how-to/ llms.txt PLAN.md (pointer)

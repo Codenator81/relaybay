@@ -1071,11 +1071,11 @@ is shown) instead of overwriting it; the editor replaces it. Every saved layer r
 
 ## 8. Memory and context
 
-Steps 11.6a and 11.6b of [Memory and context](design/0008-memory-and-context.md): documents,
+Steps 11.6a to 11.6c of [Memory and context](design/0008-memory-and-context.md): documents,
 decisions with supersede chains, memory notes, blocks, full-text search and the Docs & rules page;
 the project pulse, digests per level with budgets and reader cursors, and the context a session
-gets at its start ([below](#spec-digest)). Markdown import / export (11.6c) and vectors are not
-built yet. **Visibility per role** (coordinator everything, a manager its project, a
+gets at its start ([below](#spec-digest)); markdown import and export
+([below](#spec-import)). Vectors are not built yet. **Visibility per role** (coordinator everything, a manager its project, a
 session its task) is not enforced: every client with the token reads and writes everything.
 Tools and arguments: [MCP tools](mcp-tools.md#memory-and-documents).
 
@@ -1254,6 +1254,101 @@ The total stays below the 8000-character limit of a hook answer, with 500 charac
 moves an exactly linked session's cursor. Any exception there is logged and the answer goes out as it would
 without it, plan reminder included. `session_context = "off"` turns all of it off.
 
+<a id="spec-import"></a>
+
+### Markdown import and export
+
+`relaybay import <root>` and `relaybay export <root>` map a folder of markdown files to documents,
+decisions, notes and tasks and back. Guide with the layout and examples:
+[Import and export a markdown setup](how-to/markdown-import-export.md).
+
+<a id="spec-import-mapping"></a>
+
+**Mapping.** `projects/<slug>.md`: the project (created if missing) and document `brief`; bullets
+under a `## Decisions` heading become project decisions with the source `message:import <path>`.
+`projects/<slug>/docs/<doc>.md`: document `<doc>`, kind `spec`, `status`, `runbook` or `adr` from the
+name, else `doc`. `TASKS.md`: one task per row of every table with a project and a task column, with
+the columns stage, waiting on, next step, document and ref. The leading stage word (up to three words
+are tried) goes through an alias map and the rest, without one leading separator, is the stage note;
+an unknown word gives stage `plan`, the whole text as the note and a warning. `--aliases <file>` adds
+column, stage and heading names. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
+`## Task` section, else the first paragraph), its `## Decisions` bullets as task decisions, the whole
+file as document `task-<ref>`, linked as `relaybay://doc/<project>/task-<ref>`; a folder with no row
+creates the task in stage `plan`. `memory/<name>.md` and `projects/<slug>/memory/<name>.md`: a global
+(or, with `metadata.role`, role) note and a project note: title from `name`, else a first `# Heading`
+(which then leaves the body), else the file name; kind from `metadata.type`, anything unknown is
+`reference`; `description` as the first line of the body unless it is already; `[[links]]` in `links`.
+`retro.md`: document `retro` of `--retro-project`, skipped with a warning without it. A row's task is
+the one imported for its ref, else one no other item is imported for: the one whose key is its ref, or,
+for a row with no `ref` cell whose title no other such row claims, the only one with its title.
+
+<a id="spec-import-plan"></a>
+
+**Plan.** A dry run is the default: it plans on a throwaway copy of the database (SQLite backup API),
+so neither a migration nor an index rebuild changes the real one (SQLite may leave its empty `-shm` and
+`-wal` files next to it) and a missing database stays missing.
+It lists per kind what would be added, updated, unchanged, skipped, in conflict, refused or in error,
+with a unified diff for documents and notes (at most 40 lines per item, 400 in all), and a plan hash
+over kind, item, source, action and the hashes of file and target. `--apply` plans again on the real
+database; with `--expect <hash>` the hash is checked on a copy first, so a different one writes and
+migrates nothing and exits 1. Exit code: 0, or 1 when
+anything was refused, in conflict or failed; 2 for a bad root, aliases file or arguments.
+
+<a id="spec-import-idempotent"></a>
+
+**Idempotence.** `import_item` holds one row per item: kind, item name, source path relative to the
+root, target id, the file's value hash and the target's value hash right after the import. A re-run
+with no changes writes nothing and no events. A target already saying what the file says records
+bookkeeping only, without an event. A changed file updates through the service: a new document
+version with the reason `import`, a note update, task fields only where the file has a value. All
+writes go through `Service` one item at a time with the actor `import`; an error in one item does not
+stop the others. It runs next to `relaybay serve` on the same data folder (WAL, busy timeout); the
+board shows the items after a refresh: the events are in the log, but this process cannot push them
+to the server's live stream.
+
+<a id="spec-import-conflict"></a>
+
+**Conflicts.** A target changed since its last import, or on the board without an import, is listed as
+`conflict` and skipped, unless the file says the same; `--overwrite` takes the file's text (a new
+version, old versions stay). A task's description is an exception, because export cannot write it
+back: only a `TASK.md` whose description changed since the import can conflict. Decisions are
+append-only: a new bullet adds a decision; one that shares at least 60% of its text with a bullet gone
+from the file adds a decision superseding the old one; a bullet gone without a successor leaves its
+decision current, and a decision superseded on the board is not added again (both `skipped`).
+
+<a id="spec-import-refusals"></a>
+
+**Refusals.** An item with a secret value is `refused`, naming the file, line and detector, never the
+value, with the detectors and allowances of the effective policy ([§7](#spec-policy)). Every path and
+all cells of a registry row are scanned before anything is named from them: a refused row is shown as
+`TASKS.md:<line>` and a file name holding a secret as `(hidden name)`; a task folder of a refused row
+is skipped with it. Parsed note fields are scanned too, so JSON escapes hide nothing. Only the root's
+top level, `projects/` and `memory/` are read, without following a link out of the root (a link inside
+is read at its real place). A file over 2 MB, a document, note or description over its limit, and a
+name that is no valid slug are refused; a file that is not UTF-8 is an error for that file. Other
+markdown files there are `skipped`, also `memory/MEMORY.md`, an index.
+
+<a id="spec-import-export"></a>
+
+**Export.** `relaybay export <root>` writes documents (to the file they were imported from, else their
+place in the layout; a task document no task links to under `docs/`), current and superseded decisions
+to `projects/<slug>/decisions.md`, current notes and the registry with a `ref` column. It reads a copy
+of the database. The same data gives the same bytes: sorted, no times but stored ones; an import of an
+export changes nothing. Dry run by default, `--apply` writes. The manifest `.relaybay-export.json`
+holds each file's hash and whether export wrote it. One rule for overwriting: a file export did not
+write (`written: false`, or not in the manifest) is a `conflict` whatever its hash and `--force` takes
+it over; a file export wrote is overwritten only while it matches its hash, else it is a `conflict`
+until `--force`. A file that says the same in its own words (the same note with its tags, or a registry
+row with the document field an import would derive) is kept; the manifest takes its new hash only when
+the difference is line endings or outer whitespace, so a hand edit stays protected. A file export wrote
+that the board no longer has is removed, unless changed by hand; files it did not write are never
+removed, and a manifest entry that is no path of the layout is `refused`, also with `--force`. Two items
+for one path (compared without case): a later note takes a `-<id>` suffix, a later document its `docs/`
+path, otherwise an `error` and exit 1. In a diff, a file on disk holding a secret shows `diff hidden:
+line N (detector)`. Export refuses to run without a database and, with `--apply`, from a board with no
+projects when the manifest is not empty. A write through a link out of the root is refused, a manifest
+that cannot be read stops the run. Import does not read `decisions.md`.
+
 <a id="spec-security"></a>
 
 ## 9. Security model
@@ -1377,6 +1472,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0012_memory` | `decision.scope`, `source_kind` / `source_ref` / `source_text`, `valid_from`, `valid_to`, `recorded_at`, `superseded_at`, `superseded_by` (backfilled: scope from `task_id`, `recorded_at` and `valid_from` from `created_at`); `document`, `document_version`, `memory`, `memory_block`. Additive only. The FTS5 table `search_index` is created by the service at start, not by the migration ([§8](#spec-memory-search)) |
 | `0013_plan` | `task.size`, `task.plan_status`, `task.plan_accepted_at`, `task.plan_accepted_by`; `plan_step` (task, position, title, details, status, done at, link, outcome, conformance, created by), `plan_revision` (task, revision, body JSON, author, reason), `session_todo` (session, Claude Code id, item id, subject, status, active form, position). Additive only |
 | `0014_digests` | `project.pulse`, `project.pulse_at`, `project.pulse_by`; `reader_cursor` (reader, level, ref id with 0 for the portfolio, last event id, read at; primary key reader + level + ref id). Additive only |
+| `0015_import` | `import_item` (kind, item, source path, target id, content hash, target hash, imported at; primary key kind + item). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

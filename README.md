@@ -113,6 +113,17 @@ relaybay demo --home ./relaybay-demo                 # acme-shop and demo-api, t
 relaybay serve --home ./relaybay-demo --port 8766
 ```
 
+## Bring your markdown
+
+Briefs, a task registry, task notes and memory notes in markdown files come over with a dry run first,
+and go back out for git history and backup: [import and export](https://codenator81.github.io/relaybay/how-to/markdown-import-export/).
+
+```bash
+relaybay import ./notes                               # the plan and its hash; writes nothing
+relaybay import ./notes --apply --expect <hash>       # write exactly that plan
+relaybay export ./notes --apply                       # the board back to the same layout
+```
+
 ## Connect Claude Code
 
 ```bash

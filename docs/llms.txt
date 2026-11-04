@@ -22,4 +22,5 @@ Stages are plan, dev, review, test, live, done. Every session should read `proje
 - [Roadmap](https://codenator81.github.io/relaybay/ROADMAP/): versions and status
 - [Design documents](https://codenator81.github.io/relaybay/design/): upcoming steps
 - [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/): `relaybay doctor --json` and what each failing item means
+- [Import and export markdown](https://codenator81.github.io/relaybay/how-to/markdown-import-export/): `relaybay import` and `export`, layout, dry run, conflicts
 - [Source code](https://github.com/Codenator81/relaybay)

@@ -61,6 +61,7 @@ from relaybay.domain.models import (
     Comment,
     Decision,
     Event,
+    ImportItem,
     Project,
     Report,
     Session,
@@ -1700,6 +1701,7 @@ class Service:
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
+        actor: str = "mcp",
     ) -> tuple[Project, bool]:
         slug = _clean_slug(slug)
         name = _clean_text(name, "name", NAME_MAX)
@@ -1708,7 +1710,7 @@ class Service:
             "repo_path": _clean_text(repo_path, "repo_path"),
             "description": _clean_text(description, "description"),
         }
-        default_actor = "mcp"
+        default_actor = actor
         async with self._tx() as tx:
             sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
@@ -2675,6 +2677,7 @@ class Service:
         project: str | None = None,
         role: str | None = None,
         tags: str | None = None,
+        links: str | None = None,
         source: str | None = None,
         review_at: str | None = None,
         op: str | None = None,
@@ -2722,6 +2725,7 @@ class Service:
                 f"A {scope} note has no project; use scope 'project' for a project's note."
             )
         clean_tags = _clean_tags(tags)
+        clean_links = _clean_text(links, "links", mem.LINKS_MAX)
         review = _clean_date(review_at, "review_at")
         origin = mem.parse_source(source)
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
@@ -2733,6 +2737,7 @@ class Service:
                 title=clean_title,
                 body=clean_body,
                 tags=clean_tags,
+                links=clean_links,
                 role=clean_role,
                 source=origin.text,
                 source_ref=origin.ref,
@@ -2804,6 +2809,7 @@ class Service:
                 review_at=review,
                 author=actor,
                 now=tx.now,
+                links=clean_links,
             )
             if op == "supersede":
                 assert old is not None
@@ -2845,6 +2851,7 @@ class Service:
         title: str | None = None,
         body: str | None = None,
         tags: str | None = None,
+        links: str | None = None,
         review_at: str | None = None,
         author: str | None = None,
         session: str | None = None,
@@ -2865,6 +2872,8 @@ class Service:
                 raise ValidationError("body must not be empty.")
         if tags is not None:
             changes["tags"] = _clean_tags(tags)
+        if links is not None:
+            changes["links"] = _clean_text(links, "links", mem.LINKS_MAX)
         if review_at is not None:
             changes["review_at"] = _clean_date(review_at, "review_at")
         if not changes:
@@ -2894,6 +2903,50 @@ class Service:
             saved = await self._note_or_404(tx.conn, found.id)
             await self._note_event(tx, "memory.updated", saved, actor, sess.id if sess else None)
             return saved
+
+    # Markdown import and export
+
+    async def import_items(self) -> list[ImportItem]:
+        return await repo.list_import_items(self._r)
+
+    async def record_import_item(
+        self,
+        kind: str,
+        item: str,
+        source_path: str,
+        target_id: int,
+        content_hash: str,
+        target_hash: str,
+    ) -> None:
+        """Remember what an import wrote. Bookkeeping only: no event, nothing on the board."""
+        async with self._tx() as tx:
+            row = ImportItem(kind, item, source_path, target_id, content_hash, target_hash, tx.now)
+            await repo.save_import_item(tx.conn, row)
+
+    async def forget_import_item(self, kind: str, item: str) -> None:
+        async with self._tx() as tx:
+            await repo.delete_import_item(tx.conn, kind, item)
+
+    async def secret_rules(self, project: str | None) -> SecretRules:
+        """The secret rules of a project; of the global policy for a project not created yet."""
+        found = await repo.get_project(self._r, project) if project else None
+        rules: SecretRules = await self._secret_rules(self._r, found)
+        return rules
+
+    async def all_decisions(self, project_id: int) -> list[Decision]:
+        """Every decision of a project, superseded ones too, oldest first."""
+        items = await repo.list_decisions(
+            self._r, project_id=project_id, include_superseded=True, limit=-1
+        )
+        return items[::-1]
+
+    async def notes_by_id(self, ids: list[int]) -> list[mem.MemoryNote]:
+        """Notes by id, superseded ones too; unlike `get_note`, reading them does not count."""
+        return await repo.get_notes(self._r, ids)
+
+    async def all_notes(self) -> list[mem.MemoryNote]:
+        """Every current note: global, role and of any project, oldest first."""
+        return await repo.list_all_notes(self._r)
 
     # Blocks
 
