@@ -16,6 +16,7 @@ from relaybay.domain.environments import (
     Proposal,
     split_test_secrets,
 )
+from relaybay.domain.map_graph import CommentRow, MessageRow
 from relaybay.domain.memory import (
     Document,
     DocumentVersion,
@@ -40,6 +41,7 @@ from relaybay.domain.models import (
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
+from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile
 
 logger = logging.getLogger("relaybay")
 
@@ -243,6 +245,7 @@ def _session(row: aiosqlite.Row) -> Session:
         cc_session_id=row["cc_session_id"],
         unlinked_reason=row["unlinked_reason"],
         cc_exact=bool(row["cc_exact"]),
+        transcript_path=row["transcript_path"],
     )
 
 
@@ -2636,3 +2639,281 @@ async def like_search(
             scored.append((hits, r["id"], r["kind"]))
     scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
     return [(kind, item_id) for _, item_id, kind in scored[:limit]]
+
+
+# --- map --------------------------------------------------------------------
+
+
+async def map_comments(conn: aiosqlite.Connection) -> list[CommentRow]:
+    rows = await _all(
+        conn,
+        "SELECT task_id, SUM(author_kind = 'owner') AS owner_comments,"
+        " MAX(CASE WHEN author_kind = 'owner' THEN created_at END) AS last_owner_at,"
+        " SUM(author_kind = 'owner' AND read_at IS NULL) AS unread_by_agent,"
+        " SUM(author_kind = 'agent' AND read_at IS NULL) AS unread_by_owner"
+        " FROM comment GROUP BY task_id",
+        (),
+    )
+    return [
+        CommentRow(
+            r["task_id"],
+            r["owner_comments"],
+            r["last_owner_at"],
+            r["unread_by_agent"],
+            r["unread_by_owner"],
+        )
+        for r in rows
+    ]
+
+
+async def map_messages(
+    conn: aiosqlite.Connection, since: str, recent_since: str, limit: int
+) -> list[MessageRow]:
+    """`session.message` events from `since` on, one row per sender and recipient."""
+    rows = await _all(
+        conn,
+        "SELECT session_id, json_extract(payload, '$.to') AS recipient, COUNT(*) AS n,"
+        " MAX(ts) AS last_at FROM event"
+        " WHERE kind = 'session.message' AND ts >= ? AND session_id IS NOT NULL"
+        " GROUP BY session_id, recipient ORDER BY last_at DESC LIMIT ?",
+        (since, limit),
+    )
+    return [
+        MessageRow(
+            r["session_id"], r["recipient"], r["n"], r["last_at"], r["last_at"] >= recent_since
+        )
+        for r in rows
+        if isinstance(r["recipient"], str)
+    ]
+
+
+async def map_recent_comment_tasks(conn: aiosqlite.Connection, since: str) -> set[int]:
+    rows = await _all(
+        conn,
+        "SELECT DISTINCT task_id FROM comment WHERE author_kind = 'owner' AND created_at >= ?",
+        (since,),
+    )
+    return {r[0] for r in rows}
+
+
+async def map_recent_events(conn: aiosqlite.Connection, since: str, limit: int) -> list[Event]:
+    """What sessions did to tasks and live environments from `since` on, newest first."""
+    rows = await _all(
+        conn,
+        "SELECT * FROM event WHERE session_id IS NOT NULL AND ts >= ?"
+        " AND kind IN ('task.created', 'task.updated', 'task.stage_changed', 'report.added',"
+        " 'task.session_bound', 'plan.set', 'plan.step_updated', 'live.action')"
+        " ORDER BY id DESC LIMIT ?",
+        (since, limit),
+    )
+    return [_event(r) for r in rows]
+
+
+# --- usage ------------------------------------------------------------------
+
+
+async def track_usage_file(
+    conn: aiosqlite.Connection, session_id: int, path: str, now: str
+) -> None:
+    """Start reading `path` for the session. A file already tracked moves to the session that
+    reports it now, with the rows read so far."""
+    await conn.execute(
+        "INSERT INTO usage_file (path, session_id, created_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(path) DO UPDATE SET session_id = excluded.session_id",
+        (path, session_id, now),
+    )
+    await conn.execute(
+        "UPDATE usage_day SET session_id = ? WHERE session_id IS NOT ? AND file_id ="
+        " (SELECT id FROM usage_file WHERE path = ?)",
+        (session_id, session_id, path),
+    )
+    # Its subagents' files follow it.
+    await conn.execute(
+        "UPDATE usage_file SET session_id = ? WHERE parent_id ="
+        " (SELECT id FROM usage_file WHERE path = ?)",
+        (session_id, path),
+    )
+    await conn.execute(
+        "UPDATE usage_day SET session_id = ? WHERE file_id IN (SELECT c.id FROM usage_file c"
+        " JOIN usage_file m ON m.id = c.parent_id WHERE m.path = ?)",
+        (session_id, path),
+    )
+
+
+async def add_subagent_files(
+    conn: aiosqlite.Connection, parent: UsageFile, paths: list[str], now: str
+) -> None:
+    for path in paths:
+        await conn.execute(
+            "INSERT OR IGNORE INTO usage_file (path, session_id, parent_id, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (path, parent.session_id, parent.id, now),
+        )
+
+
+async def touch_usage_file(conn: aiosqlite.Connection, file_id: int, now: str) -> None:
+    """A read that got nowhere: the file goes to the back of the queue."""
+    await conn.execute("UPDATE usage_file SET read_at = ? WHERE id = ?", (now, file_id))
+
+
+async def move_usage(conn: aiosqlite.Connection, from_session: int, to_session: int) -> None:
+    await conn.execute(
+        "UPDATE usage_file SET session_id = ? WHERE session_id = ?", (to_session, from_session)
+    )
+    await conn.execute(
+        "UPDATE usage_day SET session_id = ? WHERE session_id = ?", (to_session, from_session)
+    )
+
+
+async def list_usage_files(conn: aiosqlite.Connection) -> list[UsageFile]:
+    """Least recently read first, so a long file cannot keep the others waiting."""
+    rows = await _all(
+        conn, "SELECT * FROM usage_file ORDER BY read_at IS NOT NULL, read_at, id", ()
+    )
+    return [
+        UsageFile(
+            r["id"],
+            r["path"],
+            r["session_id"],
+            r["read_offset"],
+            bool(r["skipping"]),
+            r["error"],
+            r["parent_id"],
+        )
+        for r in rows
+    ]
+
+
+async def apply_usage_chunk(
+    conn: aiosqlite.Connection, file_id: int, chunk: Chunk, now: str
+) -> int:
+    """Store one read of a file; returns how many messages were new. A file that shrank first
+    gives up its own rows and message ids. Ids another file counted stay with that file."""
+    if chunk.shrunk:
+        await conn.execute("DELETE FROM usage_day WHERE file_id = ?", (file_id,))
+        await conn.execute("DELETE FROM usage_message WHERE file_id = ?", (file_id,))
+    counted = 0
+    for line in chunk.lines:
+        cur = await conn.execute(
+            "INSERT OR IGNORE INTO usage_message (message_id, file_id) VALUES (?, ?)",
+            (line.message_id, file_id),
+        )
+        if cur.rowcount != 1:
+            continue
+        counted += 1
+        await conn.execute(
+            "INSERT INTO usage_day (file_id, day, session_id, model, input, output, cache_read,"
+            " cache_write, messages) VALUES (?, ?, (SELECT session_id FROM usage_file"
+            " WHERE id = ?), ?, ?, ?, ?, ?, 1) ON CONFLICT(file_id, day, model) DO UPDATE SET"
+            " input = input + excluded.input, output = output + excluded.output,"
+            " cache_read = cache_read + excluded.cache_read,"
+            " cache_write = cache_write + excluded.cache_write, messages = messages + 1",
+            (
+                file_id,
+                line.day,
+                file_id,
+                line.model,
+                line.input,
+                line.output,
+                line.cache_read,
+                line.cache_write,
+            ),
+        )
+    unknown = "?" if chunk.shrunk else "unknown_lines + ?"
+    await conn.execute(
+        f"UPDATE usage_file SET read_offset = ?, skipping = ?, unknown_lines = {unknown},"
+        " error = NULL, read_at = ? WHERE id = ?",
+        (chunk.offset, int(chunk.skipping), chunk.unknown, now, file_id),
+    )
+    return counted
+
+
+async def set_usage_error(conn: aiosqlite.Connection, file_id: int, error: str, now: str) -> None:
+    await conn.execute(
+        "UPDATE usage_file SET error = ?, read_at = ? WHERE id = ?", (error, now, file_id)
+    )
+
+
+_USAGE_PROJECT = (
+    "COALESCE(s.project_id, (SELECT t.project_id FROM task_session b JOIN task t"
+    " ON t.id = b.task_id WHERE b.session_id = s.id ORDER BY b.bound_at DESC LIMIT 1))"
+)
+
+
+async def usage_day_rows(
+    conn: aiosqlite.Connection,
+    *,
+    since: str | None,
+    project_id: int | None,
+    session_ids: list[int] | None,
+    model: str | None,
+) -> list[UsageDayRow]:
+    """Daily totals per session and model. A session counts in one project: its own, else that
+    of the task it was bound to last."""
+    where, params = [], []
+    if since is not None:
+        where.append("d.day >= ?")
+        params.append(since)
+    if project_id is not None:
+        where.append(f"{_USAGE_PROJECT} = ?")
+        params.append(project_id)
+    if session_ids is not None:
+        where.append(f"d.session_id IN ({', '.join('?' for _ in session_ids) or 'NULL'})")
+        params.extend(session_ids)
+    if model is not None:
+        where.append("d.model = ?")
+        params.append(model)
+    rows = await _all(
+        conn,
+        "SELECT d.day, d.session_id, s.name AS session,"
+        f" (SELECT slug FROM project WHERE id = {_USAGE_PROJECT}) AS project, d.model,"
+        # TOTAL: unlike SUM it cannot fail with an integer overflow.
+        " TOTAL(d.input) AS input, TOTAL(d.output) AS output, TOTAL(d.cache_read) AS cache_read,"
+        " TOTAL(d.cache_write) AS cache_write, TOTAL(d.messages) AS messages"
+        " FROM usage_day d LEFT JOIN session s ON s.id = d.session_id"
+        + (" WHERE " + " AND ".join(where) if where else "")
+        + " GROUP BY d.day, d.session_id, d.model",
+        tuple(params),
+    )
+    return [
+        UsageDayRow(
+            r["day"],
+            r["session_id"],
+            r["session"],
+            r["project"],
+            r["model"],
+            int(r["input"]),
+            int(r["output"]),
+            int(r["cache_read"]),
+            int(r["cache_write"]),
+            int(r["messages"]),
+        )
+        for r in rows
+    ]
+
+
+async def usage_file_stats(conn: aiosqlite.Connection) -> tuple[int, int, int]:
+    """Files tracked, files that could not be read at the last try, lines not understood."""
+    row = await _one(
+        conn,
+        "SELECT COUNT(*), COALESCE(SUM(error IS NOT NULL), 0), COALESCE(SUM(unknown_lines), 0)"
+        " FROM usage_file",
+        (),
+    )
+    return (row[0], row[1], row[2]) if row else (0, 0, 0)
+
+
+async def usage_sessions(conn: aiosqlite.Connection) -> list[tuple[int, str]]:
+    """Sessions that have usage, for the filter."""
+    rows = await _all(
+        conn,
+        "SELECT DISTINCT s.id, s.name FROM usage_day d JOIN session s ON s.id = d.session_id"
+        " ORDER BY s.name, s.id",
+        (),
+    )
+    return [(r[0], r[1]) for r in rows]
+
+
+async def usage_models(conn: aiosqlite.Connection) -> list[str]:
+    rows = await _all(conn, "SELECT DISTINCT model FROM usage_day ORDER BY model", ())
+    return [r[0] for r in rows]

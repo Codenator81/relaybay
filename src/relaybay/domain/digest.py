@@ -47,6 +47,7 @@ NOISE_KINDS = (
     "session.status_changed",
     "session.seen",
     "session.todo_updated",
+    "session.message",
     "comment.delivered",
     "comment.read",
 )

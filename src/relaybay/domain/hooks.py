@@ -1,5 +1,6 @@
 """Claude Code hook events: which ones relaybay reads and what they mean for a session."""
 
+import re
 from dataclasses import dataclass
 from pathlib import PureWindowsPath
 from typing import Any
@@ -42,6 +43,13 @@ ATTENDED_FIELD = "relaybay_host_attended"
 ATTENDED_HEADER = "X-Relaybay-Host-Attended"
 # SessionEnd reasons after which the same window goes on with a new Claude Code id.
 CONTINUED_END_REASONS = ("clear", "resume")
+TRANSCRIPT_PATH_MAX = 4096
+RECIPIENT_MAX = 120
+# The tools whose `to` names another session. Any other tool's `to` may be a mail address or a
+# file: it says nothing about who talks to whom.
+MESSAGE_TOOLS = ("SendMessage",)
+# An address or an address list is not a session. `name@team` still counts.
+_NOT_A_RECIPIENT = re.compile(r"@[^@\s]+\.[^@\s]+|[<,;]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +66,7 @@ class HookEvent:
     # SessionStart: True in the desktop window itself, False when it says it runs unattended ("0"),
     # None when the field is empty or missing (older desktop apps may not send it).
     attended: bool | None = None
+    transcript_path: str | None = None  # the session's transcript file (`*.jsonl`)
 
     @property
     def nested(self) -> bool:
@@ -90,6 +99,32 @@ def _attended(value: Any) -> bool | None:
     if value == "1":
         return True
     return False if value == "0" else None
+
+
+def _transcript_path(value: Any) -> str | None:
+    """The path as sent, not collapsed like other text: only one too long or not `*.jsonl` is
+    refused here. What it points at is checked before it is stored and before it is read."""
+    if not isinstance(value, str) or len(value) > TRANSCRIPT_PATH_MAX:
+        return None
+    if not value.lower().endswith(".jsonl") or not value.isprintable():
+        return None
+    return value
+
+
+def parse_message_recipient(payload: Any) -> str | None:
+    """The recipient of a message tool's call (`MESSAGE_TOOLS`): `tool_input.to` of a `PreToolUse`,
+    capped and cleaned. Nothing else of the tool's input is read, so the message text never gets
+    further than this request."""
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "PreToolUse":
+        return None
+    if payload.get("tool_name") not in MESSAGE_TOOLS:
+        return None
+    tool_input = payload.get("tool_input")
+    recipient = tool_input.get("to") if isinstance(tool_input, dict) else None
+    if not isinstance(recipient, str):
+        return None
+    clean = " ".join("".join(c for c in recipient if c.isprintable()).split())[:RECIPIENT_MAX]
+    return clean if clean and not _NOT_A_RECIPIENT.search(clean) else None
 
 
 def parse_hook(payload: Any) -> HookEvent | None:
@@ -127,6 +162,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
             _host_session(payload.get(HOST_SESSION_FIELD)) if event == "SessionStart" else None
         ),
         attended=_attended(payload.get(ATTENDED_FIELD)) if event == "SessionStart" else None,
+        transcript_path=_transcript_path(payload.get("transcript_path")),
     )
 
 

@@ -68,7 +68,7 @@ def test_sidebar_on_every_page(board: TestClient, seeded: str) -> None:
     assert '<details class="nav-project" open>' in board.get("/p/acme-shop").text
     assert '<details class="nav-project" open>' not in board.get("/inbox").text
     # Items without a working feature are not shown.
-    for absent in ("Manager", "Schedules", "Map", "Usage"):
+    for absent in ("Manager", "Schedules"):
         assert absent not in board.get("/").text
     assert "Integrations</a>" not in board.get("/").text.split("</nav>")[1]  # no header link
 

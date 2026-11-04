@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import struct
 import zlib
 from dataclasses import dataclass
@@ -356,6 +357,7 @@ async def seed(service: Service) -> int:
     )
 
     await seed_memory(service)
+    await seed_map_and_usage(service)
 
     # The desktop session of the checkout task is "working": as if its hook had reported. One
     # event only, so no coalescing timer outlives the service.
@@ -368,6 +370,65 @@ async def seed(service: Service) -> int:
         }
     )
     return count
+
+
+def demo_transcript(path: Path, seed_number: int, today: datetime) -> None:
+    """A small made-up transcript: two weeks of usage lines, a user line around them. The numbers
+    come from a formula, so screenshots stay the same between runs."""
+    lines = []
+    for back in range(14):
+        moment = (today - timedelta(days=back)).isoformat()
+        lines.append({"type": "user", "timestamp": moment, "message": {"role": "user"}})
+        for n in range(1 + (back + seed_number) % 3):
+            model = "demo-model-large" if (back + n) % 4 else "demo-model-small"
+            usage = {
+                "input_tokens": 120 + 40 * ((back * 7 + seed_number) % 11),
+                "output_tokens": 900 + 150 * ((back * 5 + n) % 13),
+                "cache_read_input_tokens": 4000 + 700 * ((back * 3 + seed_number) % 9),
+                "cache_creation_input_tokens": 300 + 90 * (n + back % 5),
+            }
+            message = {"id": f"demo-{seed_number}-{back}-{n}", "model": model, "usage": usage}
+            lines.append({"type": "assistant", "timestamp": moment, "message": message})
+    text = "".join(json.dumps(line) + "\n" for line in lines)
+    path.write_text(text, encoding="utf-8")
+
+
+async def seed_map_and_usage(service: Service) -> None:
+    """Two environments and a few messages between sessions for the Map, a small usage history for
+    Usage: both through the real paths, a hook's tool call and transcript files in the data
+    folder."""
+    await service.save_environment("acme-shop", {"name": "test", "kind": "test"}, actor="demo")
+    await service.save_environment(
+        "acme-shop", {"name": "live", "kind": "live"}, confirm_live=True, actor="demo"
+    )
+    folder = service.db_path.parent / "demo-transcripts"
+    folder.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(UTC)
+    for number, hook in enumerate((DEMO_HOOK_SESSION, DEMO_TODO_HOOK, DEMO_REVIEW_HOOK), 1):
+        path = (folder / f"{hook}.jsonl").resolve()
+        demo_transcript(path, number, today)
+        await service.record_hook(
+            {
+                "hook_event_name": "Stop",
+                "session_id": hook,
+                "cwd": ACME_REPO,
+                "transcript_path": str(path),
+            }
+        )
+    await service.usage_pass()
+    for sender, recipient in (
+        (DEMO_TODO_HOOK, DEMO_DESKTOP_SESSION),
+        (DEMO_TODO_HOOK, "wishlist-agent"),
+        (DEMO_REVIEW_HOOK, "docs-agent"),
+    ):
+        await service.record_hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": sender,
+                "tool_name": "SendMessage",
+                "tool_input": {"to": recipient},
+            }
+        )
 
 
 async def seed_annotations(service: Service, shot: int) -> None:

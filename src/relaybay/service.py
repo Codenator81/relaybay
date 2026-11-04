@@ -30,7 +30,9 @@ from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
 from relaybay.domain import guard
+from relaybay.domain import map_graph as graphs
 from relaybay.domain import memory as mem
+from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.comments import (
     COMMENT_MAX,
@@ -56,6 +58,7 @@ from relaybay.domain.hooks import (
     HookEvent,
     folder_name,
     parse_hook,
+    parse_message_recipient,
     session_start_context,
 )
 from relaybay.domain.models import (
@@ -147,6 +150,10 @@ from relaybay.policy import (
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity event per session
+MESSAGE_WINDOW = 60.0  # seconds: at most one message event per sender and recipient
+MESSAGE_RECIPIENTS_MAX = 20  # different recipients of one sender per window
+HOOK_MEMO_MAX = 4096
+MAP_RECENT_EVENTS = 2000
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
 LIVE_ACTION = "live.action"
 JOURNAL_COMMAND_MAX = 200
@@ -641,6 +648,7 @@ class Service:
         digest_budget_chars: int = limits.DEFAULT_BUDGET,
         session_context: str = "auto",
         session_context_project_chars: int = limits.DEFAULT_SESSION_PROJECT_CHARS,
+        usage_enabled: bool = True,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -698,6 +706,13 @@ class Service:
         self.digest_budget_chars = digest_budget_chars
         self.session_context = session_context
         self.session_context_project_chars = session_context_project_chars
+        self.usage_enabled = usage_enabled
+        # When a message event was last written, per sender and recipient; what a hook's
+        # transcript path was found to be, so the file system is asked once per path; subagent
+        # files over the limit, per transcript file.
+        self._message_written: dict[int, dict[str, float]] = {}
+        self._transcript_checked: dict[str, bool] = {}
+        self._usage_capped: dict[int, int] = {}
         # Projects whose missing or stale pulse a stage move already mentioned in this run.
         self._pulse_noted: set[int] = set()
 
@@ -957,12 +972,15 @@ class Service:
             return session
         if other is not None and other.id != session.id:
             await repo.move_session_todo(tx.conn, other.id, session.id, cc_id)
+            await repo.move_usage(tx.conn, other.id, session.id)
             changes.update(
                 status=other.status,
                 activity=other.activity,
                 activity_at=other.activity_at,
                 cwd=other.cwd,
             )
+            if other.transcript_path:
+                changes["transcript_path"] = other.transcript_path
             if other.kind == "hook" and not await repo.has_bindings(tx.conn, other.id):
                 await repo.delete_session(tx.conn, other.id)
             else:
@@ -1135,7 +1153,56 @@ class Service:
                 await self._record_todo(hook.cc_session_id, change)
             except Exception:
                 logger.exception("Recording the session's todo failed; the hook goes on")
+        recipient = parse_message_recipient(payload)
+        if recipient is not None and session is not None:
+            try:
+                await self._record_message(session, recipient)
+            except Exception:
+                logger.exception("Recording a message edge failed; the hook goes on")
         return session
+
+    async def _record_message(self, session: Session, recipient: str) -> None:
+        """A `session.message` event: sender, recipient and time, never the text. At most one per
+        sender and recipient per `MESSAGE_WINDOW` and `MESSAGE_RECIPIENTS_MAX` recipients per
+        sender, so the hook path writes rarely. The memo holds a bounded number of short lists: each
+        call looks only at its own sender's."""
+        now = time.monotonic()
+        sent = {
+            name: at
+            for name, at in self._message_written.get(session.id, {}).items()
+            if now - at < MESSAGE_WINDOW
+        }
+        if recipient in sent or len(sent) >= MESSAGE_RECIPIENTS_MAX:
+            return
+        sent[recipient] = now
+        if session.id not in self._message_written and (
+            len(self._message_written) >= HOOK_MEMO_MAX
+        ):
+            del self._message_written[next(iter(self._message_written))]  # the oldest sender
+        self._message_written[session.id] = sent
+        async with self._tx() as tx:
+            await tx.event(
+                "session.message",
+                session.name,
+                project_id=session.project_id,
+                session_id=session.id,
+                session=session.name,
+                to=recipient,
+            )
+
+    async def _allowed_transcript(self, value: str | None) -> str | None:
+        """The hook's transcript path when it may be kept. The answer is remembered per path:
+        most hook events repeat the path and none of them should touch the disk for it. The one
+        check runs in a worker thread: a path can take long to answer, the hook path must not."""
+        if value is None or not self.usage_enabled:
+            return None
+        allowed = self._transcript_checked.get(value)
+        if allowed is None:
+            if len(self._transcript_checked) >= HOOK_MEMO_MAX:
+                self._transcript_checked.clear()
+            allowed = await asyncio.to_thread(usage_data.transcript_file, value) is not None
+            self._transcript_checked[value] = allowed
+        return value if allowed else None
 
     async def _held_back(self, hook: HookEvent) -> Session | None:
         """The session when this activity is coalesced into the current window, else None."""
@@ -1170,6 +1237,7 @@ class Service:
             logger.error("Writing hook activity failed", exc_info=task.exception())
 
     async def _apply_hook(self, hook: HookEvent) -> Session:
+        transcript = await self._allowed_transcript(hook.transcript_path)
         async with self._tx() as tx:
             session = await self._hook_session(tx, hook)
             timer = self._activity_timers.pop(session.id, None)
@@ -1181,6 +1249,9 @@ class Service:
                 changes["cwd"] = hook.cwd
             if changes["status"] != session.status or changes["activity"] != session.activity:
                 changes["activity_at"] = tx.now
+            if transcript is not None and transcript != session.transcript_path:
+                changes["transcript_path"] = transcript
+                await repo.track_usage_file(tx.conn, session.id, transcript, tx.now)
             await repo.touch_session(tx.conn, session.id, tx.now, changes)
             updated = await repo.get_session_by_id(tx.conn, session.id)
             assert updated is not None
@@ -1552,6 +1623,206 @@ class Service:
             exclude_kinds=exclude_kinds,
             limit=max(1, min(limit, 500)),
         )
+
+    # --- map ---------------------------------------------------------------
+
+    async def map_graph(
+        self,
+        *,
+        view: str = "structure",
+        minutes: int = graphs.DEFAULT_MINUTES,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        """The Map as JSON-ready nodes and edges. The Now view marks what happened in the last
+        `minutes`. No text of a task, comment or message is in it beyond titles and names."""
+        if view not in graphs.VIEWS:
+            raise ValidationError(f"view must be one of: {', '.join(graphs.VIEWS)}.")
+        if not 1 <= minutes <= graphs.MAX_MINUTES:
+            raise ValidationError(f"minutes must be from 1 to {graphs.MAX_MINUTES}.")
+        conn = self._r
+        now = datetime.now(UTC)
+        shown = await self.get_project(project) if project else None
+        projects = [shown] if shown else await repo.list_projects(conn)
+        project_id = shown.id if shown else None
+        tasks = await repo.list_tasks(
+            conn, project_id=project_id, stages=[s.value for s in OPEN_STAGES]
+        )
+        since = (now - timedelta(days=graphs.RECENT_DAYS)).isoformat(timespec="milliseconds")
+        recent_since = (now - timedelta(minutes=minutes)).isoformat(timespec="milliseconds")
+        bound = {t.session_id for t in tasks}
+        sessions = [
+            s
+            for s in await repo.list_sessions(conn, project_id, graphs.SESSIONS_MAX)
+            if s.id in bound or s.last_seen_at >= since
+        ]
+        environments = await repo.list_environments(conn, [p.id for p in projects])
+        policies = await self._policies(conn, environments)
+        messages = await repo.map_messages(conn, since, recent_since, graphs.MESSAGES_MAX)
+        recipients: dict[str, Session] = {}
+        for name in {m.recipient for m in messages}:
+            found = await repo.find_sessions(conn, name)
+            named = found[0] if found else await repo.get_session_by_cc(conn, name)
+            if named is not None:
+                recipients[name] = named
+        data = graphs.MapData(
+            projects=projects,
+            tasks=tasks,
+            sessions=sessions,
+            environments=environments,
+            levels={e.id: policies[e.id].level_for(e) for e in environments},
+            comments=await repo.map_comments(conn),
+            messages=messages,
+            recipients=recipients,
+            owner_names={name.strip().casefold() for name in self.owner_names},
+        )
+        if view == "now":
+            data.now_comment_tasks = await repo.map_recent_comment_tasks(conn, recent_since)
+            by_name = {(e.project_id, e.name): e.id for e in environments}
+            for event in await repo.map_recent_events(conn, recent_since, MAP_RECENT_EVENTS):
+                assert event.session_id is not None
+                if event.kind == "live.action":
+                    env_id = by_name.get((event.project_id, event.payload.get("environment")))
+                    if env_id is not None:
+                        data.now_access.add((event.session_id, env_id))
+                elif event.task_id is not None:
+                    data.now_bindings.add((event.session_id, event.task_id))
+        return graphs.build_graph(data, view, minutes, shown.slug if shown else None)
+
+    # --- usage -------------------------------------------------------------
+
+    async def usage_pass(
+        self,
+        *,
+        budget: int = usage_data.PASS_BYTES,
+        chunk_bytes: int = usage_data.CHUNK_BYTES,
+        max_lines: int = usage_data.LINES_PER_TRANSACTION,
+    ) -> tuple[int, bool]:
+        """One bounded round over the tracked transcripts: returns the messages newly counted and
+        whether a file is still behind. Files are read in a worker thread with no transaction
+        open; each read is stored in one transaction. A file that fails for any reason keeps its
+        rows, the page says so, and the next file is read. Only a read that moved on is charged to
+        `budget`: a partial line waiting for its end costs nothing and goes to the back."""
+        spent = counted = 0
+        await self._find_subagent_files()
+        for file in await repo.list_usage_files(self._r):
+            offset, skipping, error = file.read_offset, file.skipping, file.error
+            try:
+                while True:
+                    if spent >= budget:
+                        return counted, True
+                    chunk = await asyncio.to_thread(
+                        usage_data.read_file, file.path, offset, skipping, chunk_bytes, max_lines
+                    )
+                    moved = chunk.shrunk or chunk.offset != offset or chunk.skipping != skipping
+                    if moved:
+                        spent += chunk.read_bytes
+                    if moved or chunk.lines or chunk.unknown or error is not None:
+                        async with self._tx() as tx:
+                            counted += await repo.apply_usage_chunk(tx.conn, file.id, chunk, tx.now)
+                    elif chunk.read_bytes:
+                        async with self._tx() as tx:
+                            await repo.touch_usage_file(tx.conn, file.id, tx.now)
+                    offset, skipping, error = chunk.offset, chunk.skipping, None
+                    if not (moved and chunk.behind):
+                        break
+            except FileNotFoundError:
+                continue  # not written yet, or removed: what was read stays counted
+            except Exception as exc:
+                await self._usage_file_failed(file, exc, error)
+        return counted, False
+
+    async def _usage_file_failed(
+        self, file: usage_data.UsageFile, exc: Exception, previous: str | None
+    ) -> None:
+        """Only the kind of failure is kept: an exception's text could quote a line."""
+        reason = (exc.strerror if isinstance(exc, OSError) else None) or type(exc).__name__
+        logger.warning("Usage: transcript file #%d not read: %s", file.id, reason)
+        if reason != previous:
+            async with self._tx() as tx:
+                await repo.set_usage_error(tx.conn, file.id, reason, tx.now)
+
+    async def _find_subagent_files(self) -> None:
+        """Track the subagent transcripts beside each reported transcript, for the same session,
+        up to `SUBAGENT_FILES_MAX` per session. Here and not on the hook path: they appear while
+        a session works, long after it reported its transcript."""
+        files = await repo.list_usage_files(self._r)
+        known = {f.path for f in files}
+        per_session: dict[int | None, int] = {}
+        for file in files:
+            if file.parent_id is not None:
+                per_session[file.session_id] = per_session.get(file.session_id, 0) + 1
+        for file in files:
+            if file.parent_id is not None:
+                continue
+            used = per_session.get(file.session_id, 0)
+            room = max(usage_data.SUBAGENT_FILES_MAX - used, 0)
+            try:
+                found, over = await asyncio.to_thread(
+                    usage_data.subagent_files, file.path, known, room
+                )
+                self._usage_capped[file.id] = over
+                if found:
+                    async with self._tx() as tx:
+                        await repo.add_subagent_files(tx.conn, file, found, tx.now)
+                    known.update(found)
+                    per_session[file.session_id] = used + len(found)
+            except Exception as exc:
+                await self._usage_file_failed(file, exc, file.error)
+
+    async def usage_loop(self, interval: float) -> None:
+        """The background reader: never on the hook path, sooner again while a file is behind."""
+        while True:
+            behind = False
+            try:
+                _, behind = await self.usage_pass()
+            except Exception:
+                logger.exception("Reading transcripts failed; the next pass tries again")
+            await asyncio.sleep(usage_data.CATCH_UP_SECONDS if behind else interval)
+
+    async def usage_session_ids(self, ref: str) -> list[int]:
+        """Sessions a name, external id, alias or Claude Code id names."""
+        found = await repo.find_sessions(self._r, ref)
+        if not found:
+            by_cc = await repo.get_session_by_cc(self._r, ref)
+            found = [by_cc] if by_cc else []
+        if not found:
+            raise NotFoundError(f"Session {ref!r} not found.")
+        return [s.id for s in found]
+
+    async def usage_report(
+        self,
+        *,
+        project: str | None = None,
+        session_ids: list[int] | None = None,
+        model: str | None = None,
+        days: int = 30,
+        group: str = "day",
+    ) -> usage_data.UsageReport:
+        """Tokens per period, session and model. `days` 0 means all of it."""
+        if group not in ("day", "week"):
+            raise ValidationError("group must be day or week.")
+        if not 0 <= days <= usage_data.DAYS_MAX:
+            raise ValidationError(f"days must be from 0 (all) to {usage_data.DAYS_MAX}.")
+        today = datetime.now(UTC).date()
+        since = (today - timedelta(days=days - 1)).isoformat() if days else None
+        project_id = (await self.get_project(project)).id if project else None
+        rows = await repo.usage_day_rows(
+            self._r, since=since, project_id=project_id, session_ids=session_ids, model=model
+        )
+        files, unread, unknown = await repo.usage_file_stats(self._r)
+        return usage_data.build_report(
+            rows,
+            group=group,
+            days=days,
+            today=today,
+            files=files,
+            unread_files=unread,
+            unknown_lines=unknown,
+            capped_files=sum(self._usage_capped.values()),
+        )
+
+    async def usage_filters(self) -> tuple[list[tuple[int, str]], list[str]]:
+        return await repo.usage_sessions(self._r), await repo.usage_models(self._r)
 
     async def unlinked_hook_sessions(self, limit: int = 50) -> list[Session]:
         """Hook sessions that could not be linked to one relaybay session (Settings page)."""

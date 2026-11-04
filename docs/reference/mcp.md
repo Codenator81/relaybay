@@ -29,6 +29,7 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`decision_list`](#decision_list) | read |
 | [`memory_add`](#memory_add) | write |
 | [`memory_update`](#memory_update) | write |
+| [`usage_summary`](#usage_summary) | read |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -335,6 +336,16 @@ Change a memory note. If someone changed it after you read it, nothing is saved 
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `usage_summary`
+
+Tokens used per day, project, session and model, read from Claude Code transcripts; subagents count to their session. Tokens only: relaybay knows neither prices nor quotas. "unknown" means the data does not say.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string or null | no | Only sessions of this project (slug). |
+| `session` | string or null | no | Only this session: its name, desktop id or hook session id. |
+| `days` | integer | no | How many days back, today included. Default: `7`. |
 
 ### `memory_search`
 

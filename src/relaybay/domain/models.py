@@ -36,6 +36,7 @@ class Session:
     cc_session_id: str | None = None
     unlinked_reason: str | None = None
     cc_exact: bool = False  # cc_session_id was linked by the agent itself (`hook_session`)
+    transcript_path: str | None = None  # the transcript file its hooks reported last
 
 
 @dataclass(slots=True)

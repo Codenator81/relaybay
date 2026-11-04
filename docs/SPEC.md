@@ -303,8 +303,8 @@ breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`).
 <a id="spec-board-nav"></a>
 
 **Navigation.** Every signed-in page has a left sidebar ([design 0004](design/0004-navigation.md)):
-**Inbox** with a live count badge, **All boards**, **Activity**, **Settings** (the Integrations
-page), then **Projects**, each expandable (the current one is open) with **Board** and
+**Inbox** with a live count badge, **All boards**, **Map**, **Usage**, **Activity**, **Settings**
+(the Integrations page), then **Projects**, each expandable (the current one is open) with **Board** and
 **Sessions**, **Stands & access** and **Docs & rules**. The current item is highlighted (`aria-current="page"`). The header button hides or
 shows the sidebar on wide screens; the choice is remembered in the browser (`localStorage`, the
 sidebar is shown when storage is unavailable). Below 760 px the sidebar is a drawer opened by the
@@ -321,6 +321,8 @@ exist yet are not shown.
 | Task page | `/t/<key>` | The same details as the dialog on a page of its own. |
 | Inbox | `/inbox` | Everything that needs the owner, across projects ([below](#spec-board-inbox)). |
 | Sessions | `/p/<slug>/sessions`, `/sessions` | The sessions of a project, or all sessions ([below](#spec-board-sessions)). |
+| Map | `/map`, `/map/graph` | Who works on what, who talks to whom, who can touch which environment ([below](#spec-map)). |
+| Usage | `/usage` | Tokens per session, model, project, day and week ([below](#spec-usage)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
 | Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)). |
@@ -456,7 +458,8 @@ those bound to one of its tasks now; `/sessions` lists all sessions. Newest acti
 200. Each row: status dot and hook status (working, waiting, idle, ended, or "no hook status"),
 name, kind (desktop, hook or named), last hook activity and its age, working directory, "Open in
 desktop" for a desktop session, the unlinked reason, and the bound tasks (each opens its task
-dialog). The list refetches on session and binding events, at most once per 2 s.
+dialog) and a link to its usage ([below](#spec-usage)). The list refetches on session and binding
+events, at most once per 2 s.
 
 <a id="spec-board-activity"></a>
 
@@ -468,6 +471,112 @@ link, a short description (the same as `events_since`: `dev → test`, a report'
 changed fields, a session's status change) and the actor. On the first page new events are
 prepended live. Above the feed, **Actions on live** lists the newest 20 `live.action` events
 ([§7](#spec-journal)) for the project filter, refreshed live.
+
+<a id="spec-map"></a>
+
+**Map** ([design 0010](design/0010-map-and-usage.md)) draws the system as a graph with the vendored
+Cytoscape.js, in the board's light or dark colours. It works at phone width: pan and zoom inside the
+canvas, no horizontal page scroll.
+
+<a id="spec-map-graph"></a>
+
+*Graph.* `GET /map/graph?view=structure|now&minutes=N&project=<slug>` (behind the board cookie,
+`no-store`; `/map` takes the same query) answers JSON: `view`, `minutes` (default 60, 1 to 10080),
+`project`, `collapsed`, `nodes`, `edges`. A wrong view or minutes is a 400, an unknown project a 404.
+
+| Node | Holds | Badges |
+|---|---|---|
+| `owner` | one | what waits for the owner, agent replies not read |
+| `project` | every project, or the filtered one | open tasks |
+| `task` | open tasks (not done) | stage, waiting for the owner, agent replies not read |
+| `session` | sessions bound to an open task or seen in the last 7 days, at most 300 | status, owner comments the agent has not read, waiting |
+| `environment` | the projects' environments | kind and effective permission level |
+
+Roles the data does not hold (coordinator, managers, workers, intake) are not guessed: a session is
+a session. A message's recipient that names no session relaybay knows, or one outside the project
+filter, is a `session` node with its name only. A node holds no working directory, transcript path,
+base URL or access entry.
+
+| Edge | From → to | Extra |
+|---|---|---|
+| `hierarchy` | owner → project → task, project → environment | |
+| `binding` | session → task it is bound to now | |
+| `message` | session → recipient, messages of the last 7 days, at most 500 pairs | `count`, `last_at` |
+| `access` | session (not ended) → each environment of its own project and of its tasks' projects | `level`, which sets the colour |
+| `comment` | owner → task with owner comments | `count`, `last_at` |
+
+<a id="spec-map-views"></a>
+
+*Views.* **Structure** shows all of it. **Now** marks with `recent: true` the edges active in the
+last N minutes (a message; an owner comment; a session's write to its bound task; an action on a
+live environment, [§7](#spec-journal)) and the page dims the rest. The filter (view, minutes,
+project) is a plain form on the query string.
+
+<a id="spec-map-collapse"></a>
+
+*Collapse.* A collapsed project stands in for its tasks, environments and sessions; edges that
+reached them reach the project, one per kind. More than 150 nodes start with every project collapsed
+(`collapsed: true` in the JSON); the page's buttons, a project's detail line and a double tap change
+it. Tapping a node shows its name, badges and links under the graph.
+
+<a id="spec-map-live"></a>
+
+*Live.* Project, task, session, comment and environment events, `live.action` and `policy.updated`
+refetch the graph at most once per 1.5 s; only elements that changed are touched, and the layout
+runs again only when an element was added. A view the user panned or zoomed stays as it is.
+
+<a id="spec-usage"></a>
+
+**Usage** shows Claude Code tokens per session and model, per day and week and per project, read
+from local transcripts. Tokens only: relaybay knows neither prices nor quotas, and makes no network
+call for this.
+
+<a id="spec-usage-source"></a>
+
+*Source.* Hook input carries `transcript_path` ([§4](#spec-hooks-messages)). It is kept on the
+session (`session.transcript_path`) and tracked per file only when it is an absolute local path
+ending in `.jsonl` and not a link leaving its folder. A UNC path in any spelling, a mapped network
+drive, an alternate data stream and a Windows device name are refused before anything touches the
+file system. The check runs in a worker thread, once per new path on the hook path, and again
+before each read. `usage_enabled = false` keeps no paths and reads nothing; the page shows what was
+read before.
+
+**Subagents count to their session.** The reader also finds `<transcript stem>/subagents/*.jsonl`
+beside each reported transcript, in the background and never on the hook path, under the same
+rules (the folder itself must not be a link), at most 200 files per session; the page and
+`usage_summary` say how many were left out.
+
+<a id="spec-usage-reader"></a>
+
+*Reader.* A background task in the server, never on the hook path, every `usage_interval_seconds`
+(default 300), sooner (5 s) while a file is behind. A pass reads at most 32 MB, 8 MB at a time per
+file, by file offset, in a worker thread with no transaction open; each read stores at most 2000
+usage lines in one transaction, and the offset moves only that far. A partial last line waits for
+the next pass; a read that got nowhere is not charged to the pass and its file goes to the back. A
+line over 8 MB is skipped and counted. A file is opened with `O_NONBLOCK` and `O_NOFOLLOW` where they exist
+and read only if the open handle says it is a regular file. A file that shrank starts over and replaces
+its own rows. A file that disappeared keeps its rows. A file that fails for any reason keeps them
+too, its reason (the kind of failure, no text from it) is kept, the page says so, and the reader
+goes on to the next file.
+
+<a id="spec-usage-parser"></a>
+
+*Parser.* From an `assistant` line only the `usage` numbers, the model name, the message id and the
+time are read; prompt and output text are never stored or logged. Days are UTC. A message id counts
+once, across files too (resumed transcripts repeat lines; the first line of an id wins). Lines that
+are not JSON, of an unknown type, with malformed usage or a number above 2^53, with an id outside
+`[A-Za-z0-9_-]{1,200}` or a day outside 2020-01-01 to tomorrow are skipped and counted; a line
+without tokens is ignored. A missing or odd model name, a removed session and a session in no project show
+as `unknown`.
+
+<a id="spec-usage-page"></a>
+
+*Page.* `/usage?project=&session=<id>&model=&days=&group=day|week`: one bar chart of tokens per
+period (no gaps, at most the newest 400; each bar names its period and total on hover), tables by project, session and
+model, and the rows by period, session, project and model with input, output, cache read, cache
+write and messages, at most 500 rows (the total counts them all). Default 30 days. A session counts
+in one project: its own, else that of the task it was bound to last. `usage_summary`
+([§3](#spec-mcp-tools)) gives the same in text.
 
 <a id="spec-board-live"></a>
 
@@ -530,6 +639,7 @@ done needs one line `as planned` or `deviation: why`.
 | Plan | `plan_get`, `plan_set`, `plan_step_update`, `plan_accept` |
 | Environments | `environments_get`, `environment_propose` |
 | Catch-up and rules | `events_since`, `rules_get` |
+| Usage | `usage_summary` |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 
@@ -590,6 +700,18 @@ waiting on anything else.
 
 Other events are ignored. Activity of a working session is written at most once per 5 s per session
 (the latest wins); status changes are written at once, as `session.status_changed` per bound task.
+
+<a id="spec-hooks-messages"></a>
+
+A `PreToolUse` of `SendMessage` (an explicit list of tools: another tool's `to` may be a mail
+address) whose `tool_input.to` is a string records `session.message` for the Map
+([§2](#spec-map)): sender, recipient and time, never any other part of the input. The recipient
+loses control characters, its whitespace is collapsed and it is capped at 120 characters; one
+holding `@` with a domain, `<`, a comma or a semicolon is not recorded, so no address list passes
+(`name@team` is recorded). At most one event per sender and recipient per minute, and 20 recipients
+per sender per minute. A failure here never stands in the hook's way. Any event's `transcript_path`
+may start the reading of a transcript ([§2](#spec-usage-source)); the file is never opened on this
+path, and the path is checked once per new value.
 
 <a id="spec-hooks-linking"></a>
 
@@ -1438,6 +1560,12 @@ that cannot be read stops the run. Import does not read `decisions.md`.
 
 relaybay is a single-user local server. The security layers, in request order:
 
+<a id="spec-security-usage"></a>
+
+What the Map and Usage keep: sender, recipient and time of a message, never its text; the paths of a
+transcript and its subagents' files and its `usage` numbers, model names, message ids and days, never prompt or output text.
+Nothing of this leaves the machine.
+
 <a id="spec-security-bind"></a>
 
 1. **Bind address.** `127.0.0.1` by default. Any other address (`--host`, LAN or phone access)
@@ -1559,6 +1687,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0014_digests` | `project.pulse`, `project.pulse_at`, `project.pulse_by`; `reader_cursor` (reader, level, ref id with 0 for the portfolio, last event id, read at; primary key reader + level + ref id). Additive only |
 | `0015_import` | `import_item` (kind, item, source path, target id, content hash, target hash, imported at; primary key kind + item). Additive only |
 | `0016_annotations` | `annotation` (screenshot, kind, colour, stroke width, geometry JSON, pin number unique per screenshot, comment, created by / at, updated at, deleted at), `annotation_reply` (annotation, author kind and name, session, body, created at), `attachment.annotated_name`, `annotated_size`, `annotated_sha256`, `annotated_sent_sha256`. Additive only |
+| `0017_usage` | `session.transcript_path`; `usage_file` (path, session, parent file for a subagent's, read offset, skipping, unknown lines, error, created at, read at), `usage_day` (file, day, session, model, input, output, cache read, cache write, messages; primary key file + day + model), `usage_message` (message id, file). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

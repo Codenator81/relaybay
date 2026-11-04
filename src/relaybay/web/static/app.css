@@ -1340,3 +1340,82 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .diff .diff-del { background: rgb(201 42 42 / 14%); }
 .diff .diff-hunk { color: var(--muted); }
 .diff .diff-file { color: var(--muted); font-weight: 600; }
+
+/* --- Map ------------------------------------------------------------------ */
+
+.page.map-page { max-width: 1400px; }
+.map-minutes {
+  width: 5.5em;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.map-status { margin: 0 0 8px; font-size: 13px; }
+.map { width: 100%; }
+.map-canvas {
+  position: relative; /* Cytoscape's own inline rule is refused by the CSP: see map.html */
+  width: 100%;
+  height: calc(100dvh - 300px);
+  min-height: 360px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.map-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+.map-detail[hidden] { display: none; }
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.map-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.map-swatch { display: inline-block; width: 22px; border-top: 2px solid var(--border); }
+.swatch-binding { border-top-color: var(--accent); }
+.swatch-message { border-top: 2px dashed var(--text); }
+.swatch-comment { border-top: 2px dotted var(--badge-text); }
+.swatch-level-none { border-top-color: var(--muted); }
+.swatch-level-read { border-top-color: var(--ok); }
+.swatch-level-ask { border-top-color: var(--warn); }
+.swatch-level-full { border-top-color: var(--bad); }
+
+/* --- Usage ---------------------------------------------------------------- */
+
+.usage-note { margin: 0 0 12px; font-size: 13px; }
+.usage-chart { margin: 0 0 14px; }
+.usage-chart figcaption { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.usage-chart svg { display: block; width: 100%; height: 120px; }
+.usage-baseline { stroke: var(--border); stroke-width: 1; }
+.usage-hit { fill: transparent; }
+.usage-bar { fill: var(--accent); }
+.usage-bar-group:hover .usage-hit { fill: var(--badge-bg); }
+.usage-axis { display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px; }
+.usage-summary { margin: 0 0 8px; font-size: 14px; }
+.usage-summary summary { cursor: pointer; color: var(--muted); }
+.usage-table-wrap { overflow-x: auto; margin: 6px 0 12px; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.usage-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 10px 4px 0; white-space: nowrap; }
+.usage-table td { padding: 4px 10px 4px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.usage-table tfoot th, .usage-table tfoot td { border-top: 2px solid var(--border); font-weight: 600; color: var(--text); }
+.usage-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-table .usage-period { white-space: nowrap; }

@@ -1,5 +1,6 @@
 """ASGI application: board, SSE, MCP endpoint and security middleware in one process."""
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
@@ -41,16 +42,26 @@ def create_app(settings: Settings) -> FastAPI:
         digest_budget_chars=settings.digest_budget_chars,
         session_context=settings.session_context,
         session_context_project_chars=settings.session_context_project_chars,
+        usage_enabled=settings.usage_enabled,
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await service.start()
+        reader = (
+            asyncio.create_task(service.usage_loop(settings.usage_interval_seconds))
+            if settings.usage_enabled
+            else None
+        )
         try:
             async with mcp.session_manager.run():
                 yield
         finally:
+            if reader is not None:
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reader
             await service.close()
 
     app = FastAPI(

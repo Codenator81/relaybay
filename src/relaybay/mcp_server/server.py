@@ -815,6 +815,28 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         return fmt.note_updated(saved)
 
     @mcp.tool(annotations=READ, structured_output=False)
+    async def usage_summary(
+        project: Annotated[
+            str | None, Field(description="Only sessions of this project (slug).")
+        ] = None,
+        session: Annotated[
+            str | None,
+            Field(description="Only this session: its name, desktop id or hook session id."),
+        ] = None,
+        days: Annotated[
+            int, Field(ge=1, le=366, description="How many days back, today included.")
+        ] = 7,
+    ) -> str:
+        """Tokens used per day, project, session and model, read from Claude Code transcripts;
+        subagents count to their session. Tokens only: relaybay knows neither prices nor quotas.
+        "unknown" means the data does not say."""
+        ids = await run(service.usage_session_ids(session)) if session else None
+        report = await run(
+            service.usage_report(project=project or None, session_ids=ids, days=days)
+        )
+        return fmt.usage_summary(report, service.usage_enabled)
+
+    @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(
         query: Annotated[str, Field(description="Words to look for (word forms match).")],
         scope: Annotated[

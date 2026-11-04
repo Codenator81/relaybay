@@ -35,6 +35,8 @@ stops `relaybay serve` with a message that names the key.
 | `digest_budget_chars` | `12000` | `RELAYBAY_DIGEST_BUDGET_CHARS` | — | Default size of a digest in characters, about 3k tokens (500 to 40000). |
 | `session_context` | `auto` | `RELAYBAY_SESSION_CONTEXT` | — | `auto` or `off`: whether `SessionStart` adds the task context or a short project digest to the session's context. |
 | `session_context_project_chars` | `1500` | `RELAYBAY_SESSION_CONTEXT_PROJECT_CHARS` | — | Size of the project digest added at `SessionStart` (500 to 40000; the hook answer's own limit applies on top). |
+| `usage_enabled` | `true` | `RELAYBAY_USAGE_ENABLED` | — | Read token usage from the Claude Code transcripts the hooks report (only `usage` numbers and the model name are kept; no network call). `false` stops the reading and the keeping of transcript paths; the Usage page shows what was read before. |
+| `usage_interval_seconds` | `300` | `RELAYBAY_USAGE_INTERVAL_SECONDS` | — | Seconds between passes of the background usage reader (whole number >= 10). |
 | `claude_home` | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` | Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor, Integrations). |
 
 ## Example `config.toml`

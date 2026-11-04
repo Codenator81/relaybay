@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Usage · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">Usage</span>{% endblock %}
+{%- macro numbers(total) -%}
+<td class="num">{{ "{:,}".format(total.tokens) }}</td>
+<td class="num">{{ "{:,}".format(total.input) }}</td>
+<td class="num">{{ "{:,}".format(total.output) }}</td>
+<td class="num">{{ "{:,}".format(total.cache_read) }}</td>
+<td class="num">{{ "{:,}".format(total.cache_write) }}</td>
+<td class="num">{{ "{:,}".format(total.messages) }}</td>
+{%- endmacro %}
+{%- macro headers() -%}
+<th class="num">Tokens</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache read</th><th class="num">Cache write</th><th class="num">Messages</th>
+{%- endmacro %}
+{%- macro summary(title, label, items) %}
+<details class="usage-summary">
+  <summary>{{ title }} ({{ items|length }})</summary>
+  <div class="usage-table-wrap">
+    <table class="usage-table">
+      <thead><tr><th>{{ label }}</th>{{ headers() }}</tr></thead>
+      <tbody>{% for name, total in items %}<tr><td>{{ name }}</td>{{ numbers(total) }}</tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</details>
+{%- endmacro %}
+{% block content %}
+<main class="page usage-page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Usage</h1>
+  <form class="board-tools" method="get" action="/usage">
+    <label class="field-inline">Project
+      <select name="project">
+        <option value="">All projects</option>
+        {% for p in nav.projects %}<option value="{{ p.slug }}"{% if p.slug == project_filter %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Session
+      <select name="session">
+        <option value="">All sessions</option>
+        {% for id, name in sessions %}<option value="{{ id }}"{% if id == session_filter %} selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Model
+      <select name="model">
+        <option value="">All models</option>
+        {% for m in models %}<option value="{{ m }}"{% if m == model_filter %} selected{% endif %}>{{ m }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Period
+      <select name="days">
+        {% for d in days_choices %}<option value="{{ d }}"{% if d == report.days %} selected{% endif %}>{{ "Last %d days"|format(d) if d else "All" }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">By
+      <select name="group">
+        <option value="day"{% if report.group == "day" %} selected{% endif %}>Day</option>
+        <option value="week"{% if report.group == "week" %} selected{% endif %}>Week</option>
+      </select>
+    </label>
+    <button type="submit" class="btn">Show</button>
+  </form>
+
+  <p class="muted usage-note">Tokens read from the Claude Code transcripts the hooks report. relaybay knows neither prices nor quotas. Subagents count to their session. "unknown" means the data does not say.</p>
+  {% if not usage_enabled %}<p class="form-warning">Reading is off (<code>usage_enabled = false</code>): this is what was read before.</p>{% endif %}
+  {% if report.unknown_lines %}<p class="form-warning">{{ "{:,}".format(report.unknown_lines) }} transcript line(s) were not understood and are not counted.</p>{% endif %}
+  {% if report.capped_files %}<p class="form-warning">{{ report.capped_files }} subagent transcript(s) over the limit per session are not counted.</p>{% endif %}
+  {% if report.unread_files %}<p class="form-warning">{{ report.unread_files }} transcript file(s) could not be read at the last pass.</p>{% endif %}
+
+  {% if not report.rows %}
+  <div class="empty">
+    <p>No usage for this filter.</p>
+    <p>Usage appears after the Claude Code hooks of a session report its transcript ({{ report.files }} file(s) tracked so far); the reader looks at them in the background.</p>
+  </div>
+  {% else %}
+  <figure class="usage-chart">
+    <figcaption>Tokens per {{ report.group }} · most in one {{ report.group }}: {{ "{:,}".format(chart.top) }}</figcaption>
+    <svg viewBox="0 0 {{ chart.width }} {{ chart.height }}" preserveAspectRatio="none" role="img" aria-label="Tokens per {{ report.group }}; the table below has the numbers">
+      <line class="usage-baseline" x1="0" x2="{{ chart.width }}" y1="{{ chart.height - 0.5 }}" y2="{{ chart.height - 0.5 }}"/>
+      {% for bar in chart.bars %}
+      <g class="usage-bar-group">
+        <title>{{ bar.title }}</title>
+        <rect class="usage-hit" x="{{ bar.hit_x }}" y="0" width="{{ bar.hit_width }}" height="{{ chart.height }}"/>
+        {% if bar.height %}<rect class="usage-bar" x="{{ bar.x }}" y="{{ bar.y }}" width="{{ bar.width }}" height="{{ bar.height }}" rx="1.5"/>{% endif %}
+      </g>
+      {% endfor %}
+    </svg>
+    <div class="usage-axis muted"><span>{{ chart.first }}</span><span>{{ chart.last }}</span></div>
+  </figure>
+
+  {{ summary("By project", "Project", report.by_project) }}
+  {{ summary("By session", "Session", report.by_session) }}
+  {{ summary("By model", "Model", report.by_model) }}
+
+  <div class="usage-table-wrap">
+    <table class="usage-table">
+      <thead><tr><th>{{ "Day" if report.group == "day" else "Week of" }}</th><th>Session</th><th>Project</th><th>Model</th>{{ headers() }}</tr></thead>
+      <tbody>
+        {% for row in shown_rows %}
+        <tr>
+          <td class="usage-period">{{ row.period }}</td>
+          <td>{% if row.session_id is not none %}<a href="/usage?session={{ row.session_id }}">{{ row.session }}</a>{% else %}{{ row.session }}{% endif %}</td>
+          <td>{{ row.project }}</td>
+          <td><code>{{ row.model }}</code></td>
+          {{ numbers(row.total) }}
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot><tr><th colspan="4">Total</th>{{ numbers(report.total) }}</tr></tfoot>
+    </table>
+  </div>
+  {% if report.rows|length > shown_rows|length %}<p class="muted">Showing the newest {{ shown_rows|length }} of {{ report.rows|length }} rows; the total counts them all. Narrow the filter to see the rest.</p>{% endif %}
+  {% endif %}
+</main>
+{% endblock %}
