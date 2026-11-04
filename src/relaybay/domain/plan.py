@@ -295,7 +295,7 @@ def reminder_line(
             line += " (blocked)"
         if details and step.details_md:
             line += f" — {one_line(step.details_md, REMINDER_DETAILS_MAX)}"
-        return line + "." + doing
+        return (line if line.endswith(".") else line + ".") + doing
     if todo:
         done = sum(1 for i in todo if i.status == "completed")
         return (

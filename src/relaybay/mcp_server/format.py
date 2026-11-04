@@ -1,8 +1,9 @@
 """Short, model-friendly markdown for tool results."""
 
 import json
-from datetime import UTC, datetime
 
+from relaybay.domain.digest import age
+from relaybay.domain.digest_limits import PULSE_CHARS_MAX
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -31,22 +32,11 @@ from relaybay.domain.models import (
 )
 from relaybay.domain.plan import Plan, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, Review, ReviewStep
-from relaybay.domain.rules import Rules, requirement_label, requirement_short
+from relaybay.domain.rules import Rules, requirement_label, rules_line
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
 from relaybay.policy import EffectivePolicy
 from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
-
-
-def age(ts: str, now: datetime | None = None) -> str:
-    then = datetime.fromisoformat(ts)
-    seconds = int(((now or datetime.now(UTC)) - then).total_seconds())
-    if seconds < 60:
-        return "just now"
-    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
-        if seconds >= size:
-            return f"{seconds // size}{unit} ago"
-    return "just now"
 
 
 def who_label(name: str, external_id: str | None) -> str:
@@ -299,23 +289,18 @@ def project(p: Project, created: bool) -> str:
     return f"{verb} project **{p.slug}** ({p.name}){repo}."
 
 
-def rules_line(rules: Rules) -> str:
-    """`Rules 1a2b3c4d: report before test, progress before done (read relaybay://rules/x)`."""
-    needs = [
-        f"{requirement_short(req)} before {stage}"
-        for stage in STAGES
-        for req in rules.requirements(stage)
-    ]
-    line = f"Rules {rules.hash}: {', '.join(needs) or 'no stage requirements'} (read {rules.uri})"
-    if rules.override_error:
-        line += f"; project override ignored: {rules.override_error}"
-    return line
-
-
 MODE_HELP = {
     "warn": "a stage move that misses a requirement succeeds and the response carries a warning",
     "strict": "a stage move that misses a requirement is refused with the reason",
 }
+
+
+def pulse_saved(p: Project) -> str:
+    text = p.pulse or ""
+    return (
+        f"Pulse of **{p.slug}** saved ({len(text.splitlines())} line(s),"
+        f" {len(text)}/{PULSE_CHARS_MAX} characters)."
+    )
 
 
 def rules_text(rules: Rules) -> str:
@@ -838,6 +823,8 @@ def event_detail(e: Event) -> str:
         return f"#{p.get('note_id')} {p.get('title') or ''}{supersedes}"
     if e.kind == "block.updated":
         return f"{p.get('label')} v{p.get('version')}"
+    if e.kind == "project.pulse_set":
+        return str(p.get("text") or "")
     if e.kind == "session.status_changed":
         change = f"{p['previous']} → {p.get('status')}" if p.get("previous") else p.get("status")
         return f"{p.get('session')}: {change}"

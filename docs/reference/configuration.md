@@ -30,6 +30,11 @@ stops `relaybay serve` with a message that names the key.
 | `attachments_max_mb` | `10` | `RELAYBAY_ATTACHMENTS_MAX_MB` | — | Largest screenshot in MB (whole number >= 1). |
 | `attachments_task_max_mb` | `200` | `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — | Screenshots of one task in all, in MB (whole number >= 1). |
 | `plan_reminder_every` | `30` | `RELAYBAY_PLAN_REMINDER_EVERY` | — | Remind a linked agent of its current plan step every this many tool calls (PostToolUse events); 0 turns the periodic reminder off (session start and todo changes still remind). |
+| `pulse_stale_days` | `7` | `RELAYBAY_PULSE_STALE_DAYS` | — | Days after which a project's pulse is marked stale (whole number >= 1). |
+| `task_stale_days` | `5` | `RELAYBAY_TASK_STALE_DAYS` | — | Days without a change after which `portfolio_digest` lists an open task (whole number >= 1). |
+| `digest_budget_chars` | `12000` | `RELAYBAY_DIGEST_BUDGET_CHARS` | — | Default size of a digest in characters, about 3k tokens (500 to 40000). |
+| `session_context` | `auto` | `RELAYBAY_SESSION_CONTEXT` | — | `auto` or `off`: whether `SessionStart` adds the task context or a short project digest to the session's context. |
+| `session_context_project_chars` | `1500` | `RELAYBAY_SESSION_CONTEXT_PROJECT_CHARS` | — | Size of the project digest added at `SessionStart` (500 to 40000; the hook answer's own limit applies on top). |
 | `claude_home` | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` | Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor, Integrations). |
 
 ## Example `config.toml`

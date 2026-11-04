@@ -9,6 +9,15 @@ from typing import Any
 
 import platformdirs
 
+from relaybay.domain.digest_limits import (
+    BUDGET_MAX,
+    BUDGET_MIN,
+    DEFAULT_BUDGET,
+    DEFAULT_PULSE_STALE_DAYS,
+    DEFAULT_SESSION_PROJECT_CHARS,
+    DEFAULT_TASK_STALE_DAYS,
+    SESSION_CONTEXT_MODES,
+)
 from relaybay.domain.environments import (
     DEFAULT_GUARD_MODE,
     DEFAULT_LEVELS,
@@ -211,6 +220,50 @@ class Settings:
             env="RELAYBAY_PLAN_REMINDER_EVERY",
         ),
     )
+    pulse_stale_days: int = field(
+        default=DEFAULT_PULSE_STALE_DAYS,
+        metadata=_doc(
+            "Days after which a project's pulse is marked stale (whole number >= 1).",
+            key="pulse_stale_days",
+            env="RELAYBAY_PULSE_STALE_DAYS",
+        ),
+    )
+    task_stale_days: int = field(
+        default=DEFAULT_TASK_STALE_DAYS,
+        metadata=_doc(
+            "Days without a change after which `portfolio_digest` lists an open task (whole"
+            " number >= 1).",
+            key="task_stale_days",
+            env="RELAYBAY_TASK_STALE_DAYS",
+        ),
+    )
+    digest_budget_chars: int = field(
+        default=DEFAULT_BUDGET,
+        metadata=_doc(
+            f"Default size of a digest in characters, about 3k tokens ({BUDGET_MIN} to"
+            f" {BUDGET_MAX}).",
+            key="digest_budget_chars",
+            env="RELAYBAY_DIGEST_BUDGET_CHARS",
+        ),
+    )
+    session_context: str = field(
+        default="auto",
+        metadata=_doc(
+            "`auto` or `off`: whether `SessionStart` adds the task context or a short project"
+            " digest to the session's context.",
+            key="session_context",
+            env="RELAYBAY_SESSION_CONTEXT",
+        ),
+    )
+    session_context_project_chars: int = field(
+        default=DEFAULT_SESSION_PROJECT_CHARS,
+        metadata=_doc(
+            f"Size of the project digest added at `SessionStart` ({BUDGET_MIN} to {BUDGET_MAX};"
+            " the hook answer's own limit applies on top).",
+            key="session_context_project_chars",
+            env="RELAYBAY_SESSION_CONTEXT_PROJECT_CHARS",
+        ),
+    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
@@ -329,6 +382,33 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
                 f"{source}: plan_reminder_every must be a whole number >= 0, got {value!r}"
             )
         settings.plan_reminder_every = value
+    for key, low, high in (
+        ("pulse_stale_days", 1, None),
+        ("task_stale_days", 1, None),
+        ("digest_budget_chars", BUDGET_MIN, BUDGET_MAX),
+        ("session_context_project_chars", BUDGET_MIN, BUDGET_MAX),
+    ):
+        if key in data:
+            value = data[key]
+            if isinstance(value, str) and value.strip().isdigit():
+                value = int(value)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < low
+                or (high is not None and value > high)
+            ):
+                limits = f"from {low} to {high}" if high else f">= {low}"
+                raise ValueError(f"{source}: {key} must be a whole number {limits}, got {value!r}")
+            setattr(settings, key, value)
+    if "session_context" in data:
+        value = str(data["session_context"]).strip().lower()
+        if value not in SESSION_CONTEXT_MODES:
+            raise ValueError(
+                f"{source}: session_context must be one of {', '.join(SESSION_CONTEXT_MODES)},"
+                f" got {data['session_context']!r}"
+            )
+        settings.session_context = value
     if "attachment_roots" in data:
         value = data["attachment_roots"]
         roots = _split_list(value) if isinstance(value, str) else value

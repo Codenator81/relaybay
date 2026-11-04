@@ -5,7 +5,7 @@ import base64
 import struct
 import zlib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from relaybay.service import Service
@@ -427,13 +427,26 @@ async def seed_memory(service: Service) -> None:
         author="demo",
     )
     await service.set_block(
-        "pulse",
-        "Checkout is in dev, search suggestions wait for the owner's test, gift cards wait for"
-        " a refund decision.",
+        "conventions",
+        "Prices are stored in cents. Every checkout change gets a review step for the owner.",
         0,
         project="acme-shop",
-        description="Where the project stands, in three lines",
+        description="What every session of this project should know",
         author="demo",
+    )
+    await service.set_pulse(
+        "acme-shop",
+        "Checkout is in dev, search suggestions wait for the owner's test.\n"
+        "Gift cards wait for a refund decision.",
+        actor="demo",
+    )
+    # Written weeks ago: the board and the digests show it as stale.
+    weeks_ago = datetime.now(UTC) - timedelta(days=21)
+    await service.set_pulse(
+        "demo-api",
+        "The public API is stable; error bodies are being unified.",
+        actor="demo",
+        at=weeks_ago.isoformat(timespec="milliseconds"),
     )
 
 

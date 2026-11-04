@@ -190,7 +190,8 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `comment.read`, `environment.created`, `environment.updated`, `environment.deleted`,
 `environment.access_added`, `environment.access_updated`, `environment.access_removed`,
 `environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`,
-`live.action`, `document.updated`, `memory.added`, `memory.updated`, `block.updated`
+`live.action`, `document.updated`, `memory.added`, `memory.updated`, `block.updated`,
+`project.pulse_set`
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
@@ -414,8 +415,10 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, eleven numbered points: read
-`project_snapshot` first (its first line names the rules); pick or create a task and pass `session`
+**Server instructions** (sent on connect) are the working contract, eleven numbered points: start with the digest for your level (`portfolio_digest`,
+`project_digest` or `task_context`), drill down only when needed, for example with
+`project_snapshot` (its first line names the rules, like `task_context`'s rules line), and keep the
+project pulse current with `project_pulse_set`; pick or create a task and pass `session`
 (desktop id with `session_title`, else a name; `hook_session` if the session start gave one; don't
 rebind without your `local_` id); update `next_step`, `waiting_on` and `progress` on every stage
 change and report; report at the end of every stage with the configured first line, states and
@@ -446,8 +449,11 @@ done needs one line `as planned` or `deviation: why`.
 | Environments | `environments_get`, `environment_propose` |
 | Catch-up and rules | `events_since`, `rules_get` |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
+| Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 
-Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay.
+Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay. The
+digests are annotated as writes: `session` moves the caller's read position and can create or link
+its session row.
 Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (or `""`) clears an
 optional text field, because models cannot always send an empty string. `task_update`,
 `task_patch` accept `expected_version` and fail instead of overwriting a newer version; otherwise the
@@ -492,7 +498,7 @@ waiting on anything else.
 
 | Hook event | Session status | Activity |
 |---|---|---|
-| `SessionStart` | working | `started (<source>)`; the answer adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the agent's context (`hookSpecificOutput.additionalContext`) |
+| `SessionStart` | working | `started (<source>)`; the answer adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the agent's context (`hookSpecificOutput.additionalContext`), then the task context or a short project digest ([§8](#spec-digest-session-start)) |
 | `UserPromptSubmit` | working | `prompt` (the prompt text is never stored) |
 | `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is never stored; `PreToolUse` is also checked by the guard, and a call that touches live leaves a redacted summary in the journal, [§7](#spec-guard)) |
 | `Notification` | waiting | the notification message |
@@ -596,7 +602,8 @@ hook session line), on the `PostToolUse` of a todo change and every `plan_remind
 `PostToolUse` events (default 30, `0` turns this one off; it repeats the current text). A todo
 change never sends the same text twice in a row for a session (`SessionStart` is a new context and
 resets it). Owner comments in the same answer get
-the rest of the 8000-character budget.
+the rest of the 8000-character budget. When the session start adds the task context
+([§8](#spec-digest-session-start)), that holds the plan and the reminder counts as sent.
 
 <a id="spec-hooks-wake"></a>
 
@@ -711,7 +718,8 @@ session whose hook id `demo-review-hook-session` is linked exactly (so a simulat
 receives the owner's decisions); an M task in dev with an accepted plan (one step done as
 planned with a report link, one done with a deviation, one in progress, one pending) and an S task
 in dev without a plan whose session (`demo-todo-hook-session`, linked exactly) reported a
-three-item todo.
+three-item todo. `acme-shop` has a current pulse, `demo-api` one written three weeks ago, so it
+shows as stale.
 `--home` is required. A database that already has a project or an event is refused (exit `1`);
 with `--force` it is renamed to `relaybay.sqlite.before-demo-<YYYYMMDD-HHMMSS>` (with its WAL files)
 and a new one is seeded. The token is not created; `relaybay serve --home <dir>` does that.
@@ -1063,10 +1071,11 @@ is shown) instead of overwriting it; the editor replaces it. Every saved layer r
 
 ## 8. Memory and context
 
-Step 11.6a of [Memory and context](design/0008-memory-and-context.md): documents, decisions with
-supersede chains, memory notes, blocks, full-text search and the Docs & rules page. Digests,
-reader cursors, budgets and SessionStart injection (11.6b) and markdown import / export (11.6c)
-are not built yet. **Visibility per role** (coordinator everything, a manager its project, a
+Steps 11.6a and 11.6b of [Memory and context](design/0008-memory-and-context.md): documents,
+decisions with supersede chains, memory notes, blocks, full-text search and the Docs & rules page;
+the project pulse, digests per level with budgets and reader cursors, and the context a session
+gets at its start ([below](#spec-digest)). Markdown import / export (11.6c) and vectors are not
+built yet. **Visibility per role** (coordinator everything, a manager its project, a
 session its task) is not enforced: every client with the token reads and writes everything.
 Tools and arguments: [MCP tools](mcp-tools.md#memory-and-documents).
 
@@ -1141,16 +1150,109 @@ notes and decisions are left out unless asked for.
 
 <a id="spec-memory-page"></a>
 
-**Docs & rules page** (`/p/<slug>/docs`): a search box over the index; the project's documents
+**Docs & rules page** (`/p/<slug>/docs`): a search box over the index; the project's pulse with its
+age and stale mark ([below](#spec-digest-pulse)); the project's documents
 (title, name, kind, version, last change); decisions (current, superseded ones collapsed with
 "superseded by #n"); memory notes of the project plus global and role notes (superseded ones
 collapsed); blocks of the project and global ones, each with an edit form for the owner (text,
 description, limit, owner-only; CSRF and the board cookie like other forms, a refused write keeps
 the typed text); the effective rules (`rules_get` rendered). Documents, decisions and notes
-refresh live on `document.updated`, `decision.added`, `memory.*`; blocks and search results stay as
+refresh live on `document.updated`, `decision.added`, `memory.*`, and the pulse on
+`project.pulse_set`; blocks and search results stay as
 the owner left them. A document page renders the markdown safely with heading anchors, a list of
 sections, the history with a link per version and a diff between any two versions (escaped lines,
 added and removed lines marked).
+
+<a id="spec-digest"></a>
+
+**Digests** are assembled by relaybay itself, with no model: markdown index lines, bodies on demand.
+Each section ends with the tool that shows more. Tools: [MCP tools](mcp-tools.md#digests).
+
+<a id="spec-digest-pulse"></a>
+
+**Pulse.** `project_pulse_set(project, text)` stores a summary of where the project stands on the
+project row (`pulse`, `pulse_at`, `pulse_by`): at most 5 lines and 600 characters (over that a
+`ValidationError` names both counts), secret scan like other memory writes, event
+`project.pulse_set`. It is shown on Docs & rules and on the All boards project cards with its age and,
+after `pulse_stale_days` (default 7), a "stale" mark. A stage move through MCP in a project whose
+pulse is missing or stale adds one `Note:` line to the answer: never a `Warning (rules)`, never a
+refusal, at most once per project per server run. A move on the board does not use that up.
+
+<a id="spec-digest-levels"></a>
+
+**Levels.** In priority order within each digest (the first section is identity and state):
+
+| Digest | Sections, most important first |
+|---|---|
+| `portfolio_digest` | identity and counts; one line per project (stage counts, first pulse line, stale mark); what waits for the owner (the Inbox's lists); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
+| `project_digest` | identity, stage counts, description and pulse; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; environments (name, kind, the agents' level); current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
+| `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's and the project's current decisions; changes; linked document sections; the effective rules line; environments (also the base URL); relevant notes |
+
+**Linked document sections:** any `relaybay://doc/<project>/<doc>#<anchor>` in the task's description
+or progress resolves to the section's heading and first lines (without an anchor, the document's
+title and start); one that does not resolve is listed as `broken`. At most 5 links.
+
+**Unread owner comments** in `task_context`: the count and the ids; the text only of comments the
+existing channels already delivered to the reader's session. Nothing is marked delivered here.
+
+**Relevant notes:** current project and global notes matching a word of the task's title, best search
+match first, at most 8.
+
+<a id="spec-digest-budget"></a>
+
+**Budgets.** `digest_budget_chars` (default 12000, about 3k tokens); a call's `budget` is held between
+500 and 40000. The output never exceeds the budget, footer included. Over budget the lowest
+priority section loses whole lines from its end first, then the next one, and says `… N more: <tool>`;
+only when even that does not fit is a section dropped, lowest priority first, and the footer names
+it if there is room. The first section goes last and is never dropped. Every value in an index line
+is collapsed to one line and clipped. A budget cut in the changes holds the reader's cursor back
+([below](#spec-digest-cursors)).
+
+<a id="spec-digest-cursors"></a>
+
+**Reader cursors.** The reader is the calling session: its desktop id, else its name
+(`reader_cursor`: reader, level `portfolio` / `project` / `task`, `ref_id` the project or task id, 0
+for the portfolio, `last_event_id`, `read_at`). A digest shows the events after the reader's cursor
+for that level and ref and moves the cursor in the same call, but only when every change group
+was rendered: if the budget cut lines of the changes or dropped the section, the cursor stays, the
+next read still has them, and the footer says the position was not moved. The 30-line cap below is
+no such cut. With `since_event` it shows from there and moves nothing. Without a reader, and on a
+reader's first read, it shows the last 24 hours. A read that finds nothing new after the cursor
+leaves it and needs no write: the next read shows the same either way, so `read_at` is when the
+cursor last moved.
+
+Changes are grouped per task (or per project, or `global`, outside any task), one line with the
+kinds counted, newest first, at most 30 lines, then `… N more: events_since(since_id=…)`
+(`project="<slug>"` included in a project or task digest). Left out:
+`session.status_changed`, `session.seen`, `session.todo_updated`, `comment.delivered`,
+`comment.read`. `task_context` also leaves out the caller's own `live.action` events, which its
+hooks wrote. The footer names the event id reached.
+
+<a id="spec-digest-session-start"></a>
+
+**Session start.** The `SessionStart` answer (every source: startup, clear, compact, resume) adds to
+`additionalContext`, after the hook session line:
+
+- an exactly linked session bound to an open task: `task_context` of its most recently bound task,
+  the other bound open tasks as one index line each. The plan reminder is not sent as well when the
+  budget left its lines in that text; otherwise it goes out after it;
+- any other session whose `cwd` maps to one project: `project_digest` limited to
+  `session_context_project_chars` (default 1500), which holds no comment text. Only an exactly linked
+  session is a reader there: a guessed row gets no cursor, and its desktop id is not printed;
+- otherwise nothing.
+
+A nested `claude` (the desktop session id inherited, attended field explicitly `"0"`) gets only the
+hook session line: no context, no reminder, no cursor row. It never links to the desktop session,
+by host id or by guess, whatever that row's state; an empty or missing field is treated as before,
+because older desktop apps may not send it.
+
+After `startup` and `clear` the agent remembers nothing, so it is not told "since your last read":
+the changes cover the last 24 hours, or from the cursor if that is older ("since this session last
+read"). `compact` and `resume` keep the cursor rule.
+
+The total stays below the 8000-character limit of a hook answer, with 500 characters left free. This
+moves an exactly linked session's cursor. Any exception there is logged and the answer goes out as it would
+without it, plan reminder included. `session_context = "off"` turns all of it off.
 
 <a id="spec-security"></a>
 
@@ -1274,6 +1376,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0011_review` | the `review` stage (the `task` table rebuilt with the wider stage check, rows and ids kept), `review_step` (task, position, title, details, status, decided at / by, created by), `attachment` (task, step, kind, stored name, original name, type, size, SHA-256, caption, created by / at), `comment.step_id`, `comment.attachment_id` |
 | `0012_memory` | `decision.scope`, `source_kind` / `source_ref` / `source_text`, `valid_from`, `valid_to`, `recorded_at`, `superseded_at`, `superseded_by` (backfilled: scope from `task_id`, `recorded_at` and `valid_from` from `created_at`); `document`, `document_version`, `memory`, `memory_block`. Additive only. The FTS5 table `search_index` is created by the service at start, not by the migration ([§8](#spec-memory-search)) |
 | `0013_plan` | `task.size`, `task.plan_status`, `task.plan_accepted_at`, `task.plan_accepted_by`; `plan_step` (task, position, title, details, status, done at, link, outcome, conformance, created by), `plan_revision` (task, revision, body JSON, author, reason), `session_todo` (session, Claude Code id, item id, subject, status, active form, position). Additive only |
+| `0014_digests` | `project.pulse`, `project.pulse_at`, `project.pulse_by`; `reader_cursor` (reader, level, ref id with 0 for the portfolio, last event id, read at; primary key reader + level + ref id). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

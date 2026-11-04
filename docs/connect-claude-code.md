@@ -50,8 +50,9 @@ Add a short section like this to the project's `CLAUDE.md` or `AGENTS.md` (repla
 
 This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
 
-- At the start of a session, call `project_snapshot(project="acme-shop")`; its first line names
-  the working rules (read them with `rules_get(project="acme-shop")`).
+- At the start of a session, call `project_digest(project="acme-shop")`; for more detail
+  `project_snapshot`, whose first line names the working rules (read them with
+  `rules_get(project="acme-shop")`).
 - Before starting work, find the task with `task_list` or create it with `task_create` (with a
   short `description`: what to do and why); then call `task_bind_session` with your session name.
 - When the work moves on, call `task_set_stage` (plan → dev → review → test → live → done).
@@ -174,6 +175,21 @@ choice:
 ```
 
 Details: [MCP tools → Plan](mcp-tools.md#plan).
+
+**What a session gets at its start.** On startup, `/clear`, compaction and resume, the same hook
+restores the picture without the agent having to ask. A session that linked itself and is bound to
+an open task gets that task's context: fields and progress, plan and current step, decisions, linked
+document sections, environments, rules, unread comment ids, relevant notes and what changed since it
+last read (other bound tasks as one line each). Any other session started in a project's folder gets a
+short project digest, 1500 characters by default (`session_context_project_chars`). Elsewhere nothing
+is added. To turn it off, put this in relaybay's `config.toml` (or set
+`RELAYBAY_SESSION_CONTEXT=off`):
+
+```toml
+session_context = "off"
+```
+
+Details: [MCP tools → Digests](mcp-tools.md#digests).
 
 For tests or a second machine profile, `--claude-home <folder>` (and `relaybay serve
 --claude-home <folder>` for the board page) points setup at another folder holding

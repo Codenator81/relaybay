@@ -1,7 +1,7 @@
 # 0008 — Memory and context
 
 - Status: **Accepted** (step 11.6), planned for 0.3.0 together with Review
-  ([0007](0007-review.md)).
+  ([0007](0007-review.md)). 11.6a and 11.6b are built: [SPEC §8](../SPEC.md#spec-memory).
 - Size: 11.6a ~3 agent-days, 11.6b ~2, 11.6c ~1.5 (includes the revision after research: time axes,
   candidate operations, blocks, stemmed search, secret scan, SessionStart injection); optional
   semantic search ~1.5 later.
@@ -136,6 +136,24 @@ backup and grep. After acceptance a coordinator's own instructions shrink to "st
   in Python with `snowballstemmer`), not external-content tables with triggers; no trigram index
   yet. Without FTS5 search falls back to `LIKE`.
 - Visibility per role is not enforced yet.
+
+## As built in 11.6b
+
+- The pulse lives on the project row (`pulse`, `pulse_at`, `pulse_by`), not in a block: it has its own
+  limit (5 lines, 600 characters), its own event and its own age. Rules do not ask for it; a stage
+  move through MCP with a missing or stale pulse adds one soft `Note:`, once per project per server
+  run.
+- `domain/digest.py` turns gathered data into sections and budgeted text without I/O; `service.py`
+  gathers. Budgets are in characters only. A section has a priority apart from its place in the
+  text: the changes come last in a project digest but do not shrink first.
+- The reader is the session's desktop id, else its name; `reader_cursor.ref_id` is 0 for the portfolio.
+  A read that finds nothing new does not move the cursor, so a session start without news needs no
+  write transaction; neither does a budget cut in the changes, so nothing is lost.
+- The digests are annotated as writes (`session` moves the read position and can create or link the
+  session row), unlike `memory_get`, whose read tracking changes nothing a caller depends on.
+- Relevant notes are ranked by search on the task's title, without tags.
+- Blocks show one clipped line per block in a digest; `block_get` has the rest.
+- Not built: visibility per role, markdown import and export (11.6c), vectors.
 
 ## Order
 

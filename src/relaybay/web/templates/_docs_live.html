@@ -1,7 +1,17 @@
 {#- Docs & rules, the live part: documents, decisions, memory notes. Expects: project,
     documents, decisions (current), superseded, notes (current), old_notes. Refetched on
-    document.*, decision.*, memory.* events. -#}
+    document.*, decision.*, memory.*, project.pulse_set events. -#}
 <div id="docs-live" hx-get="/p/{{ project.slug }}/docs-live" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  <section class="panel" id="pulse">
+    <h2>Pulse</h2>
+    {% if project.pulse %}
+    <p class="project-pulse-full">{{ project.pulse }}</p>
+    <p class="muted"><time datetime="{{ project.pulse_at }}" data-age title="{{ project.pulse_at[:19] }}Z">{{ project.pulse_at|age }}</time>{% if project.pulse_by %} by {{ project.pulse_by }}{% endif %}{% if pulse_stale(project) %} <span class="stale-mark" title="Older than {{ pulse_stale_days }} days">stale</span>{% endif %}</p>
+    {% else %}
+    <p class="muted">No pulse yet. Agents write it with <code>project_pulse_set</code>.</p>
+    {% endif %}
+  </section>
+
   <section class="panel" id="documents">
     <h2>Documents <span class="col-count">{{ documents|length }}</span></h2>
     {% if documents %}

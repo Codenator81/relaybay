@@ -9,6 +9,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Digests per level (step 11.6b of design 0008, migration `0014_digests`, additive): MCP tools
+  `portfolio_digest`, `project_digest` and `task_context` give markdown index lines with the tool to
+  drill down, within a size budget (`digest_budget_chars`, default 12000; per call `budget`, 500 to
+  40000; the lowest priority sections lose whole lines first and say `… N more`).
+- Reader cursors: with `session`, a digest shows what changed since that reader's last read, grouped
+  per task without session noise, and moves on; `since_event` shows from an event and moves nothing;
+  otherwise the last 24 hours.
+- Project pulse: `project_pulse_set` (at most 5 lines and 600 characters, secret scan, event
+  `project.pulse_set`), shown on Docs & rules and the All boards cards with its age and a stale mark
+  after `pulse_stale_days` (default 7). A stage move in a project whose pulse is missing or stale adds
+  one `Note:` to the MCP answer, once per project per server run. `task_stale_days` (default 5) sets
+  when `portfolio_digest` lists a task as without progress.
+- Context at the session start: the `SessionStart` answer adds `task_context` for an exactly linked
+  session bound to an open task (instead of the plan reminder), or a short `project_digest`
+  (`session_context_project_chars`, default 1500) for a session in a project's folder.
+  `session_context = "off"` turns it off. Point 1 of the server instructions now starts with the
+  digest for your level.
+- A nested `claude` that says it runs unattended (`CLAUDE_CODE_SESSION_ATTENDED=0`) never links to
+  the desktop session it was started from, by host id or by guess.
+- `relaybay demo` sets a current pulse on `acme-shop` and leaves a stale one on `demo-api`; the demo
+  block is now `conventions`.
 - Task plan and checkpoints (step 11.7, design 0014, migration `0013_plan`, additive): ordered
   plan steps with "what and why" and a status; a done step is a checkpoint with its time, an
   outcome, a link (report or PR) and a required conformance line (`as planned` or `deviation:
