@@ -59,7 +59,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, `record_hook`, …): validation, rules checks, transaction, event append, publish |
 | `events.py` | `EventBus`: one bounded `asyncio.Queue` (256) per subscriber, optional project filter; a full queue drops the subscriber, which then resyncs |
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
-| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), errors |
+| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
 | `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
@@ -134,6 +134,8 @@ policy_layer  id, project_id, environment_id (NULL = the project layer), body (J
 policy_proposal       id, scope (global|<project>|<project>/<environment>), project_id, patch
               (JSON), reason, proposed_by, session_id, status, created_at, decided_at, decided_by
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
+reader_cursor reader, level (portfolio|project|task), ref_id (0 = portfolio), last_event_id,
+              read_at   -- PRIMARY KEY (reader, level, ref_id)
 ```
 
 - `task.version` grows on every write; `expected_version` turns a write into a compare-and-set.
@@ -189,6 +191,9 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
   (`permissionDecision` `deny` / `ask` or a warning, and a `live.action` event for live) and never
   answers `allow`; the Stop counter and the wake-up
   waiters live in the service's memory (lost on restart, which only means one more reminder).
+- `SessionStart` also adds the task context or a short project digest. The answer shares the hook
+  client's 0.3 s timeout, so the digests read bounded lists through the read connection and write only
+  when a reader's cursor really moves; a failure there is logged and leaves the old answer.
 - Opt-in wake-up hook: an `asyncRewake` command hook at `Stop` long-polls
   `POST /hooks/claude-code/wait` (polling the database once a second, up to 25 minutes, one waiter
   per session) and exits 2 with the comment on stderr.

@@ -326,6 +326,7 @@ async def test_every_plan_write_is_kept_with_the_title_diff(service: Service) ->
 
 async def test_moving_to_dev_needs_an_accepted_plan_unless_size_s(service: Service) -> None:
     await service.upsert_project("acme-shop")
+    await service.set_pulse("acme-shop", "On track.")
     unknown = await service.create_task("acme-shop", "Unknown size")
     with collect_notes() as notes:
         saved = await service.set_stage_checked(unknown.key, "dev")

@@ -14,6 +14,9 @@ class Project:
     created_at: str
     updated_at: str
     archived_at: str | None = None
+    pulse: str | None = None  # where the project stands, at most 5 lines
+    pulse_at: str | None = None
+    pulse_by: str | None = None
 
 
 @dataclass(slots=True)

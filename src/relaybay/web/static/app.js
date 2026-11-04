@@ -4,7 +4,7 @@
   "use strict";
 
   var KINDS = [
-    "project.created", "project.updated",
+    "project.created", "project.updated", "project.pulse_set",
     "task.created", "task.updated", "task.stage_changed",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
     "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
@@ -34,7 +34,9 @@
     "session.seen", "session.status_changed", "session.alias_added",
     "task.session_bound", "task.session_unbound"
   ];
-  var DOCS_KINDS = ["document.updated", "decision.added", "memory.added", "memory.updated"];
+  var DOCS_KINDS = [
+    "document.updated", "decision.added", "memory.added", "memory.updated", "project.pulse_set"
+  ];
   var live = null;
   var lastId = 0;
   var source = null;

@@ -20,6 +20,10 @@
       </li>
       {% endfor %}
     </ul>
+    {% if item.project.pulse %}
+    {%- set p = item.project %}
+    <p class="project-pulse"><span class="clamp clamp-2">{{ p.pulse }}</span> <span class="muted">· <time datetime="{{ p.pulse_at }}" data-age title="{{ p.pulse_at[:19] }}Z">{{ p.pulse_at|age }}</time></span>{% if pulse_stale(p) %} <span class="stale-mark" title="Older than {{ pulse_stale_days }} days">stale</span>{% endif %}</p>
+    {% endif %}
   </li>
   {% endfor %}
 </ul>

@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -25,6 +25,8 @@ import aiosqlite
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain import comments as comment_text
+from relaybay.domain import digest as digests
+from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
@@ -113,6 +115,7 @@ from relaybay.domain.rules import (
     Rules,
     merge_project_rules,
     refusal_text,
+    rules_line,
     unmet,
     validate_rules,
     warning_text,
@@ -143,6 +146,8 @@ HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity event per session
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
 LIVE_ACTION = "live.action"
 JOURNAL_COMMAND_MAX = 200
+# Left free in the SessionStart answer next to the lines it holds anyway.
+SESSION_CONTEXT_RESERVE = 500
 
 
 # Lines a write wants its caller to see without failing (e.g. a hook_session that was not
@@ -624,6 +629,14 @@ class Service:
         attachment_max_bytes: int = DEFAULT_FILE_MAX_MB * MB,
         attachment_task_max_bytes: int = DEFAULT_TASK_MAX_MB * MB,
         plan_reminder_every: int = DEFAULT_REMINDER_EVERY,
+        owner_names: list[str] | None = None,
+        require_tracker_log: bool = False,
+        done_window_days: int = DEFAULT_DONE_WINDOW_DAYS,
+        pulse_stale_days: int = limits.DEFAULT_PULSE_STALE_DAYS,
+        task_stale_days: int = limits.DEFAULT_TASK_STALE_DAYS,
+        digest_budget_chars: int = limits.DEFAULT_BUDGET,
+        session_context: str = "auto",
+        session_context_project_chars: int = limits.DEFAULT_SESSION_PROJECT_CHARS,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -670,6 +683,19 @@ class Service:
         self.plan_reminder_every = plan_reminder_every
         self._tool_events: dict[int, int] = {}
         self._reminded: dict[int, str] = {}
+        if session_context not in limits.SESSION_CONTEXT_MODES:
+            modes = ", ".join(limits.SESSION_CONTEXT_MODES)
+            raise ValueError(f"session_context must be one of: {modes}.")
+        self.owner_names = owner_names if owner_names is not None else ["owner", "me", "you"]
+        self.require_tracker_log = require_tracker_log
+        self.done_window_days = done_window_days
+        self.pulse_stale_days = pulse_stale_days
+        self.task_stale_days = task_stale_days
+        self.digest_budget_chars = digest_budget_chars
+        self.session_context = session_context
+        self.session_context_project_chars = session_context_project_chars
+        # Projects whose missing or stale pulse a stage move already mentioned in this run.
+        self._pulse_noted: set[int] = set()
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1032,9 +1058,10 @@ class Service:
         the desktop session is exactly linked to another live Claude Code id, only the window
         itself moves it: an attended /clear, resume or compaction (a restart whose old process
         sent no SessionEnd). A `claude` started from one of its tools inherits the id but runs
-        unattended, and a plain startup is never the same window. An id another session's
-        agent linked itself is never taken."""
-        if hook.host_session is None:
+        unattended, and a plain startup is never the same window. One that says it runs
+        unattended never links, whatever the row's state. An id another session's agent linked
+        itself is never taken."""
+        if hook.host_session is None or hook.nested:
             return None
         desktop = await repo.get_session_by_external_id(tx.conn, hook.host_session)
         if desktop is None or (found is not None and found.id == desktop.id and found.cc_exact):
@@ -1062,6 +1089,8 @@ class Service:
             return found
         projects = await repo.projects_with_repo_path(tx.conn)
         project, reason = self._project_for_cwd(projects, hook.cwd)
+        if hook.nested:  # not guessed onto the window either: its own plain session
+            return await self._new_hook_session(tx, hook, project.id if project else None, None)
         if project is not None:
             bound = await repo.bound_desktop_sessions(tx.conn, project.id)
             # An ended desktop session links its next Claude Code id itself (host id), so a
@@ -1241,6 +1270,8 @@ class Service:
         session = await self._exact_session(hook.cc_session_id)
         if hook.event == "SessionStart":
             context = session_start_context(hook.cc_session_id)
+            if hook.nested:
+                return _context("SessionStart", context)
             unread = await repo.unread_owner_count(self._r, session.id) if session else 0
             if unread:
                 context += " " + comment_text.unread_line(unread)
@@ -1248,9 +1279,14 @@ class Service:
                 # A new context: the agent has seen nothing yet.
                 self._tool_events[session.id] = 0
                 self._reminded.pop(session.id, None)
-                reminder = await self._plan_reminder(session)
-                if reminder:
-                    context += "\n" + reminder
+            # Always computed: it is marked as sent, and the fallback when no context is added.
+            reminder = await self._plan_reminder(session) if session is not None else None
+            room = CONTEXT_MAX - len(context) - len(reminder or "") - SESSION_CONTEXT_RESERVE
+            added, has_plan = await self._session_context(hook, session, room)
+            if added:
+                context += "\n" + added
+            if reminder and not has_plan:
+                context += "\n" + reminder
             return _context("SessionStart", context)
         if hook.event == "PreToolUse":
             return await self._pre_tool_answer(payload, hook, session)
@@ -1914,6 +1950,8 @@ class Service:
                 stage = diff.get("stage", task.stage.value)
                 ref = writes.get("tracker_ref", task.tracker_ref)
                 await self._unlogged(tx, task, actor, session_id, stage, ref, unlog)
+            if "stage" in diff:
+                await self._pulse_note(tx.conn, task)
             return Saved(await self.get_task(task.id, tx.conn), warnings)
 
     async def set_stage(
@@ -2975,6 +3013,377 @@ class Service:
                 **({"created": True} if found is None else {}),
             )
             return saved
+
+    # --- pulse and digests -------------------------------------------------
+
+    def pulse_stale(self, project: Project) -> bool:
+        return digests.pulse_stale(project, self.pulse_stale_days, datetime.now(UTC))
+
+    async def _pulse_note(self, conn: aiosqlite.Connection, task: Task) -> None:
+        """One soft line to an MCP caller's stage move, once per project per server run. A board
+        move has nobody to tell, so it does not use up the once."""
+        if _NOTES.get() is None or task.project_id in self._pulse_noted:
+            return
+        project = await self.get_project(task.project_slug, conn)
+        if project.pulse_at and not self.pulse_stale(project):
+            return
+        self._pulse_noted.add(task.project_id)
+        state = f"older than {self.pulse_stale_days} days" if project.pulse_at else "missing"
+        _note(
+            f"Note: the pulse of {project.slug} is {state}; keep it current with"
+            " project_pulse_set (at most 5 lines)."
+        )
+
+    async def set_pulse(
+        self,
+        project: str,
+        text: str,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        actor: str = "mcp",
+        at: str | None = None,
+    ) -> Project:
+        """Write the project's pulse. `at` records another time than now (the demo's stale one)."""
+        clean = str(text).replace("\r\n", "\n").strip()
+        if not clean:
+            raise ValidationError("A pulse must not be empty.")
+        digests.check_pulse(clean)
+        default_actor = actor
+        async with self._tx() as tx:
+            proj = await self.get_project(project, tx.conn)
+            _scan(await self._secret_rules(tx.conn, proj), text=clean)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            await repo.update_project(
+                tx.conn,
+                proj.id,
+                {"pulse": clean, "pulse_at": at or tx.now, "pulse_by": actor},
+                tx.now,
+            )
+            await tx.event(
+                "project.pulse_set",
+                actor,
+                project_id=proj.id,
+                session_id=sess.id if sess else None,
+                project=proj.slug,
+                text=_first_words(clean, 200),
+            )
+            return await self.get_project(proj.slug, tx.conn)
+
+    @staticmethod
+    def _reader_name(session: Session) -> str:
+        return session.external_id or session.name
+
+    def _budget(self, value: int | None) -> int:
+        if value is None:
+            return self.digest_budget_chars
+        return max(limits.BUDGET_MIN, min(limits.BUDGET_MAX, int(value)))
+
+    async def _digest_reader(
+        self, session: str | None, title: str | None, hook_session: str | None
+    ) -> Session | None:
+        if not (session or "").strip():
+            return None
+        async with self._tx() as tx:
+            return await self._session(tx, session, title, hook_session)
+
+    async def _first_read_start(self) -> int:
+        cutoff = datetime.now(UTC) - timedelta(hours=digests.FIRST_READ_HOURS)
+        return await repo.last_event_before(self._r, cutoff.isoformat(timespec="seconds"))
+
+    async def _changes(
+        self,
+        level: str,
+        ref_id: int,
+        reader: Session | None,
+        since_event: int | None,
+        *,
+        project_id: int | None = None,
+        task_id: int | None = None,
+        new_context: bool = False,
+    ) -> tuple[digests.Changes, bool]:
+        """What changed since the reader's cursor (or `since_event`, or the last 24 hours), and
+        whether reading it moves the cursor. A new context has read nothing yet, so it gets at
+        least the last 24 hours. Nothing new after the cursor leaves it in place: the next read
+        shows the same either way, and this read needs no write."""
+        reached = await repo.last_event_id(self._r)
+        day = f"in the last {digests.FIRST_READ_HOURS} hours"
+        cursor = None
+        if since_event is not None:
+            after, label = int(since_event), f"since event #{int(since_event)}"
+        else:
+            if reader is not None:
+                name = self._reader_name(reader)
+                cursor = await repo.reader_cursor(self._r, name, level, ref_id)
+            if cursor is None:
+                after, label = await self._first_read_start(), day
+            elif not new_context:
+                after, label = cursor, "since your last read"
+            else:
+                after = min(cursor, await self._first_read_start())
+                label = "since this session last read" if after == cursor else day
+        rows = await repo.event_counts(
+            self._r,
+            after,
+            reached,
+            exclude_kinds=digests.NOISE_KINDS,
+            project_id=project_id,
+            task_id=task_id,
+            own_session_id=reader.id if reader is not None and level == "task" else None,
+            own_kinds=digests.OWN_HOOK_KINDS,
+        )
+        groups = digests.group_changes(rows)
+        news = cursor is None or any(g.last_id > cursor for g in groups)
+        moves = reader is not None and since_event is None and news
+        return digests.Changes(after, reached, label, groups), moves
+
+    def _footer(
+        self,
+        reader: Session | None,
+        since_event: int | None,
+        changes: digests.Changes,
+        moves: bool,
+    ) -> Callable[[bool], str]:
+        name = self._reader_name(reader) if reader is not None else None
+        return lambda complete: digests.footer_text(
+            changes.reached, name, since_event, moves, complete
+        )
+
+    async def _move_cursor(
+        self,
+        level: str,
+        ref_id: int,
+        reader: Session | None,
+        reached: int,
+        moves: bool,
+        rendered: digests.Rendered,
+    ) -> None:
+        """After the digest is built, and only when a budget cut left its changes whole: what the
+        reader did not get stays ahead of the cursor."""
+        if reader is not None and moves and rendered.changes_complete:
+            name = self._reader_name(reader)
+            async with self._tx() as tx:
+                await repo.set_reader_cursor(tx.conn, name, level, ref_id, reached, tx.now)
+
+    async def _environment_levels(self, project_id: int) -> list[tuple[Environment, str]]:
+        environments = await repo.list_environments(self._r, [project_id])
+        policies = await self._policies(self._r, environments)
+        return [(e, policies[e.id].level_for(e)) for e in environments]
+
+    async def portfolio_digest(
+        self,
+        *,
+        budget: int | None = None,
+        since_event: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> str:
+        """All projects: stage counts and pulse, what waits for the owner, the week's decisions,
+        tasks without progress, global blocks, changes since the reader's last read."""
+        reader = await self._digest_reader(session, session_title, hook_session)
+        changes, moves = await self._changes("portfolio", 0, reader, since_event)
+        now = datetime.now(UTC)
+        since = (now - timedelta(days=digests.RECENT_DECISION_DAYS)).isoformat(timespec="seconds")
+        stale_before = (now - timedelta(days=self.task_stale_days)).isoformat(timespec="seconds")
+        open_tasks = await repo.list_tasks(self._r, stages=[s.value for s in OPEN_STAGES])
+        stale = [t for t in open_tasks if t.updated_at < stale_before]
+        data = digests.PortfolioData(
+            projects=[(s.project, s.counts) for s in await self.list_projects()],
+            inbox=await self.inbox(
+                self.owner_names,
+                require_tracker_log=self.require_tracker_log,
+                done_window_days=self.done_window_days,
+            ),
+            decisions=await repo.list_decisions(self._r, since=since, limit=digests.DECISIONS_MAX),
+            decisions_total=await repo.count_current_decisions(self._r, since=since),
+            stale_tasks=sorted(stale, key=lambda t: t.updated_at),
+            blocks=await repo.list_blocks(self._r, None),
+            changes=changes,
+            pulse_stale_days=self.pulse_stale_days,
+            task_stale_days=self.task_stale_days,
+            now=now,
+        )
+        footer = self._footer(reader, since_event, changes, moves)
+        rendered = digests.portfolio_text(data, footer, self._budget(budget))
+        await self._move_cursor("portfolio", 0, reader, changes.reached, moves, rendered)
+        return rendered.text
+
+    async def _project_digest(
+        self,
+        project: Project,
+        reader: Session | None,
+        since_event: int | None,
+        budget: int,
+        new_context: bool = False,
+    ) -> str:
+        changes, moves = await self._changes(
+            "project",
+            project.id,
+            reader,
+            since_event,
+            project_id=project.id,
+            new_context=new_context,
+        )
+        notes = await repo.list_notes(self._r, project.id, limit=digests.NOTES_MAX)
+        counts = await repo.stage_counts(self._r)
+        data = digests.ProjectData(
+            project=project,
+            counts=counts.get(project.id, {}),
+            tasks=await repo.list_tasks(
+                self._r, project_id=project.id, stages=[s.value for s in OPEN_STAGES]
+            ),
+            owner_names={name.strip().casefold() for name in self.owner_names},
+            decisions=await repo.list_decisions(
+                self._r, project_id=project.id, limit=digests.DECISIONS_MAX
+            ),
+            decisions_total=await repo.count_current_decisions(self._r, project_id=project.id),
+            environments=await self._environment_levels(project.id),
+            blocks=await repo.list_blocks(self._r, project.id),
+            notes=[n for n in notes if n.scope in ("project", "global")],
+            changes=changes,
+            pulse_stale_days=self.pulse_stale_days,
+            now=datetime.now(UTC),
+        )
+        footer = self._footer(reader, since_event, changes, moves)
+        rendered = digests.project_text(data, footer, budget)
+        await self._move_cursor("project", project.id, reader, changes.reached, moves, rendered)
+        return rendered.text
+
+    async def project_digest(
+        self,
+        project: str,
+        *,
+        budget: int | None = None,
+        since_event: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> str:
+        """One project: pulse, tasks by stage, open questions, decisions, environments, blocks,
+        notes with their flags, changes since the reader's last read."""
+        found = await self.get_project(project)
+        reader = await self._digest_reader(session, session_title, hook_session)
+        return await self._project_digest(found, reader, since_event, self._budget(budget))
+
+    async def _doc_lines(self, links: list[digests.DocLink]) -> list[str]:
+        lines = []
+        for link in links:
+            project = await repo.get_project(self._r, link.project)
+            doc = await repo.get_document(self._r, project.id, link.doc) if project else None
+            version = await repo.get_document_version(self._r, doc.id, doc.version) if doc else None
+            lines.append(link.line(doc, version.body if version else ""))
+        return lines
+
+    async def _relevant_notes(self, task: Task) -> list[mem.MemoryNote]:
+        """Current project and global notes, best search match on the task's title first."""
+        words = mem.candidate_words(task.title)
+        if not words:
+            return []
+        found = await self._search_ids(
+            self._r, words, ("note",), task.project_id, digests.NOTES_MAX, any_word=True
+        )
+        by_id = {n.id: n for n in await repo.get_notes(self._r, [i for _, i in found])}
+        notes = [by_id[i] for _, i in found if i in by_id]
+        wanted = [n for n in notes if n.current and n.scope in ("project", "global")]
+        return wanted[: digests.RELEVANT_NOTES_MAX]
+
+    async def _task_context(
+        self,
+        task: Task,
+        reader: Session | None,
+        since_event: int | None,
+        budget: int,
+        others: list[Task] | None = None,
+        new_context: bool = False,
+    ) -> tuple[str, bool]:
+        """The text, and whether it holds everything the plan reminder would say."""
+        changes, moves = await self._changes(
+            "task", task.id, reader, since_event, task_id=task.id, new_context=new_context
+        )
+        project = await self.get_project(task.project_slug)
+        links = digests.doc_links(task.description, task.progress)
+        unread = await repo.list_comments(self._r, task.id, unread_only=True)
+        project_id = task.project_id
+        limit = digests.TASK_DECISIONS_MAX
+        data = digests.TaskData(
+            task=task,
+            plan=await self._load_plan(self._r, task),
+            todo=await self._task_todo(self._r, task),
+            task_decisions=await repo.list_decisions(self._r, task_id=task.id, limit=limit),
+            project_decisions=await repo.list_decisions(
+                self._r, project_id=project_id, scope="project", limit=limit
+            ),
+            decisions_total=await repo.count_current_decisions(self._r, project_id=project_id),
+            doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX]),
+            doc_links_total=len(links),
+            environments=await self._environment_levels(project_id),
+            rules_line=rules_line(await self._rules(self._r, project)),
+            comments=[c for c in unread if c.from_owner],
+            reader_session_id=reader.id if reader is not None else None,
+            notes=await self._relevant_notes(task),
+            changes=changes,
+            now=datetime.now(UTC),
+            others=[(t, await self._load_plan(self._r, t)) for t in others or []],
+        )
+        footer = self._footer(reader, since_event, changes, moves)
+        rendered = digests.task_text(data, footer, budget)
+        await self._move_cursor("task", task.id, reader, changes.reached, moves, rendered)
+        return rendered.text, digests.plan_shown(data, rendered)
+
+    async def task_context(
+        self,
+        ref: str | int,
+        *,
+        budget: int | None = None,
+        since_event: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> str:
+        """One task: fields and progress, plan, decisions, linked document sections, environment
+        map, rules, unread owner comments, relevant notes, changes since the reader's last read.
+        Reading it delivers no comment."""
+        task = await self.get_task(ref)
+        reader = await self._digest_reader(session, session_title, hook_session)
+        text, _ = await self._task_context(task, reader, since_event, self._budget(budget))
+        return text
+
+    async def _session_context(
+        self, hook: HookEvent, exact: Session | None, room: int
+    ) -> tuple[str | None, bool]:
+        """What SessionStart adds, and whether that covers the plan reminder: the task context of
+        an exactly linked session's newest open task, or a short digest of the project of `cwd`.
+        Only an exact link is a reader: a guessed row may be someone else's window. A failure here
+        costs the extra context only, never the hook answer."""
+        if self.session_context == "off":
+            return None, False
+        new_context = (hook.source or "startup") in digests.NEW_CONTEXT_SOURCES
+        try:
+            if exact is not None:
+                bound = await repo.open_tasks_of_session(self._r, exact.id)
+                by_id = {t.id: t for t in bound if t.stage in OPEN_STAGES}
+                ordered = await repo.bound_task_ids(self._r, exact.id)
+                tasks = [by_id[i] for i in ordered if i in by_id]
+                if tasks:
+                    budget = min(self.digest_budget_chars, room)
+                    return await self._task_context(
+                        tasks[0], exact, None, budget, tasks[1:], new_context
+                    )
+            row = exact or await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            cwd = hook.cwd or (row.cwd if row is not None else None)
+            projects = await repo.projects_with_repo_path(self._r)
+            project, _ = self._project_for_cwd(projects, cwd)
+            if project is None:
+                return None, False
+            budget = min(self.session_context_project_chars, room)
+            text = await self._project_digest(project, exact, None, budget, new_context)
+            return text, False
+        except Exception:
+            logger.exception("Adding context to SessionStart failed; the answer goes without it")
+            return None, False
 
     # --- comments ----------------------------------------------------------
 

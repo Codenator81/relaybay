@@ -247,3 +247,16 @@ def warning_text(stage: str, req: dict[str, Any], plan_status: str | None = None
 def refusal_text(stage: str, missing: list[dict[str, Any]]) -> str:
     needs = " and ".join(requirement_label(r) for r in missing)
     return f"Rules: moving to {stage} requires {needs}. Nothing changed."
+
+
+def rules_line(rules: Rules) -> str:
+    """`Rules 1a2b3c4d: report before test, progress before done (read relaybay://rules/x)`."""
+    needs = [
+        f"{requirement_short(req)} before {stage}"
+        for stage in STAGES
+        for req in rules.requirements(stage)
+    ]
+    line = f"Rules {rules.hash}: {', '.join(needs) or 'no stage requirements'} (read {rules.uri})"
+    if rules.override_error:
+        line += f"; project override ignored: {rules.override_error}"
+    return line

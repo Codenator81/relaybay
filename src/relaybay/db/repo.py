@@ -75,6 +75,9 @@ def _project(row: aiosqlite.Row) -> Project:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         archived_at=row["archived_at"],
+        pulse=row["pulse"],
+        pulse_at=row["pulse_at"],
+        pulse_by=row["pulse_by"],
     )
 
 
@@ -353,6 +356,17 @@ async def open_tasks_of_session(conn: aiosqlite.Connection, session_id: int) -> 
         (session_id,),
     )
     return [_task(r) for r in rows]
+
+
+async def bound_task_ids(conn: aiosqlite.Connection, session_id: int) -> list[int]:
+    """The tasks the session is bound to now, most recently bound first."""
+    rows = await _all(
+        conn,
+        "SELECT task_id FROM task_session WHERE session_id = ? AND unbound_at IS NULL"
+        " ORDER BY id DESC",
+        (session_id,),
+    )
+    return [r["task_id"] for r in rows]
 
 
 async def has_bindings(conn: aiosqlite.Connection, session_id: int) -> bool:
@@ -730,9 +744,28 @@ async def list_decisions(
     task_id: int | None = None,
     ids: list[int] | None = None,
     include_superseded: bool = False,
+    scope: str | None = None,
+    since: str | None = None,
     limit: int = 10,
 ) -> list[Decision]:
     """Newest first; superseded decisions only with `include_superseded`."""
+    where, params = _decision_filter(project_id, task_id, ids, include_superseded, scope, since)
+    sql = (
+        "SELECT d.*, t.key AS task_key, p.slug AS project_slug FROM decision d"
+        " JOIN project p ON p.id = d.project_id LEFT JOIN task t ON t.id = d.task_id"
+    )
+    rows = await _all(conn, sql + where + " ORDER BY d.id DESC LIMIT ?", (*params, limit))
+    return [_decision(r) for r in rows]
+
+
+def _decision_filter(
+    project_id: int | None,
+    task_id: int | None,
+    ids: list[int] | None,
+    include_superseded: bool,
+    scope: str | None,
+    since: str | None,
+) -> tuple[str, list[Any]]:
     where, params = [], []
     if project_id is not None:
         where.append("d.project_id = ?")
@@ -745,15 +778,24 @@ async def list_decisions(
         params.extend(ids)
     if not include_superseded:
         where.append("d.superseded_at IS NULL")
-    sql = (
-        "SELECT d.*, t.key AS task_key, p.slug AS project_slug FROM decision d"
-        " JOIN project p ON p.id = d.project_id LEFT JOIN task t ON t.id = d.task_id"
-    )
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY d.id DESC LIMIT ?"
-    rows = await _all(conn, sql, (*params, limit))
-    return [_decision(r) for r in rows]
+    if scope is not None:
+        where.append("d.scope = ?")
+        params.append(scope)
+    if since is not None:
+        where.append("d.recorded_at >= ?")
+        params.append(since)
+    return (" WHERE " + " AND ".join(where) if where else ""), params
+
+
+async def count_current_decisions(
+    conn: aiosqlite.Connection,
+    *,
+    project_id: int | None = None,
+    since: str | None = None,
+) -> int:
+    where, params = _decision_filter(project_id, None, None, False, None, since)
+    row = await _one(conn, "SELECT COUNT(*) FROM decision d" + where, tuple(params))
+    return int(row[0])
 
 
 # --- comment ---------------------------------------------------------------
@@ -1390,6 +1432,78 @@ async def latest_stage_changes(conn: aiosqlite.Connection) -> dict[int, Event]:
 async def last_event_id(conn: aiosqlite.Connection) -> int:
     row = await _one(conn, "SELECT COALESCE(MAX(id), 0) FROM event", ())
     return int(row[0])
+
+
+async def last_event_before(conn: aiosqlite.Connection, ts: str) -> int:
+    """The newest event older than `ts`, or 0. Walks back from the newest event, so it reads only
+    the events after `ts`; `ts` has no index."""
+    row = await _one(conn, "SELECT id FROM event WHERE ts < ? ORDER BY id DESC LIMIT 1", (ts,))
+    return int(row[0]) if row else 0
+
+
+async def event_counts(
+    conn: aiosqlite.Connection,
+    after_id: int,
+    upto_id: int,
+    *,
+    exclude_kinds: tuple[str, ...],
+    project_id: int | None = None,
+    task_id: int | None = None,
+    own_session_id: int | None = None,
+    own_kinds: tuple[str, ...] = (),
+) -> list[tuple[int | None, str | None, str | None, str, int, int]]:
+    """Events in (after_id, upto_id] counted per task or project and kind: (task id, task key or
+    project slug, task title, kind, count, last id). `own_kinds` are left out for one session."""
+    where = [
+        "e.id > ?",
+        "e.id <= ?",
+        f"e.kind NOT IN ({', '.join('?' for _ in exclude_kinds)})",
+    ]
+    params: list[Any] = [after_id, upto_id, *exclude_kinds]
+    if project_id is not None:
+        where.append("e.project_id = ?")
+        params.append(project_id)
+    if task_id is not None:
+        where.append("e.task_id = ?")
+        params.append(task_id)
+    if own_session_id is not None and own_kinds:
+        where.append(f"NOT (e.session_id IS ? AND e.kind IN ({', '.join('?' for _ in own_kinds)}))")
+        params.extend([own_session_id, *own_kinds])
+    rows = await _all(
+        conn,
+        "SELECT e.task_id, COALESCE(t.key, p.slug) AS subject, t.title, e.kind,"
+        " COUNT(*) AS n, MAX(e.id) AS last_id FROM event e"
+        " LEFT JOIN task t ON t.id = e.task_id LEFT JOIN project p ON p.id = e.project_id"
+        f" WHERE {' AND '.join(where)} GROUP BY e.task_id, e.project_id, e.kind",
+        tuple(params),
+    )
+    return [(r["task_id"], r["subject"], r["title"], r["kind"], r["n"], r["last_id"]) for r in rows]
+
+
+# --- reader cursors --------------------------------------------------------
+
+
+async def reader_cursor(
+    conn: aiosqlite.Connection, reader: str, level: str, ref_id: int
+) -> int | None:
+    row = await _one(
+        conn,
+        "SELECT last_event_id FROM reader_cursor WHERE reader = ? AND level = ? AND ref_id = ?",
+        (reader, level, ref_id),
+    )
+    return int(row[0]) if row else None
+
+
+async def set_reader_cursor(
+    conn: aiosqlite.Connection, reader: str, level: str, ref_id: int, event_id: int, now: str
+) -> None:
+    """Never moves back: two reads at once leave the newer position."""
+    await conn.execute(
+        "INSERT INTO reader_cursor (reader, level, ref_id, last_event_id, read_at)"
+        " VALUES (?, ?, ?, ?, ?) ON CONFLICT (reader, level, ref_id) DO UPDATE SET"
+        " last_event_id = MAX(last_event_id, excluded.last_event_id), read_at = excluded.read_at",
+        (reader, level, ref_id, event_id, now),
+    )
 
 
 # --- project rules ---------------------------------------------------------

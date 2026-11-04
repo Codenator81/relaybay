@@ -53,7 +53,7 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     assert [v.version for v in versions] == [2, 1] and versions[0].section == "gift-cards"
     assert any(d.superseded_by for d in board["decisions"])
     assert {n.scope for n in board["notes"]} == {"global", "project"}
-    assert [b.label for b in board["blocks"]] == ["pulse"]
+    assert [b.label for b in board["blocks"]] == ["conventions"]
     planned = next(d for d in board["details"] if d.plan.steps)
     assert planned.task.size == "M" and planned.plan.status == "accepted"
     assert [s.status for s in planned.plan.steps] == ["done", "done", "in_progress", "pending"]
@@ -61,6 +61,27 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     small = next(d for d in board["details"] if d.todo)
     assert small.task.size == "S" and not small.plan.steps
     assert [i.status for i in small.todo] == ["completed", "in_progress", "pending"]
+
+
+def test_demo_has_a_current_pulse_and_a_stale_one(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    create_demo(db)
+
+    async def read() -> tuple[bool, bool, str]:
+        service = Service(db)
+        await service.start()
+        try:
+            acme = await service.get_project("acme-shop")
+            api = await service.get_project("demo-api")
+            assert acme.pulse and api.pulse
+            digest = await service.portfolio_digest()
+            return service.pulse_stale(acme), service.pulse_stale(api), digest
+        finally:
+            await service.close()
+
+    acme_stale, api_stale, digest = asyncio.run(read())
+    assert not acme_stale and api_stale
+    assert "21d ago, stale" in digest and "Checkout is in dev" in digest
 
 
 def test_demo_refuses_a_board_unless_forced(tmp_path: Path) -> None:

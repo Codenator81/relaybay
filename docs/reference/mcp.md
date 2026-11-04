@@ -12,6 +12,10 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`project_list`](#project_list) | read |
 | [`project_upsert`](#project_upsert) | write |
 | [`project_snapshot`](#project_snapshot) | read |
+| [`project_pulse_set`](#project_pulse_set) | write |
+| [`portfolio_digest`](#portfolio_digest) | write |
+| [`project_digest`](#project_digest) | write |
+| [`task_context`](#task_context) | write |
 | [`task_list`](#task_list) | read |
 | [`task_get`](#task_get) | read |
 | [`task_create`](#task_create) | write |
@@ -80,6 +84,56 @@ Compact markdown snapshot of a project: open tasks by stage with waiting-on, nex
 |---|---|---|---|
 | `project` | string | yes | Project slug such as 'acme-shop'. |
 | `include_done` | boolean | no | Also list done tasks. Default: `False`. |
+
+### `project_pulse_set`
+
+Write the project's pulse: a short summary of where it stands, shown in the digests and on the board. Update it when the picture changes; it is marked stale after some days (config pulse_stale_days).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `text` | string | yes | Where the project stands: at most 5 lines and 600 characters. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `portfolio_digest`
+
+Everything at a glance, for a coordinator: one line per project with stage counts and pulse, what waits for the owner, the week's decisions, tasks without progress, global blocks and what changed since your last read. Index lines; each section says which tool shows more.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `budget` | integer or null | no | Size limit in characters, held between 500 and 40000. Optional. |
+| `since_event` | integer or null | no | Show changes after this event id and leave your read position alone. Optional. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. Changes show from your last read of this digest, and the read position moves on; without it, the last 24 hours. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `project_digest`
+
+One project, for a manager: pulse, tasks by stage with next step and waiting on, open questions, recent decisions, environments, blocks, notes flagged 'verify' or 'never read' and what changed since your last read. Index lines; each section says which tool shows more.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `budget` | integer or null | no | Size limit in characters, held between 500 and 40000. Optional. |
+| `since_event` | integer or null | no | Show changes after this event id and leave your read position alone. Optional. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. Changes show from your last read of this digest, and the read position moves on; without it, the last 24 hours. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `task_context`
+
+One task, for the session working on it: fields and progress, plan with the current step, decisions, linked document sections, environment map, rules, unread owner comments (ids; text only of those already delivered to you), relevant notes and what changed since your last read. It delivers no comment.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `budget` | integer or null | no | Size limit in characters, held between 500 and 40000. Optional. |
+| `since_event` | integer or null | no | Show changes after this event id and leave your read position alone. Optional. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. Changes show from your last read of this digest, and the read position moves on; without it, the last 24 hours. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `task_list`
 

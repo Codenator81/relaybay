@@ -8,7 +8,9 @@ with a message that says what to do.
 ## Server instructions
 
 The server's MCP `instructions` (sent once when a session connects) are a short working contract:
-read `project_snapshot` on start (its first line names the rules); pick or create a task and pass
+start with the digest for your level (`portfolio_digest`, `project_digest` or `task_context`),
+drill down only when needed, for example with `project_snapshot` (its first line names the rules,
+like `task_context`'s rules line), and keep the project pulse current with `project_pulse_set`; pick or create a task and pass
 `session` (your `local_` id with `session_title` if you know it, plus `hook_session` if the
 session start gave you one; if not, don't rebind — the coordinator binds you); update `next_step`, `waiting_on` and `progress` on every stage change and
 report; start a report with the configured first line, states and sizes (taken from the
@@ -241,6 +243,19 @@ is guessed: the hook session stays unlinked and is listed on the board under Int
 agent passes its `hook_session`. With no desktop session in the project (or no project), it becomes
 a plain session named after the folder.
 
+### Context at the session start
+
+The `SessionStart` answer also carries, after the hook session line, `task_context` of the task an
+exactly linked session was bound to last (other bound open tasks as one line each; a separate plan
+reminder only if the budget cut its lines), or for any other session whose folder maps to one project
+a short `project_digest` (`session_context_project_chars`, default 1500, no comment text). It moves
+the read position of an exactly linked session only; a guessed one has none. After `startup` and
+`clear` the changes cover at least the last 24 hours, because the new context has read nothing;
+`compact` and `resume` show what is new since the read position. A nested `claude` that says it
+runs unattended gets only the hook session line and never links to the desktop session. A failure
+there only leaves the context out. `session_context = "off"` turns it off. Details:
+[SPEC §8](SPEC.md#spec-digest-session-start).
+
 ### Owner comments through hooks
 
 Comments the owner writes on a task (task dialog or task page) reach the agent of the session bound
@@ -345,6 +360,31 @@ stem (English, or Russian for Cyrillic words), diacritics are ignored, a title h
 User text is turned into quoted words, so `"`, `(`, `AND`, `*` never cause a syntax error. Without
 FTS5 the same search runs as `LIKE` substring matches of each word or its stem (case-insensitive
 for ASCII letters only).
+
+## Digests
+
+Start here: each digest gives one level the right picture in a bounded size, as index lines, with
+the tool to drill down at the end of each section. Behaviour in detail:
+[SPEC §8](SPEC.md#spec-digest).
+
+| Tool | Arguments | Returns or does |
+|---|---|---|
+| `portfolio_digest` | `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a coordinator: one line per project (stage counts, first pulse line, stale mark), what waits for the owner, current decisions of the last 7 days, open tasks with no change for `task_stale_days`, global blocks, changes. |
+| `project_digest` | `project`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a manager: pulse, open tasks by stage with next step and waiting on, open questions, recent current decisions, environments (name, kind, level), project blocks, project and global notes flagged `[verify]` or `[never read]`, changes. |
+| `task_context` | `task`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For the session on the task: fields and progress, plan with the current step, the task's and project's decisions, linked document sections (`relaybay://doc/<project>/<doc>#<anchor>` in the description or progress; unresolved ones marked `broken`), environment map with base URLs, the rules line, unread owner comments (count and ids; text only of those already delivered to you; it delivers nothing), relevant notes, changes. |
+| `project_pulse_set` | `project`, `text`, `session?`, `session_title?`, `hook_session?` | Writes the pulse: at most 5 lines and 600 characters, secret scan, event `project.pulse_set`. Over the limit it fails with both counts. Shown on the board with its age, marked stale after `pulse_stale_days` (default 7). A stage move in a project whose pulse is missing or stale says so in one `Note:` line, once per project per server run. |
+
+- **`budget`** — size limit in characters, held between 500 and 40000 (default
+  `digest_budget_chars`, 12000). The lowest priority sections lose whole lines first and say
+  `… N more: <tool>`. The first section (identity and state) is never dropped.
+- **`session`** — your read position: changes show from your last read of this digest (per level and
+  project or task) and the position moves on; on the first read, and without `session`, the last 24
+  hours. A budget too small for all the changes leaves the position where it is, so nothing is
+  lost, and the footer says so. That is why these tools are annotated as writes.
+- **`since_event`** — show changes after that event id and leave your position alone.
+- **Changes** are one line per task with the kinds counted, without session status, activity and
+  delivery marks, at most 30 lines; `events_since` has the rest (a project or task digest names
+  its project in that line). The footer names the event id reached.
 
 ## Resources
 

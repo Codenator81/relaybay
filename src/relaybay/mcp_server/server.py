@@ -27,8 +27,11 @@ def instructions(rules: Rules) -> str:
             "relaybay is the shared task board for this user's coding sessions. Projects contain"
             " tasks; a task moves through the stages plan → dev → review → test → live → done."
             " Working contract:",
-            "1. On start, read project_snapshot for your project. Its first line names the current"
-            " rules; read relaybay://rules/<project> (or call rules_get) for the details.",
+            "1. Start with the digest for your level (portfolio_digest, project_digest or"
+            " task_context); drill down only when needed, for example with project_snapshot, whose"
+            " first line names the current rules like task_context's rules line; read"
+            " relaybay://rules/<project> (or call rules_get) for the details. Keep the project"
+            " pulse current with project_pulse_set.",
             "2. Pick the task you work on, or create one with task_create. Pass `session` on"
             " writes: your own desktop session id (local_…) with `session_title` if you know it,"
             " otherwise a human-readable name; add `hook_session` if the session start gave you"
@@ -113,6 +116,25 @@ SIZE_HELP = (
     " one."
 )
 PLAN_STEP_HELP = "The step's number in the plan (1, 2, …)."
+Budget = Annotated[
+    int | None,
+    Field(description="Size limit in characters, held between 500 and 40000. Optional."),
+]
+SinceEvent = Annotated[
+    int | None,
+    Field(
+        ge=0,
+        description="Show changes after this event id and leave your read position alone."
+        " Optional.",
+    ),
+]
+DigestSession = Annotated[
+    str | None,
+    Field(
+        description=SESSION_HELP + " Optional. Changes show from your last read of this digest,"
+        " and the read position moves on; without it, the last 24 hours."
+    ),
+]
 PROGRESS_HELP = (
     "Markdown summary of everything done so far on the task (not just the last step). Rewrite"
     " it as the work goes on and keep it current with every report."
@@ -189,6 +211,104 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         Call it at the start of a session to see the state of the project before you pick or
         create a task."""
         return fmt.snapshot(await run(service.snapshot(project, include_done)), require_tracker_log)
+
+    @write
+    async def project_pulse_set(
+        project: ProjectSlug,
+        text: Annotated[
+            str,
+            Field(description="Where the project stands: at most 5 lines and 600 characters."),
+        ],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Write the project's pulse: a short summary of where it stands, shown in the digests
+        and on the board. Update it when the picture changes; it is marked stale after some days
+        (config pulse_stale_days)."""
+        return fmt.pulse_saved(
+            await run(
+                service.set_pulse(
+                    project,
+                    text,
+                    session=session,
+                    session_title=session_title,
+                    hook_session=hook_session,
+                )
+            )
+        )
+
+    # The digests are writes for the annotations: `session` moves the caller's read position and
+    # can create or link its session row.
+    @write
+    async def portfolio_digest(
+        budget: Budget = None,
+        since_event: SinceEvent = None,
+        session: DigestSession = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Everything at a glance, for a coordinator: one line per project with stage counts and
+        pulse, what waits for the owner, the week's decisions, tasks without progress, global
+        blocks and what changed since your last read. Index lines; each section says which tool
+        shows more."""
+        return await run(
+            service.portfolio_digest(
+                budget=budget,
+                since_event=since_event,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+
+    @write
+    async def project_digest(
+        project: ProjectSlug,
+        budget: Budget = None,
+        since_event: SinceEvent = None,
+        session: DigestSession = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """One project, for a manager: pulse, tasks by stage with next step and waiting on, open
+        questions, recent decisions, environments, blocks, notes flagged 'verify' or 'never
+        read' and what changed since your last read. Index lines; each section says which tool
+        shows more."""
+        return await run(
+            service.project_digest(
+                project,
+                budget=budget,
+                since_event=since_event,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+
+    @write
+    async def task_context(
+        task: TaskRef,
+        budget: Budget = None,
+        since_event: SinceEvent = None,
+        session: DigestSession = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """One task, for the session working on it: fields and progress, plan with the current
+        step, decisions, linked document sections, environment map, rules, unread owner comments
+        (ids; text only of those already delivered to you), relevant notes and what changed since
+        your last read. It delivers no comment."""
+        return await run(
+            service.task_context(
+                task,
+                budget=budget,
+                since_event=since_event,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def task_list(

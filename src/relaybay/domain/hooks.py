@@ -55,7 +55,14 @@ class HookEvent:
     stop_hook_active: bool = False  # Stop: Claude Code is already continuing for a stop hook
     source: str | None = None  # SessionStart: startup, resume, clear or compact
     host_session: str | None = None  # SessionStart: the desktop session id (`local_<uuid>`)
-    attended: bool = False  # SessionStart: Claude Code runs attended (the desktop window itself)
+    # SessionStart: True in the desktop window itself, False when it says it runs unattended ("0"),
+    # None when the field is empty or missing (older desktop apps may not send it).
+    attended: bool | None = None
+
+    @property
+    def nested(self) -> bool:
+        """A `claude` started from a desktop session's tools: it inherits the session's id."""
+        return self.host_session is not None and self.attended is False
 
     @property
     def activity_only(self) -> bool:
@@ -77,6 +84,12 @@ def _host_session(value: Any) -> str | None:
         return parse_session_id(value)
     except ValidationError:
         return None
+
+
+def _attended(value: Any) -> bool | None:
+    if value == "1":
+        return True
+    return False if value == "0" else None
 
 
 def parse_hook(payload: Any) -> HookEvent | None:
@@ -113,7 +126,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
         host_session=(
             _host_session(payload.get(HOST_SESSION_FIELD)) if event == "SessionStart" else None
         ),
-        attended=event == "SessionStart" and payload.get(ATTENDED_FIELD) == "1",
+        attended=_attended(payload.get(ATTENDED_FIELD)) if event == "SessionStart" else None,
     )
 
 

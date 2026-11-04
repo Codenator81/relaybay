@@ -95,6 +95,7 @@ ACTIVITY_PAGE = 50
 EVENT_KINDS = (
     "project.created",
     "project.updated",
+    "project.pulse_set",
     "task.created",
     "task.updated",
     "task.stage_changed",
@@ -187,6 +188,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         csrf_token=csrf_token(token),
         require_tracker_log=settings.require_tracker_log,
         comment_max=COMMENT_MAX,
+        pulse_stale=service.pulse_stale,
+        pulse_stale_days=settings.pulse_stale_days,
     )
     versions = static_versions()
 
