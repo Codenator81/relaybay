@@ -19,6 +19,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `relaybay://attachments/<id>/annotated`, tied to the step. New MCP tools `attachment_get` and
   `annotation_reply`, and that resource; `review_get` now lists the pins and returns flattened images
   as image content. The demo has a marked-up screenshot.
+- Map (`/map`, `GET /map/graph`, design 0010): the owner, projects, open tasks, sessions and
+  environments as a graph, drawn with vendored Cytoscape.js 3.34.4 under the existing CSP. Edges:
+  session to task, session to session messages, session to environment coloured by permission level,
+  owner comments. Structure and Now (edges of the last N minutes) views, project filter, collapsing
+  projects (more than 150 nodes start collapsed), live over SSE, light and dark, phone width. The
+  hook receiver records `session.message` for a `PreToolUse` of `SendMessage`: sender, recipient and
+  time, never the text, at most once a minute per pair and 20 recipients a minute per sender.
+- Usage (`/usage`, migration `0017_usage`, additive): tokens by session and model, per day and week
+  and per project, read in the background from the Claude Code transcripts the hooks report.
+  Subagents' transcripts count to their session. Incremental by file offset, bounded per pass,
+  duplicates counted once, unknown lines skipped and
+  counted. Only `usage` numbers and the model name are kept; tokens only, no money or quota figures;
+  no network call. New settings `usage_enabled` and `usage_interval_seconds`, new MCP tool
+  `usage_summary`, a Usage link on each session row. The demo has environments, messages and a small
+  usage history.
 
 ### Fixed
 

@@ -1,0 +1,8 @@
+{"type":"summary","summary":"Demo conversation"}
+{"type":"user","timestamp":"2026-01-05T09:00:00.000Z","message":{"role":"user","content":"Add a wishlist button to acme-shop"}}
+{"type":"assistant","timestamp":"2026-01-05T09:00:05.000Z","message":{"id":"msg_demo_1","model":"demo-model-large","role":"assistant","content":[{"type":"text","text":"Looking at the product page."}],"usage":{"input_tokens":120,"output_tokens":40,"cache_read_input_tokens":3000,"cache_creation_input_tokens":200}}}
+{"type":"assistant","timestamp":"2026-01-05T09:00:06.000Z","message":{"id":"msg_demo_1","model":"demo-model-large","role":"assistant","content":[{"type":"tool_use","name":"Read"}],"usage":{"input_tokens":120,"output_tokens":40,"cache_read_input_tokens":3000,"cache_creation_input_tokens":200}}}
+{"type":"assistant","timestamp":"2026-01-06T10:00:00.000Z","message":{"id":"msg_demo_2","model":"demo-model-small","role":"assistant","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":10,"output_tokens":5}}}
+{"type":"assistant","timestamp":"2026-01-06T10:01:00.000Z","message":{"id":"msg_demo_3","role":"assistant","usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"a-line-type-of-the-future","timestamp":"2026-01-06T10:02:00.000Z"}
+this line is not JSON

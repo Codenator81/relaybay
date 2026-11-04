@@ -90,6 +90,12 @@ Something off? `relaybay doctor`.
   with one line, `as planned` or `deviation: why`; you accept the plan in the task's Plan tab,
   deviations stand out on the card, and the agent's own Claude Code todo shows under the current
   step. By default a move to `dev` needs an accepted plan unless the task is size `S`.
+- **Map** — the owner, projects, open tasks, sessions and environments as a live graph: who works on
+  what, who messages whom (sender, recipient and time, never the text), who can touch which
+  environment. Structure and Now views, a project filter, collapsing projects.
+- **Usage** — tokens by session and model, per day and week and per project, read locally from the
+  Claude Code transcripts the hooks report: only `usage` numbers and the model name are kept, never
+  prompt or output text, and no prices or quotas. Turn it off with `usage_enabled = false`.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a

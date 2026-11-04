@@ -33,6 +33,7 @@ from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, valid
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
 from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
+from relaybay.domain.usage import DEFAULT_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS
 from relaybay.policy import PolicyFile
 
 DEFAULT_HOST = "127.0.0.1"
@@ -264,6 +265,25 @@ class Settings:
             env="RELAYBAY_SESSION_CONTEXT_PROJECT_CHARS",
         ),
     )
+    usage_enabled: bool = field(
+        default=True,
+        metadata=_doc(
+            "Read token usage from the Claude Code transcripts the hooks report (only `usage`"
+            " numbers and the model name are kept; no network call). `false` stops the reading"
+            " and the keeping of transcript paths; the Usage page shows what was read before.",
+            key="usage_enabled",
+            env="RELAYBAY_USAGE_ENABLED",
+        ),
+    )
+    usage_interval_seconds: int = field(
+        default=DEFAULT_INTERVAL_SECONDS,
+        metadata=_doc(
+            f"Seconds between passes of the background usage reader (whole number >="
+            f" {MIN_INTERVAL_SECONDS}).",
+            key="usage_interval_seconds",
+            env="RELAYBAY_USAGE_INTERVAL_SECONDS",
+        ),
+    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
@@ -387,6 +407,7 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         ("task_stale_days", 1, None),
         ("digest_budget_chars", BUDGET_MIN, BUDGET_MAX),
         ("session_context_project_chars", BUDGET_MIN, BUDGET_MAX),
+        ("usage_interval_seconds", MIN_INTERVAL_SECONDS, None),
     ):
         if key in data:
             value = data[key]
@@ -415,13 +436,14 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         if not isinstance(roots, list) or not all(isinstance(r, str) and r.strip() for r in roots):
             raise ValueError(f"{source}: attachment_roots must be a list of folders, got {value!r}")
         settings.attachment_roots = [Path(r.strip()).expanduser() for r in roots]
-    if "require_tracker_log" in data:
-        value = data["require_tracker_log"]
-        if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:
-            value = _BOOL_WORDS[value.strip().lower()]
-        if not isinstance(value, bool):
-            raise ValueError(f"{source}: require_tracker_log must be true or false, got {value!r}")
-        settings.require_tracker_log = value
+    for key in ("require_tracker_log", "usage_enabled"):
+        if key in data:
+            value = data[key]
+            if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:
+                value = _BOOL_WORDS[value.strip().lower()]
+            if not isinstance(value, bool):
+                raise ValueError(f"{source}: {key} must be true or false, got {value!r}")
+            setattr(settings, key, value)
     if "rules_mode" in data:
         value = str(data["rules_mode"]).strip().lower()
         if value not in RULES_MODES:

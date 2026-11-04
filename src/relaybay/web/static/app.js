@@ -17,7 +17,7 @@
     "live.action",
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
-    "plan.set", "plan.step_updated", "plan.accepted", "session.todo_updated",
+    "plan.set", "plan.step_updated", "plan.accepted", "session.todo_updated", "session.message",
     "document.updated", "memory.added", "memory.updated", "block.updated",
     "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied"
   ];
@@ -166,6 +166,8 @@
       if (viewer && viewer.open) window.relaybayAnnotate.onEvent(data);
       return;
     }
+
+    if (window.relaybayMap) { window.relaybayMap.onEvent(data); return; }
 
     // The task page: comment events refetch the thread; other changes of its own task reload
     // the page (not every hook status of its session, which comes every few seconds while it

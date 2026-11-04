@@ -14,6 +14,7 @@
   <script src="{{ static_url("sse.js") }}" defer></script>
   <script src="{{ static_url("annotate.js") }}" defer></script>
   <script src="{{ static_url("app.js") }}" defer></script>
+  {% block scripts %}{% endblock %}
 </head>
 <body{% if nav %} class="has-nav"{% endif %}>
   {% if nav %}{% include "_sidebar.html" %}{% endif %}

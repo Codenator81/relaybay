@@ -100,8 +100,13 @@ search_index  FTS5 (kind, ref, project_id, title, body, stems), created at start
               FTS5; rebuilt from the tables when its row count is off
 session       id, external_id UNIQUE (local_<uuid>), name (unique among rows without external_id),
               project_id, cwd, kind, desktop_link, status (working|idle|waiting|ended), activity,
-              cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, last_seen_at,
-              created_at
+              cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, transcript_path,
+              last_seen_at, created_at
+usage_file    id, path UNIQUE, session_id, parent_id (a subagent's file), read_offset, skipping, unknown_lines, error, created_at,
+              read_at
+usage_day     file_id, day (UTC), session_id, model, input, output, cache_read, cache_write,
+              messages   -- PK (file_id, day, model)
+usage_message message_id PK, file_id   -- ids already counted: resumed transcripts repeat lines
 comment       id, task_id, author_kind (owner|agent), author, session_id, body_md, in_reply_to,
               created_at, delivered_at, delivered_to_session_id, read_at, step_id, attachment_id
 review_step   id, task_id, position (UNIQUE per task), title, details_md,
@@ -167,6 +172,10 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
 - The page never receives HTML over SSE: `app.js` maps an event to the fragment it affects
   (column, card, dialog view, comment thread, Inbox badge and list, sessions list) and asks htmx to refetch it, so
   replay is idempotent; the Activity page asks for the rows newer than its newest one.
+- The Map page alone loads `cytoscape.min.js` (vendored from npm like htmx, its licence notice kept
+  at the top of the file) and `map.js`, which redraws from the JSON of `/map/graph`. Cytoscape's only
+  inline `<style>` is skipped because `map.html` holds an element with the id it looks for; its one
+  rule is in `app.css`, so the CSP stays as it is.
 - `nav.js` (loaded before the body, not deferred) applies the remembered collapsed sidebar before
   the first paint and runs the phone drawer.
 - `visibilitychange` and `online` force a reconnect (phones kill `EventSource` in the background);

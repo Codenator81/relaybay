@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Map · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">Map</span>{% endblock %}
+{% block scripts %}
+  <script src="{{ static_url("cytoscape.min.js") }}" defer></script>
+  <script src="{{ static_url("map.js") }}" defer></script>
+{% endblock %}
+{% block content %}
+<main class="page map-page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Map</h1>
+  <form class="board-tools" method="get" action="/map">
+    <label class="field-inline">View
+      <select name="view">
+        <option value="structure"{% if view == "structure" %} selected{% endif %}>Structure</option>
+        <option value="now"{% if view == "now" %} selected{% endif %}>Now</option>
+      </select>
+    </label>
+    <label class="field-inline">Last minutes
+      <input class="map-minutes" type="number" name="minutes" required min="1" max="10080" value="{{ minutes }}">
+    </label>
+    <label class="field-inline">Project
+      <select name="project">
+        <option value="">All projects</option>
+        {% for p in nav.projects %}<option value="{{ p.slug }}"{% if p.slug == project_filter %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn">Show</button>
+    <button type="button" class="action" id="map-collapse">Collapse projects</button>
+    <button type="button" class="action" id="map-expand">Expand projects</button>
+  </form>
+  <p class="muted map-status" id="map-status" role="status">Loading…</p>
+  {#- Cytoscape adds an inline <style> unless this id exists, and the CSP refuses inline styles:
+      the one rule it would add (position: relative on the container) is in app.css. #}
+  <span id="__________cytoscape_stylesheet" hidden></span>
+  <div id="map" class="map" data-graph-url="{{ graph_url }}" data-view="{{ view }}" data-project="{{ project_filter }}">
+    <div id="map-canvas" class="map-canvas" role="img" aria-label="Graph of the owner, projects, tasks, sessions and environments"></div>
+  </div>
+  <div class="map-detail" id="map-detail" hidden>
+    <strong id="map-detail-title"></strong>
+    <span class="muted" id="map-detail-text"></span>
+    <a class="action" id="map-detail-link" href="/">Open</a>
+    <a class="action" id="map-detail-usage" href="/usage" hidden>Usage</a>
+    <button type="button" class="action" id="map-detail-toggle" hidden>Collapse</button>
+  </div>
+  <ul class="map-legend" aria-label="Legend">
+    <li><span class="map-swatch swatch-binding"></span>works on a task</li>
+    <li><span class="map-swatch swatch-message"></span>message between sessions</li>
+    <li><span class="map-swatch swatch-comment"></span>owner's comment</li>
+    <li><span class="map-swatch swatch-level-none"></span>access: none</li>
+    <li><span class="map-swatch swatch-level-read"></span>access: read</li>
+    <li><span class="map-swatch swatch-level-ask"></span>access: ask</li>
+    <li><span class="map-swatch swatch-level-full"></span>access: full</li>
+  </ul>
+</main>
+{% endblock %}

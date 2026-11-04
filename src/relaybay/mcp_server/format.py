@@ -36,6 +36,7 @@ from relaybay.domain.review import Attachment, Review, ReviewStep
 from relaybay.domain.rules import Rules, requirement_label, rules_line
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
+from relaybay.domain.usage import UsageReport, UsageTotal
 from relaybay.policy import EffectivePolicy
 from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
 
@@ -884,6 +885,8 @@ def event_detail(e: Event) -> str:
         return f"{p.get('steps')} step(s) accepted"
     if e.kind == "session.todo_updated":
         return f"todo {p.get('completed')}/{p.get('items')} done"
+    if e.kind == "session.message":
+        return f"{p.get('session')} → {p.get('to')}"
     if e.kind == "live.action":
         return f"{p.get('environment')} · {p.get('decision')} · {p.get('command') or ''}".rstrip()
     if e.kind in ("environment.created", "environment.deleted"):
@@ -902,6 +905,47 @@ def event_detail(e: Event) -> str:
         reason = p.get("unlinked_reason")
         return f"{p.get('session')}" + (f" (unlinked: {reason})" if reason else "")
     return ""
+
+
+USAGE_LINES_MAX = 30
+
+
+def _usage_line(label: str, total: UsageTotal) -> str:
+    return (
+        f"- {label}: {total.tokens:,} tokens (input {total.input:,}, output {total.output:,},"
+        f" cache read {total.cache_read:,}, cache write {total.cache_write:,},"
+        f" {total.messages:,} messages)"
+    )
+
+
+def usage_summary(report: UsageReport, enabled: bool) -> str:
+    lines = [
+        f"Usage, last {report.days} day(s). Tokens only: no prices or quotas are known. Subagents"
+        " count to their session."
+    ]
+    if not enabled:
+        lines.append("Reading is off (usage_enabled = false): this is what was read before.")
+    if report.unknown_lines:
+        lines.append(f"{report.unknown_lines} transcript line(s) not understood, not counted.")
+    if report.capped_files:
+        lines.append(f"{report.capped_files} subagent transcript(s) over the limit, not counted.")
+    if report.unread_files:
+        lines.append(f"{report.unread_files} transcript file(s) could not be read.")
+    if not report.rows:
+        lines.append("No usage recorded for this filter.")
+        return "\n".join(lines)
+    lines.append(_usage_line("Total", report.total))
+    for title, items in (
+        ("By day", [item for item in reversed(report.periods) if item[1].messages]),
+        ("By project", report.by_project),
+        ("By session", report.by_session),
+        ("By model", report.by_model),
+    ):
+        lines.append(f"\n{title}:")
+        lines += [_usage_line(label, total) for label, total in items[:USAGE_LINES_MAX]]
+        if len(items) > USAGE_LINES_MAX:
+            lines.append(f"... {len(items) - USAGE_LINES_MAX} more")
+    return "\n".join(lines)
 
 
 def events(items: list[Event], since_id: int) -> str:

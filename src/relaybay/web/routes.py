@@ -38,10 +38,12 @@ from relaybay.domain.errors import (
     NotFoundError,
     ValidationError,
 )
+from relaybay.domain.map_graph import DEFAULT_MINUTES
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
 from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage
 from relaybay.domain.tasks import is_archived
+from relaybay.domain.usage import UsageReport
 from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
@@ -137,6 +139,7 @@ EVENT_KINDS = (
     "plan.step_updated",
     "plan.accepted",
     "session.todo_updated",
+    "session.message",
     "attachment.added",
     "attachment.updated",
     "attachment.removed",
@@ -161,6 +164,46 @@ DOCS_DECISIONS = 200
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
+
+
+USAGE_ROWS = 500
+USAGE_DAYS = (7, 30, 90, 365, 0)
+CHART_WIDTH = 720
+CHART_HEIGHT = 120
+CHART_GAP = 2
+
+
+def usage_chart(report: UsageReport) -> dict[str, Any] | None:
+    """Bars for the Usage page as numbers for an inline SVG; drawn from presentation attributes,
+    which the CSP allows, so the page needs no chart library."""
+    if not report.periods:
+        return None
+    top = max(total.tokens for _, total in report.periods) or 1
+    width = CHART_WIDTH / len(report.periods)
+    bars = []
+    for index, (period, total) in enumerate(report.periods):
+        height = round(total.tokens / top * (CHART_HEIGHT - 2), 1)
+        if total.tokens:
+            height = max(height, 2)
+        bars.append(
+            {
+                "x": round(index * width + CHART_GAP / 2, 2),
+                "y": round(CHART_HEIGHT - height, 1),
+                "width": round(max(width - CHART_GAP, 1), 2),
+                "height": height,
+                "hit_x": round(index * width, 2),
+                "hit_width": round(width, 2),
+                "title": f"{period}: {total.tokens:,} tokens",
+            }
+        )
+    return {
+        "width": CHART_WIDTH,
+        "height": CHART_HEIGHT,
+        "bars": bars,
+        "top": top,
+        "first": report.periods[0][0],
+        "last": report.periods[-1][0],
+    }
 
 
 def static_versions(folder: Path = STATIC_DIR) -> dict[str, str]:
@@ -269,7 +312,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `activity`, `settings`, `sessions`; `board`, `sessions`, `environments` or
+        `boards`, `map`, `usage`, `activity`, `settings`, `sessions`; `board`, `sessions`,
+        `environments` or
         `docs` with `project`)."""
         nav = {
             "active": active,
@@ -476,6 +520,76 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/fragments/inbox-badge", response_class=HTMLResponse)
     async def inbox_badge(request: Request):
         return render(request, "_inbox_badge.html", count=(await inbox()).count)
+
+    @router.get("/map", response_class=HTMLResponse)
+    async def map_page(
+        request: Request,
+        view: str = "structure",
+        minutes: int = DEFAULT_MINUTES,
+        project: str = "",
+    ):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        project = project.strip().lower()
+        await service.map_graph(view=view, minutes=minutes, project=project or None)  # validates
+        query = {"view": view, "minutes": minutes, **({"project": project} if project else {})}
+        return await page(
+            request,
+            "map.html",
+            "map",
+            view=view,
+            minutes=minutes,
+            project_filter=project,
+            graph_url="/map/graph?" + urlencode(query),
+            last_event_id=last_event_id,
+        )
+
+    @router.get("/map/graph")
+    async def map_graph(
+        view: str = "structure", minutes: int = DEFAULT_MINUTES, project: str = ""
+    ) -> JSONResponse:
+        graph = await service.map_graph(
+            view=view, minutes=minutes, project=project.strip().lower() or None
+        )
+        return JSONResponse(graph, headers={"Cache-Control": "no-store"})
+
+    @router.get("/usage", response_class=HTMLResponse)
+    async def usage_page(
+        request: Request,
+        project: str = "",
+        session: str = "",
+        model: str = "",
+        days: int = 30,
+        group: str = "day",
+    ):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        project = project.strip().lower()
+        if session and not (session.isascii() and session.isdigit() and len(session) <= 18):
+            raise ValidationError("session must be a session's number.")
+        session_id = int(session) if session else None
+        report = await service.usage_report(
+            project=project or None,
+            session_ids=[session_id] if session_id is not None else None,
+            model=model or None,
+            days=days,
+            group=group,
+        )
+        sessions, models = await service.usage_filters()
+        return await page(
+            request,
+            "usage.html",
+            "usage",
+            report=report,
+            shown_rows=report.rows[:USAGE_ROWS],
+            chart=usage_chart(report),
+            project_filter=project,
+            session_filter=session_id,
+            last_event_id=last_event_id,
+            model_filter=model,
+            sessions=sessions,
+            models=models,
+            days_choices=USAGE_DAYS,
+            usage_enabled=settings.usage_enabled,
+        )
 
     @router.get("/sessions", response_class=HTMLResponse)
     async def all_sessions_page(request: Request):

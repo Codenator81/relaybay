@@ -16,6 +16,7 @@
         <span class="history-name">{{ s.name }}</span>
         <span class="session-kind">{{ kinds.get(s.kind, "named") }}</span>
         {% if s.status %}<span class="session-status status-{{ s.status }}">{{ s.status }}</span>{% else %}<span class="muted session-status">no hook status</span>{% endif %}
+        <a class="action" href="/usage?session={{ s.id }}">Usage</a>
         {% if s.desktop_link %}<a class="action open-desktop" href="{{ s.desktop_link }}" title="If nothing opens, paste the link into the Claude desktop app">Open in desktop</a>{% endif %}
       </div>
       <p class="session-line muted">
