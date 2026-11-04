@@ -8,6 +8,7 @@ from typing import Any
 
 import aiosqlite
 
+from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -1239,6 +1240,10 @@ def _attachment(row: aiosqlite.Row) -> Attachment:
         task_key=row["task_key"],
         project_slug=row["project_slug"],
         step_position=row["step_position"],
+        annotated_name=row["annotated_name"],
+        annotated_size=row["annotated_size"],
+        annotated_sha256=row["annotated_sha256"],
+        annotated_sent_sha256=row["annotated_sent_sha256"],
     )
 
 
@@ -1296,7 +1301,10 @@ async def find_attachment(
 
 async def task_attachment_bytes(conn: aiosqlite.Connection, task_id: int) -> int:
     row = await _one(
-        conn, "SELECT COALESCE(SUM(size), 0) FROM attachment WHERE task_id = ?", (task_id,)
+        conn,
+        "SELECT COALESCE(SUM(size + COALESCE(annotated_size, 0)), 0) FROM attachment"
+        " WHERE task_id = ?",
+        (task_id,),
     )
     return int(row[0])
 
@@ -1316,13 +1324,153 @@ async def delete_attachment(conn: aiosqlite.Connection, attachment_id: int) -> N
 
 
 async def stored_files(conn: aiosqlite.Connection) -> set[tuple[str, str, str]]:
-    """(project slug, task key, stored name) of every attachment: the files that must exist."""
+    """(project slug, task key, stored name) of every attachment and flattened image: the
+    files that must exist."""
     rows = await _all(
         conn,
-        "SELECT p.slug, t.key, a.stored_name FROM attachment a"
+        "SELECT p.slug, t.key, a.stored_name, a.annotated_name FROM attachment a"
         " JOIN task t ON t.id = a.task_id JOIN project p ON p.id = t.project_id",
     )
-    return {(r[0], r[1], r[2]) for r in rows}
+    return {(r[0], r[1], name) for r in rows for name in (r[2], r[3]) if name}
+
+
+def _annotation(row: aiosqlite.Row) -> Annotation:
+    return Annotation(
+        id=row["id"],
+        attachment_id=row["attachment_id"],
+        kind=row["kind"],
+        colour=row["colour"],
+        stroke_width=row["stroke_width"],
+        geometry=json.loads(row["geometry"]),
+        pin_number=row["pin_number"],
+        body_md=row["body_md"],
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        deleted_at=row["deleted_at"],
+    )
+
+
+async def _with_replies(
+    conn: aiosqlite.Connection, annotations: list[Annotation]
+) -> list[Annotation]:
+    by_id = {a.id: a for a in annotations}
+    if not by_id:
+        return annotations
+    marks = ", ".join("?" for _ in by_id)
+    rows = await _all(
+        conn,
+        f"SELECT * FROM annotation_reply WHERE annotation_id IN ({marks}) ORDER BY id",
+        tuple(by_id),
+    )
+    for r in rows:
+        by_id[r["annotation_id"]].replies.append(
+            AnnotationReply(
+                id=r["id"],
+                annotation_id=r["annotation_id"],
+                author_kind=r["author_kind"],
+                author=r["author"],
+                body_md=r["body_md"],
+                created_at=r["created_at"],
+            )
+        )
+    return annotations
+
+
+async def get_annotation(conn: aiosqlite.Connection, annotation_id: int) -> Annotation | None:
+    row = await _one(conn, "SELECT * FROM annotation WHERE id = ?", (annotation_id,))
+    return (await _with_replies(conn, [_annotation(row)]))[0] if row else None
+
+
+async def list_annotations(conn: aiosqlite.Connection, attachment_id: int) -> list[Annotation]:
+    """The live annotations of a screenshot, oldest first."""
+    rows = await _all(
+        conn,
+        "SELECT * FROM annotation WHERE attachment_id = ? AND deleted_at IS NULL ORDER BY id",
+        (attachment_id,),
+    )
+    return await _with_replies(conn, [_annotation(r) for r in rows])
+
+
+async def list_task_annotations(conn: aiosqlite.Connection, task_id: int) -> list[Annotation]:
+    rows = await _all(
+        conn,
+        "SELECT n.* FROM annotation n JOIN attachment a ON a.id = n.attachment_id"
+        " WHERE a.task_id = ? AND n.deleted_at IS NULL ORDER BY n.id",
+        (task_id,),
+    )
+    return await _with_replies(conn, [_annotation(r) for r in rows])
+
+
+async def next_pin_number(conn: aiosqlite.Connection, attachment_id: int) -> int:
+    """Counts removed pins too: their numbers are never given out again."""
+    row = await _one(
+        conn,
+        "SELECT COALESCE(MAX(pin_number), 0) + 1 FROM annotation WHERE attachment_id = ?",
+        (attachment_id,),
+    )
+    return int(row[0])
+
+
+async def insert_annotation(
+    conn: aiosqlite.Connection,
+    *,
+    attachment_id: int,
+    kind: str,
+    colour: str,
+    stroke_width: float,
+    geometry: dict[str, Any],
+    pin_number: int | None,
+    body_md: str | None,
+    created_by: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO annotation (attachment_id, kind, colour, stroke_width, geometry, pin_number,"
+        " body_md, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            attachment_id,
+            kind,
+            colour,
+            stroke_width,
+            geometry_json(geometry),
+            pin_number,
+            body_md,
+            created_by,
+            now,
+            now,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_annotation(
+    conn: aiosqlite.Connection, annotation_id: int, changes: dict[str, Any], now: str
+) -> None:
+    values = {**changes, "updated_at": now}
+    sets = [f"{k} = ?" for k in values]
+    await conn.execute(
+        f"UPDATE annotation SET {', '.join(sets)} WHERE id = ?",
+        (*values.values(), annotation_id),
+    )
+
+
+async def insert_annotation_reply(
+    conn: aiosqlite.Connection,
+    *,
+    annotation_id: int,
+    author_kind: str,
+    author: str,
+    session_id: int | None,
+    body_md: str,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO annotation_reply (annotation_id, author_kind, author, session_id, body_md,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (annotation_id, author_kind, author, session_id, body_md, now),
+    )
+    return int(cur.lastrowid or 0)
 
 
 async def review_queue(conn: aiosqlite.Connection) -> list[Task]:

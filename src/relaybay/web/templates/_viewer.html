@@ -1,13 +1,51 @@
-{#- Full-screen screenshot viewer, opened by app.js from a thumbnail ([data-viewer]). -#}
-<dialog class="viewer" id="viewer" aria-label="Screenshot">
+{#- Full-screen screenshot viewer, opened by app.js from a thumbnail ([data-viewer]); the markup
+    tools are annotate.js. -#}
+<dialog class="viewer" id="viewer" aria-label="Screenshot" data-csrf="{{ csrf_token }}">
   <div class="viewer-bar">
     <span class="viewer-count" aria-live="polite"></span>
+    <div class="viewer-tools" role="toolbar" aria-label="Markup" hidden>
+      <span class="viewer-tool-group">
+        <button type="button" class="viewer-tool" data-tool="select" aria-pressed="true">Select</button>
+        <button type="button" class="viewer-tool" data-tool="rect" aria-pressed="false">Rectangle</button>
+        <button type="button" class="viewer-tool" data-tool="arrow" aria-pressed="false">Arrow</button>
+        <button type="button" class="viewer-tool" data-tool="freehand" aria-pressed="false">Pen</button>
+        <button type="button" class="viewer-tool" data-tool="pin" aria-pressed="false">Pin</button>
+      </span>
+      <span class="viewer-tool-group">
+        {% for colour in annotation_colours %}
+        <button type="button" class="viewer-swatch" data-colour="{{ colour }}" aria-pressed="{{ 'true' if loop.first else 'false' }}" aria-label="Colour {{ loop.index }}">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="{{ colour }}" stroke="#fff" stroke-width="1"/></svg>
+        </button>
+        {% endfor %}
+      </span>
+      <span class="viewer-tool-group">
+        <button type="button" class="viewer-tool" data-action="undo">Undo</button>
+        <button type="button" class="viewer-tool" data-action="delete">Delete</button>
+        <button type="button" class="viewer-tool" data-action="hide" aria-pressed="false">Hide markup</button>
+        <button type="button" class="viewer-tool viewer-send" data-action="send">Send to agent</button>
+      </span>
+    </div>
     <button type="button" class="viewer-close" aria-label="Close (Esc)">Close</button>
   </div>
   <button type="button" class="viewer-nav viewer-prev" aria-label="Previous screenshot (←)">‹</button>
   <figure class="viewer-figure">
-    <img class="viewer-img" alt="">
+    <div class="viewer-stage">
+      <img class="viewer-img" alt="">
+      <svg class="viewer-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" aria-label="Markup"></svg>
+      <aside class="viewer-thread" aria-label="Pin" hidden>
+        <div class="viewer-thread-head">
+          <strong class="viewer-thread-title"></strong>
+          <button type="button" class="viewer-close viewer-thread-close">Close</button>
+        </div>
+        <textarea class="viewer-thread-body" rows="3" maxlength="{{ annotation_body_max }}" aria-label="Pin comment" placeholder="What is wrong here?"></textarea>
+        <button type="button" class="viewer-tool viewer-thread-save">Save comment</button>
+        <ul class="viewer-thread-replies"></ul>
+        <textarea class="viewer-thread-reply" rows="2" maxlength="{{ annotation_body_max }}" aria-label="Reply" placeholder="Reply to the agent"></textarea>
+        <button type="button" class="viewer-tool viewer-thread-send">Reply</button>
+      </aside>
+    </div>
     <figcaption class="viewer-caption"></figcaption>
+    <p class="viewer-note" role="status"></p>
   </figure>
   <button type="button" class="viewer-nav viewer-next" aria-label="Next screenshot (→)">›</button>
 </dialog>

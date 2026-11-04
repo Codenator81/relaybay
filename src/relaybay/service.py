@@ -24,12 +24,14 @@ import aiosqlite
 
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
+from relaybay.domain import annotations as ann
 from relaybay.domain import comments as comment_text
 from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
+from relaybay.domain.annotations import Annotation
 from relaybay.domain.comments import (
     COMMENT_MAX,
     CONTEXT_MAX,
@@ -107,6 +109,7 @@ from relaybay.domain.review import (
     clean_step_title,
     read_source,
     require_image,
+    require_png,
     resolve_source,
 )
 from relaybay.domain.rules import (
@@ -3477,6 +3480,7 @@ class Service:
         body: str,
         in_reply_to: int | None,
         step_id: int | None = None,
+        attachment_id: int | None = None,
     ) -> Comment:
         comment_id = await repo.insert_comment(
             tx.conn,
@@ -3488,6 +3492,7 @@ class Service:
             in_reply_to=in_reply_to,
             now=tx.now,
             step_id=step_id,
+            attachment_id=attachment_id,
         )
         await tx.event(
             "comment.added",
@@ -4198,6 +4203,19 @@ class Service:
     def _file_path(self, item: Attachment) -> Path:
         return self.attachments_dir / item.project_slug / item.task_key / item.stored_name
 
+    def _annotated_path(self, item: Attachment) -> Path:
+        assert item.annotated_name is not None
+        return self.attachments_dir / item.project_slug / item.task_key / item.annotated_name
+
+    def _drop_annotated(self, item: Attachment) -> None:
+        """After the commit, so the write has succeeded: a file that cannot go now (another
+        program holds it) stays for the startup sweep, which no row keeps it from."""
+        path = self._annotated_path(item)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove %s, the next start removes it: %s", path, exc)
+
     def _store_bytes(self, folder: Path, data: bytes, ext: str) -> str:
         folder.mkdir(parents=True, exist_ok=True)
         name = secrets.token_hex(16) + ext
@@ -4395,12 +4413,415 @@ class Service:
         # After the commit: a failed delete leaves an orphan for the startup sweep, never a
         # row without its file.
         self._file_path(item).unlink(missing_ok=True)
+        if item.annotated_name:
+            self._drop_annotated(item)
 
     async def attachment_file(self, attachment_id: int) -> tuple[Attachment, Path]:
         item = await repo.get_attachment(self._r, attachment_id)
         if item is None:
             raise NotFoundError(f"Attachment #{attachment_id} not found.")
         return item, self._file_path(item)
+
+    # --- annotations: markup on a screenshot, pins and their threads ------------------------
+
+    async def _attachment_in(self, conn: aiosqlite.Connection, attachment_id: int) -> Attachment:
+        item = await repo.get_attachment(conn, attachment_id)
+        if item is None:
+            raise NotFoundError(f"Attachment #{attachment_id} not found.")
+        return item
+
+    async def _annotation_on(
+        self, conn: aiosqlite.Connection, attachment_id: int, annotation_id: int
+    ) -> Annotation:
+        """An annotation only through its own screenshot: another one's id is not found."""
+        found = await repo.get_annotation(conn, annotation_id)
+        if found is None or found.attachment_id != attachment_id:
+            raise NotFoundError(
+                f"Annotation #{annotation_id} not found on attachment #{attachment_id}."
+            )
+        return found
+
+    async def _annotation_event(
+        self,
+        tx: _Tx,
+        kind: str,
+        task: Task,
+        annotation: Annotation,
+        actor: str,
+        session_id: int | None = None,
+    ) -> None:
+        await tx.event(
+            kind,
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=session_id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            attachment_id=annotation.attachment_id,
+            annotation_id=annotation.id,
+            annotation_kind=annotation.kind,
+            pin_number=annotation.pin_number,
+        )
+
+    async def _clean_pin_text(self, tx: _Tx, task: Task, value: Any) -> str | None:
+        """The cleaning of a comment plus the secret scan: this text also reaches an agent."""
+        if value is not None and not isinstance(value, str):
+            raise ValidationError("body must be a string or null.")
+        text = _clean_text(value, "body", ann.BODY_MAX)
+        project = await self.get_project(task.project_slug, tx.conn)
+        _scan(await self._secret_rules(tx.conn, project), body=text)
+        return text
+
+    async def annotations(self, attachment_id: int) -> tuple[Attachment, list[Annotation]]:
+        """A screenshot and its live annotations with their threads."""
+        item = await self._attachment_in(self._r, attachment_id)
+        return item, await repo.list_annotations(self._r, item.id)
+
+    async def add_annotation(
+        self, attachment_id: int, values: Any, *, actor: str = "owner"
+    ) -> Annotation:
+        """New markup from the board: `kind`, `colour`, `geometry`, optional `stroke_width` and,
+        on a pin, `body`."""
+        if not isinstance(values, dict):
+            raise ValidationError("An annotation is an object with kind, colour and geometry.")
+        unknown = sorted(set(values) - {"kind", "colour", "stroke_width", "geometry", "body"})
+        if unknown:
+            raise ValidationError(f"Unknown annotation field(s): {', '.join(unknown)}.")
+        kind = ann.clean_kind(values.get("kind"))
+        colour = ann.clean_colour(values.get("colour"))
+        stroke = ann.clean_stroke(values.get("stroke_width"))
+        geometry = await asyncio.to_thread(ann.clean_geometry, kind, values.get("geometry"))
+        if kind != "pin" and values.get("body"):
+            raise ValidationError("Only a pin carries a comment.")
+        async with self._tx() as tx:
+            item = await self._attachment_in(tx.conn, attachment_id)
+            task = await self.get_task(item.task_id, tx.conn)
+            body = await self._clean_pin_text(tx, task, values.get("body"))
+            if len(await repo.list_annotations(tx.conn, item.id)) >= ann.ANNOTATIONS_MAX:
+                raise ValidationError(
+                    f"A screenshot holds at most {ann.ANNOTATIONS_MAX} annotations."
+                )
+            number = await repo.next_pin_number(tx.conn, item.id) if kind == "pin" else None
+            annotation_id = await repo.insert_annotation(
+                tx.conn,
+                attachment_id=item.id,
+                kind=kind,
+                colour=colour,
+                stroke_width=stroke,
+                geometry=geometry,
+                pin_number=number,
+                body_md=body,
+                created_by=actor,
+                now=tx.now,
+            )
+            added = await repo.get_annotation(tx.conn, annotation_id)
+            assert added is not None
+            await self._annotation_event(tx, "annotation.added", task, added, actor)
+            return added
+
+    async def update_annotation(
+        self, attachment_id: int, annotation_id: int, body: Any, *, actor: str = "owner"
+    ) -> Annotation:
+        """The owner rewrites a pin's comment."""
+        async with self._tx() as tx:
+            item = await self._attachment_in(tx.conn, attachment_id)
+            await self._annotation_on(tx.conn, item.id, annotation_id)
+            pin = await self._live_pin(tx.conn, annotation_id)
+            task = await self.get_task(item.task_id, tx.conn)
+            text = await self._clean_pin_text(tx, task, body)
+            if text != pin.body_md:
+                await repo.update_annotation(tx.conn, pin.id, {"body_md": text}, tx.now)
+                await self._annotation_event(tx, "annotation.updated", task, pin, actor)
+            updated = await repo.get_annotation(tx.conn, pin.id)
+            assert updated is not None
+            return updated
+
+    async def remove_annotation(
+        self, attachment_id: int, annotation_id: int, *, actor: str = "owner"
+    ) -> Annotation:
+        """A soft delete: the row stays, so its pin number is not used again and Undo can bring
+        it back. Removing a removed one changes nothing."""
+        async with self._tx() as tx:
+            item = await self._attachment_in(tx.conn, attachment_id)
+            found = await self._annotation_on(tx.conn, item.id, annotation_id)
+            if found.deleted_at is None:
+                task = await self.get_task(item.task_id, tx.conn)
+                await repo.update_annotation(tx.conn, found.id, {"deleted_at": tx.now}, tx.now)
+                await self._annotation_event(tx, "annotation.removed", task, found, actor)
+            updated = await repo.get_annotation(tx.conn, found.id)
+            assert updated is not None
+            return updated
+
+    async def restore_annotation(
+        self, attachment_id: int, annotation_id: int, *, actor: str = "owner"
+    ) -> Annotation:
+        """Undo of a delete: the annotation comes back with its pin number and thread."""
+        async with self._tx() as tx:
+            item = await self._attachment_in(tx.conn, attachment_id)
+            found = await self._annotation_on(tx.conn, item.id, annotation_id)
+            if found.deleted_at is not None:
+                task = await self.get_task(item.task_id, tx.conn)
+                await repo.update_annotation(tx.conn, found.id, {"deleted_at": None}, tx.now)
+                await self._annotation_event(tx, "annotation.updated", task, found, actor)
+            updated = await repo.get_annotation(tx.conn, found.id)
+            assert updated is not None
+            return updated
+
+    async def _live_pin(self, conn: aiosqlite.Connection, annotation_id: int) -> Annotation:
+        found = await repo.get_annotation(conn, annotation_id)
+        if found is None or found.deleted_at or found.kind != "pin":
+            raise NotFoundError(f"Pin annotation #{annotation_id} not found.")
+        return found
+
+    async def reply_as_owner(
+        self, attachment_id: int, annotation_id: int, body: Any, *, actor: str = "owner"
+    ) -> Annotation:
+        """The owner answers in a pin's thread; it reaches the bound session as an owner comment."""
+        async with self._tx() as tx:
+            item = await self._attachment_in(tx.conn, attachment_id)
+            await self._annotation_on(tx.conn, item.id, annotation_id)
+            pin = await self._live_pin(tx.conn, annotation_id)
+            task = await self.get_task(item.task_id, tx.conn)
+            text = await self._clean_pin_text(tx, task, body)
+            if not text:
+                raise ValidationError("A reply must not be empty.")
+            await repo.insert_annotation_reply(
+                tx.conn,
+                annotation_id=pin.id,
+                author_kind="owner",
+                author=actor,
+                session_id=None,
+                body_md=text,
+                now=tx.now,
+            )
+            await self._annotation_event(tx, "annotation.replied", task, pin, actor)
+            await self._read(tx, task, await self._unread(tx, task, False), actor, None)
+            await self._insert_comment(
+                tx,
+                task,
+                author_kind="owner",
+                author=actor,
+                session_id=None,
+                body=f"On pin #{pin.pin_number} of screenshot #{item.id}"
+                f" (annotation {pin.id}): {text}",
+                in_reply_to=None,
+                step_id=item.step_id,
+                attachment_id=item.id,
+            )
+            updated = await repo.get_annotation(tx.conn, pin.id)
+            assert updated is not None
+            return updated
+
+    async def reply_as_agent(
+        self,
+        annotation_id: int,
+        body: Any,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Attachment, Annotation]:
+        """An agent answers a pin. The owner sees it in the pin's thread and, as an agent reply,
+        in the task's thread; it marks the owner's unread comments on this screenshot read."""
+        async with self._tx() as tx:
+            pin = await self._live_pin(tx.conn, annotation_id)
+            item = await self._attachment_in(tx.conn, pin.attachment_id)
+            task = await self.get_task(item.task_id, tx.conn)
+            text = await self._clean_pin_text(tx, task, body)
+            if not text:
+                raise ValidationError("A reply must not be empty.")
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            session_id = sess.id if sess else None
+            await repo.insert_annotation_reply(
+                tx.conn,
+                annotation_id=pin.id,
+                author_kind="agent",
+                author=actor,
+                session_id=session_id,
+                body_md=text,
+                now=tx.now,
+            )
+            await self._annotation_event(tx, "annotation.replied", task, pin, actor, session_id)
+            unread = [c for c in await self._unread(tx, task, True) if c.attachment_id == item.id]
+            await self._read(tx, task, unread, actor, session_id)
+            await self._insert_comment(
+                tx,
+                task,
+                author_kind="agent",
+                author=actor,
+                session_id=session_id,
+                body=f"Pin #{pin.pin_number} of screenshot #{item.id}: {text}",
+                in_reply_to=None,
+                step_id=item.step_id,
+                attachment_id=item.id,
+            )
+            updated = await repo.get_annotation(tx.conn, pin.id)
+            assert updated is not None
+            return item, updated
+
+    async def store_annotated(
+        self, attachment_id: int, data: bytes, *, actor: str = "owner"
+    ) -> Attachment:
+        """The flattened PNG from the viewer, beside the original, which never changes. The name
+        comes from here, never from the client; the previous file goes after the commit."""
+        if len(data) > self.attachment_max_bytes:
+            raise ValidationError(f"The file is larger than {self.attachment_max_bytes // MB} MB.")
+        require_png(data)
+        item = await self._attachment_in(self._r, attachment_id)
+        task = await self.get_task(item.task_id)
+        folder = self._task_folder(task)
+        stored: str | None = await asyncio.to_thread(self._store_bytes, folder, data, ".png")
+        try:
+            async with self._tx() as tx:
+                fresh = await self._attachment_in(tx.conn, attachment_id)
+                used = await repo.task_attachment_bytes(tx.conn, fresh.task_id)
+                used -= fresh.annotated_size or 0
+                if used + len(data) > self.attachment_task_max_bytes:
+                    raise ValidationError(
+                        f"{task.key} already holds {used // MB} MB of screenshots; the limit is"
+                        f" {self.attachment_task_max_bytes // MB} MB per task."
+                    )
+                await repo.update_attachment(
+                    tx.conn,
+                    fresh.id,
+                    {
+                        "annotated_name": stored,
+                        "annotated_size": len(data),
+                        "annotated_sha256": hashlib.sha256(data).hexdigest(),
+                    },
+                )
+                await tx.event(
+                    "attachment.updated",
+                    actor,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    project=task.project_slug,
+                    key=task.key,
+                    stage=task.stage.value,
+                    attachment_id=fresh.id,
+                    annotated=True,
+                )
+                updated = await repo.get_attachment(tx.conn, fresh.id)
+                assert updated is not None
+                stored = None  # kept
+        finally:
+            if stored is not None:
+                (folder / stored).unlink(missing_ok=True)
+        if fresh.annotated_name:
+            self._drop_annotated(fresh)
+        return updated
+
+    async def annotated_file(self, attachment_id: int) -> tuple[Attachment, Path]:
+        item = await self._attachment_in(self._r, attachment_id)
+        if not item.annotated_name:
+            raise NotFoundError(f"Attachment #{attachment_id} has no annotated image yet.")
+        return item, self._annotated_path(item)
+
+    async def send_annotations(self, attachment_id: int, *, actor: str = "owner") -> Comment | None:
+        """ "Send to agent": one owner comment with the pins, their coordinates and the annotated
+        image, tied to the step. The same text with the same image again (a double click, nothing
+        changed) writes and delivers nothing: None. A new colour or a small move leaves the text
+        alike, and the image's hash tells it apart."""
+        async with self._tx() as tx:
+            item = await self._attachment_in(tx.conn, attachment_id)
+            task = await self.get_task(item.task_id, tx.conn)
+            live = await repo.list_annotations(tx.conn, item.id)
+            if not live:
+                raise ValidationError("Nothing to send: this screenshot has no markup.")
+            if not item.annotated_name:
+                raise ValidationError("Upload the annotated image first.")
+            siblings = await repo.list_attachments(tx.conn, task.id)
+            same_place = [a.id for a in siblings if a.step_id == item.step_id]
+            number = same_place.index(item.id) + 1
+            where = (
+                f"Screenshot {number} of step {item.step_position}"
+                if item.step_position
+                else f"Screenshot {number} of {task.key} (no step)"
+            )
+            text = ann.send_text(where, item.id, live)
+            comments = await repo.list_comments(tx.conn, task.id)
+            sent = [c for c in comments if c.from_owner and c.attachment_id == item.id]
+            same_image = item.annotated_sha256 == item.annotated_sent_sha256
+            if same_image and sent and sent[-1].body_md == text:
+                return None
+            await repo.update_attachment(
+                tx.conn, item.id, {"annotated_sent_sha256": item.annotated_sha256}
+            )
+            await self._read(tx, task, await self._unread(tx, task, False), actor, None)
+            return await self._insert_comment(
+                tx,
+                task,
+                author_kind="owner",
+                author=actor,
+                session_id=None,
+                body=text,
+                in_reply_to=None,
+                step_id=item.step_id,
+                attachment_id=item.id,
+            )
+
+    async def attachment_image(
+        self, attachment_id: int, *, annotated: bool
+    ) -> tuple[Attachment, bytes, str]:
+        """A screenshot's bytes and type for an MCP answer; too large is refused, by name."""
+        item = await self._attachment_in(self._r, attachment_id)
+        if annotated and not item.annotated_name:
+            raise ValidationError(
+                f"Attachment #{item.id} has no annotated image yet; the owner makes one with"
+                " 'Send to agent' in the viewer."
+            )
+        path = self._annotated_path(item) if annotated else self._file_path(item)
+        size = (item.annotated_size or 0) if annotated else item.size
+        if size > ann.IMAGE_TOOL_MAX_BYTES:
+            raise ValidationError(
+                f"The image of attachment #{item.id} is {size / MB:.1f} MB, too large for a tool"
+                f" answer (limit {ann.IMAGE_TOOL_MAX_BYTES / MB:.1f} MB). Ask the owner to look"
+                " at it on the board, and use the pin coordinates from review_get."
+            )
+        try:
+            data = await asyncio.to_thread(path.read_bytes)
+        except FileNotFoundError:
+            raise NotFoundError(f"The file of attachment #{item.id} is missing.") from None
+        # Sides are known for PNG, which every flattened image is; other originals are not read.
+        width, height = ann.png_size(data) or (0, 0)
+        if max(width, height) > ann.IMAGE_TOOL_MAX_SIDE:
+            raise ValidationError(
+                f"The image of attachment #{item.id} is {width}x{height} px, too large for a tool"
+                f" answer (limit {ann.IMAGE_TOOL_MAX_SIDE} px on a side). Ask the owner to look at"
+                " it on the board, and use the pin coordinates from review_get."
+            )
+        return item, data, "image/png" if annotated else item.mime
+
+    async def review_markup(
+        self, task: Task, review: Review
+    ) -> tuple[dict[int, list[Annotation]], dict[int, bytes], dict[int, str]]:
+        """For review_get: the annotations by screenshot, the flattened images that fit in one
+        answer, and a note for each one that does not."""
+        by_attachment: dict[int, list[Annotation]] = {}
+        for found in await repo.list_task_annotations(self._r, task.id):
+            by_attachment.setdefault(found.attachment_id, []).append(found)
+        images: dict[int, bytes] = {}
+        notes: dict[int, str] = {}
+        left = ann.REVIEW_IMAGES_MAX_BYTES
+        for item in review.images():
+            if not item.annotated_name:
+                continue
+            size = item.annotated_size or 0
+            if size > left:
+                notes[item.id] = (
+                    f"not in this answer, see attachment_get({item.id}, annotated=true)"
+                )
+                continue
+            try:
+                _, images[item.id], _ = await self.attachment_image(item.id, annotated=True)
+            except (NotFoundError, ValidationError) as exc:
+                notes[item.id] = str(exc)
+                continue
+            left -= size
+        return by_attachment, images, notes
 
     async def _sweep_attachments(self) -> None:
         """Remove files no attachment row names (left by a crash, a removed task, a failed

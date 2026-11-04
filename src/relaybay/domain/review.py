@@ -41,6 +41,10 @@ class Attachment:
     task_key: str = ""
     project_slug: str = ""
     step_position: int | None = None  # the number of its step in the checklist
+    annotated_name: str | None = None  # the latest flattened PNG, beside the original
+    annotated_size: int | None = None
+    annotated_sha256: str | None = None
+    annotated_sent_sha256: str | None = None  # of the image in the last comment sent
 
 
 @dataclass(slots=True)
@@ -90,6 +94,13 @@ def sniff_image(head: bytes) -> str | None:
     if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "image/webp"
     return None
+
+
+def require_png(data: bytes) -> None:
+    if sniff_image(data[:16]) != "image/png":
+        raise ValidationError(
+            "An annotated image must be a PNG (checked by its content, not its name)."
+        )
 
 
 def require_image(data: bytes) -> str:

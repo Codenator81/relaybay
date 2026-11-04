@@ -2,6 +2,7 @@
 
 import json
 
+from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.digest import age
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
 from relaybay.domain.environments import (
@@ -229,8 +230,45 @@ def step_line(step: ReviewStep) -> str:
     return line
 
 
-def review_text(task: Task, review: Review, comments: list[Comment]) -> str:
+def annotation_lines(annotations: list[Annotation]) -> list[str]:
+    """A screenshot's pins with their threads, then the rest of its markup."""
+    lines = []
+    for a in annotations:
+        if a.kind != "pin":
+            continue
+        lines.append(f"    pin {pin_line(a)}")
+        lines.extend(f"      {r.author}: {r.body_md}" for r in a.replies)
+    shapes = [shape_line(a) for a in annotations if a.kind != "pin"]
+    if shapes:
+        lines.append("    also marked: " + "; ".join(shapes))
+    return lines
+
+
+def _shot_lines(
+    item: Attachment,
+    annotations: dict[int, list[Annotation]],
+    images: dict[int, bytes],
+    notes: dict[int, str],
+) -> list[str]:
+    lines = [attachment_line(item)]
+    if item.id in images:
+        lines.append(f"    annotated image of #{item.id}: attached to this answer")
+    elif item.id in notes:
+        lines.append(f"    annotated image of #{item.id}: {notes[item.id]}")
+    lines.extend(annotation_lines(annotations.get(item.id, [])))
+    return lines
+
+
+def review_text(
+    task: Task,
+    review: Review,
+    comments: list[Comment],
+    annotations: dict[int, list[Annotation]] | None = None,
+    images: dict[int, bytes] | None = None,
+    notes: dict[int, str] | None = None,
+) -> str:
     """A task's checklist for `review_get`."""
+    marked, shown, noted = annotations or {}, images or {}, notes or {}
     if not review.steps and not review.loose:
         return (
             f"**{task.key}** has no review checklist yet. Write one with review_steps_set before"
@@ -244,12 +282,14 @@ def review_text(task: Task, review: Review, comments: list[Comment]) -> str:
     ]
     for step in review.steps:
         lines.append(step_line(step))
-        lines.extend(attachment_line(a) for a in step.attachments)
+        for item in step.attachments:
+            lines.extend(_shot_lines(item, marked, shown, noted))
         notes = [c for c in comments if c.step_id == step.id]
         lines.extend(f"   owner #{c.id}: {short(c.body_md, 400)}" for c in notes)
     if review.loose:
         lines.append("Screenshots of no step:")
-        lines.extend(attachment_line(a) for a in review.loose)
+        for item in review.loose:
+            lines.extend(_shot_lines(item, marked, shown, noted))
     return "\n".join(lines)
 
 
@@ -828,6 +868,8 @@ def event_detail(e: Event) -> str:
     if e.kind == "session.status_changed":
         change = f"{p['previous']} → {p.get('status')}" if p.get("previous") else p.get("status")
         return f"{p.get('session')}: {change}"
+    if e.kind.startswith("annotation."):
+        return f"pin #{p['pin_number']}" if p.get("pin_number") else str(p.get("annotation_kind"))
     if e.kind == "comment.added":
         return f"#{p.get('comment_id')} {p.get('excerpt') or ''}".rstrip()
     if e.kind == "comment.delivered":

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
+    JSONResponse,
     PlainTextResponse,
     RedirectResponse,
     Response,
@@ -27,6 +28,8 @@ from relaybay import __version__, machine_setup
 from relaybay.config import Settings
 from relaybay.domain import environments as env_domain
 from relaybay.domain import memory as mem
+from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
+from relaybay.domain.annotations import COLOURS
 from relaybay.domain.comments import COMMENT_MAX
 from relaybay.domain.errors import (
     ConfirmationNeeded,
@@ -137,12 +140,17 @@ EVENT_KINDS = (
     "attachment.added",
     "attachment.updated",
     "attachment.removed",
+    "annotation.added",
+    "annotation.updated",
+    "annotation.removed",
+    "annotation.replied",
     "document.updated",
     "memory.added",
     "memory.updated",
     "block.updated",
 )
 CSRF_HEADER = "x-relaybay-csrf"
+ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
 BOARD_ONLY = (
     "Environments, permission levels and the policy change only from the board in a browser;"
     " agents propose changes with environment_propose or policy_propose."
@@ -188,6 +196,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         csrf_token=csrf_token(token),
         require_tracker_log=settings.require_tracker_log,
         comment_max=COMMENT_MAX,
+        annotation_colours=COLOURS,
+        annotation_body_max=ANNOTATION_BODY_MAX,
         pulse_stale=service.pulse_stale,
         pulse_stale_days=settings.pulse_stale_days,
     )
@@ -897,6 +907,112 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             filename=item.stored_name,
             headers={"Cache-Control": "private, max-age=86400"},
         )
+
+    # --- Annotations: the viewer's calls. A page's script sends the CSRF token as a header. ---
+
+    def viewer_write(request: Request) -> None:
+        board_only(request, request.headers.get(CSRF_HEADER, ""))
+
+    async def limited_body(request: Request, limit: int, refusal: str) -> bytes:
+        body = bytearray()
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > limit:
+                raise HTTPException(status_code=413, detail=refusal)
+        return bytes(body)
+
+    async def json_body(request: Request) -> Any:
+        raw = await limited_body(request, ANNOTATION_JSON_MAX, "The annotation is too large.")
+        try:
+            return json.loads(raw)
+        except (ValueError, RecursionError):  # RecursionError: nested too deep
+            raise ValidationError("The body is not valid JSON.") from None
+
+    def body_field(values: Any) -> Any:
+        # A missing key is refused: `{}` must not wipe a pin's comment; null clears it on purpose.
+        if not isinstance(values, dict) or "body" not in values:
+            raise ValidationError("The body must be an object with body.")
+        return values["body"]
+
+    @router.get("/files/{attachment_id}/annotations")
+    async def list_annotations(attachment_id: int) -> JSONResponse:
+        item, annotations = await service.annotations(attachment_id)
+        return JSONResponse(
+            {
+                "attachment": item.id,
+                "annotated": bool(item.annotated_name),
+                "annotations": [a.to_dict() for a in annotations],
+            }
+        )
+
+    @router.post("/files/{attachment_id}/annotations")
+    async def add_annotation(request: Request, attachment_id: int) -> JSONResponse:
+        viewer_write(request)
+        added = await service.add_annotation(attachment_id, await json_body(request))
+        return JSONResponse(added.to_dict(), status_code=201)
+
+    @router.post("/files/{attachment_id}/annotations/{annotation_id}")
+    async def update_annotation(
+        request: Request, attachment_id: int, annotation_id: int
+    ) -> JSONResponse:
+        viewer_write(request)
+        values = await json_body(request)
+        updated = await service.update_annotation(attachment_id, annotation_id, body_field(values))
+        return JSONResponse(updated.to_dict())
+
+    @router.post("/files/{attachment_id}/annotations/{annotation_id}/delete")
+    async def remove_annotation(
+        request: Request, attachment_id: int, annotation_id: int
+    ) -> JSONResponse:
+        viewer_write(request)
+        removed = await service.remove_annotation(attachment_id, annotation_id)
+        return JSONResponse(removed.to_dict())
+
+    @router.post("/files/{attachment_id}/annotations/{annotation_id}/restore")
+    async def restore_annotation(
+        request: Request, attachment_id: int, annotation_id: int
+    ) -> JSONResponse:
+        viewer_write(request)
+        restored = await service.restore_annotation(attachment_id, annotation_id)
+        return JSONResponse(restored.to_dict())
+
+    @router.post("/files/{attachment_id}/annotations/{annotation_id}/replies")
+    async def reply_annotation(
+        request: Request, attachment_id: int, annotation_id: int
+    ) -> JSONResponse:
+        viewer_write(request)
+        values = await json_body(request)
+        updated = await service.reply_as_owner(attachment_id, annotation_id, body_field(values))
+        return JSONResponse(updated.to_dict(), status_code=201)
+
+    @router.post("/files/{attachment_id}/annotated")
+    async def upload_annotated(request: Request, attachment_id: int) -> JSONResponse:
+        """The flattened PNG: the raw image is the body."""
+        viewer_write(request)
+        limit = service.attachment_max_bytes
+        body = await limited_body(request, limit, f"The image is larger than {limit // MB} MB.")
+        item = await service.store_annotated(attachment_id, body)
+        return JSONResponse({"attachment": item.id, "size": item.annotated_size}, status_code=201)
+
+    @router.get("/files/{attachment_id}/annotated")
+    async def annotated_image(attachment_id: int) -> Response:
+        """The latest flattened PNG. Its URL stays when the file is replaced: never cached blind."""
+        item, path = await service.annotated_file(attachment_id)
+        if not path.is_file():
+            raise NotFoundError(f"The annotated image of attachment #{attachment_id} is missing.")
+        return FileResponse(
+            path,
+            media_type="image/png",
+            content_disposition_type="inline",
+            filename=item.annotated_name,
+            headers={"Cache-Control": "private, no-cache"},
+        )
+
+    @router.post("/files/{attachment_id}/send-annotations")
+    async def send_annotations(request: Request, attachment_id: int) -> JSONResponse:
+        viewer_write(request)
+        comment = await service.send_annotations(attachment_id)
+        return JSONResponse({"comment": comment.id if comment else None})
 
     # --- Stands & access: environments, access map, permission levels -----------------
 
