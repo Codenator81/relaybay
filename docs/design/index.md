@@ -14,7 +14,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0006 | [Environments, access and agent permissions](0006-environments-and-access.md) | Implemented (unreleased) | 0.2.0 |
 | 0007 | [Review: checklist with screenshots](0007-review.md) | Implemented | 0.3.0 |
 | 0008 | [Memory and context](0008-memory-and-context.md) | Accepted (11.6a, 11.6b built) | 0.3.0 |
-| 0009 | [Screenshot annotations](0009-screenshot-annotations.md) | Accepted | 0.4.0 |
+| 0009 | [Screenshot annotations](0009-screenshot-annotations.md) | Implemented (unreleased) | 0.4.0 |
 | 0010 | [Map and Usage](0010-map-and-usage.md) | Accepted | 0.4.0 |
 | 0011 | [Project documents in the database](0011-docs-in-database.md) | Accepted (scope) | 0.4.0 |
 | 0012 | [Runner and embedded terminal](0012-runner-and-embedded-terminal.md) | Accepted (direction) | 0.6+ |

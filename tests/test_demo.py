@@ -29,6 +29,15 @@ async def _board(db_path: Path) -> dict:
         await service.close()
 
 
+async def _annotations(db_path: Path, attachment_id: int) -> list:
+    service = Service(db_path)
+    await service.start()
+    try:
+        return (await service.annotations(attachment_id))[1]
+    finally:
+        await service.close()
+
+
 def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     db = tmp_path / "relaybay.sqlite"
     result = create_demo(db)
@@ -49,6 +58,9 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     review = next(d for d in board["details"] if d.task.stage == "review")
     assert len(review.review.steps) == 3 and len(review.review.images()) == 2
     assert all(a.mime == "image/png" for a in review.review.images())
+    marks = asyncio.run(_annotations(db, review.review.images()[0].id))
+    assert sorted(a.kind for a in marks) == ["arrow", "pin", "pin", "rect"]
+    assert [len(a.replies) for a in marks if a.kind == "pin"] == [1, 0]
     _, versions = board["spec"]
     assert [v.version for v in versions] == [2, 1] and versions[0].section == "gift-cards"
     assert any(d.superseded_by for d in board["decisions"])

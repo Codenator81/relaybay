@@ -6,7 +6,7 @@
 <ul class="thumbs">
   {% for a in items %}
   <li class="thumb">
-    <a class="thumb-link" href="/files/{{ a.id }}" data-viewer data-caption="{{ a.caption_md or '' }}" title="Open full screen">
+    <a class="thumb-link" href="/files/{{ a.id }}" data-viewer data-attachment="{{ a.id }}" data-caption="{{ a.caption_md or '' }}" title="Open full screen">
       <img src="/files/{{ a.id }}" alt="{{ a.caption_md or a.original_name or ('Screenshot #' ~ a.id) }}" loading="lazy">
     </a>
     {% if a.caption_md %}<div class="markdown thumb-caption">{{ a.caption_md|markdown }}</div>{% endif %}

@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Screenshot annotations (step 11.5b of design 0009, migration `0016_annotations`, additive): the
+  viewer has a toolbar with Select, Rectangle, Arrow, Pen, Pin, five colours, Undo, Delete, Hide
+  markup and Send to agent, over an SVG layer that scales with the image; it works with touch. Pins
+  are numbered per screenshot (numbers are never reused) and open a thread. "Send to agent" flattens
+  the screenshot in the browser at its own resolution, uploads the PNG beside the untouched original
+  (`POST /files/<id>/annotated`, same CSRF, type and size checks as uploads, counted in the task's
+  limit) and posts one owner comment with the pins, their coordinates and
+  `relaybay://attachments/<id>/annotated`, tied to the step. New MCP tools `attachment_get` and
+  `annotation_reply`, and that resource; `review_get` now lists the pins and returns flattened images
+  as image content. The demo has a marked-up screenshot.
+
+### Fixed
+
+- The viewer's image no longer collapses on phones, where hidden arrows moved it out of its grid
+  cell.
+
 ## [0.3.0] - 2026-11-04
 
 Acceptance and memory: a review stage with a checklist and screenshots; versioned documents,

@@ -30,6 +30,7 @@ from relaybay.domain.markdown_layout import (
 from relaybay.markdown_export import FileAction, Wanted, _claim, file_hash, read_manifest
 from relaybay.markdown_import import FILE_MAX_BYTES, Plan, apply_plan, make_plan, scan
 from relaybay.service import Service
+from tests.test_migrations import LATEST
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SETUP = FIXTURES / "markdown_setup"
@@ -847,7 +848,7 @@ async def test_upgrade_from_0014_with_data(home: Path, root: Path, capsys) -> No
     try:
         async with conn.execute("PRAGMA user_version") as cur:
             assert (await cur.fetchone())[0] == 14
-        assert await migrate(conn) == 15
+        assert await migrate(conn) == LATEST
         async with conn.execute("SELECT COUNT(*) FROM import_item") as cur:
             assert (await cur.fetchone())[0] == 0
         async with conn.execute("SELECT name FROM project") as cur:
@@ -1239,6 +1240,12 @@ async def test_a_stale_hash_does_not_migrate(
     await service.close()
     db = home / "relaybay.sqlite"
     with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute("DROP TABLE annotation_reply")
+        conn.execute("DROP TABLE annotation")
+        conn.execute("ALTER TABLE attachment DROP COLUMN annotated_name")
+        conn.execute("ALTER TABLE attachment DROP COLUMN annotated_size")
+        conn.execute("ALTER TABLE attachment DROP COLUMN annotated_sha256")
+        conn.execute("ALTER TABLE attachment DROP COLUMN annotated_sent_sha256")
         conn.execute("DROP TABLE import_item")
         conn.execute("PRAGMA user_version = 14")
         conn.commit()

@@ -18,7 +18,8 @@
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
     "plan.set", "plan.step_updated", "plan.accepted", "session.todo_updated",
-    "document.updated", "memory.added", "memory.updated", "block.updated"
+    "document.updated", "memory.added", "memory.updated", "block.updated",
+    "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -60,10 +61,20 @@
     return u.pathname + u.search;
   }
 
+  // A reload would take the open viewer, and a send under way, with it: it waits for the close.
+  var staleBehindViewer = false;
+  function reloadPage() {
+    if (viewer && viewer.open) {
+      staleBehindViewer = true;
+      return;
+    }
+    window.location.reload();
+  }
+
   function createEventSource(url) {
     var es = new EventSource(withLastId(url));
     KINDS.forEach(function (kind) { es.addEventListener(kind, onMessage); });
-    es.addEventListener("resync", function () { window.location.reload(); });
+    es.addEventListener("resync", reloadPage);
     es.addEventListener("open", function () { setStatus("live"); });
     es.addEventListener("error", function () { setStatus("offline"); });
     source = es;
@@ -150,6 +161,11 @@
       queueThrottled(document.getElementById("inbox"));
     }
     if (data.kind === "task.stage_changed") notifyAcceptance(data);
+    // Markup changes only the open viewer; the comment that may follow has its own event.
+    if (data.kind.indexOf("annotation.") === 0) {
+      if (viewer && viewer.open) window.relaybayAnnotate.onEvent(data);
+      return;
+    }
 
     // The task page: comment events refetch the thread; other changes of its own task reload
     // the page (not every hook status of its session, which comes every few seconds while it
@@ -166,7 +182,7 @@
         queue(document.querySelector(".task-view"));
         queue(thread(data.key));
       } else {
-        window.location.reload();
+        reloadPage();
       }
       return;
     }
@@ -615,7 +631,7 @@
   var shotIndex = 0;
 
   function showShot(i) {
-    if (!shots.length) return;
+    if (!shots.length || window.relaybayAnnotate.holds()) return;
     shotIndex = (i + shots.length) % shots.length;
     var link = shots[shotIndex];
     var img = viewer.querySelector(".viewer-img");
@@ -627,6 +643,7 @@
     var many = shots.length > 1;
     viewer.querySelector(".viewer-prev").hidden = !many;
     viewer.querySelector(".viewer-next").hidden = !many;
+    window.relaybayAnnotate.show(link);
   }
 
   function openViewer(link) {
@@ -637,10 +654,34 @@
     if (!viewer.open) viewer.showModal();
   }
 
+  // Also from the `close` event, for a close the page did not ask for. That event is queued, and
+  // a browser may hold it back while the window is hidden, so the page does not wait for it.
+  function afterViewerClosed() {
+    if (viewer.open) return;
+    viewer.querySelector(".viewer-img").removeAttribute("src");
+    window.relaybayAnnotate.hide();
+    if (!staleBehindViewer) return;
+    staleBehindViewer = false;
+    if (commentDraft(document)) {
+      queue(document.querySelector(".task-view"));
+      queue(thread(live.dataset.task));
+    } else {
+      window.location.reload();
+    }
+  }
+
+  function closeViewer() {
+    if (window.relaybayAnnotate.holds()) return;
+    viewer.close();
+    afterViewerClosed();
+  }
+
   function setupViewer() {
     viewer = document.getElementById("viewer");
     if (!viewer) return;
+    window.relaybayAnnotate.setup(viewer);
     viewer.addEventListener("keydown", function (event) {
+      if (window.relaybayAnnotate.onKey(event)) return;
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
         event.stopPropagation();
@@ -649,17 +690,18 @@
         // Only the viewer closes: the task dialog under it stays open.
         event.preventDefault();
         event.stopPropagation();
-        viewer.close();
+        closeViewer();
       }
     });
     viewer.addEventListener("click", function (event) {
       if (event.target.closest(".viewer-prev")) showShot(shotIndex - 1);
       else if (event.target.closest(".viewer-next")) showShot(shotIndex + 1);
-      else if (event.target.closest(".viewer-close") || event.target === viewer) viewer.close();
+      else if (event.target.closest(".viewer-close") || event.target === viewer) closeViewer();
     });
     var startX = null;
     viewer.addEventListener("touchstart", function (event) {
-      startX = event.touches.length === 1 ? event.touches[0].clientX : null;
+      var swipes = event.touches.length === 1 && !window.relaybayAnnotate.takesTouch();
+      startX = swipes ? event.touches[0].clientX : null;
     }, { passive: true });
     viewer.addEventListener("touchend", function (event) {
       if (startX === null || !event.changedTouches.length) return;
@@ -667,8 +709,12 @@
       startX = null;
       if (Math.abs(dx) > 40) showShot(shotIndex + (dx < 0 ? 1 : -1));
     });
+    // A close the page did not ask for (the browser's own cancel) waits like the rest.
+    viewer.addEventListener("cancel", function (event) {
+      if (window.relaybayAnnotate.holds()) event.preventDefault();
+    });
     viewer.addEventListener("close", function () {
-      viewer.querySelector(".viewer-img").removeAttribute("src");
+      afterViewerClosed();
     });
   }
 

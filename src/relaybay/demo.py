@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from relaybay.domain.annotations import COLOURS
 from relaybay.service import Service
 
 # A fixed, made-up desktop session id, so screenshots stay the same between runs.
@@ -191,12 +192,13 @@ async def seed(service: Service) -> int:
         ],
         session="wishlist-agent",
     )
+    shots = []
     for step, accent, rows, caption in (
         (1, (59, 91, 219), 4, "Product page with the heart button"),
         (2, (112, 72, 232), 6, "Wishlist page with one saved product"),
     ):
         image = mock_screen(640, 400, accent, rows)
-        await service.attach_file(
+        shot, _ = await service.attach_file(
             wishlist,
             content_base64=base64.b64encode(image).decode(),
             filename=f"step-{step}.png",
@@ -204,6 +206,8 @@ async def seed(service: Service) -> int:
             caption=caption,
             session="wishlist-agent",
         )
+        shots.append(shot.id)
+    await seed_annotations(service, shots[0])
     banner = await task(
         "acme-shop",
         "Holiday banner",
@@ -364,6 +368,44 @@ async def seed(service: Service) -> int:
         }
     )
     return count
+
+
+async def seed_annotations(service: Service, shot: int) -> None:
+    """The owner's markup on a screenshot: a rectangle, an arrow and two pins, one answered."""
+    red, blue = COLOURS[0], COLOURS[3]
+    await service.add_annotation(
+        shot,
+        {"kind": "rect", "colour": red, "geometry": {"x": 0.62, "y": 0.72, "w": 0.33, "h": 0.15}},
+    )
+    await service.add_annotation(
+        shot,
+        {
+            "kind": "arrow",
+            "colour": blue,
+            "geometry": {"x1": 0.4, "y1": 0.55, "x2": 0.62, "y2": 0.75},
+        },
+    )
+    first = await service.add_annotation(
+        shot,
+        {
+            "kind": "pin",
+            "colour": red,
+            "geometry": {"x": 0.78, "y": 0.68},
+            "body": "The heart should sit next to this button.",
+        },
+    )
+    await service.add_annotation(
+        shot,
+        {
+            "kind": "pin",
+            "colour": blue,
+            "geometry": {"x": 0.3, "y": 0.3},
+            "body": "Is this the final product title?",
+        },
+    )
+    await service.reply_as_agent(
+        first.id, "Moved it next to Add to cart; look again.", session="wishlist-agent"
+    )
 
 
 DEMO_SPEC = """# Acme Shop specification

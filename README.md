@@ -45,7 +45,8 @@ Something off? `relaybay doctor`.
   dropped connection, a stage tab bar on narrow screens; ← / → switch the two board pages.
 - **Review** — agents write what you should check by eye as a checklist and attach screenshots
   (`review_steps_set`, `attach_file`); you accept or reject each step in the task's Review tab,
-  look at screenshots full screen, paste your own with Ctrl+V, and each decision reaches the
+  look at screenshots full screen, draw on them and drop numbered pins for the agent, paste your
+  own with Ctrl+V, and each decision reaches the
   agent as a comment. Tasks waiting for acceptance are in the Inbox's Review queue; an optional
   browser notification (Settings → Notifications) says when one arrives. How agents make
   screenshot files: [Screenshots for review](https://codenator81.github.io/relaybay/how-to/screenshots-for-review/).
@@ -242,7 +243,7 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.2.0** — sidebar navigation and Inbox, comments to agents, project environments and access,
   policy as data.
 - **0.3.0** — review checklist with screenshots, memory and documents.
-- **Later** — annotations, map and usage, rules versioning, intake, agents started from relaybay.
+- **Later** — map and usage, rules versioning, intake, agents started from relaybay.
 
 Details and status: [docs/ROADMAP.md](docs/ROADMAP.md). Designs of upcoming steps are in
 [docs/design/](docs/design/index.md), decisions in [docs/adr/](docs/adr/). relaybay sends no

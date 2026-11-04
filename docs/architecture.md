@@ -109,7 +109,14 @@ review_step   id, task_id, position (UNIQUE per task), title, details_md,
               updated_at
 attachment    id, task_id, step_id, kind (image), stored_name UNIQUE, original_name, mime, size,
               sha256, caption_md, created_by, created_at
-              -- the file: <data dir>/attachments/<project>/<task key>/<stored_name>
+              annotated_name, annotated_size, annotated_sha256, annotated_sent_sha256
+              -- the files: <data dir>/attachments/<project>/<task key>/<stored_name>, and
+              -- the latest flattened PNG beside it
+annotation    id, attachment_id, kind (rect|arrow|freehand|pin), colour, stroke_width,
+              geometry (JSON, fractions of the image size), pin_number (UNIQUE per attachment,
+              never reused), body_md, created_by, created_at, updated_at, deleted_at (soft delete)
+annotation_reply id, annotation_id, author_kind (owner|agent), author, session_id, body_md,
+              created_at
 plan_step     id, task_id, position (UNIQUE per task), title, details_md,
               status (pending|in_progress|done|blocked), done_at, link, outcome, conformance,
               created_by, created_at, updated_at

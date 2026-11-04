@@ -43,6 +43,8 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`rules_get`](#rules_get) | read |
 | [`events_since`](#events_since) | read |
 | [`review_get`](#review_get) | read |
+| [`attachment_get`](#attachment_get) | read |
+| [`annotation_reply`](#annotation_reply) | write |
 | [`review_steps_set`](#review_steps_set) | write |
 | [`review_step_update`](#review_step_update) | write |
 | [`plan_get`](#plan_get) | read |
@@ -481,11 +483,32 @@ Events after `since_id` (task created, stage changed, report added, ...), oldest
 
 ### `review_get`
 
-The task's review checklist: each step with its status (open, accepted, rejected), what to check, its screenshots with captions and ids, plus the owner's comments on the steps. Call it after an owner decision arrives, or before you change the checklist.
+The task's review checklist: each step with its status (open, accepted, rejected), what to check, its screenshots with captions and ids, the owner's pins on them with coordinates and replies, plus the owner's comments on the steps. Flattened images with the owner's markup come as image content after the text. Call it after an owner decision arrives, or before you change the checklist.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+
+### `attachment_get`
+
+One screenshot as image content, with a text line and its pins. An image too large for a tool answer is refused with a message that says so.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | integer | yes | The screenshot's id, as review_get lists it. |
+| `annotated` | boolean | no | True: the flattened PNG with the owner's markup, not the original. Default: `False`. |
+
+### `annotation_reply`
+
+Answer a pin the owner put on a screenshot. The owner reads it in the pin's thread and in the task's thread. Secret values are refused.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `annotation` | integer | yes | The pin's annotation id, as the owner's comment names it. |
+| `body` | string | yes | Your answer, up to 2000 characters. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `review_steps_set`
 
@@ -637,6 +660,7 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 
 | URI | Name | Type | Description |
 |---|---|---|---|
+| `relaybay://attachments/{attachment_id}/annotated` | annotated-screenshot | image/png | The flattened PNG of a screenshot with the owner's markup (same as attachment_get with annotated=true). |
 | `relaybay://doc/{project}/{doc}` | project-document | text/markdown | A project document's current markdown (same as doc_get). |
 | `relaybay://project/{slug}` | project-snapshot | text/markdown | Markdown snapshot of a project (same as project_snapshot). |
 | `relaybay://project/{slug}/environments` | project-environments | text/markdown | A project's environments, access map (no secrets) and permission levels. |

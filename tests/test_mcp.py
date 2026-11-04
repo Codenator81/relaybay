@@ -26,6 +26,8 @@ EXPECTED_TOOLS = {
     "review_step_update",
     "attach_file",
     "attachment_caption",
+    "attachment_get",
+    "annotation_reply",
     "decision_add",
     "events_since",
     "rules_get",

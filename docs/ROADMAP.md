@@ -55,7 +55,7 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| Screenshot annotations: drawing, numbered pins, flattened PNG for the agent (11.5b) | later | [0009](design/0009-screenshot-annotations.md) |
+| Screenshot annotations: drawing, numbered pins, flattened PNG for the agent (11.5b) | done | [0009](design/0009-screenshot-annotations.md) |
 | Map (structure and "now" views) and Usage | later | [0010](design/0010-map-and-usage.md) |
 | Rules versioning, `rules_update` / `rules_propose`, Settings → Rules, MCP prompts (1.5b–c) | later | [0002](design/0002-working-rules.md) |
 | Ctrl+K quick switcher, saved filters | later | [0004](design/0004-navigation.md) |

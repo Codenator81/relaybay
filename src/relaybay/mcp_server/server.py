@@ -5,14 +5,15 @@ from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
 from mcp.server import MCPServer
-from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError, ToolError
+from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.routing import BaseRoute
 
 from relaybay import __version__
-from relaybay.domain.errors import DomainError, NotFoundError
+from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
 from relaybay.mcp_server import format as fmt
 from relaybay.service import Service, collect_notes
@@ -1091,12 +1092,58 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         return fmt.events(items, since_id)
 
     @mcp.tool(annotations=READ, structured_output=False)
-    async def review_get(task: TaskRef) -> str:
+    async def review_get(task: TaskRef) -> list[str | Image]:
         """The task's review checklist: each step with its status (open, accepted, rejected), what
-        to check, its screenshots with captions and ids, plus the owner's comments on the steps.
-        Call it after an owner decision arrives, or before you change the checklist."""
+        to check, its screenshots with captions and ids, the owner's pins on them with coordinates
+        and replies, plus the owner's comments on the steps. Flattened images with the owner's
+        markup come as image content after the text. Call it after an owner decision arrives, or
+        before you change the checklist."""
         row, review, comments = await run(service.review(task))
-        return fmt.review_text(row, review, comments)
+        annotations, images, notes = await run(service.review_markup(row, review))
+        text = fmt.review_text(row, review, comments, annotations, images, notes)
+        return [text, *(Image(data=data, format="png") for data in images.values())]
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def attachment_get(
+        id: Annotated[int, Field(description="The screenshot's id, as review_get lists it.")],
+        annotated: Annotated[
+            bool,
+            Field(description="True: the flattened PNG with the owner's markup, not the original."),
+        ] = False,
+    ) -> list[str | Image]:
+        """One screenshot as image content, with a text line and its pins. An image too large for
+        a tool answer is refused with a message that says so."""
+        item, data, mime = await run(service.attachment_image(id, annotated=annotated))
+        _, marks = await run(service.annotations(item.id))
+        what = "Annotated image" if annotated else "Original"
+        lines = [
+            f"{what} of screenshot #{item.id} on **{item.task_key}** ({mime}, {len(data)} bytes)."
+        ]
+        lines.extend(fmt.annotation_lines(marks))
+        return ["\n".join(lines), Image(data=data, format=mime.split("/")[1])]
+
+    @write
+    async def annotation_reply(
+        annotation: Annotated[
+            int, Field(description="The pin's annotation id, as the owner's comment names it.")
+        ],
+        body: Annotated[str, Field(description="Your answer, up to 2000 characters.")],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Answer a pin the owner put on a screenshot. The owner reads it in the pin's thread and
+        in the task's thread. Secret values are refused."""
+        item, pin = await run(
+            service.reply_as_agent(
+                annotation,
+                body,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return f"Replied to pin #{pin.pin_number} of screenshot #{item.id} on **{item.task_key}**."
 
     @write
     async def review_steps_set(
@@ -1441,6 +1488,24 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             )
         )
         return fmt.policy_proposal_saved(proposal)
+
+    @mcp.resource(
+        "relaybay://attachments/{attachment_id}/annotated",
+        name="annotated-screenshot",
+        description="The flattened PNG of a screenshot with the owner's markup"
+        " (same as attachment_get with annotated=true).",
+        mime_type="image/png",
+    )
+    async def annotated_resource(attachment_id: str) -> bytes:
+        if not attachment_id.isdigit():
+            raise ResourceNotFoundError(f"No attachment {attachment_id!r}.")
+        try:
+            _, data, _ = await service.attachment_image(int(attachment_id), annotated=True)
+        except NotFoundError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+        except ValidationError as exc:
+            raise ResourceError(str(exc)) from exc
+        return data
 
     @mcp.resource(
         "relaybay://project/{slug}/environments",

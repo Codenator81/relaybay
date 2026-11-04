@@ -120,7 +120,88 @@ to any step, reuses it and the answer names the step it is on. Files live at `<d
 keeps only the stored name, the original name (display only), type, size, hash, caption, author
 and time. Removing an attachment deletes its file after the commit; on every start a sweep deletes
 files and folders under `attachments/` that no row names (left by a crash, a failed delete, a
-removed task). Events: `attachment.added`, `attachment.updated` (caption), `attachment.removed`.
+removed task). Events: `attachment.added`, `attachment.updated` (caption, or a new flattened
+image: [Annotations](#spec-annotations-flatten)), `attachment.removed`.
+
+<a id="spec-annotations"></a>
+
+**Annotations.** In the screenshot viewer the owner marks up a screenshot and drops numbered pins
+([design 0009](design/0009-screenshot-annotations.md)); the agent gets the pins with coordinates and
+a flattened PNG.
+
+<a id="spec-annotations-model"></a>
+
+*Model.* An `annotation` belongs to a screenshot: kind `rect`, `arrow`, `freehand` or `pin`, a colour
+from a fixed list of five, a stroke width (a fraction of the image's width, at most 0.05) and its
+geometry as JSON in **fractions of the image size**: rect `{x, y, w, h}`, arrow `{x1, y1, x2, y2}`,
+freehand `{points: [[x, y], ...]}`, pin `{x, y}`. Coordinates are numbers in 0..1; up to 0.01 past
+an edge is held to the edge, anything else is refused. A pen line takes at most 5000 points. On save
+a longer line is thinned along its length to at most 500, keeping each slice's farthest point so a
+fine zigzag keeps its height, and then simplified with a fixed tolerance of 0.001, so only a line
+that really is straight ends with 2 points. A screenshot holds at most 200 live annotations. Only a pin has a
+comment (a string or null, up to 2000 characters) and a thread of replies (`annotation_reply`: author owner or agent).
+Pin numbers are per screenshot and never reused. Deleting is soft: the row keeps `deleted_at`, the
+number stays taken and Undo brings it back with its thread. Comment and reply texts are cleaned like
+comments and pass the secret scan ([§8](#spec-memory)). Updating a pin needs `body` in the request:
+`null` or an empty string clears the comment, `{}` is refused. Only the owner draws, on the board; an agent
+only answers. Events: `annotation.added`, `annotation.updated`, `annotation.removed`,
+`annotation.replied`. They refresh the open viewer and nothing else.
+
+<a id="spec-annotations-flatten"></a>
+
+*Flattened image.* The vector data is the source of truth. On "Send to agent" the viewer draws the
+image and the markup at the image's own resolution on a canvas and uploads the PNG (`POST
+/files/<id>/annotated`, the raw image as the body). The upload passes the board's cookie and CSRF
+checks, must be a PNG by its magic bytes and at most `attachments_max_mb`. Its name comes from the
+server. It lies beside the original, which never changes (`attachment.annotated_name`,
+`annotated_size`, `annotated_sha256`); the previous flattened file is removed after the commit (one
+that cannot be removed now is logged, the upload still succeeds and the next start removes it). Its
+size counts in
+`attachments_task_max_mb`, and the startup sweep keeps it. `GET /files/<id>/annotated` serves it
+behind the board cookie, revalidated on every read because the URL stays when the file changes.
+Removing the screenshot removes both files. Event: `attachment.updated`.
+
+<a id="spec-annotations-delivery"></a>
+
+*Delivery.* "Send to agent" posts one owner comment through the comment path
+([below](#spec-comments)), tied to the step (`comment.step_id`) and the screenshot
+(`comment.attachment_id`): "Screenshot 3 of step 2 — 2 pins: #1 (x 0.42, y 0.18, annotation 12)
+'Button text is cut off'; #2 (…) 'Wrong currency'. Also marked: rectangle (…). Annotated image:
+relaybay://attachments/7/annotated. Answer a pin with annotation_reply." Only this comment shortens:
+a pin's text is cut at 300 characters and the comment then says that `review_get` has it whole; what
+does not fit in a comment is counted ("And 3 more: see review_get"). The same text with the same
+image again (a double click, nothing changed) writes and delivers nothing; a new colour or a small
+move changes the image's hash and is sent. A screenshot without live markup, or without a flattened
+image yet, is refused.
+
+`review_get` lists each screenshot's pins with coordinates, ids, whole texts and threads and its other
+markup, and returns the flattened images as MCP image content after the text, at most 7 MB in one
+answer (a line names `attachment_get` for the rest). `attachment_get(id, annotated?)` returns one
+screenshot as image content with a text line and its pins, whole. A file over 3.5 MB, or a PNG over
+7990 px on a side, is not returned: `review_get` has a text note in its place and `attachment_get`
+answers with that message as a tool error. The resource `relaybay://attachments/{attachment_id}/annotated` returns the same
+PNG.
+
+A reply reaches the other side through the task's thread as well. `annotation_reply` adds to the pin's
+thread, posts an agent reply ("Pin #1 of screenshot #7: …", unread by the owner, in the Inbox) and
+marks the owner's unread comments on that screenshot read. An owner's reply in the thread posts an
+owner comment that is delivered and wakes the session like any other. Only a live pin takes a reply.
+
+<a id="spec-annotations-viewer"></a>
+
+*Viewer.* A toolbar over the screenshot: Select, Rectangle, Arrow, Pen, Pin, five colours, Undo,
+Delete, Hide markup, Send to agent. The markup is an SVG layer in the image's own pixels, in the same
+box as the image, so it scales with it. Every shape is saved when it is drawn. Select picks a shape
+for Delete (or the `Delete` key); shapes do not move. A click on a pin opens its thread with any tool:
+the comment (saved on Save or on leaving the box) and the replies, updated live. Undo (or Ctrl+Z)
+takes back this visit's additions and deletions on this screenshot. ←/→ page and Esc closes; while
+typing in a pin's boxes the arrows stay in the text and Esc closes only the thread. Every write goes to
+the screenshot it was made on, whatever is on screen when it runs. While Send to agent runs, paging,
+closing and the tools wait, and the viewer says so. Mouse, pen and
+touch work alike; while a drawing tool is on, a swipe draws instead of paging. Agent text is shown as
+plain text, never as HTML or markdown. The CSP stays as it is and the viewer's script is a static
+file with no third-party library. On the task page a live event no longer reloads the page while
+the viewer is open; the page refreshes when the viewer closes.
 
 <a id="spec-session"></a>
 
@@ -246,6 +327,7 @@ exist yet are not shown.
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Notifications | `/settings/notifications` | Browser notifications: state and the button that asks for the permission ([below](#spec-board-notify)). |
 | Screenshot | `/files/<id>` | One stored image behind the board cookie ([§9](#spec-security)). |
+| Annotated screenshot | `/files/<id>/annotated` | The latest flattened PNG with the owner's markup ([Annotations](#spec-annotations-flatten)). |
 | Policy | `/settings/policy` | The effective policy per scope with the source of each value, preset, layer editors and agent proposals ([§7](#spec-policy-page)). |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
 
@@ -444,7 +526,7 @@ done needs one line `as planned` or `deviation: why`.
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
-| Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption` |
+| Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption`, `attachment_get`, `annotation_reply` |
 | Plan | `plan_get`, `plan_set`, `plan_step_update`, `plan_accept` |
 | Environments | `environments_get`, `environment_propose` |
 | Catch-up and rules | `events_since`, `rules_get` |
@@ -464,7 +546,8 @@ last write wins.
 **Resources.** `relaybay://project/{slug}` (same markdown as `project_snapshot`),
 `relaybay://project/{slug}/environments` (same as `environments_get`),
 `relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`),
-`relaybay://doc/{project}/{doc}` (a document's current markdown), `relaybay://schema/task`
+`relaybay://doc/{project}/{doc}` (a document's current markdown),
+`relaybay://attachments/{attachment_id}/annotated` (a flattened PNG), `relaybay://schema/task`
 (the editable task fields as a table: name, type, description, how to clear). No MCP prompts yet.
 
 <a id="spec-mcp-warnings"></a>
@@ -1396,6 +1479,8 @@ relaybay is a single-user local server. The security layers, in request order:
     folders after resolving symlinks and `..` ([§1](#spec-attachments)). `GET /files/<id>` needs
     the board cookie (or the Bearer token), answers with the stored `Content-Type`,
     `Content-Disposition: inline`, `nosniff` and the CSP above, so a file is never run as a page.
+    `GET /files/<id>/annotated` answers the same way with `image/png`; its upload and the viewer's
+    other writes need the board cookie and the CSRF header ([Annotations](#spec-annotations)).
 
 <a id="spec-security-forms"></a>
 
@@ -1473,6 +1558,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0013_plan` | `task.size`, `task.plan_status`, `task.plan_accepted_at`, `task.plan_accepted_by`; `plan_step` (task, position, title, details, status, done at, link, outcome, conformance, created by), `plan_revision` (task, revision, body JSON, author, reason), `session_todo` (session, Claude Code id, item id, subject, status, active form, position). Additive only |
 | `0014_digests` | `project.pulse`, `project.pulse_at`, `project.pulse_by`; `reader_cursor` (reader, level, ref id with 0 for the portfolio, last event id, read at; primary key reader + level + ref id). Additive only |
 | `0015_import` | `import_item` (kind, item, source path, target id, content hash, target hash, imported at; primary key kind + item). Additive only |
+| `0016_annotations` | `annotation` (screenshot, kind, colour, stroke width, geometry JSON, pin number unique per screenshot, comment, created by / at, updated at, deleted at), `annotation_reply` (annotation, author kind and name, session, body, created at), `attachment.annotated_name`, `annotated_size`, `annotated_sha256`, `annotated_sent_sha256`. Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

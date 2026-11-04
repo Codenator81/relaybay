@@ -8,7 +8,7 @@ from relaybay.events import SubscriberDropped
 from relaybay.service import Service
 
 RETRY_MS = 3000
-_PAYLOAD_KEYS = ("project", "key", "stage", "from", "to", "session", "summary")
+_PAYLOAD_KEYS = ("project", "key", "stage", "from", "to", "session", "summary", "attachment_id")
 
 
 def format_event(event: Event) -> str:
