@@ -10,7 +10,7 @@
   <ul class="session-list">
     {% for row in rows %}
     {%- set s = row.session %}
-    <li class="session-row">
+    <li class="session-row" id="session-{{ s.id }}">
       <div class="session-head">
         <span class="status-dot{% if s.status %} dot-{{ s.status }}{% endif %}" aria-hidden="true"></span>
         <span class="history-name">{{ s.name }}</span>

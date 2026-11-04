@@ -220,7 +220,7 @@ token is the only authorisation.
 the summary (up to 200 characters). A first line `state · size · gist` with a known state
 (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`; a second word such as
 "verified locally" is allowed) and size (`S`, `M`, `L`) also sets the report's state and size, shown
-as badges.
+as badges. Any other first line is checked against the rules ([§6](#spec-rules-modes)).
 
 <a id="spec-progress"></a>
 
@@ -305,11 +305,44 @@ breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`).
 **Navigation.** Every signed-in page has a left sidebar ([design 0004](design/0004-navigation.md)):
 **Inbox** with a live count badge, **All boards**, **Map**, **Usage**, **Activity**, **Settings**
 (the Integrations page), then **Projects**, each expandable (the current one is open) with **Board** and
-**Sessions**, **Stands & access** and **Docs & rules**. The current item is highlighted (`aria-current="page"`). The header button hides or
+**Sessions**, **Stands & access** and **Docs & rules**, plus the project's
+[saved filters](#spec-saved-filters) under Board. The current item is highlighted (`aria-current="page"`). The header button hides or
 shows the sidebar on wide screens; the choice is remembered in the browser (`localStorage`, the
 sidebar is shown when storage is unavailable). Below 760 px the sidebar is a drawer opened by the
 same button and closed by Esc, a click outside or following a link. Items whose feature does not
 exist yet are not shown.
+
+<a id="spec-switcher"></a>
+
+**Quick switcher.** Ctrl+K (Cmd+K on macOS), or the Search button in the top bar on every signed-in
+page (at phone width an icon button), opens a dialog over the page. It searches tasks (key, title),
+projects (slug, name) and sessions (name, desktop id) through `GET /switcher?q=`, behind the board
+cookie (without it: 401), and shows at most 20 results as `{kind, title, detail, url, key}`, written
+into the page as text. Matching ignores case and every word typed has to match one of the item's
+texts: the whole text, its start, the start of a word, anywhere, then the letters in order with the
+fewest gaps; equal scores keep the most recently changed task first. It looks at the 2000 tasks and
+500 sessions changed last. With nothing typed it lists at most 15 recent tasks and every project, no
+sessions.
+↑ / ↓ move, Enter or a tap opens: a task's dialog on its board (`/p/<slug>?task=<key>`), a board, or
+a session's row on the Sessions page (`/sessions#session-<id>`, highlighted). Esc or a click outside
+closes it. With focus in an input, text area, select or editable text the shortcut does nothing and
+the browser keeps it; elsewhere the browser's own Ctrl+K is prevented. A failed search says so in the
+dialog.
+
+<a id="spec-saved-filters"></a>
+
+**Board filters and saved filters.** The board takes `stage`, `waiting_on` (ignoring case), `session`
+(name, alias or desktop id) and `q` (key or title) in its URL, together with `archived` and `page`;
+the form above the columns sets them, and `Clear` drops them. A value that cannot be used (an unknown
+stage, a malformed desktop id) shows the unfiltered board with the reason in an error line. A stage filter leaves the other columns
+empty and opens the page and phone tab of that stage. Live column refetches carry the same query, so
+the board keeps showing only what matches; while a filter is on, a changed task refetches its column
+rather than its card, so it leaves or enters the view at once. With a filter on, the board offers
+**Save filter**: a name (at most 60 characters, unique per project) stored in `saved_filter`. Saved
+filters are chips above the columns, each with a delete button (a browser confirmation), and items
+under Board in the sidebar on every page; opening one is an ordinary board URL, so it can be shared on
+the same machine. `archived` and `page` are not part of a saved filter. Writes are cookie + CSRF form
+posts; events `filter.saved`, `filter.deleted`.
 
 <a id="spec-board-pages"></a>
 
@@ -331,6 +364,7 @@ exist yet are not shown.
 | Screenshot | `/files/<id>` | One stored image behind the board cookie ([§9](#spec-security)). |
 | Annotated screenshot | `/files/<id>/annotated` | The latest flattened PNG with the owner's markup ([Annotations](#spec-annotations-flatten)). |
 | Policy | `/settings/policy` | The effective policy per scope with the source of each value, preset, layer editors and agent proposals ([§7](#spec-policy-page)). |
+| Rules | `/settings/rules` | The rules per scope, version history with diffs, proposals, roll back ([§6](#spec-rules-page)). |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
 
 <a id="spec-board-paging"></a>
@@ -433,7 +467,8 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
 - **Waiting on you:** open tasks whose `waiting_on` is one of `owner_names` (config, default
   `owner`, `me`, `you`; compared case-insensitively after trimming).
 - **Rule warnings:** tasks whose last stage move missed a working rule (the warnings in its
-  `task.stage_changed` event), until the task moves again.
+  `task.stage_changed` event), until the task moves again. The tracker-log warning is left out: the
+  task is already under the next group, until it is marked.
 - **Not logged in the tracker:** done tasks without the work-log mark, only with
   `require_tracker_log = true`.
 - **Unlinked hook sessions** ([§4](#spec-hooks-linking)), linking to the Integrations page.
@@ -443,12 +478,16 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
   project's Stands & access page.
 - **Policy proposals:** pending policy proposals ([§7](#spec-policy-proposals)), linking to
   Settings → Policy.
+- **Rules proposals:** open rules proposals ([§6](#spec-rules-versions)), linking to
+  Settings → Rules.
+- **Rules changed directly:** versions made by `rules_update`, with reason and author, linking to the
+  version in Settings → Rules, until the owner presses **Mark read** (event `rules.notice_read`).
 
 Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?task=<key>`). The
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
 `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
-`policy.proposal_*`, `review.step_*`), at most once per 2 s. With
+`policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -614,7 +653,9 @@ project pulse current with `project_pulse_set`; pick or create a task and pass `
 rebind without your `local_` id); update `next_step`, `waiting_on` and `progress` on every stage
 change and report; report at the end of every stage with the configured first line, states and
 sizes (taken from the effective global rules); set `waiting_on` to who decides when a decision is
-needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (rules)` line names;
+needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (rules)` line names,
+read the rules again on a `rules updated to vN` line and change them through `rules_propose`
+(`rules_update` is only for coordinators);
 when a hook gives owner comments, handle them like a user message and call `comment_ack` (or answer
 with `comment_add`); before touching a server, cluster or database read `environments_get` (the
 level says what is allowed unasked; live is read-only unless the owner set otherwise), never paste
@@ -638,7 +679,7 @@ done needs one line `as planned` or `deviation: why`.
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption`, `attachment_get`, `annotation_reply` |
 | Plan | `plan_get`, `plan_set`, `plan_step_update`, `plan_accept` |
 | Environments | `environments_get`, `environment_propose` |
-| Catch-up and rules | `events_since`, `rules_get` |
+| Catch-up and rules | `events_since`, `rules_get`, `rules_update`, `rules_propose` |
 | Usage | `usage_summary` |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
@@ -658,13 +699,25 @@ last write wins.
 `relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`),
 `relaybay://doc/{project}/{doc}` (a document's current markdown),
 `relaybay://attachments/{attachment_id}/annotated` (a flattened PNG), `relaybay://schema/task`
-(the editable task fields as a table: name, type, description, how to clear). No MCP prompts yet.
+(the editable task fields as a table: name, type, description, how to clear).
+
+<a id="spec-prompts"></a>
+
+**Prompts.** `start_task` and `finish_stage`, with the arguments `project` (required) and `task`
+(optional key), expand to one user message: the task's key, title and stage, a checklist and the
+project's current rules (`rules_get` as text). `finish_stage` names what moving to the next stage
+needs. An unknown project or task, or a task of another project, is a protocol error with the reason.
+Checked with the MCP Python SDK client (`mcp` 2.3.0); whether a given client lists them as slash
+commands is not verified, see [MCP tools](mcp-tools.md#prompts).
 
 <a id="spec-mcp-warnings"></a>
 
 **Warnings.** A write that misses a rule in `warn` mode succeeds and its result carries one line per
 unmet requirement, `Warning (rules): moving to test usually needs a report since the last stage
-change.` In `strict` mode the tool fails with `Rules: … Nothing changed.`
+change.` In `strict` mode the tool fails with `Rules: … Nothing changed.` `report_add` does the same
+for a first line that does not fit `report_format` ([§6](#spec-rules-modes)). When the session's last
+known rules version is older, a write tool's result also ends with one line, once per version:
+`rules updated to vN: re-read relaybay://rules/<project>` ([§6](#spec-rules-versions)).
 
 <a id="spec-mcp-compat"></a>
 
@@ -905,8 +958,8 @@ is down. Items, in order: `relaybay` (version and interpreter), `Python` (at lea
 on POSIX not readable by others), `Claude Code` (on `PATH`, version at least the minimum supported),
 `desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
-(the hash of the global rules from the settings; fails when the running server reports another one
-in `/healthz`, i.e. it needs a restart), then the Claude Code items of the check (`hooks in user
+(the hash of the global rules from the settings; fails when the running server started with another
+one, reported in `/healthz`, i.e. it needs a restart; versions accepted since do not count), then the Claude Code items of the check (`hooks in user
 settings`, `command hook runs` or `RELAYBAY_TOKEN for http hooks`, `MCP registered for Claude
 Code`). Output: one `[ok]` / `[FAIL]` line per item, or with `--json` a list of
 `{ok, name, detail}` (the shape of `setup --check --json`); exit code `1` when an item fails. Invalid
@@ -945,7 +998,7 @@ One structured document with a fixed set of keys:
 | Key | Meaning | Default |
 |---|---|---|
 | `report_format` | `first_line` (pattern shown to agents), `states`, `sizes` (subsets of the built-in ones) | `state · size · gist`, all states, `S`/`M`/`L` |
-| `stage_requirements` | per target stage, a list of `{kind = "report_since_stage_change"}`, `{kind = "field_present", field = "<task field>"}` or `{kind = "plan_accepted", unless_size = ["S"]}` | `dev`: an accepted plan unless size `S`; `test`: a report since the last stage change; `done`: `progress` |
+| `stage_requirements` | per target stage, a list of `{kind = "report_since_stage_change"}`, `{kind = "field_present", field = "<task field>"}`, `{kind = "plan_accepted", unless_size = ["S"]}` or `{kind = "require_tracker_log"}` | `dev`: an accepted plan unless size `S`; `test`: a report since the last stage change; `done`: `progress` |
 | `description_template` | markdown template for new task descriptions | none |
 | `guidance` | free-text markdown for agents | one short paragraph |
 
@@ -962,30 +1015,122 @@ going to do (todo or 2-3 steps with plan_set).` (any size, not a rule warning).
 
 <a id="spec-rules-merge"></a>
 
-**Layers and merge:** built-in defaults ⊕ the global `[rules]` table of `config.toml` ⊕ a project
+**Layers and merge:** built-in defaults ⊕ the global `[rules]` table of `config.toml`, which is
+where the global rules start ([versions](#spec-rules-versions)) ⊕ a project
 override (a row in `project_rules`, the same document as JSON). `report_format` merges per key,
 `stage_requirements` per stage (a list replaces the earlier one, `[]` drops the stage's
 requirements), `description_template` replaces, the config `guidance` replaces the built-in text and
 a project's `guidance` is appended. Every layer is validated (unknown keys, stages, kinds or fields
 name the key). An error in `config.toml` stops the server at start; a broken project override is
 logged once and ignored, and `rules_get`, the resource and the snapshot line say "project override
-ignored: <error>". There is no write tool for project overrides yet; the row is inserted by hand
-([example](mcp-tools.md#working-rules)).
+ignored: <error>".
+
+<a id="spec-rules-versions"></a>
+
+**Versions.** Each scope (`global` or a project) is a `rule_set` with numbered `rule_version` rows:
+body (the global rules as a whole document, a project's override as a partial one), rendered markdown,
+author, session, reason, a unified diff to the previous version and the time. Nothing is rewritten:
+a rollback is a new version.
+
+- **First start.** Migration `0018` only adds tables. At the first start after it, the rules from the
+  config become global version 1 (author `config`) and every valid `project_rules` row becomes that
+  project's version 1 (author `project_rules`), once, in one transaction and without an event. A
+  project without a row has no versions (`project v0`) and follows the global rules. A broken row is
+  not versioned; it stays logged and ignored until a new version replaces it.
+- **`config.toml` stays a source.** The server remembers the hash of the raw `[rules]` table, before
+  the merge with the built-in defaults (no table: the hash of `{}`), last turned into a version. At each
+  start:
+    - the same hash: nothing happens, and the current version stays in force even when it was changed
+      since, so an accepted proposal survives restarts;
+    - another hash: the file wins. The whole document becomes a new global version with author
+      `config`, replacing what versions since the old one changed (they stay in the history and can
+      be rolled back to) and a warning is logged; if the current version already equals it, only the
+      remembered hash moves.
+
+    Settings → Rules says when the current version differs from the file. A new relaybay release that
+    changes the built-in defaults changes no table, so it never replaces accepted rules and makes no
+    version: stored versions keep what they say, and new defaults arrive with the next change of the
+    table. `rules_mode` and `require_tracker_log` are not part of the document and make no version.
+- **Project rows.** A new project version also replaces the project's `project_rules` row, which stays
+  the row checks read. A row edited by hand applies at once and becomes a new version (author
+  `project_rules`) at the next start.
+- **Broken versions.** A version that is not valid JSON or does not validate never stops the server, in
+  any scope. The newest valid version is in force, without one the config (global) or the
+  `project_rules` row (project). It is logged at start and Settings → Rules shows the error naming the
+  row (`rule_version #7 (global v3): …`). It cannot be rolled back to. The next number comes from the
+  highest number stored, so a hand-edited `current_version` cannot make two versions collide.
+- **Namespaces.** Rule sets are found by project id, never by name. In a tool's `scope`, `global` is
+  always the global rules; a project with the slug `global` is `project:global`.
+- **`rules_update(scope, patch, reason, session…)`** makes a new version directly. It is only for
+  sessions named in `coordinators` in the config, and it is a guard against mistakes, not access
+  control: all MCP clients share one token. A desktop id entry (`local_…`) needs proof: the call passes
+  `hook_session` equal to the id that session already has linked exactly; no MCP tool prints that id,
+  and the same call's link does not count. So the session first links it with `hook_session` on an
+  earlier write. A name or alias entry only needs to be passed as `session`. A malformed entry stops
+  the start, naming the key. Everyone else gets an error pointing to `rules_propose`, and so does
+  everyone when no coordinator is configured. A direct update shows in the Inbox until it is marked
+  read, and in Activity.
+- **`rules_propose(scope, patch, reason, session…)`** stores a proposal (`open`) for the owner, shown
+  in the Inbox and in Settings → Rules. **Accept** merges the patch on top of the version current
+  then, checks it again and makes a new version (author `<proposer>, accepted by <owner>`); a proposal
+  that no longer validates or changes nothing is refused and stays open. **Reject** keeps it in the
+  history. Only the board decides.
+- **Patches** merge like `policy_propose`: objects key by key, other values (lists included) replace,
+  `null` removes a key, so a project follows the global rules there and the global rules take the
+  built-in default. Unknown keys are refused before merging, also with `null`, and the error does not
+  repeat them. The result is validated as a whole; an invalid patch, one that changes nothing, an
+  empty `reason` or a secret in `reason`, `guidance`, `description_template` or
+  `report_format.first_line` is refused with the reason, on both tools and again on accept.
+- **Events:** `rules.updated` (not for version 1), `rules.proposed`, `rules.proposal_accepted`,
+  `rules.proposal_rejected`, `rules.notice_read`.
+- **"Rules updated" line.** Per session the server keeps the newest global and per-project version it
+  told that session about (`rule_seen`). When a write tool names a session whose version is older, its
+  result ends with `rules updated to vN: re-read relaybay://rules/<project>`, once per version, and a
+  global change only once whichever project comes next. Working this line out never fails the write:
+  a problem is logged. The first write of a session records the
+  current versions and says nothing. Writes without `session` say nothing; `task_bind_session` and
+  `task_unbind_session` neither, their `session` is not the caller. The MCP `instructions` a new
+  session gets on connect follow the current global version, and a connected session keeps what it
+  got. Refreshing them uses a private attribute of the SDK: if that goes, a warning is logged and the
+  start and the write are not affected.
+
+<a id="spec-rules-page"></a>
+
+**Settings → Rules** (`/settings/rules?scope=`): the scope's version line, hash, mode and rules as
+markdown; the error of a broken version; the open proposals of all scopes with Accept / Reject and the
+diff against the version current now (or why they no longer apply), refetched live; the scope's history,
+newest first, with author, reason, a collapsible diff and "Roll back to vK", which asks for a
+confirmation on the page and then makes a new version equal to vK; decided proposals. Everything an
+agent wrote is escaped. Writes are form posts from a signed-in browser (cookie + CSRF).
 
 <a id="spec-rules-hash"></a>
 
-**Identity:** no version numbers yet. The rules hash is the first 8 hex digits of SHA-256 over the
-canonical JSON of the merged document plus `rules_mode`. `project_snapshot` starts with
-`Rules <hash>: accepted plan before dev, report before test, progress before done (read
-relaybay://rules/<project>)`.
+**Identity:** `Rules vN (global vG, project vP)`, where N = G + P: it grows with a change of either
+layer, and P is 0 for a project without its own rules. The global scope says `Rules vG (global vG)`.
+The rules hash is still the first 8 hex digits of SHA-256 over the canonical JSON of the merged
+document plus `rules_mode`. `project_snapshot` starts with, and `portfolio_digest`, `project_digest`
+and `task_context` contain,
+`Rules v3 (global v2, project v1), hash 1a2b3c4d: accepted plan before dev, report before test, progress before done (read relaybay://rules/<project>)`;
+`rules_get` and the resource have the same
+version in a `version` line.
 
 <a id="spec-rules-modes"></a>
 
-**Checks and modes:** requirements are checked on stage moves only (`task_set_stage`, `task_update`
+**Checks and modes:** requirements are checked on stage moves (`task_set_stage`, `task_update`
 / `task_patch` with a stage, the board form). `rules_mode = "warn"` (default): the move succeeds and
 the response, the board form and the `task.stage_changed` event carry the warnings.
-`rules_mode = "strict"`: the move is refused with the reason and nothing changes. Report format is
-not checked on `report_add` in this release.
+`rules_mode = "strict"`: the move is refused with the reason and nothing changes.
+
+`report_add` checks the first line of the report against the project's `report_format`, when its
+`first_line` is the standard `state · size · gist`: it has to have that shape, with a state and a size
+that format allows. A custom `first_line` is free text for agents and is not checked. In `warn` mode the report is saved
+as always and the result and the `report.added` event carry
+`Warning (rules): the first line of a report should be …`; `strict` refuses it with `Rules: … Nothing changed.`
+
+**Tracker log.** `{kind = "require_tracker_log"}` is met when the task's `tracker_logged` is set after
+the write. `require_tracker_log = true` in the config adds it to `done` in every scope, on top of the
+document and without a version, and it shows in the rules line and `rules_get` like any requirement:
+in `warn` mode a move to done without the mark carries the warning, in `strict` it is refused.
 
 <a id="spec-environments"></a>
 
@@ -1582,8 +1727,8 @@ Nothing of this leaves the machine.
    others logs a warning). Required as `Authorization: Bearer` on `/mcp`, `/hooks` and the reserved
    `/api` prefix. `relaybay token --rotate` replaces it (restart the server).
    `/healthz` is public and returns `status`, `version`, `token_id` (a 12-hex-digit HMAC
-   fingerprint that reveals nothing about the token) and `rules_hash` (the global rules the server
-   started with, [§6](#spec-rules-hash)).
+   fingerprint that reveals nothing about the token) and `rules_hash` (the rules in the config the
+   server started with, not the current version, [§6](#spec-rules-hash)).
 5. **Browser session.** `/login?token=…` (or the sign-in form) sets an `HttpOnly`, `SameSite=Strict`
    cookie (`Secure` over https, one year) derived from the token and redirects, so the token leaves
    the address bar; the access log redacts the `/login` query. Unauthenticated page visits redirect
@@ -1688,6 +1833,8 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0015_import` | `import_item` (kind, item, source path, target id, content hash, target hash, imported at; primary key kind + item). Additive only |
 | `0016_annotations` | `annotation` (screenshot, kind, colour, stroke width, geometry JSON, pin number unique per screenshot, comment, created by / at, updated at, deleted at), `annotation_reply` (annotation, author kind and name, session, body, created at), `attachment.annotated_name`, `annotated_size`, `annotated_sha256`, `annotated_sent_sha256`. Additive only |
 | `0017_usage` | `session.transcript_path`; `usage_file` (path, session, parent file for a subagent's, read offset, skipping, unknown lines, error, created at, read at), `usage_day` (file, day, session, model, input, output, cache read, cache write, messages; primary key file + day + model), `usage_message` (message id, file). Additive only |
+| `0018_rule_versions` | `rule_set` (display scope, project, current version, config hash), `rule_version` (set, number, body, rendered markdown, author, session, reason, diff, open notice, created at), `rule_proposal` (scope, project, patch, reason, proposed by, session, status `open` / `accepted` / `rejected`, version made, created / decided at, decided by), `rule_seen` (session, project or 0 for global, version). Additive only; the first start fills them ([§6](#spec-rules-versions)) |
+| `0019_saved_filters` | `saved_filter` (project, name unique per project, stage, waiting on, session, text, created at). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

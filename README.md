@@ -108,7 +108,8 @@ Something off? `relaybay doctor`.
   `test`, `progress` before `done`), a description template and
   free-text guidance. Global rules come from `config.toml`, a project can override them; agents read
   them through `rules_get` or `relaybay://rules/<project>`, and `project_snapshot` starts with the
-  rules hash. A stage move that misses a rule succeeds with a warning (or is refused with
+  rules version. Rules are versioned: agents change them with `rules_propose` and the owner accepts or
+  rolls back in Settings → Rules. A stage move that misses a rule succeeds with a warning (or is refused with
   `rules_mode = "strict"`), in MCP responses and on the board.
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
   no outbound calls, no CDN.
@@ -202,7 +203,8 @@ desktop_link_template = "claude://claude.ai/epitaxy/{id}"  # {id} = desktop sess
 done_window_days = 7                # older done tasks are archived
 require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
 owner_names = ["owner", "me"]       # waiting_on values listed in the Inbox
-rules_mode = "warn"                 # "strict": a stage move that misses a rule is refused
+rules_mode = "warn"                 # "strict": a stage move or report that misses a rule is refused
+coordinators = []                   # sessions that may use rules_update: a guard against mistakes, not access control
 
 [stages.labels]                     # display names; the stage keys stay plan/dev/review/test/live/done
 dev = "in progress"
@@ -214,7 +216,7 @@ verified = "checked"
 [reports.hints]                     # badge tooltips
 M = "medium change"
 
-[rules]                             # global working rules, merged over the built-in defaults
+[rules]                             # global working rules, merged over the built-in defaults; a change makes a new version
 guidance = "Ask the owner before anything goes live."
 description_template = "Goal:\nWhy:\nDone when:"
 

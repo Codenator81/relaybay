@@ -1140,6 +1140,7 @@ def _service(settings: Settings, db_path: Path, attachments: Path) -> Service:
     return Service(
         db_path,
         rules=settings.rules,
+        rules_table=settings.rules_table,
         rules_mode=settings.rules_mode,
         permission_defaults=settings.policy_config.get("permission_defaults"),
         guard_mode=settings.policy_config.get("guard_mode"),

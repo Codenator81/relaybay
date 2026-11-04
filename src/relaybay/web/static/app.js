@@ -14,6 +14,8 @@
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
     "policy.updated", "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
     "policy.proposal_reopened",
+    "rules.updated", "rules.proposed", "rules.proposal_accepted", "rules.proposal_rejected",
+    "rules.notice_read", "filter.saved", "filter.deleted",
     "live.action",
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
@@ -28,6 +30,8 @@
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
     "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
     "policy.proposal_reopened",
+    "rules.updated", "rules.notice_read", "rules.proposed", "rules.proposal_accepted",
+    "rules.proposal_rejected",
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected"
   ];
@@ -149,6 +153,12 @@
     if (typing) panel.dataset.stale = "1"; else queue(panel);
   }
   function card(key) { return key ? document.getElementById("card-" + key) : null; }
+  // With a filter on the board a changed task may leave or enter the view: its column decides,
+  // a refetched card would stay on the board whatever it now says.
+  function changed(key, stage) {
+    var board = document.getElementById("board");
+    return (board && board.dataset.filtered) ? column(stage) : (card(key) || column(stage));
+  }
 
   function onMessage(event) {
     var id = parseInt(event.lastEventId, 10);
@@ -204,6 +214,12 @@
       if (data.kind.indexOf("policy.propos") === 0) queue(policyProposals);
       return;
     }
+    // Settings → Rules: the same.
+    var ruleProposals = document.getElementById("rule-proposals");
+    if (ruleProposals) {
+      if (data.kind.indexOf("rules.propos") === 0) queue(ruleProposals);
+      return;
+    }
     // Stands & access: only the proposals list is live; the forms stay as the user left them.
     var proposals = document.getElementById("proposals");
     if (proposals) {
@@ -253,12 +269,14 @@
       case "task.updated":
       case "task.tracker_unlogged":
         // A done task can leave the done column (archived) when it is marked as logged.
-        queue(data.stage === "done" ? column("done") : (card(data.key) || column(data.stage)));
+        queue(data.stage === "done" ? column("done") : changed(data.key, data.stage));
+        break;
+      case "task.session_bound":
+      case "task.session_unbound":
+        queue(changed(data.key, data.stage));
         break;
       case "report.added":
       case "session.status_changed":
-      case "task.session_bound":
-      case "task.session_unbound":
         queue(card(data.key) || column(data.stage));
         break;
     }

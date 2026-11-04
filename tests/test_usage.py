@@ -28,6 +28,7 @@ from relaybay.service import Service
 from tests.conftest import LiveServer, run_in_app
 from tests.test_mcp import call
 from tests.test_mcp import connect as mcp_connect
+from tests.test_migrations import LATEST
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SECRET = "PROMPT-TEXT-THAT-MUST-NOT-BE-KEPT"
@@ -914,6 +915,6 @@ async def test_upgrade_from_0016_keeps_data(tmp_path: Path) -> None:
     conn = await connect(db)
     try:
         async with conn.execute("PRAGMA user_version") as cur:
-            assert (await cur.fetchone())[0] == 17
+            assert (await cur.fetchone())[0] == LATEST
     finally:
         await conn.close()

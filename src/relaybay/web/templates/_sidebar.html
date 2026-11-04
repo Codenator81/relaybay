@@ -1,4 +1,5 @@
-{#- Left navigation. Expects: nav (active, project, projects, inbox_count). Items whose feature
+{#- Left navigation. Expects: nav (active, project, projects, inbox_count, saved_filters per
+    project slug, filter_active: the board shows one of them). Items whose feature
     does not exist yet are not shown. -#}
 {%- macro item(href, text, is_active) -%}
 <a class="nav-item{% if is_active %} is-active{% endif %}" href="{{ href }}"{% if is_active %} aria-current="page"{% endif %}>{{ text }}{{ caller() if caller else "" }}</a>
@@ -22,7 +23,10 @@
       <details class="nav-project"{% if here %} open{% endif %}>
         <summary class="nav-item{% if here %} is-current{% endif %}" title="{{ p.slug }}">{{ p.name }}</summary>
         <ul class="nav-list nav-sub">
-          <li>{{ item("/p/" ~ p.slug, "Board", here and nav.active == "board") }}</li>
+          <li>{{ item("/p/" ~ p.slug, "Board", here and nav.active == "board" and not nav.filter_active) }}</li>
+          {% for f in nav.saved_filters.get(p.slug, []) %}
+          <li>{{ item("/p/" ~ p.slug ~ "?" ~ f.qs, f.name, here and nav.active == "board" and view_qs == f.qs) }}</li>
+          {% endfor %}
           <li>{{ item("/p/" ~ p.slug ~ "/sessions", "Sessions", here and nav.active == "sessions") }}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/environments", "Stands & access", here and nav.active == "environments") }}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/docs", "Docs & rules", here and nav.active == "docs") }}</li>

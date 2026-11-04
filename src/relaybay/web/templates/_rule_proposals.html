@@ -1,0 +1,30 @@
+{#- Open agent proposals for the rules (Settings → Rules). Expects: proposals, diffs (per id,
+    against the current version). Refetched on rules.* events. -#}
+<div id="rule-proposals" hx-get="/settings/rules/proposals" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if proposals %}
+  <section class="panel env-proposals">
+    <h2>Proposed by agents <span class="col-count">{{ proposals|length }}</span></h2>
+    <p class="muted inbox-hint">Accepting checks the patch again against the current version and makes a new version. A rejected proposal stays in the history.</p>
+    <ul class="inbox-list">
+      {% for p in proposals %}
+      <li class="inbox-row" id="rule-proposal-{{ p.id }}">
+        <span class="inbox-title"><strong>#{{ p.id }}</strong> {{ p.scope }}</span>
+        <pre class="policy-json">{{ diffs.get(p.id) or (p.patch|tojson_compact) }}</pre>
+        <p class="inbox-note">{{ p.reason }}</p>
+        <span class="inbox-meta muted">{{ p.proposed_by }} · <time datetime="{{ p.created_at }}" data-age>{{ p.created_at|age }}</time></span>
+        <div class="form-actions">
+          <form method="post" action="/settings/rules/proposals/{{ p.id }}/accept">
+            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+            <button type="submit" class="btn primary">Accept</button>
+          </form>
+          <form method="post" action="/settings/rules/proposals/{{ p.id }}/reject">
+            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+            <button type="submit" class="btn">Reject</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>

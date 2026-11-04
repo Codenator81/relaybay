@@ -195,7 +195,7 @@ def _parameters(schema: dict[str, Any]) -> list[str]:
     return rows
 
 
-async def _registry() -> tuple[list[Any], list[Any], list[Any]]:
+async def _registry() -> tuple[list[Any], list[Any], list[Any], list[Any]]:
     from relaybay.mcp_server.server import build_mcp
     from relaybay.service import Service
 
@@ -205,18 +205,19 @@ async def _registry() -> tuple[list[Any], list[Any], list[Any]]:
             await mcp.list_tools(),
             await mcp.list_resources(),
             await mcp.list_resource_templates(),
+            await mcp.list_prompts(),
         )
 
 
 def mcp_page() -> str:
-    tools, resources, templates = asyncio.run(_registry())
+    tools, resources, templates, prompts = asyncio.run(_registry())
     lines = [
         GENERATED.format(source="the live MCP tool registry"),
         "",
         "# MCP reference",
         "",
-        "Every tool and resource the server registers, with the parameters and descriptions",
-        "clients receive. How to use them together: [MCP tools](../mcp-tools.md).",
+        "Every tool, prompt and resource the server registers, with the parameters and",
+        "descriptions clients receive. How to use them together: [MCP tools](../mcp-tools.md).",
         "",
         "## Tools",
         "",
@@ -236,6 +237,12 @@ def mcp_page() -> str:
         lines.append(
             f"| `{uri}` | {item.name} | {item.mime_type or ''} | {_cell(item.description or '')} |"
         )
+    lines += ["", "## Prompts", "", "| Prompt | Arguments | Description |", "|---|---|---|"]
+    for prompt in prompts:
+        arguments = ", ".join(
+            f"`{a.name}`" + ("" if a.required else "?") for a in prompt.arguments or []
+        )
+        lines.append(f"| `{prompt.name}` | {arguments} | {_cell(prompt.description or '')} |")
     return "\n".join(lines) + "\n"
 
 

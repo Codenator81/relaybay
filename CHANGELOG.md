@@ -9,6 +9,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Rules versions (design 0002 1.5b-c, migration `0018_rule_versions`, additive): `rule_set`,
+  `rule_version`, `rule_proposal`, `rule_seen`. The rules from `config.toml` and each `project_rules`
+  row become version 1 at the first start; an edited `[rules]` table becomes a new global version with
+  author `config`, an unchanged one leaves accepted versions in force. New MCP tools `rules_update`
+  (only for the sessions in the new config key `coordinators`, a guard against mistakes, not access
+  control; shown in the Inbox until marked read) and `rules_propose`. `project_snapshot`
+  and the digests say `Rules vN (global vG, project vP)`, and a write tool adds one line
+  `rules updated to vN: re-read relaybay://rules…` once per version and session.
+- Settings → Rules: the version per scope, history with author, reason and diff, Accept / Reject for
+  proposals (also in the Inbox and the portfolio digest), "Roll back to vK" with a confirmation.
+- MCP prompts `start_task` and `finish_stage`: the current rules plus a checklist.
+- `report_add` checks the first line against the standard `report_format`: a `Warning (rules)` line,
+  refused in `strict` mode. New requirement kind `require_tracker_log`; `require_tracker_log = true`
+  adds it to `done`.
+- With `require_tracker_log = true` and `rules_mode = "strict"` a move to `done` without the mark is now
+  refused; before it was allowed and the task showed "not logged".
+- Ctrl+K quick switcher (Cmd+K on macOS, a button in the top bar): fuzzy search over tasks, projects
+  and sessions, `GET /switcher`, keyboard and touch.
+- Board filters `stage`, `waiting_on` and `session` next to the search, kept in the URL and in live
+  updates; saved filters (migration `0019_saved_filters`, additive) with chips on the board and items
+  under the project in the sidebar. The demo has a second rules version, an open proposal and a saved
+  filter.
 - Screenshot annotations (step 11.5b of design 0009, migration `0016_annotations`, additive): the
   viewer has a toolbar with Select, Rectangle, Arrow, Pen, Pin, five colours, Undo, Delete, Hide
   markup and Send to agent, over an SVG layer that scales with the image; it works with touch. Pins

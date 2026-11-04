@@ -16,7 +16,8 @@ session start gave you one; if not, don't rebind — the coordinator binds you);
 report; start a report with the configured first line, states and sizes (taken from the
 effective global rules, so they match `rules_get`); set `waiting_on` to who
 decides when the work needs a decision; use `task_patch` for fields your tool schema lacks; treat a
-`Warning (rules)` line as something to fix; when a hook hands over owner comments, handle them like
+`Warning (rules)` line as something to fix and a `rules updated to vN` line as a reason to read the
+rules again, and change them through `rules_propose` (`rules_update` is only for coordinators); when a hook hands over owner comments, handle them like
 a message from the user and call `comment_ack` (or answer with `comment_add`); before touching a
 server, cluster or database, read `environments_get` — the level there says what is allowed
 unasked, live is read-only unless the owner set otherwise — never paste secrets into relaybay and
@@ -126,7 +127,7 @@ Conventions:
 | `task_set_stage` | `task`, `stage`, `note?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Moves the task; `note` is shown next to the stage. Moving to `done` sets the closed time. `next_step` and `waiting_on` are saved in the same transaction (`task.stage_changed` + `task.updated`, one version bump); `"-"` clears them. |
 | `task_bind_session` | `task`, `session`, `session_title?`, `hook_session?` (ignored: never linked here, a note says so) | Shows the session in the task dialog as the one working on the task (a desktop session also gets an "open in desktop" icon on the card). The previous binding is closed and kept in the task's history (event `task.session_bound`). A plain name on a task bound to a desktop session keeps that binding and becomes its alias (see *Session aliases*). |
 | `task_unbind_session` | `task`, `session?` | Removes the bound session from the task; the binding is closed and kept in the history (event `task.session_unbound`). With `session` (desktop id or name), fails without changes if another session is bound. Nothing bound: says so, changes nothing. |
-| `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`); that size also becomes the task's `size` when it has none. `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
+| `report_add` | `task`, `body`, `progress?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Appends a markdown report. Its first line is the report summary; a first line `state · size · gist` also sets the state (`inspected`, `changed`, `verified`, `committed`, `pushed`, `blocked`) and size (`S`, `M`, `L`); that size also becomes the task's `size` when it has none. A first line that does not fit the rules' `report_format` adds a `Warning (rules)` line (`strict` mode refuses the report). `progress` replaces the task's progress summary in the same transaction (`task.updated` + `report.added`); omitted, the summary stays; `"-"` clears it. `next_step` and `waiting_on` work the same way and go into the same `task.updated`. |
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `source?`, `supersedes?`, `session?`, `session_title?`, `hook_session?` | Records a decision of the project (scope `task` with `task`); it appears in the project snapshot and `decision_list`. `source`: `report:12`, `comment:7`, `event:301` or `message:<id>`, optionally followed by display text, or display text alone; a named report, comment or event must exist in the project. `supersedes`: the id of a current decision of the same project this one replaces (see *Memory and documents*). |
 | `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
 | `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
@@ -389,6 +390,17 @@ the tool to drill down at the end of each section. Behaviour in detail:
   delivery marks, at most 30 lines; `events_since` has the rest (a project or task digest names
   its project in that line). The footer names the event id reached.
 
+## Prompts
+
+`start_task` and `finish_stage` take `project` (required) and `task` (optional key) and expand to one
+user message: the task, a checklist and the project's current rules. `finish_stage` also names what
+moving to the next stage needs. An unknown project or task, or a task of another project, is an error
+with the reason.
+
+Checked with the MCP Python SDK client (`mcp` 2.3.0): both are listed with their arguments and expand
+as described. Claude Code is documented to list MCP prompts as slash commands
+(`/mcp__relaybay__start_task`); that is **not verified** against any Claude Code version yet.
+
 ## Resources
 
 `relaybay://project/{slug}` — the same markdown as `project_snapshot`, so a session can attach a
@@ -426,10 +438,8 @@ Layers, merged in this order:
 
 1. built-in defaults;
 2. the global `[rules]` table in `config.toml` (see the README);
-3. a project override: a row in the table `project_rules` (`project_id`, `body` = the same document
-   as JSON, `updated_at`). There is no write tool yet; insert the row with any SQLite client, e.g.
-   `INSERT INTO project_rules (project_id, body, updated_at) SELECT id,
-   '{"stage_requirements": {"test": []}}', datetime('now') FROM project WHERE slug = 'acme-shop';`
+3. a project override: the same document, partial, set through `rules_update` or an accepted
+   `rules_propose`.
 
 Each layer may be partial. `report_format` merges per key, `stage_requirements` per stage (a stage's
 list replaces the earlier list; `[]` drops the stage's requirements), `description_template`
@@ -440,14 +450,44 @@ naming the key). An error in `config.toml` stops the server at startup. A broken
 the project uses the global rules, and `rules_get` / `relaybay://rules/{project}` and the first
 line of `project_snapshot` add "project override ignored: <error>".
 
-The rules hash is the first 8 hex digits of the SHA-256 of the merged document plus `rules_mode`
-(canonical JSON), so it changes exactly when the rules an agent reads change, including a switch
-between `warn` and `strict`. `project_snapshot` starts with
-`Rules <hash>: accepted plan before dev, report before test, progress before done (read
-relaybay://rules/<project>)`.
+Rules have version numbers. `project_snapshot` starts with
+`Rules v3 (global v2, project v1), hash 1a2b3c4d: accepted plan before dev, report before test, progress before done (read relaybay://rules/<project>)`;
+the digests carry the same line. N in
+`Rules vN` is the sum of the two, so it grows when either changes. The hash is the first 8 hex digits
+of the SHA-256 of the merged document plus `rules_mode`, so it also changes on a switch between `warn`
+and `strict`.
 
-`rules_mode` (config, default `warn`) decides what an unmet stage requirement does: `warn` lets the
-write through with a warning, `strict` refuses it.
+`rules_mode` (config, default `warn`) decides what an unmet stage requirement and a report whose first
+line misses the format do: `warn` lets the write through with a `Warning (rules)` line, `strict`
+refuses it.
+
+### Changing rules
+
+| Tool | Parameters | What it does |
+|---|---|---|
+| `rules_update` | `scope` (`global` or a project slug; `project:global` for a project with that slug), `patch` (object), `reason`, `session?`, `session_title?`, `hook_session?` | A new version at once. Only for sessions named in `coordinators` in the config; everyone else gets an error pointing to `rules_propose`, and so does everyone when none is configured. The owner sees it in the Inbox until it is marked read, and in Activity. |
+| `rules_propose` | the same | Records a proposal for the owner and changes nothing. It shows in the Inbox and Settings → Rules; accepting checks it again against the current version. |
+
+`patch` merges into the scope's current version: objects key by key, other values (lists included)
+replace, `null` removes a key (a project then follows the global rules, the global rules take the
+built-in default). Unknown keys are refused. For example `{"stage_requirements": {"test": []}}` drops what moving to test needs
+in that scope. The merged result must be valid rules, otherwise the call is refused with the reason;
+free text is scanned for secrets.
+
+`coordinators` is a guard against mistakes, not access control: all MCP clients share one token. A
+desktop id entry (`local_…`) needs the call to pass `hook_session` equal to the id that session already
+linked exactly on an earlier write; the same call's link does not count. A name or alias entry only has
+to be passed as `session`, so any client can use it.
+
+When your session's last known version is older, a write tool's result ends with one line, once per
+version: `rules updated to v4: re-read relaybay://rules/acme-shop`.
+
+The report format check applies only to the standard `first_line`; a custom one is free text.
+
+`config.toml` stays a valid source: an edited `[rules]` table becomes a new global version at the next
+start, and an unchanged one leaves accepted versions in force, also when a release changes the built-in
+defaults
+([SPEC §6](SPEC.md#spec-rules-versions)).
 
 ## Schema changes and long-running sessions
 

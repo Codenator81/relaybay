@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlencode
 
 from relaybay.domain.stages import Stage
 
@@ -216,3 +217,33 @@ class Event:
     session_id: int | None
     actor: str
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SavedFilter:
+    """A named board query of one project."""
+
+    id: int
+    project_id: int
+    project_slug: str
+    name: str
+    stage: str | None
+    waiting_on: str | None
+    session: str | None
+    q: str | None
+    created_at: str
+
+    @property
+    def query(self) -> dict[str, str]:
+        """The board's query parameters; the filter's URL is built from them."""
+        given = {
+            "stage": self.stage,
+            "waiting_on": self.waiting_on,
+            "session": self.session,
+            "q": self.q,
+        }
+        return {name: value for name, value in given.items() if value}
+
+    @property
+    def qs(self) -> str:
+        return urlencode(self.query)

@@ -2,8 +2,8 @@
 
 # MCP reference
 
-Every tool and resource the server registers, with the parameters and descriptions
-clients receive. How to use them together: [MCP tools](../mcp-tools.md).
+Every tool, prompt and resource the server registers, with the parameters and
+descriptions clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 
 ## Tools
 
@@ -42,6 +42,8 @@ clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 | [`comment_ack`](#comment_ack) | write |
 | [`comment_add`](#comment_add) | write |
 | [`rules_get`](#rules_get) | read |
+| [`rules_update`](#rules_update) | write |
+| [`rules_propose`](#rules_propose) | write |
 | [`events_since`](#events_since) | read |
 | [`review_get`](#review_get) | read |
 | [`attachment_get`](#attachment_get) | read |
@@ -476,11 +478,37 @@ Reply to the owner on a task's comment thread (shown on the board and in the own
 
 ### `rules_get`
 
-The working rules: report format (first line, states, sizes), what a stage move needs (e.g. a report before test, progress before done), the description template and guidance, with the rules hash. Call it at the start of a session, or when the hash in project_snapshot changed since you last read them.
+The working rules: report format (first line, states, sizes), what a stage move needs (e.g. a report before test, progress before done), the description template and guidance, with the version and the rules hash. Call it at the start of a session, or when the version in project_snapshot changed or a response says the rules were updated.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | string or null | no | Project slug for its merged rules; omit for the global rules. |
+
+### `rules_update`
+
+Change the working rules directly: a new version of the scope. Only for coordinator sessions named in the server's config; everyone else gets an error and uses rules_propose. An invalid patch is refused with the reason.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `scope` | string | yes | 'global' or a project slug. |
+| `patch` | object | yes | Merged on top of the scope's current version: objects key by key, other values (lists included) replace, null removes a key (a project then follows the global rules, the global rules the built-in default). Keys: report_format ({first_line, states, sizes}), stage_requirements ({stage: [requirement]}; [] drops a stage's requirements), description_template, guidance. The result must be valid rules (rules_get shows the current ones). |
+| `reason` | string | yes | Why the rules change; kept in the history. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `rules_propose`
+
+Propose a change to the working rules. Nothing changes until the owner accepts it on the board (Inbox, Settings → Rules); it is checked again against the current version then. A rejected proposal stays in the history.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `scope` | string | yes | 'global' or a project slug. |
+| `patch` | object | yes | Merged on top of the scope's current version: objects key by key, other values (lists included) replace, null removes a key (a project then follows the global rules, the global rules the built-in default). Keys: report_format ({first_line, states, sizes}), stage_requirements ({stage: [requirement]}; [] drops a stage's requirements), description_template, guidance. The result must be valid rules (rules_get shows the current ones). |
+| `reason` | string | yes | Why the change is needed, for the owner. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `events_since`
 
@@ -678,3 +706,10 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |
 | `relaybay://rules/{project}` | project-rules | text/markdown | A project's working rules: global rules merged with the project override. |
 | `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_patch: name, type, description, clearing. |
+
+## Prompts
+
+| Prompt | Arguments | Description |
+|---|---|---|
+| `start_task` | `project`, `task`? | The project's current working rules and a checklist for starting a task. |
+| `finish_stage` | `project`, `task`? | The project's current working rules and a checklist for ending a stage. |

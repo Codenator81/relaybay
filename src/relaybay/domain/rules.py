@@ -1,18 +1,19 @@
 """Working rules: a fixed set of rule kinds as one structured JSON document.
 
-Layers: built-in defaults ⊕ the global `[rules]` table of `config.toml` ⊕ a project's row in
-`project_rules`. Each layer is a partial document validated by `validate_rules`; `merge_rules`
-applies one on top of another. The merged document is what agents read and what stage moves are
-checked against.
+Layers: built-in defaults ⊕ the current global version (first made from the `[rules]` table of
+`config.toml`) ⊕ a project's current version, stored in `project_rules`. Each layer is a partial
+document validated by `validate_rules`; `merge_rules` applies one on top of another. The merged
+document is what agents read and what stage moves are checked against.
 """
 
 import copy
+import difflib
 import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
 
-from relaybay.domain.reports import REPORT_SIZES, REPORT_STATES
+from relaybay.domain.reports import REPORT_SIZES, REPORT_STATES, parse_report
 from relaybay.domain.stages import STAGES
 from relaybay.domain.task_fields import FIELD_NAMES, MARKDOWN_MAX
 
@@ -20,7 +21,9 @@ RULES_MODES = ("warn", "strict")
 REPORT_SINCE_STAGE_CHANGE = "report_since_stage_change"
 FIELD_PRESENT = "field_present"
 PLAN_ACCEPTED = "plan_accepted"
-REQUIREMENT_KINDS = (REPORT_SINCE_STAGE_CHANGE, FIELD_PRESENT, PLAN_ACCEPTED)
+REQUIRE_TRACKER_LOG = "require_tracker_log"
+TRACKER_LOG_LABEL = "the work log entered in the tracker (tracker_logged)"
+REQUIREMENT_KINDS = (REPORT_SINCE_STAGE_CHANGE, FIELD_PRESENT, PLAN_ACCEPTED, REQUIRE_TRACKER_LOG)
 TOP_KEYS = ("report_format", "stage_requirements", "description_template", "guidance")
 REPORT_FORMAT_KEYS = ("first_line", "states", "sizes")
 
@@ -139,6 +142,36 @@ def validate_rules(data: Any, source: str) -> dict[str, Any]:
     return out
 
 
+def check_patch_keys(patch: dict[str, Any], source: str) -> None:
+    """Refuse a patch's unknown keys before it is merged: `null` would drop them from the result,
+    so validating the result alone would let any text through as a stored key. The message does
+    not repeat the key, which may be the very secret."""
+    unknown = set(patch) - set(TOP_KEYS)
+    if unknown:
+        raise ValueError(f"{source}: unknown rules key; allowed: {', '.join(TOP_KEYS)}.")
+    fmt = patch.get("report_format")
+    if isinstance(fmt, dict) and set(fmt) - set(REPORT_FORMAT_KEYS):
+        allowed = ", ".join(REPORT_FORMAT_KEYS)
+        raise ValueError(f"{source}: report_format: unknown key; allowed: {allowed}.")
+    reqs = patch.get("stage_requirements")
+    if isinstance(reqs, dict) and set(reqs) - set(STAGES):
+        allowed = ", ".join(STAGES)
+        raise ValueError(f"{source}: stage_requirements: unknown stage; use one of: {allowed}.")
+
+
+def stored_global_rules(body: Any, source: str) -> dict[str, Any]:
+    """A stored global version as a whole document. Only the shape is filled in: a stage's
+    requirements a new release added to the defaults do not creep into an old version."""
+    clean = validate_rules(body, source)
+    bare = {
+        "report_format": DEFAULT_RULES["report_format"],
+        "stage_requirements": {},
+        "description_template": None,
+        "guidance": None,
+    }
+    return merge_rules(bare, clean)
+
+
 def merge_rules(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """`override` on top of `base`: report_format per key, stage_requirements per stage (a
     stage's list replaces the base list), description_template and guidance replace."""
@@ -170,12 +203,17 @@ def rules_hash(body: dict[str, Any]) -> str:
 @dataclass(frozen=True, slots=True)
 class Rules:
     """The merged rules for the global scope (`project` None) or one project. `override_error`
-    says why a project's own override was ignored (the global rules apply instead)."""
+    says why a project's own override was ignored (the global rules apply instead).
+    `require_tracker_log` is the config key: it makes the work-log mark a requirement of `done`
+    without being part of the versioned document."""
 
     body: dict[str, Any]
     project: str | None = None
     mode: str = "warn"
     override_error: str | None = None
+    global_version: int = 0
+    project_version: int = 0
+    require_tracker_log: bool = False
 
     @property
     def hash(self) -> str:
@@ -186,8 +224,29 @@ class Rules:
     def uri(self) -> str:
         return f"relaybay://rules/{self.project}" if self.project else "relaybay://rules"
 
+    @property
+    def version(self) -> int:
+        """Grows with every change of either layer: the sum of the two version numbers."""
+        return self.global_version + self.project_version
+
+    @property
+    def version_text(self) -> str:
+        if self.project is None:
+            return f"Rules v{self.version} (global v{self.global_version})"
+        return (
+            f"Rules v{self.version} (global v{self.global_version},"
+            f" project v{self.project_version})"
+        )
+
     def requirements(self, stage: str) -> list[dict[str, Any]]:
-        return list(self.body["stage_requirements"].get(stage, []))
+        found = list(self.body["stage_requirements"].get(stage, []))
+        if (
+            self.require_tracker_log
+            and stage == "done"
+            and not any(r["kind"] == REQUIRE_TRACKER_LOG for r in found)
+        ):
+            found.append({"kind": REQUIRE_TRACKER_LOG})
+        return found
 
 
 def requirement_label(req: dict[str, Any]) -> str:
@@ -198,12 +257,16 @@ def requirement_label(req: dict[str, Any]) -> str:
         return "an accepted plan" + (
             f" (not needed for size {' or '.join(unless)})" if unless else ""
         )
+    if req["kind"] == REQUIRE_TRACKER_LOG:
+        return TRACKER_LOG_LABEL
     return f"the {req['field']} field"
 
 
 def requirement_short(req: dict[str, Any]) -> str:
     if req["kind"] == PLAN_ACCEPTED:
         return "accepted plan"
+    if req["kind"] == REQUIRE_TRACKER_LOG:
+        return "tracker log"
     return "report" if req["kind"] == REPORT_SINCE_STAGE_CHANGE else req["field"]
 
 
@@ -223,6 +286,8 @@ def unmet(
             ok = report_since_stage_change
         elif req["kind"] == PLAN_ACCEPTED:
             ok = plan_status == "accepted" or values.get("size") in req.get("unless_size", [])
+        elif req["kind"] == REQUIRE_TRACKER_LOG:
+            ok = bool(values.get("tracker_logged"))
         else:
             value = values.get(req["field"])
             ok = bool(value.strip()) if isinstance(value, str) else bool(value)
@@ -250,13 +315,101 @@ def refusal_text(stage: str, missing: list[dict[str, Any]]) -> str:
 
 
 def rules_line(rules: Rules) -> str:
-    """`Rules 1a2b3c4d: report before test, progress before done (read relaybay://rules/x)`."""
+    """`Rules v3 (global v2, project v1), hash 1a2b3c4d: report before test, progress before done
+    (read relaybay://rules/x)`."""
     needs = [
         f"{requirement_short(req)} before {stage}"
         for stage in STAGES
         for req in rules.requirements(stage)
     ]
-    line = f"Rules {rules.hash}: {', '.join(needs) or 'no stage requirements'} (read {rules.uri})"
+    head = f"{rules.version_text}, hash {rules.hash}" if rules.version else f"Rules {rules.hash}"
+    line = f"{head}: {', '.join(needs) or 'no stage requirements'} (read {rules.uri})"
     if rules.override_error:
         line += f"; project override ignored: {rules.override_error}"
     return line
+
+
+def report_format_problem(body: str, report_format: dict[str, Any]) -> str | None:
+    """What is wrong with a report's first line under `report_format`; None when it fits. Only
+    the standard `state · size · gist` has a structure to check: a custom `first_line` is free
+    text for agents, and refusing against it would make every report fail."""
+    if report_format["first_line"] != DEFAULT_RULES["report_format"]["first_line"]:
+        return None
+    state, size, _ = parse_report(body)
+    wanted = (
+        f"`{report_format['first_line']}` (state: {', '.join(report_format['states'])};"
+        f" size: {', '.join(report_format['sizes'])})"
+    )
+    if state is None or size is None:
+        return f"the first line of a report should be {wanted}."
+    if state not in report_format["states"] or size not in report_format["sizes"]:
+        return f"the first line of a report says {state} · {size}; it should be {wanted}."
+    return None
+
+
+def rules_markdown(rules: Rules) -> str:
+    """The merged document as markdown, without the heading a caller puts on top."""
+    body = rules.body
+    report_format = body["report_format"]
+    lines = [
+        "## Report format",
+        f"- first line: `{report_format['first_line']}`",
+        f"- states: {', '.join(report_format['states'])}",
+        f"- sizes: {', '.join(report_format['sizes'])}",
+        "",
+        "## Stage requirements",
+    ]
+    reqs = [(stage, rules.requirements(stage)) for stage in STAGES]
+    reqs = [(stage, items) for stage, items in reqs if items]
+    if not reqs:
+        lines.append("- none")
+    for stage, items in reqs:
+        lines.append(f"- moving to {stage} needs {' and '.join(map(requirement_label, items))}")
+    if body.get("description_template"):
+        lines += ["", "## Description template", body["description_template"]]
+    if body.get("guidance"):
+        lines += ["", "## Guidance", body["guidance"]]
+    return "\n".join(lines)
+
+
+def rules_diff(old: dict[str, Any], new: dict[str, Any]) -> str:
+    """A unified diff of two rule documents as sorted, indented JSON."""
+
+    def text(body: dict[str, Any]) -> list[str]:
+        return json.dumps(body, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+
+    return "\n".join(
+        difflib.unified_diff(text(old), text(new), "before", "after", lineterm="", n=2)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RuleVersion:
+    id: int
+    scope: str
+    number: int
+    body: dict[str, Any]
+    rendered: str
+    author: str
+    session_id: int | None
+    reason: str
+    diff: str
+    created_at: str
+    notice_open: bool = False
+    body_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuleProposal:
+    id: int
+    scope: str
+    project_id: int | None
+    patch: dict[str, Any]
+    reason: str
+    proposed_by: str
+    session_id: int | None
+    status: str
+    version: int | None
+    created_at: str
+    decided_at: str | None
+    decided_by: str | None

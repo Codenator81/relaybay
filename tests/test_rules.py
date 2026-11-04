@@ -182,7 +182,8 @@ async def test_project_override_is_merged(service: Service) -> None:
     demo = await service.rules("demo-api")
     assert demo.hash == service.global_rules.hash and demo.requirements("test")
     assert fmt.rules_line(acme) == (
-        f"Rules {acme.hash}: accepted plan before dev, progress before done"
+        f"Rules v1 (global v1, project v0), hash {acme.hash}: accepted plan before dev, progress"
+        " before done"
         " (read relaybay://rules/acme-shop)"
     )
 
@@ -289,8 +290,8 @@ async def test_snapshot_starts_with_the_rules_line(service: Service) -> None:
     text = fmt.snapshot(await service.snapshot("acme-shop"))
     first, second = text.splitlines()[:2]
     assert first == (
-        f"Rules {service.global_rules.hash}: accepted plan before dev, report before test,"
-        " progress before done (read relaybay://rules/acme-shop)"
+        f"Rules v1 (global v1, project v0), hash {service.global_rules.hash}: accepted plan"
+        " before dev, report before test, progress before done (read relaybay://rules/acme-shop)"
     )
     assert second == "# acme-shop — Acme Shop"
 

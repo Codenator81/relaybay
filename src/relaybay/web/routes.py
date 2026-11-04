@@ -7,6 +7,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -41,7 +42,8 @@ from relaybay.domain.errors import (
 from relaybay.domain.map_graph import DEFAULT_MINUTES
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
-from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage
+from relaybay.domain.rules import rules_markdown
+from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage, parse_stage
 from relaybay.domain.tasks import is_archived
 from relaybay.domain.usage import UsageReport
 from relaybay.mcp_server import format as fmt
@@ -151,6 +153,13 @@ EVENT_KINDS = (
     "memory.added",
     "memory.updated",
     "block.updated",
+    "rules.updated",
+    "rules.proposed",
+    "rules.proposal_accepted",
+    "rules.proposal_rejected",
+    "rules.notice_read",
+    "filter.saved",
+    "filter.deleted",
 )
 CSRF_HEADER = "x-relaybay-csrf"
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
@@ -304,6 +313,12 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             done_window_days=settings.done_window_days,
         )
 
+    async def saved_filters_by_project() -> dict[str, list[Any]]:
+        found: dict[str, list[Any]] = {}
+        for item in await service.saved_filters():
+            found.setdefault(item.project_slug, []).append(item)
+        return found
+
     async def page(
         request: Request,
         name: str,
@@ -320,14 +335,40 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "project": nav_project,
             "projects": [item.project for item in await service.list_projects()],
             "inbox_count": (await inbox()).count,
+            "saved_filters": await saved_filters_by_project(),
+            "filter_active": bool(context.get("filter_query")),
         }
         return render(request, name, nav=nav, **context)
 
-    async def board_context(slug: str, archived: bool = False, q: str = "") -> dict[str, Any]:
+    async def board_context(
+        slug: str,
+        archived: bool = False,
+        q: str = "",
+        stage: str = "",
+        waiting_on: str = "",
+        session: str = "",
+    ) -> dict[str, Any]:
         """Columns of the board. Archived done tasks are left out unless `archived` is set or a
-        search `q` (matched against key and title) is given; a search covers the archive too."""
+        search `q` (matched against key and title) is given; a search covers the archive too.
+        `stage`, `waiting_on` and `session` narrow the tasks like `task_list` does."""
         project = await service.get_project(slug)
-        tasks = await service.list_tasks(project=project.slug, include_done=True)
+        waiting_on = waiting_on.strip()[:SEARCH_MAX]
+        session = session.strip()[:SEARCH_MAX]
+        filter_error = None
+        try:
+            stage = parse_stage(stage).value if stage.strip() else ""
+            tasks = await service.list_tasks(
+                project=project.slug,
+                stage=stage or None,
+                waiting_on=waiting_on or None,
+                session=session or None,
+                include_done=True,
+            )
+        except ValidationError as exc:
+            # A hand-typed URL still shows the board, with the reason, not a bare 400.
+            filter_error = f"Filter ignored: {exc}"
+            stage = waiting_on = session = ""
+            tasks = await service.list_tasks(project=project.slug, include_done=True)
         q = q.strip()[:SEARCH_MAX]
         needle = q.casefold()
         now = utcnow()
@@ -344,7 +385,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             by_stage[task.stage.value].append(task)
         done_more = max(0, len(by_stage[Stage.DONE]) - DONE_COLUMN_LIMIT)
         by_stage[Stage.DONE] = by_stage[Stage.DONE][:DONE_COLUMN_LIMIT]
-        view = {"archived": "1" if archived else "", "q": q}
+        query = {"stage": stage, "waiting_on": waiting_on, "session": session, "q": q}
+        filter_query = {name: value for name, value in query.items() if value}
+        # A saved filter's URL is exactly filter_query: the same order, so the sidebar can match.
+        view = {**filter_query, "archived": "1" if archived else ""}
         page_qs = {
             n: urlencode({k: v for k, v in {**view, "page": str(n) if n > 1 else ""}.items() if v})
             for n in range(1, len(BOARD_PAGES) + 1)
@@ -356,6 +400,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "columns": by_stage,
             "archived": archived,
             "q": q,
+            "stage_filter": stage,
+            "waiting_filter": waiting_on,
+            "session_filter": session,
+            "filter_query": filter_query,
+            "filter_error": filter_error,
             "view_qs": urlencode({k: v for k, v in view.items() if v}),
             "archived_qs": urlencode({k: v for k, v in {**view, "archived": "1"}.items() if v}),
             "hidden_archived": hidden_archived,
@@ -375,7 +424,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "status": "ok",
             "version": __version__,
             "token_id": token_id(token),
-            "rules_hash": service.global_rules.hash,
+            # What config.toml says, for `relaybay doctor`; accepted versions may differ.
+            "rules_hash": service.config_rules.hash,
         }
 
     def signed_in(request: Request, next_path: str) -> Response:
@@ -471,17 +521,28 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         task: str | None = None,
         archived: bool = False,
         q: str = "",
+        stage: str = "",
+        waiting_on: str = "",
+        session: str = "",
         page_number: Annotated[str, Query(alias="page")] = "",
         tab: str = "",
     ):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
-        context = await board_context(slug, archived, q)
-        first_busy = next((s for s in STAGES if context["columns"][s]), Stage.PLAN)
-        board_page = int(page_number) if page_number.isdigit() else 1
+        flash = take_flash(request)
+        context = await board_context(slug, archived, q, stage, waiting_on, session)
+        chosen = context["stage_filter"]
+        first_busy = chosen or next((s for s in STAGES if context["columns"][s]), Stage.PLAN)
+        # Without an explicit page, a stage filter opens the page its column is on.
+        default_page = next((n for n, page in enumerate(BOARD_PAGES, 1) if chosen in page), 1)
+        board_page = int(page_number) if page_number.isdigit() else default_page
         board_page = min(max(board_page, 1), len(BOARD_PAGES))
         # `?task=<key>` is the URL of the open task dialog: render it so the page opens with it.
-        dialog = await dialog_context(slug, task, tab) if task else {}
-        return await page(
+        dialog = (
+            await dialog_context(slug, task, tab)
+            if task
+            else {"waiting_values": await service.waiting_on_values()}
+        )
+        response = await page(
             request,
             "board.html",
             "board",
@@ -490,8 +551,50 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             **dialog,
             active_stage=first_busy,
             board_page=board_page,
+            saved_filters=await service.saved_filters(context["project"].slug),
+            message=flash.get("message"),
+            error=flash.get("error") or context["filter_error"],
             last_event_id=last_event_id,
         )
+        return shown_once(request, response)
+
+    @router.post("/p/{slug}/filters")
+    async def save_filter(
+        request: Request,
+        slug: str,
+        name: Annotated[str, Form()] = "",
+        stage: Annotated[str, Form()] = "",
+        waiting_on: Annotated[str, Form()] = "",
+        session: Annotated[str, Form()] = "",
+        q: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        given = {"stage": stage, "waiting_on": waiting_on, "session": session, "q": q}
+        back = f"/p/{slug}?{urlencode({k: v for k, v in given.items() if v})}"
+        try:
+            saved = await service.save_filter(slug, name, **given, actor="owner")
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return flash_redirect(request, back, error=str(exc))
+        return flash_redirect(request, back, message=f"Saved the filter {saved.name}.")
+
+    @router.post("/p/{slug}/filters/{filter_id}/delete")
+    async def delete_filter(
+        request: Request,
+        slug: str,
+        filter_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        await service.delete_filter(slug, filter_id, actor="owner")
+        return flash_redirect(request, f"/p/{slug}", message="Saved filter deleted.")
+
+    @router.get("/switcher")
+    async def switcher(q: str = "") -> JSONResponse:
+        items = [asdict(item) for item in await service.switcher(q)]
+        return JSONResponse({"items": items}, headers={"Cache-Control": "no-store"})
 
     @router.get("/t/{key}", response_class=HTMLResponse)
     async def task_page(request: Request, key: str):
@@ -691,9 +794,16 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/p/{slug}/col/{stage}", response_class=HTMLResponse)
     async def column_fragment(
-        request: Request, slug: str, stage: Stage, archived: bool = False, q: str = ""
+        request: Request,
+        slug: str,
+        stage: Stage,
+        archived: bool = False,
+        q: str = "",
+        stage_filter: Annotated[str, Query(alias="stage")] = "",
+        waiting_on: str = "",
+        session: str = "",
     ):
-        context = await board_context(slug, archived, q)
+        context = await board_context(slug, archived, q, stage_filter, waiting_on, session)
         return render(
             request, "_column.html", **context, stage=stage, tasks=context["columns"][stage]
         )
@@ -1831,6 +1941,128 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return f"Policy proposal #{decided.id} {decided.status}."
 
         return await policy_write(request, csrf, "global", write)
+
+    # --- Settings → Rules --------------------------------------------------------------
+
+    async def rules_page(
+        request: Request,
+        scope: str = "global",
+        *,
+        error: str | None = None,
+        confirm: dict[str, Any] | None = None,
+        message: str | None = None,
+        status: int = 200,
+    ) -> HTMLResponse:
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        scopes = await service.rule_scopes()
+        if scope not in scopes:
+            scope = "global"
+        rules = await service.rules_of_scope(scope)
+        return await page(
+            request,
+            "rules.html",
+            "settings",
+            status=status,
+            scope=scope,
+            scopes=scopes,
+            rules=rules,
+            rules_md=rules_markdown(rules),
+            versions=await service.rule_versions(scope),
+            proposals=await service.rule_proposals(),
+            diffs=await service.rule_proposal_diffs(),
+            version_error=await service.rule_version_error(scope),
+            decided=await service.decided_rule_proposals(scope),
+            coordinators=service.coordinators,
+            config_differs=scope == "global" and rules.body != service.config_rules.body,
+            error=error,
+            confirm=confirm,
+            message=message,
+            last_event_id=last_event_id,
+        )
+
+    async def rules_write(
+        request: Request, csrf: str, scope: str, write: Callable[[Any], Awaitable[str]]
+    ) -> Response:
+        """A Settings → Rules write: back to the page, or the page with the reason, or the
+        confirmation a rollback asks for."""
+        board_only(request, csrf)
+        form = await request.form()
+        try:
+            message = await write(form)
+        except ConfirmationNeeded as exc:
+            confirm = {
+                "action": str(request.url.path),
+                "message": str(exc),
+                "fields": confirm_fields(form),
+            }
+            return await rules_page(request, scope, confirm=confirm)
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return await rules_page(request, scope, error=str(exc), status=400)
+        url = "/settings/rules" + (f"?{urlencode({'scope': scope})}" if scope != "global" else "")
+        return flash_redirect(request, url, message=message)
+
+    @router.get("/settings/rules", response_class=HTMLResponse)
+    async def rules_settings(request: Request, scope: str = "global"):
+        flash = take_flash(request)
+        response = await rules_page(request, scope, message=flash.get("message"))
+        return shown_once(request, response)
+
+    @router.get("/settings/rules/proposals", response_class=HTMLResponse)
+    async def rule_proposals_fragment(request: Request):
+        return render(
+            request,
+            "_rule_proposals.html",
+            proposals=await service.rule_proposals(),
+            diffs=await service.rule_proposal_diffs(),
+        )
+
+    @router.post("/settings/rules/notices/{version_id}/read")
+    async def close_rule_notice(
+        request: Request,
+        version_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        await service.close_rule_notice(version_id, actor="owner")
+        return RedirectResponse("/inbox", status_code=303)
+
+    @router.post("/settings/rules/rollback", response_class=HTMLResponse)
+    async def rules_rollback(
+        request: Request,
+        scope: Annotated[str, Form()] = "global",
+        number: Annotated[int, Form()] = 0,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> str:
+            canonical, made = await service.rollback_rules(
+                scope, number, confirmed=confirmed(form), actor="owner"
+            )
+            return f"The {canonical} rules are now v{made}, equal to v{number}."
+
+        return await rules_write(request, csrf, scope, write)
+
+    @router.post("/settings/rules/proposals/{proposal_id}/{decision}", response_class=HTMLResponse)
+    async def decide_rule_proposal(
+        request: Request,
+        proposal_id: int,
+        decision: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if decision not in ("accept", "reject"):
+            raise HTTPException(status_code=404)
+        board_only(request, csrf)
+        proposal = await service.rule_proposal(proposal_id)
+
+        async def write(form: Any) -> str:
+            decided = await service.decide_rule_proposal(
+                proposal_id, decision == "accept", actor="owner"
+            )
+            made = f" as v{decided.version}" if decided.version else ""
+            return f"Rules proposal #{decided.id} {decided.status}{made}."
+
+        return await rules_write(request, csrf, proposal.scope, write)
 
     @router.get("/favicon.ico")
     async def favicon() -> Response:

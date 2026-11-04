@@ -1,7 +1,8 @@
 # 0004 — Navigation: sidebar, Inbox, Map, Usage, quick switcher
 
-- Status: **Accepted; steps (1) and (2) implemented** (sidebar, Inbox, Sessions, Activity, Map,
-  Usage; see [SPEC §2](../SPEC.md#spec-board-nav)). Replaces the planned top tabs (Board | Review | Settings).
+- Status: **Accepted; steps (1) and (2) and the quick switcher with saved filters implemented**
+  (sidebar, Inbox, Sessions, Activity, Map, Usage; see [SPEC §2](../SPEC.md#spec-board-nav),
+  [switcher](../SPEC.md#spec-switcher), [saved filters](../SPEC.md#spec-saved-filters)). Replaces the planned top tabs (Board | Review | Settings).
 - Size and order: (1) sidebar, Inbox, Sessions, Activity ~1.5–2 agent-days, right after the
   documentation restructure (0.2.0); (2) Map ~2 and Usage ~1 after environments and access
   ([0010](0010-map-and-usage.md), 0.4.0); (3) Coordinator, Managers, Schedules with the runner
@@ -46,6 +47,17 @@ Routes: `/inbox`, `/activity`, `/p/<slug>/sessions`; existing URLs stay.
   dialog, board or session. Not captured inside inputs.
 - **Saved filters**: a named board query (stage, waiting on, session, text) stored in the database,
   shown under the project.
+
+### As built
+
+- Search is a JSON endpoint (`GET /switcher`) over a subsequence-style score in Python; results go into
+  the page as text. It looks at the 2000 tasks and 500 sessions changed last, so a very old task may
+  need the board's search instead.
+- A session opens as its row on the Sessions page; sessions have no page of their own.
+- With nothing typed: at most 15 recent tasks and every project.
+- A filter value that cannot be used shows the unfiltered board with an error line.
+- Saved filters hold stage, waiting on, session and text; `archived` and `page` stay out. With a filter
+  on, a changed task refetches its column instead of its card, so it can leave or enter the view.
 
 ## Risks
 
