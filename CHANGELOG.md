@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
+Acceptance and memory: a review stage with a checklist and screenshots; versioned documents,
+decisions, memory notes and full-text search; a plan with checkpoints on every task; digests per
+level and the session's context at start; markdown import and export. Sessions relink by
+themselves after `/clear` or a restart, and a comment can wake an idle session.
+
 ### Added
 
 - Markdown import and export (step 11.6c of design 0008, migration `0015_import`, additive):
@@ -397,6 +404,7 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.1.0

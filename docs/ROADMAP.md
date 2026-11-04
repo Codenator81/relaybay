@@ -39,7 +39,7 @@ live board.
 | Project environments and access map, agent permission levels, guard, live-actions journal (11.4b) | done | [0006](design/0006-environments-and-access.md) |
 | Policy as data: presets, layered `policy.json` / project / environment policy, custom guard patterns, secret rules, test secrets, Settings → Policy, `policy_get` / `policy_propose` (11.4c) | done | [0013](design/0013-policy-as-data.md) |
 
-## 0.3.0 — acceptance and memory
+## 0.3.0 — acceptance and memory (released 2026-11-04)
 
 Ships when a coordinator runs its daily work from relaybay.
 
