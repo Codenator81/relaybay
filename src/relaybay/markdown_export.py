@@ -11,15 +11,18 @@ from typing import Any
 from relaybay.config import Settings
 from relaybay.domain.environments import find_secrets
 from relaybay.domain.markdown_layout import (
+    BACKLOG,
     MANIFEST,
     REGISTRY,
     TASK_FILE,
     Aliases,
+    backlog_meaning,
     normalize,
     note_file_stem,
     parse_note,
     place_of,
     registry_meaning,
+    render_backlog,
     render_decisions,
     render_note,
     render_registry,
@@ -141,6 +144,9 @@ async def gather(service: Service) -> tuple[dict[str, Wanted], list[FileAction]]
             wanted[path] = Wanted(render_decisions(project.slug, decisions))
     if rows:
         wanted[REGISTRY] = Wanted(render_registry(rows))
+    items = await service.all_backlog()  # never cut: the file holds the whole backlog
+    if items:
+        wanted[BACKLOG] = Wanted(render_backlog(items))
     for note in await service.all_notes():
         path = _note_path(note, tracked.get(("note", note.id)))
         text = render_note(note.title, note.kind, note.body, tags=note.tags, role=note.role)
@@ -214,6 +220,8 @@ def _says_the_same(
     if rel == REGISTRY:
         said = registry_meaning(existing, aliases, folders)
         return said == registry_meaning(wanted.text, aliases)
+    if rel == BACKLOG:
+        return backlog_meaning(existing, aliases) == backlog_meaning(wanted.text, aliases)
     if wanted.note is not None:
         stem = rel.rsplit("/", 1)[-1][: -len(".md")]
         said = parse_note(existing, stem)

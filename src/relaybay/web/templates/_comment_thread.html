@@ -7,14 +7,17 @@
   {% if comments %}
   <ol class="comment-list">
     {% for c in comments %}
-    <li class="comment {{ 'from-owner' if c.from_owner else 'from-agent' }}" id="comment-{{ c.id }}">
+    {%- set external = c.author_kind == "external" %}
+    <li class="comment {{ 'from-owner' if c.to_agent else 'from-agent' }}{% if external %} from-external{% endif %}" id="comment-{{ c.id }}">
       <header class="comment-head">
-        <span class="comment-author">{{ "You" if c.from_owner else c.author }}</span>
+        <span class="comment-author">{{ "You" if c.from_owner else ("External via " ~ c.author if external else c.author) }}</span>
         <span class="muted">#{{ c.id }}{% if c.in_reply_to %} · re #{{ c.in_reply_to }}{% endif %}</span>
       </header>
-      <div class="markdown comment-body">{{ c.body_md|markdown(doc_refs) }}</div>
+      {#- External text is shown as plain text, never rendered as markdown. #}
+      {% if external %}<p class="comment-body intake-text">{{ c.body_md }}</p>
+      {% else %}<div class="markdown comment-body">{{ c.body_md|markdown(doc_refs) }}</div>{% endif %}
       <p class="comment-marks muted">
-        {%- if c.from_owner %}
+        {%- if c.to_agent %}
         <span class="mark mark-sent">sent {{ stamp(c.created_at) }}</span>
         {%- if c.delivered_at %} · <span class="mark mark-delivered">delivered {{ stamp(c.delivered_at) }}{% if c.delivered_to_name %} to {{ c.delivered_to_name }}{% endif %}</span>
         {%- else %} · <span class="mark mark-pending">not delivered yet</span>{% endif %}
@@ -27,7 +30,7 @@
     </li>
     {% endfor %}
   </ol>
-  {% if comments|rejectattr("from_owner")|selectattr("read_at", "none")|list %}
+  {% if comments|rejectattr("to_agent")|selectattr("read_at", "none")|list %}
   <form class="comment-read-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/comments/read"
         hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/comments/read" hx-target="closest .comment-thread" hx-swap="outerHTML">
     <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">

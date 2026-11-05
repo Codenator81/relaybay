@@ -61,6 +61,7 @@ nav:
   - How-to guides:
       - Coordinate many projects: how-to/coordinator.md
       - Import and export markdown: how-to/markdown-import-export.md
+      - Intake from chats and e-mail: how-to/intake.md
       - Phone and LAN access: how-to/lan-access.md
       - Screenshots for review: how-to/screenshots-for-review.md
       - Troubleshooting: how-to/troubleshooting.md
@@ -93,6 +94,7 @@ nav:
           - Runner and embedded terminal: design/0012-runner-and-embedded-terminal.md
           - Policy as data: design/0013-policy-as-data.md
           - Task plan: design/0014-task-plan.md
+          - Intake and autonomy: design/0015-intake-and-autonomy.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
       - Former plan: PLAN.md

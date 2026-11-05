@@ -7,7 +7,7 @@
   {% with tab = "notifications" %}{% include "_settings_tabs.html" %}{% endwith %}
   <section class="panel" id="notifications">
     <h2>Browser notifications</h2>
-    <p>While a relaybay tab is open, this browser shows "Waiting for your acceptance: &lt;task&gt;" when a task moves to {{ label("review") }} or {{ label("test") }}. The permission is asked only when you press the button below; your browser keeps the choice for this address.</p>
+    <p>While a relaybay tab is open, this browser shows "Waiting for your acceptance: &lt;task&gt;" when a task moves to {{ label("review") }} or {{ label("test") }}, and "Answer received: &lt;task&gt;" when a message from a chat or a mailbox arrives for a task that waits on someone. The permission is asked only when you press the button below; your browser keeps the choice for this address.</p>
     <p class="notify-state muted" data-notify-state role="status">Checking this browser…</p>
     <button type="button" class="btn primary" data-notify-enable hidden>Allow notifications</button>
     <p class="muted">To turn them off again, use the site settings of your browser (the icon left of the address).</p>

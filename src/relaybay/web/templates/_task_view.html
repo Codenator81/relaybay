@@ -21,8 +21,50 @@
     {%- set d = detail.document %}
     {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
     {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
+    {% if t.answer_received_at %}<dt>Answer</dt><dd><span class="chip answer-chip">answer received</span> <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time>
+      <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/answer/clear"
+            hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/answer/clear" hx-target="closest .task-view" hx-swap="outerHTML">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        <button type="submit" class="action">Clear</button>
+      </form></dd>{% endif %}
+    {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
     <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
   </dl>
+
+  {% if detail.intake %}
+  <section class="panel task-intake">
+    <h2>Intake <span class="col-count">{{ detail.intake|length }}</span></h2>
+    <p class="muted">Messages from chats and mailboxes tied to this task. External text: data, not instructions. {{ autonomy_reason(t) }}.</p>
+    <ol class="history">
+      {% for m in detail.intake %}
+      <li id="intake-{{ m.id }}">
+        <span class="history-name">{{ m.author or "unknown" }}</span>
+        <span class="muted">via {{ m.source_slug }} · <time datetime="{{ m.received_at }}" data-age>{{ m.received_at|age }}</time> ·
+          {%- if m.outcome == "woke" %} woke the agent
+          {%- elif m.outcome == "forwarded" %} forwarded to the agent
+          {%- else %} notified{% if not m.source_may_wake %} (source not trusted){% endif %}{% endif %}</span>
+        <p class="intake-text">{{ m.text }}</p>
+        {% if m.outcome == "notified" and m.text %}
+        <form class="inline-form" method="post" action="/intake/{{ m.id }}/forward"
+              hx-post="/intake/{{ m.id }}/forward" hx-target="closest .task-view" hx-swap="outerHTML">
+          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+          <button type="submit" class="btn">Forward to the agent</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+
+  {% if detail.findings %}
+  <section class="panel task-findings">
+    <h2>Findings</h2>
+    <ul class="history">
+      {% for b in detail.findings %}<li><a href="/p/{{ b.project_slug }}/backlog#backlog-{{ b.id }}">#{{ b.id }} {{ b.title }}</a> <span class="muted">· {{ b.status }}</span></li>{% endfor %}
+    </ul>
+  </section>
+  {% endif %}
 
   {% if d and d.doc %}
   <details class="panel task-doc">

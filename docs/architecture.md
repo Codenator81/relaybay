@@ -75,12 +75,13 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 ```
 project       id, slug UNIQUE, name, repo_path, description, task_seq, created_at, updated_at,
-              archived_at
+              archived_at, pulse, pulse_at, pulse_by, autonomy (0|1)
 task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
               waiting_on, next_step, branch, doc_path, description, progress, session_id,
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
               next_step_at, stage_changed_at, created_at, updated_at, closed_at, size (S|M|L),
-              plan_status (draft|accepted), plan_accepted_at, plan_accepted_by
+              plan_status (draft|accepted), plan_accepted_at, plan_accepted_by,
+              autonomy (project|on|off), answer_received_at, answer_message_id
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
 decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
@@ -107,7 +108,7 @@ usage_file    id, path UNIQUE, session_id, parent_id (a subagent's file), read_o
 usage_day     file_id, day (UTC), session_id, model, input, output, cache_read, cache_write,
               messages   -- PK (file_id, day, model)
 usage_message message_id PK, file_id   -- ids already counted: resumed transcripts repeat lines
-comment       id, task_id, author_kind (owner|agent), author, session_id, body_md, in_reply_to,
+comment       id, task_id, author_kind (owner|agent|external), author, session_id, body_md, in_reply_to,
               created_at, delivered_at, delivered_to_session_id, read_at, step_id, attachment_id
 review_step   id, task_id, position (UNIQUE per task), title, details_md,
               status (open|accepted|rejected), decided_at, decided_by, created_by, created_at,
@@ -156,8 +157,18 @@ rule_seen     session_id, project_id (0 = global), version   -- PRIMARY KEY (ses
 saved_filter  id, project_id, name, stage, waiting_on, session, q, created_at
               -- UNIQUE (project_id, name)
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
-import_item   kind (document|task|task_note|decision|note), item, source_path, target_id,
+import_item   kind (document|task|task_note|decision|note|backlog), item, source_path, target_id,
               content_hash, target_hash, imported_at
+intake_source id, slug UNIQUE, kind (telegram|email|chat|other), name, may_wake, created_at,
+              last_message_at
+intake_message id, source_id, external_id (UNIQUE per source), thread, author, text (NULL when
+              refused), received_at, status (new|tied|proposed|dismissed|refused), refused_reason,
+              task_id, outcome (notified|forwarded|woke), created_at
+intake_thread source_id, thread, task_id, updated_at   -- PRIMARY KEY (source_id, thread)
+backlog_item  id, project_id, title, body_md, area, origin (session|review|intake|owner),
+              origin_task_id, origin_session_id, intake_message_id, status
+              (new|later|planned|declined), decline_reason, task_id, decided_at, decided_by,
+              created_at, created_by
 reader_cursor reader, level (portfolio|project|task), ref_id (0 = portfolio), last_event_id,
               read_at   -- PRIMARY KEY (reader, level, ref_id)
 ```

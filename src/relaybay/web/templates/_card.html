@@ -25,6 +25,15 @@
   <a class="chip plan-chip{% if draft %} is-draft{% endif %}{% if t.plan_deviations %} has-deviation{% endif %}{% if t.plan_done == t.plan_total %} is-done{% endif %}" href="/p/{{ slug }}?task={{ t.key }}&amp;tab=plan" data-task="{{ t.key }}" data-tab="plan"
      title="Plan{% if draft %} (draft, not accepted){% endif %}: {{ t.plan_done }} of {{ t.plan_total }} steps done{% if t.plan_deviations %}, {{ t.plan_deviations }} with a deviation{% endif %}{% if t.plan_now %}; now: {{ t.plan_now }}{% endif %}">Plan {{ t.plan_done }}/{{ t.plan_total }}{% if draft %} · draft{% endif %}{% if t.plan_deviations %} · <span class="deviation-mark">{{ t.plan_deviations }} deviation{{ "s" if t.plan_deviations > 1 else "" }}</span>{% endif %}{% if t.plan_now %} · now: {{ t.plan_now }}{% endif %}</a>
   {% endif %}
+  {% if t.answer_received_at and is_open %}
+  <form class="answer-mark" method="post" action="/p/{{ slug }}/t/{{ t.key }}/answer/clear"
+        hx-post="/p/{{ slug }}/t/{{ t.key }}/answer/clear" hx-target="closest .card" hx-swap="outerHTML">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="target" value="card">
+    <span class="chip answer-chip" title="A message arrived for {{ t.waiting_on or 'this task' }}">answer received</span>
+    <button type="submit" class="saved-filter-delete" aria-label="Clear the answer received mark of {{ t.key }}" title="Clear the mark">×</button>
+  </form>
+  {% endif %}
   {% if (t.waiting_on and is_open) or t.branch %}
   <div class="card-meta">
     {% if t.waiting_on and is_open %}<span class="chip waiting" title="Waiting on {{ t.waiting_on }}">waiting on {{ t.waiting_on }}</span>{% endif %}

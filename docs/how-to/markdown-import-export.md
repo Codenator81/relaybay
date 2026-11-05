@@ -17,6 +17,7 @@ folder layout for git history, backup and grep. The rules behind this page:
   projects/<slug>/decisions.md         written by export, never read by import
   memory/<name>.md                     global notes, with frontmatter
   retro.md                             retro registry
+  backlog.md                           backlog: a markdown table, one row per item
 ```
 
 Other markdown files under the root's top level, `projects/` and `memory/` are listed as `skipped`.
@@ -34,6 +35,7 @@ at.
 | `memory/<name>.md` | A global note: title from `name` or the first heading, kind from `metadata.type` (`user`, `feedback`, `project`, `reference`; anything else is `reference`), the `description` as the first line of the body if it is not already, `[[links]]` kept in the note's links. `metadata.role` makes it a role note. |
 | `projects/<slug>/memory/<name>.md` | The same, as a note of that project. |
 | `retro.md` | Document `retro` of the project named by `--retro-project`; skipped with a warning without it. |
+| `backlog.md` | Backlog items. Columns: date (`2026-11-05`), project, area, what (the title), origin (`session`, `review`, `intake`, `owner`; anything else is `owner`) and decision (`planned`, `later`, `declined: <reason>`, empty for new). An item is the same item again when project, date and title slug match. `planned` only records history: import creates no task. An unknown project is an error line. Other column names map through `--aliases` under `"backlog"`. Export writes every item, oldest first. |
 
 **Which row is which task folder.** A row finds its folder through its `ref` cell, then a `document`
 cell holding a path through `tasks/<ref>/` or a `relaybay://` link, then the title as a slug

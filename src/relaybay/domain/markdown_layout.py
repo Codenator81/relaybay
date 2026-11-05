@@ -78,6 +78,20 @@ STAGE_ALIASES = {
     "completed": "done",
     "archived": "done",
 }
+BACKLOG = "backlog.md"
+BACKLOG_COLUMNS = ("date", "project", "area", "what", "origin", "decision")
+BACKLOG_ALIASES = {
+    **{c: c for c in BACKLOG_COLUMNS},
+    "created": "date",
+    "when": "date",
+    "component": "area",
+    "title": "what",
+    "item": "what",
+    "finding": "what",
+    "source": "origin",
+    "from": "origin",
+    "status": "decision",
+}
 HEADING_NAMES = ("decisions", "task")
 _STAGE_WORDS_MAX = 3
 _DASHES = "-" + chr(0x2013) + chr(0x2014)
@@ -139,7 +153,11 @@ def place_of(rel: str) -> Place | None:
         return None
     stem = parts[-1][: -len(".md")]
     if len(parts) == 1:
-        return {REGISTRY: Place("registry"), RETRO: Place("retro")}.get(rel)
+        return {
+            REGISTRY: Place("registry"),
+            RETRO: Place("retro"),
+            BACKLOG: Place("backlog"),
+        }.get(rel)
     if parts[0] == "memory":
         return Place("note", None, stem) if len(parts) == 2 else None
     if parts[0] != "projects":
@@ -187,20 +205,25 @@ class Aliases:
     columns: dict[str, str] = field(default_factory=lambda: dict(COLUMN_ALIASES))
     stages: dict[str, str] = field(default_factory=lambda: dict(STAGE_ALIASES))
     headings: dict[str, str] = field(default_factory=lambda: {n: n for n in HEADING_NAMES})
+    backlog: dict[str, str] = field(default_factory=lambda: dict(BACKLOG_ALIASES))
 
 
 def load_aliases(data: Any) -> Aliases:
     """The built-in aliases plus an `--aliases` file: `{"columns": {"their name": "column"},
-    "stages": {"their word": "stage"}, "headings": {"their heading": "decisions" or "task"}}`."""
+    "stages": {"their word": "stage"}, "headings": {"their heading": "decisions" or "task"},
+    "backlog": {"their name": "backlog column"}}`."""
     if not isinstance(data, dict):
         raise ValueError("the aliases file must hold a JSON object")
-    unknown = sorted(set(data) - {"columns", "stages", "headings"})
+    unknown = sorted(set(data) - {"columns", "stages", "headings", "backlog"})
     if unknown:
-        raise ValueError(f"unknown key(s) {', '.join(unknown)}; use columns, stages, headings")
+        raise ValueError(
+            f"unknown key(s) {', '.join(unknown)}; use columns, stages, headings, backlog"
+        )
     allowed = {
         "columns": COLUMNS,
         "stages": tuple(s.value for s in Stage),
         "headings": HEADING_NAMES,
+        "backlog": BACKLOG_COLUMNS,
     }
     base = Aliases()
     for section, known in allowed.items():
@@ -387,6 +410,84 @@ def render_registry(rows: list[tuple[str, str, Task]]) -> str:
         )
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
     return "\n".join(lines) + "\n"
+
+
+# --- the backlog -------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BacklogRow:
+    line: int
+    date: str
+    project: str
+    area: str | None
+    title: str
+    origin: str | None
+    decision: str
+
+
+def parse_backlog(text: str, aliases: Aliases) -> tuple[list[BacklogRow], list[str]]:
+    """Every table with a project and a what column; tables without them give a warning."""
+    rows: list[BacklogRow] = []
+    warnings: list[str] = []
+    lines = text.replace("\r\n", "\n").split("\n")
+    i = 0
+    while i < len(lines) - 1:
+        if not (_is_table_line(lines[i]) and _TABLE_RULE_RE.match(lines[i + 1])):
+            i += 1
+            continue
+        header = [aliases.backlog.get(c.casefold()) for c in _split_row(lines[i])]
+        start = i + 1
+        i += 2
+        table: list[tuple[int, list[str]]] = []
+        while i < len(lines) and _is_table_line(lines[i]):
+            table.append((i + 1, _split_row(lines[i])))
+            i += 1
+        if "project" not in header or "what" not in header:
+            warnings.append(
+                f"line {start}: a table without project and what columns was skipped"
+                " (--aliases maps other column names under backlog)"
+            )
+            continue
+        for number, cells in table:
+            if not any(cells):
+                continue
+            values = {
+                name: cells[n] if n < len(cells) else ""
+                for n, name in enumerate(header)
+                if name is not None
+            }
+            rows.append(
+                BacklogRow(
+                    line=number,
+                    date=values.get("date", "").strip(),
+                    project=values["project"].strip("*` ").lower(),
+                    area=values.get("area", "").strip() or None,
+                    title=values["what"].strip(),
+                    origin=values.get("origin", "").strip().lower() or None,
+                    decision=values.get("decision", "").strip(),
+                )
+            )
+    return rows, warnings
+
+
+def render_backlog(items: list[Any]) -> str:
+    """Backlog items (domain.backlog.BacklogItem), oldest first, as backlog.md."""
+    lines = [
+        "# Backlog",
+        "",
+        "| date | project | area | what | origin | decision |",
+        "|---|---|---|---|---|---|",
+    ]
+    for b in sorted(items, key=lambda b: (b.created_at, b.id)):
+        cells = (b.created_at[:10], b.project_slug, b.area, b.title, b.origin, b.decision)
+        lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def backlog_meaning(text: str, aliases: Aliases) -> set[tuple[Any, ...]]:
+    rows, _ = parse_backlog(text, aliases)
+    return {(r.date, r.project, r.area, r.title, r.origin, r.decision) for r in rows}
 
 
 def registry_meaning(

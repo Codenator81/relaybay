@@ -65,8 +65,8 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| Chats and e-mail intake into proposals with approval | later | — |
-| Optional semantic search (`relaybay[semantic]`) | later | [0008](design/0008-memory-and-context.md) |
+| Intake from chats and e-mail: sources, matching to the waiting task, "answer received", autonomy switch per project and task, example Telegram and e-mail watchers | in progress | [0015](design/0015-intake-and-autonomy.md) |
+| Backlog: findings of sessions and reviews, intake proposals, "To plan" creates the task, `backlog.md` import and export | in progress | [0015](design/0015-intake-and-autonomy.md#backlog) |
 
 ## 0.6+ — agents inside
 
@@ -89,5 +89,8 @@ operating systems.
 
 ## Later, not planned
 
+- Optional semantic search (`relaybay[semantic]`): moved out of 0.5.0, no corpus justifies it yet;
+  [0008](design/0008-memory-and-context.md) enables it only when it beats full-text search on an
+  evaluation set.
 - A phone app that connects to a local relaybay. Phone access stays through the browser (LAN mode);
   the priority is the local workflow.

@@ -9,6 +9,7 @@ from typing import Any
 import aiosqlite
 
 from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
+from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -16,6 +17,7 @@ from relaybay.domain.environments import (
     Proposal,
     split_test_secrets,
 )
+from relaybay.domain.intake import IntakeMessage, IntakeSource
 from relaybay.domain.map_graph import CommentRow, MessageRow
 from relaybay.domain.memory import (
     Document,
@@ -48,7 +50,8 @@ from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile
 logger = logging.getLogger("relaybay")
 
 _TASK_SELECT = """
-SELECT t.*, p.slug AS project_slug, s.name AS session_name, s.external_id AS session_external_id,
+SELECT t.*, p.slug AS project_slug, p.autonomy AS project_autonomy,
+       s.name AS session_name, s.external_id AS session_external_id,
        s.status AS session_status, s.desktop_link AS session_link,
        s.activity AS session_activity, s.activity_at AS session_activity_at,
        (SELECT COUNT(*) FROM review_step r WHERE r.task_id = t.id) AS review_total,
@@ -84,6 +87,7 @@ def _project(row: aiosqlite.Row) -> Project:
         pulse=row["pulse"],
         pulse_at=row["pulse_at"],
         pulse_by=row["pulse_by"],
+        autonomy=bool(row["autonomy"]),
     )
 
 
@@ -132,6 +136,10 @@ def _task(row: aiosqlite.Row) -> Task:
         plan_deviations=row["plan_deviations"],
         plan_now=row["plan_now"],
         plan_now_position=row["plan_now_position"],
+        autonomy=row["autonomy"],
+        project_autonomy=bool(row["project_autonomy"]),
+        answer_received_at=row["answer_received_at"],
+        answer_message_id=row["answer_message_id"],
     )
 
 
@@ -551,6 +559,9 @@ async def update_task(
     if "next_step" in changes:
         sets.append("next_step_at = ?")
         params.append(now)
+    if "waiting_on" in changes and "answer_received_at" not in changes:
+        # The "answer received" mark is about who was waited on: a new `waiting_on` clears it.
+        sets += ["answer_received_at = NULL", "answer_message_id = NULL"]
     sets += ["version = version + 1", "updated_at = ?"]
     await conn.execute(f"UPDATE task SET {', '.join(sets)} WHERE id = ?", (*params, now, task_id))
 
@@ -818,9 +829,9 @@ FROM comment c
 JOIN task t ON t.id = c.task_id
 LEFT JOIN session d ON d.id = c.delivered_to_session_id
 """
-# Owner comments on the tasks a session is bound to now.
+# Comments for the agent (owner and external) on the tasks a session is bound to now.
 _BOUND_OWNER = (
-    " WHERE c.author_kind = 'owner' AND c.read_at IS NULL AND c.task_id IN"
+    " WHERE c.author_kind != 'agent' AND c.read_at IS NULL AND c.task_id IN"
     " (SELECT task_id FROM task_session WHERE session_id = ? AND unbound_at IS NULL)"
 )
 
@@ -3017,7 +3028,7 @@ async def map_comments(conn: aiosqlite.Connection) -> list[CommentRow]:
         conn,
         "SELECT task_id, SUM(author_kind = 'owner') AS owner_comments,"
         " MAX(CASE WHEN author_kind = 'owner' THEN created_at END) AS last_owner_at,"
-        " SUM(author_kind = 'owner' AND read_at IS NULL) AS unread_by_agent,"
+        " SUM(author_kind != 'agent' AND read_at IS NULL) AS unread_by_agent,"
         " SUM(author_kind = 'agent' AND read_at IS NULL) AS unread_by_owner"
         " FROM comment GROUP BY task_id",
         (),
@@ -3284,4 +3295,314 @@ async def usage_sessions(conn: aiosqlite.Connection) -> list[tuple[int, str]]:
 
 async def usage_models(conn: aiosqlite.Connection) -> list[str]:
     rows = await _all(conn, "SELECT DISTINCT model FROM usage_day ORDER BY model", ())
+    return [r[0] for r in rows]
+
+
+# --- intake ----------------------------------------------------------------
+
+
+def _source(row: aiosqlite.Row) -> IntakeSource:
+    keys = row.keys()
+    return IntakeSource(
+        id=row["id"],
+        slug=row["slug"],
+        kind=row["kind"],
+        name=row["name"],
+        may_wake=bool(row["may_wake"]),
+        created_at=row["created_at"],
+        last_message_at=row["last_message_at"],
+        messages=row["messages"] if "messages" in keys else 0,
+        new=row["new"] if "new" in keys else 0,
+        first_message_id=row["first_message_id"] if "first_message_id" in keys else None,
+    )
+
+
+async def get_source(conn: aiosqlite.Connection, slug: str) -> IntakeSource | None:
+    row = await _one(conn, "SELECT * FROM intake_source WHERE slug = ?", (slug,))
+    return _source(row) if row else None
+
+
+async def get_source_by_id(conn: aiosqlite.Connection, source_id: int) -> IntakeSource | None:
+    row = await _one(conn, "SELECT * FROM intake_source WHERE id = ?", (source_id,))
+    return _source(row) if row else None
+
+
+async def insert_source(
+    conn: aiosqlite.Connection, slug: str, kind: str, name: str, now: str
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO intake_source (slug, kind, name, created_at) VALUES (?, ?, ?, ?)",
+        (slug, kind, name, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def list_sources(conn: aiosqlite.Connection) -> list[IntakeSource]:
+    rows = await _all(
+        conn,
+        "SELECT s.*, (SELECT COUNT(*) FROM intake_message m WHERE m.source_id = s.id) AS messages,"
+        " (SELECT COUNT(*) FROM intake_message m WHERE m.source_id = s.id AND m.status = 'new')"
+        " AS new,"
+        " (SELECT MIN(m.id) FROM intake_message m WHERE m.source_id = s.id) AS first_message_id"
+        " FROM intake_source s ORDER BY s.slug",
+    )
+    return [_source(r) for r in rows]
+
+
+async def set_source_may_wake(conn: aiosqlite.Connection, source_id: int, value: bool) -> None:
+    await conn.execute(
+        "UPDATE intake_source SET may_wake = ? WHERE id = ?", (int(value), source_id)
+    )
+
+
+async def touch_source(conn: aiosqlite.Connection, source_id: int, now: str) -> None:
+    await conn.execute(
+        "UPDATE intake_source SET last_message_at = ? WHERE id = ?", (now, source_id)
+    )
+
+
+async def count_messages_since(conn: aiosqlite.Connection, source_id: int, since: str) -> int:
+    row = await _one(
+        conn,
+        "SELECT COUNT(*) FROM intake_message WHERE source_id = ? AND created_at >= ?"
+        " AND status != 'refused'",
+        (source_id, since),
+    )
+    return int(row[0])
+
+
+_MESSAGE_SELECT = """
+SELECT m.*, s.slug AS source_slug, s.may_wake AS source_may_wake, t.key AS task_key,
+       (SELECT MIN(f.id) FROM intake_message f WHERE f.source_id = m.source_id)
+           AS source_first_message_id
+FROM intake_message m
+JOIN intake_source s ON s.id = m.source_id
+LEFT JOIN task t ON t.id = m.task_id
+"""
+
+
+def _message(row: aiosqlite.Row) -> IntakeMessage:
+    return IntakeMessage(
+        id=row["id"],
+        source_id=row["source_id"],
+        source_slug=row["source_slug"],
+        source_may_wake=bool(row["source_may_wake"]),
+        external_id=row["external_id"],
+        thread=row["thread"],
+        author=row["author"],
+        text=row["text"],
+        received_at=row["received_at"],
+        status=row["status"],
+        refused_reason=row["refused_reason"],
+        task_id=row["task_id"],
+        task_key=row["task_key"],
+        outcome=row["outcome"],
+        created_at=row["created_at"],
+        source_first_message_id=row["source_first_message_id"],
+    )
+
+
+async def get_message(conn: aiosqlite.Connection, message_id: int) -> IntakeMessage | None:
+    row = await _one(conn, _MESSAGE_SELECT + " WHERE m.id = ?", (message_id,))
+    return _message(row) if row else None
+
+
+async def find_message(
+    conn: aiosqlite.Connection, source_id: int, external_id: str
+) -> IntakeMessage | None:
+    row = await _one(
+        conn,
+        _MESSAGE_SELECT + " WHERE m.source_id = ? AND m.external_id = ?",
+        (source_id, external_id),
+    )
+    return _message(row) if row else None
+
+
+async def insert_message(
+    conn: aiosqlite.Connection,
+    *,
+    source_id: int,
+    external_id: str,
+    thread: str | None,
+    author: str | None,
+    text: str | None,
+    received_at: str,
+    status: str,
+    refused_reason: str | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO intake_message (source_id, external_id, thread, author, text, received_at,"
+        " status, refused_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (source_id, external_id, thread, author, text, received_at, status, refused_reason, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_message(
+    conn: aiosqlite.Connection, message_id: int, changes: dict[str, Any]
+) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(
+        f"UPDATE intake_message SET {sets} WHERE id = ?", (*changes.values(), message_id)
+    )
+
+
+async def list_messages(
+    conn: aiosqlite.Connection,
+    *,
+    source_id: int | None = None,
+    status: str | None = None,
+    task_id: int | None = None,
+    limit: int = 50,
+) -> list[IntakeMessage]:
+    """Newest first."""
+    where, params = [], []
+    for column, value in (("m.source_id", source_id), ("m.status", status), ("m.task_id", task_id)):
+        if value is not None:
+            where.append(f"{column} = ?")
+            params.append(value)
+    sql = _MESSAGE_SELECT + (" WHERE " + " AND ".join(where) if where else "")
+    rows = await _all(conn, sql + " ORDER BY m.id DESC LIMIT ?", (*params, limit))
+    return [_message(r) for r in rows]
+
+
+async def thread_task(conn: aiosqlite.Connection, source_id: int, thread: str) -> int | None:
+    row = await _one(
+        conn,
+        "SELECT task_id FROM intake_thread WHERE source_id = ? AND thread = ?",
+        (source_id, thread),
+    )
+    return int(row[0]) if row else None
+
+
+async def set_thread(
+    conn: aiosqlite.Connection, source_id: int, thread: str, task_id: int, now: str
+) -> None:
+    await conn.execute(
+        "INSERT INTO intake_thread (source_id, thread, task_id, updated_at) VALUES (?, ?, ?, ?)"
+        " ON CONFLICT (source_id, thread) DO UPDATE SET task_id = excluded.task_id,"
+        " updated_at = excluded.updated_at",
+        (source_id, thread, task_id, now),
+    )
+
+
+async def set_answer_mark(
+    conn: aiosqlite.Connection, task_id: int, received_at: str | None, message_id: int | None
+) -> None:
+    """The "answer received" mark; no version bump: an open edit form must not conflict."""
+    await conn.execute(
+        "UPDATE task SET answer_received_at = ?, answer_message_id = ? WHERE id = ?",
+        (received_at, message_id, task_id),
+    )
+
+
+_BACKLOG_SELECT = """
+SELECT b.*, p.slug AS project_slug, ot.key AS origin_task_key, ot.stage AS origin_task_stage,
+       os.name AS origin_session_name, t.key AS task_key
+FROM backlog_item b
+JOIN project p ON p.id = b.project_id
+LEFT JOIN task ot ON ot.id = b.origin_task_id
+LEFT JOIN session os ON os.id = b.origin_session_id
+LEFT JOIN task t ON t.id = b.task_id
+"""
+
+
+def _backlog(row: aiosqlite.Row) -> BacklogItem:
+    return BacklogItem(
+        id=row["id"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"],
+        title=row["title"],
+        body_md=row["body_md"],
+        area=row["area"],
+        origin=row["origin"],
+        origin_task_id=row["origin_task_id"],
+        origin_task_key=row["origin_task_key"],
+        origin_task_stage=row["origin_task_stage"],
+        origin_session_id=row["origin_session_id"],
+        origin_session_name=row["origin_session_name"],
+        intake_message_id=row["intake_message_id"],
+        status=row["status"],
+        decline_reason=row["decline_reason"],
+        task_id=row["task_id"],
+        task_key=row["task_key"],
+        decided_at=row["decided_at"],
+        decided_by=row["decided_by"],
+        created_at=row["created_at"],
+        created_by=row["created_by"],
+    )
+
+
+async def insert_backlog_item(conn: aiosqlite.Connection, values: dict[str, Any]) -> int:
+    """`values`: project_id, title, origin, created_at, created_by and any optional column."""
+    cols = list(values)
+    cur = await conn.execute(
+        f"INSERT INTO backlog_item ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+        tuple(values.values()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_backlog_item(conn: aiosqlite.Connection, item_id: int) -> BacklogItem | None:
+    row = await _one(conn, _BACKLOG_SELECT + " WHERE b.id = ?", (item_id,))
+    return _backlog(row) if row else None
+
+
+async def update_backlog_item(
+    conn: aiosqlite.Connection, item_id: int, changes: dict[str, Any]
+) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(f"UPDATE backlog_item SET {sets} WHERE id = ?", (*changes.values(), item_id))
+
+
+async def list_backlog(
+    conn: aiosqlite.Connection,
+    *,
+    project_id: int | None = None,
+    status: str | None = None,
+    area: str | None = None,
+    origin_task_id: int | None = None,
+    task_id: int | None = None,
+    limit: int = 200,
+) -> list[BacklogItem]:
+    """`new` first, then later, planned and declined; newest first within a status."""
+    where, params = [], []
+    for column, value in (
+        ("b.project_id", project_id),
+        ("b.status", status),
+        ("b.origin_task_id", origin_task_id),
+        ("b.task_id", task_id),
+    ):
+        if value is not None:
+            where.append(f"{column} = ?")
+            params.append(value)
+    if area is not None:
+        where.append("b.area = ? COLLATE NOCASE")
+        params.append(area)
+    sql = _BACKLOG_SELECT + (" WHERE " + " AND ".join(where) if where else "")
+    order = (
+        " ORDER BY CASE b.status WHEN 'new' THEN 0 WHEN 'later' THEN 1 WHEN 'planned' THEN 2"
+        " ELSE 3 END, b.id DESC LIMIT ?"
+    )
+    return [_backlog(r) for r in await _all(conn, sql + order, (*params, limit))]
+
+
+async def backlog_new_counts(conn: aiosqlite.Connection) -> dict[int, int]:
+    """New backlog items per project id."""
+    rows = await _all(
+        conn,
+        "SELECT project_id, COUNT(*) FROM backlog_item WHERE status = 'new' GROUP BY project_id",
+    )
+    return {r[0]: r[1] for r in rows}
+
+
+async def backlog_areas(conn: aiosqlite.Connection, project_id: int | None) -> list[str]:
+    where = " AND project_id = ?" if project_id is not None else ""
+    params = (project_id,) if project_id is not None else ()
+    rows = await _all(
+        conn,
+        f"SELECT DISTINCT area FROM backlog_item WHERE area IS NOT NULL{where} ORDER BY area",
+        params,
+    )
     return [r[0] for r in rows]

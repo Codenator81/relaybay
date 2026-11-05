@@ -617,7 +617,8 @@ def _comment_lines(comments: list[Comment], reader_session_id: int | None) -> li
     lines = [f"{len(comments)} unread: {ids}{more}"]
     for c in comments:
         if reader_session_id is not None and c.delivered_to_session_id == reader_session_id:
-            lines.append(f"- #{c.id} (delivered to you): {_clip(c.body_md, 240)}")
+            kind = "external, " if c.author_kind == "external" else ""
+            lines.append(f"- #{c.id} ({kind}delivered to you): {_clip(c.body_md, 240)}")
     return lines
 
 
