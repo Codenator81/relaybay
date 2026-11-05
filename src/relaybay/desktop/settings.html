@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>relaybay settings</title>
+<style>
+/*APP_CSS*/
+body { padding: 20px; }
+form { display: grid; gap: 14px; max-width: 560px; }
+.row { display: flex; gap: 8px; align-items: end; }
+.row .field { flex: 1; }
+.status { min-height: 1.4em; }
+.status.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<form id="form" class="panel" autocomplete="off">
+  <h2>relaybay settings</h2>
+  <p class="muted">Stored in <code id="path"></code>. The command line reads the same file.</p>
+
+  <div class="row">
+    <label class="field">Data folder (empty: the default)
+      <input id="data_dir" spellcheck="false">
+    </label>
+    <button class="btn" type="button" id="browse">Browse...</button>
+  </div>
+  <p class="muted">Changing it moves nothing: point it at the folder that holds your board.</p>
+
+  <label class="field">Server
+    <select id="server_mode">
+      <option value="embedded">Run the server in this program</option>
+      <option value="external">Connect to an external server</option>
+    </select>
+  </label>
+  <div id="external">
+    <label class="field">Server URL
+      <input id="server_url" placeholder="https://board.example.lan" spellcheck="false">
+    </label>
+    <label class="field">Token of that server (empty: keep the saved one)
+      <input id="token" type="password" spellcheck="false">
+    </label>
+  </div>
+
+  <label class="field field-check"><input id="autostart" type="checkbox"> Start at login</label>
+
+  <div class="row">
+    <button class="btn primary" type="submit">Save</button>
+    <button class="btn" type="button" id="close">Close</button>
+  </div>
+  <p id="status" class="status" role="status"></p>
+</form>
+<script>
+const $ = (id) => document.getElementById(id);
+function showMode() { $("external").hidden = $("server_mode").value !== "external"; }
+function say(text, bad) { $("status").textContent = text; $("status").className = "status" + (bad ? " bad" : ""); }
+
+window.addEventListener("pywebviewready", async () => {
+  const s = await pywebview.api.get();
+  $("path").textContent = s.path;
+  $("data_dir").value = s.data_dir;
+  $("server_mode").value = s.server_mode;
+  $("server_url").value = s.server_url;
+  $("autostart").checked = s.autostart;
+  showMode();
+});
+$("server_mode").addEventListener("change", showMode);
+$("browse").addEventListener("click", async () => {
+  const folder = await pywebview.api.browse($("data_dir").value);
+  if (folder) $("data_dir").value = folder;
+});
+$("close").addEventListener("click", () => pywebview.api.close());
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  say("Saving...");
+  const result = await pywebview.api.save({
+    data_dir: $("data_dir").value,
+    server_mode: $("server_mode").value,
+    server_url: $("server_url").value,
+    token: $("token").value,
+    autostart: $("autostart").checked,
+  });
+  $("token").value = "";
+  say(result.message, !result.ok);
+});
+</script>
+</body>
+</html>

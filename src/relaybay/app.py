@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
@@ -97,6 +98,18 @@ def create_app(settings: Settings) -> FastAPI:
     return app
 
 
+def server_options(settings: Settings) -> dict[str, Any]:
+    """uvicorn options shared by `relaybay serve` and the desktop program's embedded server."""
+    return {
+        "host": settings.host,
+        "port": settings.port,
+        "proxy_headers": False,
+        "server_header": False,
+        # SSE and MCP streams never finish on their own; do not wait for them on Ctrl+C.
+        "timeout_graceful_shutdown": 2,
+    }
+
+
 def create_app_from_env() -> FastAPI:
     """Factory for `uvicorn --reload`, which re-imports the app in a child process."""
-    return create_app(load_settings())
+    return create_app(load_settings(serving=True))

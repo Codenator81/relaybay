@@ -2510,6 +2510,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/favicon.ico")
     async def favicon() -> Response:
-        return Response(status_code=204)
+        # Browsers take a PNG under this name; drawn by packaging/icons/make_icons.py.
+        return FileResponse(STATIC_DIR / "favicon.png", media_type="image/png")
 
     return router

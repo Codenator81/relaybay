@@ -17,9 +17,10 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0009 | [Screenshot annotations](0009-screenshot-annotations.md) | Implemented (unreleased) | 0.4.0 |
 | 0010 | [Map and Usage](0010-map-and-usage.md) | Implemented | 0.4.0 |
 | 0011 | [Project documents in the database](0011-docs-in-database.md) | Implemented (unreleased) | 0.4.0 |
-| 0012 | [Runner and embedded terminal](0012-runner-and-embedded-terminal.md) | Accepted (direction) | 0.6+ |
+| 0012 | [Runner and embedded terminal](0012-runner-and-embedded-terminal.md) | Accepted (direction) | 0.7+ |
 | 0013 | [Policy as data](0013-policy-as-data.md) | Implemented (unreleased) | 0.2.0 |
 | 0014 | [Task plan and checkpoints](0014-task-plan.md) | Implemented (unreleased) | 0.3.0 |
 | 0015 | [Intake from chats and e-mail, autonomy, backlog](0015-intake-and-autonomy.md) | Accepted | 0.5.0 |
+| 0016 | [Desktop program: tray, window, autostart, installers](0016-desktop-program.md) | Accepted (PR1 built) | 0.6.0 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md).

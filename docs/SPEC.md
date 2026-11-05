@@ -19,7 +19,8 @@ Contents:
 [9. Security model](#spec-security) ·
 [10. Configuration](#spec-config) ·
 [11. Data model and migrations](#spec-data) ·
-[12. Intake and backlog](#spec-intake)
+[12. Intake and backlog](#spec-intake) ·
+[13. Desktop program (preview)](#spec-desktop)
 
 <a id="spec-concepts"></a>
 
@@ -2062,3 +2063,36 @@ items. An item no import wrote (made on the board) is matched by the same identi
 second item. An item planned on the board (it has a task) is never moved back by an import, also with
 `--overwrite` (`skipped`). Export writes the same table with every item, uncapped, oldest first; an
 import of the export changes nothing.
+
+<a id="spec-desktop"></a>
+
+## 13. Desktop program (preview)
+
+The full section comes with the installers; the design is [0016](design/0016-desktop-program.md).
+`relaybay desktop` (needs the `relaybay[desktop]` extra, else it prints how to install it and exits
+`2`) runs the server of `relaybay serve` in a thread of a program with a board window (the system
+web view) and a tray icon. The window signs in with the login link and keeps no cookies; closing it
+hides it, **Quit relaybay** in the tray stops the server and the program. The tray menu: Open board,
+Open in browser (the link `relaybay token` prints), Restart server (Reconnect for an external
+server), Logs (`<data dir>/logs/relaybay.log`, 5 x 1 MB, the login token redacted), Settings (Start
+at login, the data folder and the server, in a local form) and Quit. When the port is taken the
+program starts no second server: the window names the holder (another relaybay and its version, or
+another program). One program per user: a second start shows the first one's window and exits;
+`relaybay desktop --quit` asks the running one to quit. `--background` starts hidden; start at login
+writes the Windows Run key, a macOS LaunchAgent or an XDG autostart file, rewritten with the current
+executable on each start.
+
+<a id="spec-desktop-settings"></a>
+
+**`desktop.toml`.** In the per-user config folder (or `RELAYBAY_CONFIG_DIR`);
+`relaybay desktop config` shows and changes it. The data folder is `--home`, else `RELAYBAY_HOME`,
+else `data_dir` in `desktop.toml`, else the per-user data dir; changing `data_dir` moves nothing.
+With `server_mode = "external"` the program opens `server_url` with the token saved in
+`external-token` (0600) beside the file, and the CLI's `token`, `hook`, `setup` and `doctor` use
+that server too; `relaybay serve` and the program's own server ignore the mode,
+`relaybay token --rotate` is refused and a missing token is an error in `token` and `setup` (exit
+`2`). Plain `http://` to another machine is allowed with a warning (Settings, `desktop config`, the
+log): the token travels in clear text. `data_dir` must be an absolute path. A server never fails
+over `desktop.toml`: keys of a newer version are skipped, a broken file is a logged warning and its
+settings are left out; the CLI names the problem, and `relaybay desktop config` with options writes
+the file anew. Keys: [configuration reference](reference/configuration.md#desktop-program-desktoptoml).

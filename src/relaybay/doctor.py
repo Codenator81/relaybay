@@ -60,11 +60,17 @@ def _data_dir_check(settings: Settings) -> Check:
 
 def _token_check(settings: Settings) -> tuple[Check, str | None]:
     path = settings.token_path
+    if settings.external_url:
+        # desktop.toml points at an external server: its token is a saved copy.
+        fix = "save the server's token with 'relaybay desktop config --token-file <file>'"
+        missing, empty = fix, fix
+    else:
+        missing, empty = "'relaybay serve' creates it", "run 'relaybay token --rotate'"
     if not path.is_file():
-        return Check(False, "token file", f"{path} missing; 'relaybay serve' creates it"), None
+        return Check(False, "token file", f"{path} missing; {missing}"), None
     token = path.read_text(encoding="utf-8").strip()
     if not token:
-        return Check(False, "token file", f"{path} is empty; run 'relaybay token --rotate'"), None
+        return Check(False, "token file", f"{path} is empty; {empty}"), None
     if os.name == "posix" and path.stat().st_mode & 0o077:
         return Check(False, "token file", f"{path} is readable by others; chmod 600 it"), token
     return Check(True, "token file", f"{path} (private)"), token

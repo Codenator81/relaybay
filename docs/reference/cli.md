@@ -14,6 +14,7 @@
 | [`demo`](#demo) | Seed a demo workspace (acme-shop, demo-api) into a data directory. |
 | [`import`](#import) | Bring a markdown setup (project briefs, task registry, task notes, memory notes) into relaybay. Prints the plan; writes nothing without --apply. |
 | [`export`](#export) | Write documents, decisions, notes and the task registry back to the markdown layout. Prints what would change; writes nothing without --apply. |
+| [`desktop`](#desktop) | Start the desktop program: tray icon, board window and the server (needs relaybay[desktop]); 'desktop config' shows or changes its settings. |
 | [`hook`](#hook) | Forward one hook event from stdin (command hook). |
 
 ## `serve`
@@ -103,6 +104,27 @@ Write documents, decisions, notes and the task registry back to the markdown lay
 | `--aliases` | `FILE` | The aliases of the import: a hand-written registry that says the same stays as it is. |
 | `--home` | `HOME` | relaybay data directory. |
 
+## `desktop`
+
+Start the desktop program: tray icon, board window and the server (needs relaybay[desktop]); 'desktop config' shows or changes its settings.
+
+| Option | Value | Meaning |
+|---|---|---|
+| `--background` |  | Start with the window hidden, only the tray icon (the autostart entry uses it). |
+| `--quit` |  | Ask the running program to quit (stops its server); exit 1 when none answers. |
+
+### `desktop config`
+
+Show desktop.toml (data folder, server, autostart) or change it with the options.
+
+| Option | Value | Meaning |
+|---|---|---|
+| `--home` | `HOME` | Data folder for the program and the CLI when neither --home nor RELAYBAY_HOME is given; '-' clears it. Moves nothing. |
+| `--mode` | `embedded\|external` | Server mode. |
+| `--url` | `URL` | Base URL of the external server ('-' clears it). |
+| `--token-file` | `TOKEN_FILE` | File holding the external server's token; copied to external-token (0600) beside desktop.toml. |
+| `--autostart` | `on\|off` | Start the program at login. |
+
 ## `hook`
 
 Forward one hook event from stdin (command hook).
@@ -117,7 +139,7 @@ Forward one hook event from stdin (command hook).
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | A failed setup write, a failed check item (`setup --check`, `doctor`), `demo` refused a data folder that already holds a board, or `import` / `export` has an item refused, in conflict or failed. |
-| `2` | Invalid settings or arguments. |
+| `1` | A failed setup write, a failed check item (`setup --check`, `doctor`), `demo` refused a data folder that already holds a board, or `import` / `export` has an item refused, in conflict or failed; `desktop --quit` found no running program, or a second `desktop` found one that holds the lock but does not answer. |
+| `2` | Invalid settings or arguments; `desktop` without the `desktop` extra. |
 
 `relaybay hook` always exits `0`, so a hook never fails a Claude Code session.

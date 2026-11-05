@@ -95,6 +95,7 @@ nav:
           - Policy as data: design/0013-policy-as-data.md
           - Task plan: design/0014-task-plan.md
           - Intake and autonomy: design/0015-intake-and-autonomy.md
+          - Desktop program: design/0016-desktop-program.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
       - Former plan: PLAN.md

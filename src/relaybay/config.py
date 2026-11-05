@@ -1,14 +1,18 @@
 """Settings: defaults → `config.toml` in the home directory → `RELAYBAY_*` env → CLI flags."""
 
 import copy
+import logging
 import os
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 import platformdirs
 
+from relaybay.desktop import settings as desktop_settings
+from relaybay.desktop.settings import DesktopSettings
 from relaybay.domain.digest_limits import (
     BUDGET_MAX,
     BUDGET_MIN,
@@ -37,6 +41,8 @@ from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
 from relaybay.domain.usage import DEFAULT_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS
 from relaybay.policy import PolicyFile
 
+log = logging.getLogger(__name__)
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
@@ -63,7 +69,7 @@ class Settings:
             "Data directory: `relaybay.sqlite`, `token`, `config.toml`.",
             env="RELAYBAY_HOME",
             flag="--home",
-            default="per-user data dir (`platformdirs`)",
+            default="`data_dir` in `desktop.toml`, else the per-user data dir (`platformdirs`)",
         )
     )
     host: str = field(
@@ -311,6 +317,10 @@ class Settings:
             default="your home directory",
         ),
     )
+    # internal: set from desktop.toml when server_mode = "external" (never for `serve`); the
+    # CLI and the program then talk to that server with the token kept beside desktop.toml.
+    external_url: str = ""
+    external_token_path: Path | None = None
     # internal: the legacy guard_mode / [permission_defaults] as a policy layer, only the keys
     # that config.toml or the environment set (so a preset is not overridden by defaults).
     policy_config: dict[str, Any] = field(default_factory=dict)
@@ -330,6 +340,8 @@ class Settings:
 
     @property
     def token_path(self) -> Path:
+        if self.external_token_path is not None:
+            return self.external_token_path
         return self.home / "token"
 
     @property
@@ -343,6 +355,8 @@ class Settings:
 
     @property
     def base_url(self) -> str:
+        if self.external_url:
+            return self.external_url
         host = self.host
         if host in ("0.0.0.0", "::", ""):
             host = "127.0.0.1"
@@ -375,6 +389,20 @@ ENV_KEYS = tuple(f.name for f in fields(Settings) if f.metadata.get("env") and f
 
 def default_home() -> Path:
     return Path(platformdirs.user_data_dir("relaybay", appauthor=False))
+
+
+def resolve_home(
+    home: Path | None, env: Mapping[str, str], desktop: DesktopSettings
+) -> tuple[Path, str]:
+    """The data folder and where it came from: `--home` > `RELAYBAY_HOME` > `desktop.toml`
+    `data_dir` > the per-user data dir."""
+    if home is not None:
+        return home, "flag"
+    if env.get("RELAYBAY_HOME"):
+        return Path(env["RELAYBAY_HOME"]).expanduser(), "environment"
+    if desktop.data_dir is not None:
+        return desktop.data_dir, "desktop.toml"
+    return default_home(), "default"
 
 
 def _split_list(value: str) -> list[str]:
@@ -535,12 +563,28 @@ def load_settings(
     host: str | None = None,
     port: int | None = None,
     claude_home: Path | None = None,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
+    serving: bool = False,
 ) -> Settings:
+    """`serving`: the settings of a server this process runs (`serve`, the program's embedded
+    server), which ignore desktop.toml's external mode."""
     env = os.environ if environ is None else environ
-    if home is None:
-        home = Path(env["RELAYBAY_HOME"]).expanduser() if env.get("RELAYBAY_HOME") else None
-    settings = Settings(home=(home or default_home()).resolve())
+    folder = desktop_settings.config_dir(env)
+    if serving:
+        # A server never fails over the desktop program's file: keys of a newer version are
+        # skipped, a broken file is a warning and its settings are left out.
+        try:
+            desktop = desktop_settings.load_desktop_settings(folder, ignore_unknown=True)
+        except (ValueError, OSError) as exc:
+            log.warning("ignoring %s: %s", desktop_settings.settings_path(folder), exc)
+            desktop = DesktopSettings()
+    else:
+        desktop = desktop_settings.load_desktop_settings(folder)
+    home, _source = resolve_home(home, env, desktop)
+    settings = Settings(home=home.resolve())
+    if desktop.server_mode == "external" and not serving:
+        settings.external_url = desktop.server_url
+        settings.external_token_path = desktop_settings.external_token_path(folder)
 
     if settings.config_path.is_file():
         with settings.config_path.open("rb") as fh:

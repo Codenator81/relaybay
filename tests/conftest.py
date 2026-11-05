@@ -18,6 +18,17 @@ from relaybay.service import Service
 BASE = "http://127.0.0.1:8765"
 
 
+@pytest.fixture(autouse=True)
+def desktop_config_dir(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Keep every test (and its subprocesses) off the real desktop.toml in the user's config."""
+    folder = tmp_path_factory.mktemp("config")
+    monkeypatch.setenv("RELAYBAY_CONFIG_DIR", str(folder))
+    monkeypatch.setattr("relaybay.desktop.settings.default_config_dir", lambda: folder)
+    return folder
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return load_settings(home=tmp_path, environ={})

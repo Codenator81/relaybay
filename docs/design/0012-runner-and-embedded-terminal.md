@@ -1,6 +1,6 @@
 # 0012 — Runner and embedded terminal (agents inside relaybay)
 
-- Status: **Accepted** (direction), planned for 0.6+ (stage 3). Starts with the "verify before
+- Status: **Accepted** (direction), planned for 0.7+ (stage 3). Starts with the "verify before
   start" checks below.
 - Size: to be estimated after the checks; roughly runner ~3 agent-days, embedded terminal ~3,
   first ACP adapter ~2.

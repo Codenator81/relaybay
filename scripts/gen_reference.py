@@ -48,6 +48,20 @@ def _option(action: argparse.Action) -> tuple[str, str, str]:
     return names, value, _cell(help_text)
 
 
+def _options(command: argparse.ArgumentParser) -> list[str]:
+    """The option table of one command; hidden options and nested commands are left out."""
+    options = [
+        a
+        for a in command._actions
+        if not isinstance(a, argparse._HelpAction | argparse._SubParsersAction)
+        and a.help != argparse.SUPPRESS
+    ]
+    if not options:
+        return ["No options."]
+    lines = ["| Option | Value | Meaning |", "|---|---|---|"]
+    return lines + ["| {} | {} | {} |".format(*_option(a)) for a in options]
+
+
 def cli_page() -> str:
     from relaybay.cli import build_parser
 
@@ -68,12 +82,13 @@ def cli_page() -> str:
     lines += [f"| [`{name}`](#{name}) | {_cell(helps[name])} |" for name in sub.choices]
     for name, command in sub.choices.items():
         lines += ["", f"## `{name}`", "", _cell(helps[name]), ""]
-        options = [a for a in command._actions if not isinstance(a, argparse._HelpAction)]
-        if not options:
-            lines.append("No options.")
-            continue
-        lines += ["| Option | Value | Meaning |", "|---|---|---|"]
-        lines += ["| {} | {} | {} |".format(*_option(a)) for a in options]
+        lines += _options(command)
+        nested = [a for a in command._actions if isinstance(a, argparse._SubParsersAction)]
+        for action in nested:
+            nested_helps = {a.dest: a.help or "" for a in action._choices_actions}
+            for child, parser in action.choices.items():
+                lines += ["", f"### `{name} {child}`", "", _cell(nested_helps[child]), ""]
+                lines += _options(parser)
     lines += [
         "",
         "## Exit codes",
@@ -83,8 +98,9 @@ def cli_page() -> str:
         "| `0` | Success. |",
         "| `1` | A failed setup write, a failed check item (`setup --check`, `doctor`), `demo`"
         " refused a data folder that already holds a board, or `import` / `export` has an item"
-        " refused, in conflict or failed. |",
-        "| `2` | Invalid settings or arguments. |",
+        " refused, in conflict or failed; `desktop --quit` found no running program, or a"
+        " second `desktop` found one that holds the lock but does not answer. |",
+        "| `2` | Invalid settings or arguments; `desktop` without the `desktop` extra. |",
         "",
         "`relaybay hook` always exits `0`, so a hook never fails a Claude Code session.",
     ]
@@ -164,8 +180,34 @@ def config_page() -> str:
             meta["meaning"],
         ]
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
-    lines += ["", "## Example `config.toml`", "", CONFIG_EXAMPLE]
+    lines += ["", "## Example `config.toml`", "", CONFIG_EXAMPLE, *desktop_section()]
     return "\n".join(lines) + "\n"
+
+
+def desktop_section() -> list[str]:
+    from relaybay.desktop.settings import DesktopSettings
+
+    lines = [
+        "",
+        "## Desktop program (`desktop.toml`)",
+        "",
+        "`desktop.toml` lives in the per-user config folder (`platformdirs`: on Windows",
+        "`%LOCALAPPDATA%\\relaybay`, on macOS `~/Library/Application Support/relaybay`, on",
+        "Linux `~/.config/relaybay`), or in the folder `RELAYBAY_CONFIG_DIR` names. The program",
+        "and the CLI both read it; `relaybay desktop config` shows and changes it. Beside it:",
+        "`external-token` (0600, the external server's token) and the program's `desktop.lock`",
+        "and `desktop.ipc`.",
+        "",
+        "The data folder is `--home`, else `RELAYBAY_HOME`, else `data_dir` here, else the",
+        "per-user data dir.",
+        "",
+        "| Key | Default | Meaning |",
+        "|---|---|---|",
+    ]
+    for f in fields(DesktopSettings):
+        cells = [f"`{f.name}`", _default(f), f.metadata["meaning"]]
+        lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
+    return lines
 
 
 # --- MCP -------------------------------------------------------------------
