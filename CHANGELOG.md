@@ -24,6 +24,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Entry points `relaybay-hook` (the hook forwarder) and `relaybay-desktop` (windowed).
 - An icon: `packaging/icons/` (SVG source, PNG, ICO, ICNS, drawn by `make_icons.py`); the board's
   favicon uses it.
+- Frozen builds and installers (design 0016): `packaging/relaybay.spec` (PyInstaller 6.22.3, onedir
+  with `relaybay`, `relaybay-desktop` and `relaybay-hook`; `relaybay.app` on macOS), a per-user
+  Windows installer (Inno Setup 6, no admin rights, optional start at login, user `PATH`), a macOS
+  `.dmg` (arm64, ad-hoc signed, not notarized) and a Linux `.deb` (`/opt/relaybay`,
+  `/usr/bin/relaybay`; tray and browser, no window yet). `THIRD_PARTY_LICENSES.txt` lists what the
+  builds bundle. CI builds all three on every pull request and smoke-tests the frozen and the installed
+  program (`.github/workflows/desktop.yml`); a release attaches them with `SHA256SUMS.txt`.
 
 ## [0.5.0] - 2026-11-05
 

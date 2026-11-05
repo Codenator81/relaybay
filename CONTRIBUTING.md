@@ -75,11 +75,27 @@ uv run python scripts/gen_reference.py           # rewrite docs/reference/*.md
 uv run python scripts/gen_reference.py --check   # what CI runs
 ```
 
+## Desktop builds
+
+The installers are built from a PyInstaller onedir folder; [packaging/README.md](packaging/README.md)
+has the steps per OS. On any OS:
+
+```bash
+uv sync --extra desktop --group build
+uv run --no-sync pyinstaller --noconfirm packaging/relaybay.spec   # dist/relaybay/ (+ relaybay.app)
+uv run --no-sync python scripts/hook_timing.py -- dist/relaybay/relaybay-hook
+```
+
+CI builds and smoke-tests them on Windows, macOS and Linux (`.github/workflows/desktop.yml`). A new
+runtime dependency adds a line to `THIRD_PARTY_LICENSES.txt` (a test checks it against `uv.lock`).
+
 ## Releases
 
 Maintainers only. Set the version in `pyproject.toml` (the only place), run `uv lock`, move
 `[Unreleased]` in `CHANGELOG.md` to `## [x.y.z] - YYYY-MM-DD`, merge, then tag `vx.y.z` on `main`
 and push the tag. `.github/workflows/release.yml` checks that the tag matches the version, builds
 and checks the wheel and sdist (`scripts/check_dist.py`), publishes to PyPI by trusted publishing,
-pushes `ghcr.io/codenator81/relaybay:<version>` and `:latest`, creates the GitHub Release with the
-notes from `CHANGELOG.md` (`scripts/changelog_notes.py`) and deploys the docs.
+pushes `ghcr.io/codenator81/relaybay:<version>` and `:latest`, builds the installers
+(`desktop.yml`), creates the GitHub Release with the notes from `CHANGELOG.md`
+(`scripts/changelog_notes.py`), the wheel, the sdist, the installers and `SHA256SUMS.txt`, and
+deploys the docs.

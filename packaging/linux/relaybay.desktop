@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=relaybay
+GenericName=Agent board
+Comment=Live board and MCP server for Claude Code sessions
+Exec=/opt/relaybay/relaybay-desktop
+Icon=relaybay
+Terminal=false
+Categories=Development;
+StartupNotify=false

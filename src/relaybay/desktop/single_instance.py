@@ -29,6 +29,8 @@ QUIT = "quit"
 ACCEPT_POLL = 0.5
 PEER_TIMEOUT = 2.0
 LINE_MAX = 256
+# Mirrored by AppMutexName in packaging/windows/relaybay.iss.
+APP_MUTEX = "relaybay-desktop"
 
 
 class Lock:
@@ -184,3 +186,19 @@ def notify_running(folder: Path, message: str = RAISE, timeout: float = 5.0) -> 
     except (OSError, ValueError, UnicodeDecodeError) as exc:
         log.info("no running program answered on %s: %s", address, exc)
         return False
+
+
+def hold_app_mutex() -> None:
+    """Windows: create the named mutex the installer waits on (`CheckForMutexes`) after asking
+    the program to quit. The OS releases it when the process exits. A failure only costs the
+    installer that wait, so it is logged and the program starts anyway."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    if not kernel32.CreateMutexW(None, False, APP_MUTEX):
+        log.warning(
+            "could not create the mutex %s: %s", APP_MUTEX, ctypes.WinError(ctypes.get_last_error())
+        )

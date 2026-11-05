@@ -1,0 +1,223 @@
+name: Desktop builds
+
+# Frozen builds (PyInstaller onedir) and installers per OS, with smokes on the frozen output and
+# on the installed program. Called by ci.yml (every pull request) and release.yml (v* tags).
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Expected version; empty takes it from pyproject.toml.
+        type: string
+        default: ""
+      retention-days:
+        description: How long the installers stay as workflow artifacts.
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    # macOS never blocks a pull request or a release: a red macOS build is reported, not fatal.
+    continue-on-error: ${{ matrix.name == 'macos' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest  # arm64
+          - name: linux
+            os: ubuntu-22.04  # glibc 2.35 is the floor of the .deb
+    defaults:
+      run:
+        shell: bash
+    env:
+      PORT: "8799"
+      DESKTOP_PORT: "8798"
+      # The bundle is ad-hoc signed; a signing failure must fail the build, not warn.
+      PYINSTALLER_STRICT_BUNDLE_CODESIGN_ERROR: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - id: version
+        name: Version
+        env:
+          EXPECTED: ${{ inputs.version }}
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$version" ]; then
+            echo "Expected version $EXPECTED, pyproject.toml has $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            echo "BIN=dist/relaybay.app/Contents/MacOS" >> "$GITHUB_ENV"
+          else
+            echo "BIN=dist/relaybay" >> "$GITHUB_ENV"
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then echo "EXE=.exe" >> "$GITHUB_ENV"; fi
+
+      - name: Linux packages for the smokes
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - run: uv sync --locked --extra desktop --group build
+      - name: Frozen build
+        run: uv run --no-sync pyinstaller --noconfirm packaging/relaybay.spec
+
+      - name: Smoke - version
+        run: |
+          got="$("$BIN/relaybay$EXE" --version)"
+          echo "$got"
+          test "$got" = "relaybay ${{ steps.version.outputs.version }}"
+
+      - name: Smoke - server, health and MCP initialize
+        run: |
+          "$BIN/relaybay$EXE" serve --home "$RUNNER_TEMP/smoke" --port "$PORT" &
+          server=$!
+          trap 'kill "$server" 2>/dev/null; wait "$server" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null "http://127.0.0.1:$PORT/healthz" && break
+            sleep 1
+          done
+          curl -sf "http://127.0.0.1:$PORT/healthz"
+          curl -sf -o /dev/null -X POST "http://127.0.0.1:$PORT/mcp" \
+            -H "Authorization: Bearer $(cat "$RUNNER_TEMP/smoke/token")" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+
+      - name: Smoke - hook forwarder time (live server) and silence (dead port)
+        run: |
+          uv run --no-sync python scripts/hook_timing.py --limit-ms 300 -- "$BIN/relaybay-hook$EXE"
+          # For comparison only: the same forwarder from the interpreter.
+          uv run --no-sync python scripts/hook_timing.py --limit-ms 60000 --interpreter
+
+      - name: Smoke - desktop program
+        env:
+          RELAYBAY_CONFIG_DIR: ${{ runner.temp }}/desktop-config
+          RELAYBAY_HOME: ${{ runner.temp }}/desktop-home
+          RELAYBAY_PORT: ${{ env.DESKTOP_PORT }}
+        run: |
+          wrap=()
+          if [ "$RUNNER_OS" = "Linux" ]; then wrap=(xvfb-run -a); fi
+          "${wrap[@]}" "$BIN/relaybay$EXE" desktop --exit-after 10 &
+          program=$!
+          trap 'kill "$program" 2>/dev/null || true' EXIT
+          up=""
+          for _ in $(seq 1 20); do
+            if curl -sf "http://127.0.0.1:$DESKTOP_PORT/healthz"; then up=yes; break; fi
+            sleep 0.5
+          done
+          status=0
+          wait "$program" || status=$?
+          trap - EXIT
+          echo
+          echo "desktop exit $status, healthz up: ${up:-no}"
+          test "$status" = 0 && test "$up" = yes
+
+      - name: Installer - Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          # The installed program runs with a scratch config and data folder on its own port.
+          RELAYBAY_CONFIG_DIR: ${{ runner.temp }}\installed-config
+          RELAYBAY_HOME: ${{ runner.temp }}\installed-home
+          RELAYBAY_PORT: ${{ env.DESKTOP_PORT }}
+        run: |
+          $health = "http://127.0.0.1:$env:RELAYBAY_PORT/healthz"
+          function Test-Up { try { Invoke-RestMethod $health -TimeoutSec 2 | Out-Null; $true } catch { $false } }
+          function Wait-Up {
+            for ($i = 0; $i -lt 60; $i++) { if (Test-Up) { return } ; Start-Sleep 1 }
+            throw "the program never answered on $health"
+          }
+          function Program { Get-Process relaybay-desktop -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$dir\*" } }
+          function Install([string]$log) {
+            $p = Start-Process $setup -Wait -PassThru -ArgumentList '/VERYSILENT', '/CURRENTUSER', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", "/LOG=$log"
+            if ($p.ExitCode -ne 0) { Get-Content $log; throw "setup exited $($p.ExitCode)" }
+            if (-not (Select-String -Path $log -Pattern 'Installation process succeeded' -Quiet)) { Get-Content $log; throw "setup did not complete" }
+          }
+
+          choco install innosetup --version=6.7.1 --allow-downgrade --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DVersion=$env:VERSION" packaging\windows\relaybay.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = "dist\relaybay-$env:VERSION-windows-x64-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "installed"
+
+          Install "$env:RUNNER_TEMP\setup-1.log"
+          $got = & "$dir\relaybay.exe" --version
+          Write-Output $got
+          if ($got -ne "relaybay $env:VERSION") { throw "installed version is $got" }
+          $path = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not ($path -split ';' -contains $dir)) { throw "user PATH lacks $dir" }
+
+          # Upgrade over the running program: setup asks it to quit, installs, starts it again.
+          Start-Process "$dir\relaybay-desktop.exe" -ArgumentList '--background'
+          Wait-Up
+          $before = (Program).Id
+          Install "$env:RUNNER_TEMP\setup-2.log"
+          Wait-Up
+          $after = (Program).Id
+          if (-not $after -or $after -eq $before) { throw "the program was not restarted by the upgrade ($before -> $after)" }
+          Write-Output "upgrade over the running program: process $before replaced by $after"
+
+          # Uninstall while it runs: the uninstaller asks it to quit first.
+          # It copies itself to %TEMP% and returns at once: wait for the files to go.
+          Start-Process "$dir\unins000.exe" -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          for ($i = 0; $i -lt 90 -and (Test-Path "$dir\relaybay.exe"); $i++) { Start-Sleep 1 }
+          if (Program) { throw "the program still runs after the uninstall" }
+          if (Test-Up) { throw "the program's server still answers after the uninstall" }
+          if (Test-Path "$dir\relaybay.exe") { throw "uninstall left $dir\relaybay.exe" }
+          $path = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if ($path -split ';' -contains $dir) { throw "uninstall left $dir in PATH" }
+          Write-Output "installed, upgraded over the running program and uninstalled $setup"
+
+      - name: Installer - macOS
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bash packaging/macos/build_dmg.sh "$VERSION"
+          dmg="dist/relaybay-$VERSION-macos-arm64.dmg"
+          mount="$RUNNER_TEMP/dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          test -L "$mount/Applications"
+          got="$("$mount/relaybay.app/Contents/MacOS/relaybay" --version)"
+          echo "$got"
+          test "$got" = "relaybay $VERSION"
+
+      - name: Installer - Linux
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bash packaging/linux/build_deb.sh "$VERSION"
+          sudo dpkg -i "dist/relaybay_${VERSION}_amd64.deb"
+          got="$(/usr/bin/relaybay --version)"
+          echo "$got"
+          test "$got" = "relaybay $VERSION"
+          test -f /usr/share/applications/relaybay.desktop
+          sudo dpkg -r relaybay
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            dist/relaybay-*-windows-x64-setup.exe
+            dist/relaybay-*-macos-arm64.dmg
+            dist/relaybay_*_amd64.deb
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}

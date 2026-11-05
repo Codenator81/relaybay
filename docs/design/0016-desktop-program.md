@@ -1,7 +1,7 @@
 # 0016 — Desktop program: tray, window, autostart, installers
 
-- Status: **Accepted**, planned for 0.6.0. PR1 (tray, window, autostart, external client mode) is
-  built; the preview behaviour is in [SPEC §13](../SPEC.md#spec-desktop). This design is frozen in
+- Status: **Accepted**, planned for 0.6.0. PR1 (tray, window, autostart, external client mode) and
+  PR2 (frozen builds, installers, CI; see Packaging) are built; the preview behaviour is in [SPEC §13](../SPEC.md#spec-desktop). This design is frozen in
   the last PR of 0.6.
 - Size: four pull requests (below), about 6 agent-days.
 
@@ -33,8 +33,8 @@ runs the same server and shows the same pages.
 | Icon images | Pillow 13.0 (`>=13.0,<14`) | MIT-CMU (HPND) | also draws the icon files at development time |
 | Autostart | own code: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, `~/Library/LaunchAgents/io.github.codenator81.relaybay.plist` (RunAtLoad), `~/.config/autostart/relaybay.desktop` | stdlib | |
 | Single instance | OS file lock (`msvcrt.locking` / `fcntl.flock`) + a line protocol on 127.0.0.1 with an HMAC-SHA256 challenge over a random key, socket timeouts on both sides | stdlib | `multiprocessing.connection` was dropped: its handshake has no timeout and an early close killed the listener thread |
-| Freezing (PR2) | PyInstaller 6, onedir | GPL-2 with the bootloader exception | rejected: Briefcase, PyOxidizer, Nuitka; Qt (about 200 MB) |
-| Installers (PR2) | Inno Setup 6 per user; `.app` + `.dmg` (ad-hoc signed); `.deb` | | AppImage later: its per-run mount path breaks stable hook paths |
+| Freezing | PyInstaller 6.22.3, onedir | GPL-2.0-or-later with the bootloader exception | rejected: Briefcase, PyOxidizer, Nuitka; Qt (about 200 MB) |
+| Installers | Inno Setup 6.7.1 per user; `.app` + `.dmg` (ad-hoc signed); `.deb` | Inno Setup licence (free, commercial use allowed) | AppImage later: its per-run mount path breaks stable hook paths |
 
 ## Settings: `desktop.toml`
 
@@ -127,6 +127,63 @@ nodes radius 10, ring stroke 7, corner 16). The tray uses monochrome variants wi
 (dark figure for a light panel, white for a dark one, 32 px and a 16 px drawing for 100 % scale)
 chosen by the panel theme the OS reports (Windows `SystemUsesLightTheme`, macOS
 `AppleInterfaceStyle`), else the colour icon. Generated files are committed.
+
+### Packaging
+
+Built in PR2; the steps per OS are in `packaging/README.md`.
+
+- **Frozen folder.** `packaging/relaybay.spec`, PyInstaller 6.22.3 (pinned in the `build` dependency
+  group), onedir: three executables over one shared `_internal/` folder. `relaybay` (console) and
+  `relaybay-desktop` (windowed, the icon) each come from their own Analysis of a two-line launcher in
+  `packaging/launchers/`; `relaybay-hook` (console) is a third Analysis of `relaybay.hook_client`
+  alone, with the web, MCP and GUI packages in `excludes` (a test keeps its imports to the standard
+  library). The data files are `collect_data_files("relaybay")` plus `copy_metadata("relaybay")`, so
+  the frozen `--version` is the package's; `LICENSE` and `THIRD_PARTY_LICENSES.txt` go in too. The
+  hooks of `pyinstaller-hooks-contrib` cover uvicorn, pywebview, pythonnet and pystray; no custom
+  hook is needed. `setuptools` and `pkg_resources` are excluded: PyInstaller's own hooks would
+  otherwise collect setuptools' vendored packages into a program that never uses them.
+- **Windows.** `packaging/windows/relaybay.iss`, Inno Setup 6.7.1 (installed by CI with Chocolatey):
+  per user (`PrivilegesRequired=lowest`) into `%LOCALAPPDATA%\Programs\relaybay`, a fixed `AppId`,
+  a Start Menu entry, tasks "Start relaybay at login" (off; it runs
+  `relaybay desktop config --autostart on`, so `desktop.toml` and the Run value agree) and "Add
+  relaybay to PATH for this user" (on). The program holds the named mutex `relaybay-desktop` while
+  it runs (a failure to create it is a logged warning). Setup does not use Inno's `AppMutex`: Inno
+  checks it at start-up with an OK/Cancel box, in an order against the script's own code that is not
+  documented. Instead, after the wizard and before any file is written (`PrepareToInstall`), setup
+  sends `relaybay desktop --quit` to a running program, waits up to 30 s for the mutex to go, and
+  leaves a program that does not answer to the Restart Manager (`CloseApplications`); after the
+  files are in place it starts the new `relaybay-desktop --background` again when one was running.
+  The uninstaller sends the same `--quit` first and stops with a message when the program is still
+  running 30 s later. An upgrade replaces `_internal` as a whole. The uninstaller removes the PATH
+  entry and the Run value when it points into the install folder; the data folder and
+  `desktop.toml` are outside it and stay. `desktop.toml` stays the source of truth for start at
+  login: the uninstaller does not edit it, and a program started with `autostart = true` writes the
+  Run value again (the same healing as after a move), so a reinstall comes back as it was.
+- **macOS.** `BUNDLE` makes `relaybay.app` (`io.github.codenator81.relaybay`, `relaybay-desktop` is
+  the bundle's executable, a Dock icon, ad-hoc signed by PyInstaller, a signing error fails the
+  build); `packaging/macos/build_dmg.sh` makes the `.dmg` with `hdiutil create` and an
+  `Applications` link. arm64 only, not notarized.
+- **Linux.** `packaging/linux/build_deb.sh` on ubuntu-22.04 (glibc 2.35 floor) with `dpkg-deb`:
+  `/opt/relaybay`, `/usr/bin/relaybay`, a desktop entry and the SVG icon; `Depends: libc6 (>= 2.35)`,
+  `Recommends: xdg-utils`. The frozen interpreter cannot import the system's `python3-gi` (built for
+  the system Python), and PyGObject with WebKitGTK is not bundled, so the Linux build has no board
+  window: the tray (pystray's X11 backend) and the board in the browser. A window on Linux needs
+  PyGObject in the build and a check that WebKitGTK from the system loads next to the bundled GTK
+  libraries: later.
+- **Names.** `relaybay-<v>-windows-x64-setup.exe`, `relaybay-<v>-macos-arm64.dmg`,
+  `relaybay_<v>_amd64.deb`; a release adds `SHA256SUMS.txt` over them, the wheel and the sdist.
+- **CI.** `.github/workflows/desktop.yml` (called by `ci.yml` on every pull request, artifacts kept
+  7 days, and by `release.yml`) builds on the three runners and checks the frozen program: the
+  version, `serve` with `/healthz` and an MCP `initialize`, `relaybay-hook` timed against a live
+  local server answering `200 application/json {}` (exit 0 and `{}` on stdout, median of 20 runs at
+  most 300 ms on every OS, the interpreter's time printed beside it) and once against a dead port
+  (exit 0, no output, not timed: Windows retries a refused loopback connect until the hook's
+  0.3 s timeout), `relaybay desktop --exit-after 10` with `/healthz` up meanwhile (under `xvfb-run`
+  on Linux); then the installed one: silent setup, `--version`, user PATH, an upgrade over the
+  running program (it is stopped and started again), a silent uninstall while it runs (process gone,
+  files and PATH entry removed); the mounted `.dmg`; `dpkg -i`. The macOS job may fail without
+  failing the run (`continue-on-error`), and a release goes out without the `.dmg` then; the
+  Windows and Linux installers are required.
 
 ## Pull requests
 

@@ -131,6 +131,15 @@ def test_linux_respects_xdg_config_home(tmp_path: Path, monkeypatch: pytest.Monk
     assert entry.path == tmp_path / "xdg" / "autostart" / "relaybay.desktop"
 
 
+def test_launch_command_frozen_is_the_windowed_executable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    suffix = ".exe" if sys.platform == "win32" else ""
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / f"relaybay{suffix}"))
+    assert launch_command() == [str(tmp_path / f"relaybay-desktop{suffix}"), "--background"]
+
+
 def test_launch_command_from_a_venv(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["-c"])
     command = launch_command()

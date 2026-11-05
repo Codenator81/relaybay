@@ -27,7 +27,8 @@ the `claude mcp add …` command for Claude Code. Docker, Windows/macOS/Linux de
 your coding agent can follow for you:
 [Install](https://codenator81.github.io/relaybay/getting-started/install/) ·
 [Install with your coding agent](https://codenator81.github.io/relaybay/getting-started/agent-install/).
-Something off? `relaybay doctor`.
+Something off? `relaybay doctor`. Installers for Windows, macOS and Linux (a desktop program with a
+tray icon) come with 0.6.0.
 
 **Documentation:** [codenator81.github.io/relaybay](https://codenator81.github.io/relaybay/) ·
 [Specification](docs/SPEC.md) (how it behaves now) · [Roadmap](docs/ROADMAP.md) ·

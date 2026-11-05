@@ -1,0 +1,15 @@
+Package: relaybay
+Version: @VERSION@
+Section: devel
+Priority: optional
+Architecture: amd64
+Maintainer: relaybay contributors
+Installed-Size: @SIZE@
+Depends: libc6 (>= 2.35)
+Recommends: xdg-utils
+Homepage: https://github.com/Codenator81/relaybay
+Description: live board and MCP server for coordinating Claude Code sessions
+ relaybay keeps one board of projects, tasks, stages and reports that every
+ Claude Code session updates over MCP. This package installs the frozen
+ program in /opt/relaybay: the relaybay command (server, setup, doctor), the
+ relaybay-desktop tray program and the relaybay-hook forwarder.
