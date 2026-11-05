@@ -21,7 +21,11 @@
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
     "plan.set", "plan.step_updated", "plan.accepted", "session.todo_updated", "session.message",
     "document.updated", "memory.added", "memory.updated", "block.updated",
-    "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied"
+    "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied",
+    "intake.received", "intake.tied", "intake.answer_received", "intake.answer_cleared",
+    "intake.wake", "intake.forwarded", "intake.proposed", "intake.dismissed",
+    "intake.source_trusted", "intake.source_untrusted",
+    "backlog.added", "backlog.updated", "backlog.planned"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -33,7 +37,10 @@
     "rules.updated", "rules.notice_read", "rules.proposed", "rules.proposal_accepted",
     "rules.proposal_rejected",
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
-    "review.step_rejected"
+    "review.step_rejected",
+    "intake.received", "intake.tied", "intake.answer_received", "intake.answer_cleared",
+    "intake.proposed", "intake.dismissed", "intake.source_trusted", "intake.source_untrusted",
+    "backlog.added", "backlog.updated", "backlog.planned"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -171,6 +178,16 @@
       queueThrottled(document.getElementById("inbox"));
     }
     if (data.kind === "task.stage_changed") notifyAcceptance(data);
+    if (data.kind === "intake.answer_received") notifyAnswer(data);
+    // The backlog page: only its table is live; the add form stays as the user left it.
+    var backlogList = document.getElementById("backlog");
+    if (backlogList) {
+      if (data.kind.indexOf("backlog.") === 0 &&
+          (!live.dataset.project || data.project === live.dataset.project)) {
+        queue(backlogList);
+      }
+      return;
+    }
     // Markup changes only the open viewer; the comment that may follow has its own event.
     if (data.kind.indexOf("annotation.") === 0) {
       if (viewer && viewer.open) window.relaybayAnnotate.onEvent(data);
@@ -276,6 +293,8 @@
         queue(changed(data.key, data.stage));
         break;
       case "report.added":
+      case "intake.answer_received":
+      case "intake.answer_cleared":
       case "session.status_changed":
         queue(card(data.key) || column(data.stage));
         break;
@@ -787,6 +806,24 @@
         window.focus();
         window.location.href = "/p/" + encodeURIComponent(data.project) + "?task=" +
           encodeURIComponent(data.key) + "&tab=review";
+      };
+    } catch (e) {
+      // Some browsers allow notifications only from a service worker; then none is shown.
+    }
+  }
+
+  // "Answer received: <task>": a message from a chat or a mailbox for a task waiting on someone.
+  function notifyAnswer(data) {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    try {
+      var note = new Notification("Answer received: " + data.key, {
+        body: data.key + " · " + (data.source || "intake"),
+        tag: "answer-" + data.key
+      });
+      note.onclick = function () {
+        window.focus();
+        window.location.href = "/p/" + encodeURIComponent(data.project) + "?task=" +
+          encodeURIComponent(data.key);
       };
     } catch (e) {
       // Some browsers allow notifications only from a service worker; then none is shown.

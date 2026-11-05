@@ -70,6 +70,11 @@ Something off? `relaybay doctor`.
   and agents answer with `comment_add` (their replies land in your Inbox). An opt-in
   wake-up hook (`relaybay setup --apply --wake`, Claude Code 2.1.309+) wakes an idle session for a new
   comment.
+- **Intake and backlog** — a watcher you run (Telegram and e-mail examples in `examples/intake/`)
+  posts chat and mail messages; relaybay ties them to the waiting task and marks it "answer
+  received", and only a trusted source on a task with autonomy on lets the agent go on by itself.
+  Findings and ideas wait on the backlog until you plan them
+  ([guide](https://codenator81.github.io/relaybay/how-to/intake/)).
 - **Stands & access** — per project, the local, test and live environments with their base URL and
   how agents reach them (ssh alias, kube context, database host, GitOps repository, log links),
   stored as references only, never secrets; agents' permission level per environment (`none`,
@@ -252,7 +257,9 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.2.0** — sidebar navigation and Inbox, comments to agents, project environments and access,
   policy as data.
 - **0.3.0** — review checklist with screenshots, memory and documents.
-- **Later** — map and usage, rules versioning, intake, agents started from relaybay.
+- **0.4.0** — map and usage, rules versioning, screenshot annotations, documents on the board.
+- **0.5.0** — intake from chats and e-mail with an autonomy switch, the backlog.
+- **Later** — agents started from relaybay.
 
 Details and status: [docs/ROADMAP.md](docs/ROADMAP.md). Designs of upcoming steps are in
 [docs/design/](docs/design/index.md), decisions in [docs/adr/](docs/adr/). relaybay sends no

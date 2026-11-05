@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{%- set scope = backlog_project.name if backlog_project else "All projects" %}
+{% block title %}Backlog · {{ scope }} · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span>{% if backlog_project %}<a class="crumb" href="/p/{{ backlog_project.slug }}">{{ backlog_project.name }}</a><span class="crumb-sep">/</span>{% endif %}<span class="crumb">Backlog</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}"{% if backlog_project %} data-project="{{ backlog_project.slug }}"{% endif %}>
+  <h1>Backlog{% if not backlog_project %} <span class="muted">· all projects</span>{% endif %}</h1>
+  <p class="muted">Findings of sessions and reviews, proposals from intake and your own notes. An item is not a task: <em>To plan</em> creates the task in {{ label("plan") }}.</p>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {%- set base = "/p/" ~ backlog_project.slug ~ "/backlog" if backlog_project else "/backlog" %}
+  <form class="board-tools" method="get" action="{{ base }}" role="search">
+    <select class="board-filter" name="status" aria-label="Status">
+      <option value="">Open (new and later)</option>
+      {% for s in statuses %}<option value="{{ s }}"{% if s == status_filter %} selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+    <input class="board-filter" type="search" name="area" value="{{ area_filter }}" maxlength="60" placeholder="Area" aria-label="Area" list="backlog-areas">
+    <datalist id="backlog-areas">{% for a in areas %}<option value="{{ a }}"></option>{% endfor %}</datalist>
+    <button type="submit" class="btn">Filter</button>
+    {% if filter_qs %}<a class="action" href="{{ base }}">Clear</a>{% endif %}
+  </form>
+  {% include "_backlog.html" %}
+  <details class="panel" id="backlog-add">
+    <summary><h2>Add an item</h2></summary>
+    <form method="post" action="/backlog/new">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <input type="hidden" name="back" value="{{ base }}">
+      {% if backlog_project %}<input type="hidden" name="project" value="{{ backlog_project.slug }}">
+      {% else %}
+      <label class="field"><span>Project</span>
+        <select name="project">{% for p in projects %}<option value="{{ p.slug }}">{{ p.name }}</option>{% endfor %}</select>
+      </label>
+      {% endif %}
+      <label class="field"><span>Title</span><input name="title" required maxlength="200"></label>
+      <label class="field"><span>Area</span><input name="area" maxlength="60" list="backlog-areas" placeholder="e.g. checkout"></label>
+      <label class="field"><span>What <span class="muted">· markdown</span></span><textarea name="body" rows="4"></textarea></label>
+      <div class="form-actions"><button type="submit" class="btn primary">Add</button></div>
+    </form>
+  </details>
+</main>
+{% endblock %}

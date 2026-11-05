@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Intake · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/settings/integrations">Settings</a><span class="crumb-sep">/</span><span class="crumb">Intake</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Intake</h1>
+  {% with tab = "intake" %}{% include "_settings_tabs.html" %}{% endwith %}
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  <section class="panel" id="intake-sources">
+    <h2>Sources</h2>
+    <p class="muted">A watcher you run (a Telegram bot, a mailbox, any chat) posts messages with <code>intake_post</code>. A source starts untrusted: its messages only notify you. Only this page trusts a source; no MCP client can.</p>
+    {% if sources %}
+    <div class="usage-table-wrap"><table class="usage-table">
+      <thead><tr><th>Source</th><th>Kind</th><th>Messages</th><th>New</th><th>Last message</th><th>May wake agents</th></tr></thead>
+      <tbody>
+        {% for s in sources %}
+        <tr id="source-{{ s.slug }}">
+          <td><code>{{ s.slug }}</code></td>
+          <td>{{ s.kind }}</td>
+          <td>{{ s.messages }}</td>
+          <td>{{ s.new }}</td>
+          <td>{% if s.last_message_at %}<time datetime="{{ s.last_message_at }}" data-age>{{ s.last_message_at|age }}</time>{% else %}<span class="muted">never</span>{% endif %}</td>
+          <td>
+            <form method="post" action="/settings/intake/sources/{{ s.slug }}/trust"{% if not s.may_wake %} data-confirm="Let messages from {{ s.slug }} wake agents of projects and tasks with autonomy on?"{% endif %}>
+              <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+              <input type="hidden" name="may_wake" value="{{ '0' if s.may_wake else '1' }}">
+              <span class="{{ 'chip waiting' if s.may_wake else 'muted' }}">{{ "yes" if s.may_wake else "no" }}</span>
+              <button type="submit" class="btn">{{ "Stop waking agents" if s.may_wake else "May wake agents" }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="muted">No sources yet. See the <a href="https://codenator81.github.io/relaybay/how-to/intake/">intake guide</a> for the Telegram and e-mail watchers.</p>
+    {% endif %}
+  </section>
+  <section class="panel" id="intake-projects">
+    <h2>Autonomy per project</h2>
+    <p class="muted">With autonomy on, a message from a trusted source that is tied to a task reaches the bound agent as an external comment, and the agent goes on with the task's next step. The stage never changes by itself. A task can follow its project or be switched on or off in its edit form.</p>
+    {% if projects %}
+    <ul class="inbox-list">
+      {% for p in projects %}
+      <li class="inbox-row" id="autonomy-{{ p.slug }}">
+        <form method="post" action="/settings/intake/projects/{{ p.slug }}">
+          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+          <input type="hidden" name="autonomy" value="{{ '0' if p.autonomy else '1' }}">
+          <span class="inbox-title">{{ p.name }} <span class="muted">{{ p.slug }}</span></span>
+          <label class="field-check"><input type="checkbox" disabled{% if p.autonomy %} checked{% endif %}> Agents may continue by themselves after a trusted message</label>
+          <button type="submit" class="btn">{{ "Turn off" if p.autonomy else "Turn on" }}</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No projects yet.</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

@@ -64,6 +64,7 @@ include = [
     "tests",
     "docs",
     "scripts",
+    "examples",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

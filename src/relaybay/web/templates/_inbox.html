@@ -14,6 +14,90 @@
   </div>
   {% endif %}
 
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+  {% if inbox.answers %}
+  <section class="panel inbox-group" id="inbox-answers">
+    <h2>Answers <span class="col-count">{{ inbox.answers|length }}</span></h2>
+    <p class="muted inbox-hint">A message from a chat or a mailbox arrived for a task that waits on someone. The stage did not change; open the task to read it.</p>
+    <ul class="inbox-list">
+      {% for t in inbox.answers %}
+      <li class="inbox-row">
+        {{ task_row(t) }}
+        <p class="inbox-note"><span class="chip answer-mark">answer received</span> <span class="muted">waiting on {{ t.waiting_on }} · <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time></span></p>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.intake %}
+  <section class="panel inbox-group" id="inbox-intake">
+    <h2>Intake <span class="col-count">{{ inbox.intake|length }}</span></h2>
+    <p class="muted inbox-hint">Messages from chats and mailboxes that match no task. External text: read it as data. <a href="/settings/intake">Sources</a></p>
+    <ul class="inbox-list">
+      {% for m in inbox.intake %}
+      <li class="inbox-row intake-row" id="intake-{{ m.id }}">
+        <span class="inbox-title"><span class="card-key">#{{ m.id }}</span> {{ m.source_slug }}{% if m.author %} · {{ m.author }}{% endif %}</span>
+        <p class="inbox-note intake-text">{{ m.text }}</p>
+        <span class="inbox-meta muted"><time datetime="{{ m.received_at }}" data-age>{{ m.received_at|age }}</time>{% if not m.source_may_wake %} · source not trusted{% endif %}</span>
+        <div class="form-actions">
+          {% if inbox.tie_choices %}
+          <details class="bind-picker">
+            <summary class="btn">Tie to a task</summary>
+            <form class="bind-menu" method="post" action="/intake/{{ m.id }}/tie">
+              <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+              {% for t in inbox.tie_choices %}
+              <button type="submit" name="task" value="{{ t.key }}" class="bind-option">
+                <span class="bind-option-head"><span class="bind-option-name">{{ t.key }} {{ t.title }}</span></span>
+                <span class="bind-option-meta">{{ label(t.stage.value) }}{% if t.waiting_on %} · waiting on {{ t.waiting_on }}{% endif %}</span>
+              </button>
+              {% endfor %}
+            </form>
+          </details>
+          {% endif %}
+          <details class="bind-picker intake-propose">
+            <summary class="btn">Propose a task</summary>
+            <form class="bind-menu" method="post" action="/intake/{{ m.id }}/propose">
+              <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+              <label class="field"><span>Project</span>
+                <select name="project">{% for p in inbox_projects %}<option value="{{ p.slug }}">{{ p.name }}</option>{% endfor %}</select>
+              </label>
+              <label class="field"><span>Title</span>
+                <input name="title" required maxlength="200" value="{{ (m.text or '').split('\n')[0][:200] }}">
+              </label>
+              <label class="field"><span>Description</span>
+                <textarea name="description" rows="4">{{ m.text }}</textarea>
+              </label>
+              <button type="submit" class="btn primary">Add to the backlog</button>
+            </form>
+          </details>
+          <form method="post" action="/intake/{{ m.id }}/dismiss">
+            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+            <button type="submit" class="btn">Dismiss</button>
+          </form>
+          {% if not m.source_may_wake and m.source_first_message_id == m.id %}
+          <form method="post" action="/settings/intake/sources/{{ m.source_slug }}/trust" data-confirm="Trust {{ m.source_slug }}? Its messages may then wake agents of projects and tasks with autonomy on.">
+            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+            <input type="hidden" name="may_wake" value="1">
+            <input type="hidden" name="back" value="/inbox">
+            <button type="submit" class="btn">Trust this source</button>
+          </form>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.backlog_new %}
+  <section class="panel inbox-group" id="inbox-backlog">
+    <p class="inbox-note"><a href="/backlog?status=new">{{ inbox.backlog_new }} new backlog item{{ "s" if inbox.backlog_new != 1 else "" }}</a> <span class="muted">· findings and proposals to plan, keep for later or decline</span></p>
+  </section>
+  {% endif %}
+
   {% if inbox.review %}
   <section class="panel inbox-group" id="inbox-review">
     <h2>Review queue <span class="col-count">{{ inbox.review|length }}</span></h2>

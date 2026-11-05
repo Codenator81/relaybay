@@ -13,17 +13,22 @@ import tempfile
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from relaybay.config import Settings
+from relaybay.domain import backlog
+from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.environments import DEFAULT_SECRET_RULES, SecretRules, find_secrets
 from relaybay.domain.errors import DomainError, NotFoundError
 from relaybay.domain.markdown_layout import (
+    BACKLOG,
     MEMORY_INDEX,
     REGISTRY,
     RETRO,
     Aliases,
+    BacklogRow,
     ParsedNote,
     RegistryRow,
     decision_bullets,
@@ -33,6 +38,7 @@ from relaybay.domain.markdown_layout import (
     folder_from_document,
     load_aliases,
     normalize,
+    parse_backlog,
     parse_note,
     parse_registry,
     place_of,
@@ -63,7 +69,7 @@ DIFF_ITEM_LINES = 40
 DIFF_TOTAL_LINES = 400
 # An edited bullet is one whose text still shares this much with a bullet that left the file.
 SAME_DECISION_RATIO = 0.6
-KINDS = ("project", "document", "task", "task_note", "decision", "note", "file")
+KINDS = ("project", "document", "task", "task_note", "decision", "note", "backlog", "file")
 ACTIONS = ("add", "update", "unchanged", "skipped", "conflict", "refused", "error")
 FAILED = ("conflict", "refused", "error")
 FAILED_NEW = ("refused", "error")  # a task in one of these does not exist for what depends on it
@@ -907,6 +913,84 @@ class _Planner:
                     await self._decisions(slug, None, file, normalize(file.text), None)
             elif place.kind == "doc":
                 await self._doc_file(file, place.project or "", place.name or "")
+            elif place.kind == "backlog":
+                await self._backlog_file(file)
+
+    # The backlog
+
+    async def _backlog_file(self, file: SourceFile) -> None:
+        """One item per row; identity project + date + title slug. A row's decision is the status
+        (planned only records history: no task is created by an import)."""
+        rows, warnings = parse_backlog(file.text, self.aliases)
+        self.warnings.extend(f"{BACKLOG}: {w}" for w in warnings)
+        tracked_ids = {t.target_id for t in self.tracked.values() if t.kind == "backlog"}
+        items = await self.service.all_backlog()
+        current = {b.id: b for b in items}
+        # Items no import wrote (made on the board, or exported from it) match by the same
+        # identity a row has, so an import of an export never adds them again.
+        untracked: dict[str, BacklogItem] = {}
+        for b in sorted(items, key=lambda b: b.id):
+            if b.id not in tracked_ids:
+                key = f"{b.project_slug}/{b.created_at[:10]}/{backlog.title_slug(b.title)}"
+                untracked.setdefault(key, b)
+        seen: set[str] = set()
+        for row in rows:
+            source = f"{BACKLOG}:{row.line}"
+            name = f"{row.project}/{row.date}/{backlog.title_slug(row.title)}"
+            if not SLUG_RE.match(row.project):
+                self.add("backlog", name, source, "error", f"invalid project name {row.project!r}")
+                continue
+            # Known: on the board, or created by this import (projects come first).
+            if row.project not in self.projects and row.project not in self.new_projects:
+                try:
+                    self.projects[row.project] = await self.service.get_project(row.project)
+                except NotFoundError:
+                    self.add("backlog", name, source, "error", f"unknown project {row.project!r}")
+                    continue
+            problem = _backlog_problem(row)
+            if problem:
+                self.add("backlog", name, source, "error", problem)
+                continue
+            if name in seen:
+                self.add("backlog", name, source, "skipped", "the same row again")
+                continue
+            seen.add(name)
+            text = " ".join(filter(None, (row.title, row.area, row.decision)))
+            secret = await self._secret(text, row.project)
+            if secret:
+                self.add("backlog", name, source, "refused", secret)
+                continue
+            status, reason = backlog.parse_decision(row.decision)
+            origin = row.origin if row.origin in backlog.ORIGINS else "owner"
+            values = {"title": row.title, "area": (row.area or "").lower() or None}
+            values |= {"origin": origin, "status": status, "reason": reason}
+            tracked = self.tracked.get(("backlog", name))
+            target = current.get(tracked.target_id) if tracked else None
+            if tracked is None:
+                target = untracked.get(name)
+            target_hash = backlog_hash(target) if target else ""
+            content = text_hash(*(values[k] for k in BACKLOG_FIELDS))
+            if target is not None and target.task_id is not None and status != "planned":
+                detail = f"planned on the board as {target.task_key}; an import never moves it back"
+                self.add("backlog", name, source, "skipped", detail)
+                continue
+            action, detail, record = _decide(
+                exists=target is not None,
+                tracked=tracked,
+                content_hash=content,
+                target_hash=target_hash,
+                same=target is not None and target_hash == content,
+                overwrite=self.overwrite,
+            )
+            payload = {
+                "project": row.project,
+                "date": row.date,
+                "values": values,
+                "target_id": target.id if target else 0,
+            }
+            self.add(
+                "backlog", name, source, action, detail, content, target_hash, record, [], payload
+            )
 
     async def _doc_file(self, file: SourceFile, project: str, name: str) -> None:
         slug = self._valid_project(project, file.rel)
@@ -946,6 +1030,31 @@ class _Planner:
         if slug is not None:
             await self._need_project(slug)
             await self._document(slug, "retro", file, "retro")
+
+
+BACKLOG_FIELDS = ("title", "area", "origin", "status", "reason")
+
+
+def backlog_hash(item: BacklogItem) -> str:
+    return text_hash(item.title, item.area, item.origin, item.status, item.decline_reason)
+
+
+def _backlog_problem(row: BacklogRow) -> str | None:
+    if not row.title:
+        return "the row has no what"
+    if len(row.title) > backlog.TITLE_MAX:
+        return f"what is longer than {backlog.TITLE_MAX} characters"
+    if row.area and len(row.area) > backlog.AREA_MAX:
+        return f"area is longer than {backlog.AREA_MAX} characters"
+    try:
+        date.fromisoformat(row.date)
+    except ValueError:
+        return f"date must be like 2026-11-05, got {row.date!r}"
+    try:
+        backlog.parse_decision(row.decision)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _in_scope(kind: str, item: str, scope: str) -> bool:
@@ -1083,6 +1192,18 @@ async def _apply_note(service: Service, item: Item) -> None:
     await _record(service, item, saved.id, note_hash(saved))
 
 
+async def _apply_backlog(service: Service, item: Item) -> None:
+    p = item.payload
+    if item.action == "add":
+        saved = await service.import_backlog_item(p["project"], p["values"], p["date"])
+    elif item.action == "update":
+        saved = await service.import_backlog_update(p["target_id"], p["values"])
+    else:
+        await _record(service, item, p["target_id"], item.target_hash)
+        return
+    await _record(service, item, saved.id, backlog_hash(saved))
+
+
 async def apply_plan(service: Service, plan: Plan) -> None:
     """Write the plan in order. An item that fails turns into an `error`; the others go on."""
     tasks = {i.item: key for i in plan.items if i.kind == "task" and (key := i.payload.get("key"))}
@@ -1102,6 +1223,8 @@ async def apply_plan(service: Service, plan: Plan) -> None:
                 await _apply_decision(service, item, tasks)
             elif item.kind == "note":
                 await _apply_note(service, item)
+            elif item.kind == "backlog":
+                await _apply_backlog(service, item)
         except (DomainError, sqlite3.Error, OSError) as exc:
             item.action, item.record, item.detail = "error", False, _first_line(str(exc))
 

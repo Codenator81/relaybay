@@ -1240,6 +1240,15 @@ async def test_a_stale_hash_does_not_migrate(
     await service.close()
     db = home / "relaybay.sqlite"
     with contextlib.closing(sqlite3.connect(db)) as conn:
+        for table in ("backlog_item", "intake_thread", "intake_message", "intake_source"):
+            conn.execute(f"DROP TABLE {table}")
+        for table, column in (
+            ("task", "autonomy"),
+            ("task", "answer_received_at"),
+            ("task", "answer_message_id"),
+            ("project", "autonomy"),
+        ):
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
         conn.execute("ALTER TABLE document DROP COLUMN source_url")
         conn.execute("DROP TABLE saved_filter")
         conn.execute("DROP TABLE rule_seen")

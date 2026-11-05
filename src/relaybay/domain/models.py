@@ -18,6 +18,7 @@ class Project:
     pulse: str | None = None  # where the project stands, at most 5 lines
     pulse_at: str | None = None
     pulse_by: str | None = None
+    autonomy: bool = False  # agents may continue by themselves after a trusted message
 
 
 @dataclass(slots=True)
@@ -85,6 +86,17 @@ class Task:
     plan_deviations: int = 0
     plan_now: str | None = None  # title of the step in progress
     plan_now_position: int | None = None
+    autonomy: str = "project"  # project (follows the project's switch), on, off
+    project_autonomy: bool = False
+    answer_received_at: str | None = None  # an external message answered `waiting_on`
+    answer_message_id: int | None = None
+
+    @property
+    def autonomy_on(self) -> bool:
+        """Effective autonomy: the task's own switch, or the project's when it follows it."""
+        if self.autonomy == "project":
+            return self.project_autonomy
+        return self.autonomy == "on"
 
     @property
     def next_step_stale(self) -> bool:
@@ -174,7 +186,7 @@ class Comment:
 
     id: int
     task_id: int
-    author_kind: str  # 'owner' or 'agent'
+    author_kind: str  # 'owner', 'agent' or 'external' (an intake message forwarded to the agent)
     author: str
     session_id: int | None
     body_md: str
@@ -192,6 +204,11 @@ class Comment:
     @property
     def from_owner(self) -> bool:
         return self.author_kind == "owner"
+
+    @property
+    def to_agent(self) -> bool:
+        """Delivered to the bound agent through its hooks: an owner or an external comment."""
+        return self.author_kind != "agent"
 
 
 @dataclass(slots=True)

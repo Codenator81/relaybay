@@ -9,6 +9,7 @@
   <ul class="nav-list">
     <li>{% call item("/inbox", "Inbox", nav.active == "inbox") %}{% with count = nav.inbox_count %}{% include "_inbox_badge.html" %}{% endwith %}{% endcall %}</li>
     <li>{{ item("/", "All boards", nav.active == "boards") }}</li>
+    <li>{{ item("/backlog", "All backlog", nav.active == "backlog" and not nav.project) }}</li>
     <li>{{ item("/map", "Map", nav.active == "map") }}</li>
     <li>{{ item("/usage", "Usage", nav.active == "usage") }}</li>
     <li>{{ item("/activity", "Activity", nav.active == "activity") }}</li>
@@ -27,6 +28,8 @@
           {% for f in nav.saved_filters.get(p.slug, []) %}
           <li>{{ item("/p/" ~ p.slug ~ "?" ~ f.qs, f.name, here and nav.active == "board" and view_qs == f.qs) }}</li>
           {% endfor %}
+          {%- set new_backlog = nav.backlog_counts.get(p.slug, 0) if nav.backlog_counts else 0 %}
+          <li>{% call item("/p/" ~ p.slug ~ "/backlog", "Backlog", here and nav.active == "backlog") %}{% if new_backlog %} <span class="col-count" title="{{ new_backlog }} new">{{ new_backlog }}</span>{% endif %}{% endcall %}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/sessions", "Sessions", here and nav.active == "sessions") }}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/environments", "Stands & access", here and nav.active == "environments") }}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/docs", "Docs & rules", here and nav.active == "docs") }}</li>

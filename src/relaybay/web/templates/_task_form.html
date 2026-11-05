@@ -38,6 +38,15 @@
         </datalist>
       </label>
     </div>
+    <div class="field-row">
+      <label class="field"><span>Autonomy</span>
+        {%- set autonomy = values.get('autonomy', t.autonomy) %}
+        <select name="autonomy">
+          {% for value, text in (("project", "As project"), ("on", "On"), ("off", "Off")) %}<option value="{{ value }}"{% if value == autonomy %} selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select>
+      </label>
+      <p class="field autonomy-reason muted" role="note">{{ autonomy_reason(t) }}</p>
+    </div>
     <label class="field"><span>Next step</span>
       <textarea name="next_step" rows="2">{{ values.get('next_step', t.next_step or '') }}</textarea>
     </label>

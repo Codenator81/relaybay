@@ -1,0 +1,68 @@
+{#- Backlog rows, refetched on backlog.* events. Expects: backlog_project (None: all projects),
+    open_items, history, show_history, filter_qs. -#}
+{%- set base = "/p/" ~ backlog_project.slug ~ "/backlog" if backlog_project else "/backlog" %}
+{%- set view_qs = filter_qs ~ ("&history=1" if filter_qs and show_history else ("history=1" if show_history else "")) %}
+{%- set back = base ~ ("?" ~ view_qs if view_qs else "") %}
+{%- macro row(b, actions) -%}
+<tr id="backlog-{{ b.id }}" class="backlog-row status-{{ b.status }}">
+  <td class="usage-period"><time datetime="{{ b.created_at }}">{{ b.created_at[:10] }}</time></td>
+  {% if not backlog_project %}<td><a href="/p/{{ b.project_slug }}/backlog">{{ b.project_slug }}</a></td>{% endif %}
+  <td>{{ b.area or "" }}</td>
+  <td>
+    <strong>#{{ b.id }} {{ b.title }}</strong>
+    {#- An intake item's body is external text: plain text, never markdown. #}
+    {% if b.body_md %}<details class="backlog-body"><summary class="muted">what</summary>{% if b.origin == "intake" %}<p class="intake-text">{{ b.body_md }}</p>{% else %}<div class="markdown">{{ b.body_md|markdown }}</div>{% endif %}</details>{% endif %}
+  </td>
+  <td>
+    {{ b.origin }}
+    {%- if b.origin_task_key %} · <a href="/p/{{ b.project_slug }}?task={{ b.origin_task_key }}">{{ b.origin_task_key }}</a>{% if b.origin_task_stage %} <span class="stage-pill stage-{{ b.origin_task_stage }}">{{ label(b.origin_task_stage) }}</span>{% endif %}{% endif %}
+    {%- if b.origin_session_name %} · <a href="/sessions">{{ b.origin_session_name }}</a>{% endif %}
+    {%- if b.intake_message_id %} · <span class="muted">message #{{ b.intake_message_id }}</span>{% endif %}
+  </td>
+  <td>
+    {{ b.status }}{% if b.status == "declined" and b.decline_reason %}: <span class="muted">{{ b.decline_reason }}</span>{% endif %}
+    {%- if b.task_key %} · <a href="/p/{{ b.project_slug }}?task={{ b.task_key }}">{{ b.task_key }}</a>{% endif %}
+  </td>
+  {% if actions %}
+  <td class="backlog-actions">
+    <form method="post" action="/backlog/{{ b.id }}/plan" data-confirm="Create a task in {{ label('plan') }} from #{{ b.id }} {{ b.title }}?">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}"><input type="hidden" name="back" value="{{ back }}">
+      <button type="submit" class="btn primary">To plan</button>
+    </form>
+    {% if b.status != "later" %}
+    <form method="post" action="/backlog/{{ b.id }}/later">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}"><input type="hidden" name="back" value="{{ back }}">
+      <button type="submit" class="btn">Later</button>
+    </form>
+    {% endif %}
+    <details class="bind-picker">
+      <summary class="btn">Not doing</summary>
+      <form class="bind-menu" method="post" action="/backlog/{{ b.id }}/decline">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}"><input type="hidden" name="back" value="{{ back }}">
+        <label class="field"><span>Why not</span><input name="reason" required maxlength="500"></label>
+        <button type="submit" class="btn danger">Not doing</button>
+      </form>
+    </details>
+  </td>
+  {% endif %}
+</tr>
+{%- endmacro %}
+<div id="backlog" hx-get="/fragments/backlog?{{ fragment_qs }}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if open_items %}
+  <div class="usage-table-wrap"><table class="usage-table backlog-table">
+    <thead><tr><th>Date</th>{% if not backlog_project %}<th>Project</th>{% endif %}<th>Area</th><th>Title</th><th>Origin</th><th>Status</th><th></th></tr></thead>
+    <tbody>{% for b in open_items %}{{ row(b, True) }}{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <p class="muted">Nothing open on the backlog.</p>
+  {% endif %}
+  {% if history %}
+  <details class="panel backlog-history"{% if show_history %} open{% endif %}>
+    <summary><h2>Planned and declined <span class="col-count">{{ history|length }}</span></h2></summary>
+    <div class="usage-table-wrap"><table class="usage-table backlog-table">
+      <thead><tr><th>Date</th>{% if not backlog_project %}<th>Project</th>{% endif %}<th>Area</th><th>Title</th><th>Origin</th><th>Status</th></tr></thead>
+      <tbody>{% for b in history %}{{ row(b, False) }}{% endfor %}</tbody>
+    </table></div>
+  </details>
+  {% endif %}
+</div>
