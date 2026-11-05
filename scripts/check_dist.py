@@ -11,12 +11,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "src" / "relaybay"
-RUNTIME_DIRS = ("web/templates", "web/static", "db/migrations", "policy")
+RUNTIME_DIRS = ("web/templates", "web/static", "db/migrations", "policy", "desktop")
 
 
 def expected_files() -> set[str]:
-    """Templates, static assets, migrations and the policy schema and presets as paths inside
-    the package."""
+    """Templates, static assets, migrations, the policy schema and presets and the desktop
+    program (its form and icons) as paths inside the package."""
     return {
         path.relative_to(PACKAGE.parent).as_posix()
         for folder in RUNTIME_DIRS

@@ -68,7 +68,16 @@ Ships when a coordinator runs its daily work from relaybay.
 | Intake from chats and e-mail: sources, matching to the waiting task, "answer received", autonomy switch per project and task, example Telegram and e-mail watchers | in progress | [0015](design/0015-intake-and-autonomy.md) |
 | Backlog: findings of sessions and reviews, intake proposals, "To plan" creates the task, `backlog.md` import and export | in progress | [0015](design/0015-intake-and-autonomy.md#backlog) |
 
-## 0.6+ — agents inside
+## 0.6.0 — desktop program
+
+| Item | Status | Design |
+|---|---|---|
+| PR1: tray, window, autostart, external server mode, `desktop.toml` | in progress | [0016](design/0016-desktop-program.md) |
+| PR2: frozen builds and installers for Windows, macOS and Linux | planned | [0016](design/0016-desktop-program.md#pull-requests) |
+| PR2b: update check, in-app update, backup before a new version | planned | [0016](design/0016-desktop-program.md#pull-requests) |
+| PR3: setup and doctor for the installed program, desktop docs | planned | [0016](design/0016-desktop-program.md#pull-requests) |
+
+## 0.7+ — agents inside
 
 | Item | Status | Design |
 |---|---|---|
@@ -88,6 +97,10 @@ Stable MCP contract, complete documentation, a migration path from earlier versi
 operating systems.
 
 ## Later, not planned
+
+- Agent runtime: local process | Docker container (sandbox with the task's repo for `claude -p`,
+  report back, container stopped), run by the program on a manager's MCP call; a separate setting
+  from the server mode. 0.6 starts no containers.
 
 - Optional semantic search (`relaybay[semantic]`): moved out of 0.5.0, no corpus justifies it yet;
   [0008](design/0008-memory-and-context.md) enables it only when it beats full-text search on an

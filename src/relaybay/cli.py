@@ -1,5 +1,5 @@
-"""Command line: `relaybay serve`, `token`, `setup`, `doctor`, `demo`, `import`, `export` and
-`hook`."""
+"""Command line: `relaybay serve`, `token`, `setup`, `doctor`, `demo`, `import`, `export`,
+`desktop` and `hook`."""
 
 import argparse
 import asyncio
@@ -188,6 +188,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exporter.add_argument("--home", type=Path, help="relaybay data directory.")
 
+    desktop = sub.add_parser(
+        "desktop",
+        help="Start the desktop program: tray icon, board window and the server (needs"
+        " relaybay[desktop]); 'desktop config' shows or changes its settings.",
+    )
+    from relaybay.desktop import add_run_arguments
+    from relaybay.desktop.settings import SERVER_MODES
+
+    add_run_arguments(desktop)
+    desktop_sub = desktop.add_subparsers(dest="desktop_command", metavar="config")
+    desktop_config = desktop_sub.add_parser(
+        "config",
+        help="Show desktop.toml (data folder, server, autostart) or change it with the options.",
+    )
+    desktop_config.add_argument(
+        "--home",
+        type=Path,
+        help="Data folder for the program and the CLI when neither --home nor RELAYBAY_HOME is"
+        " given; '-' clears it. Moves nothing.",
+    )
+    desktop_config.add_argument("--mode", choices=SERVER_MODES, help="Server mode.")
+    desktop_config.add_argument("--url", help="Base URL of the external server ('-' clears it).")
+    desktop_config.add_argument(
+        "--token-file",
+        type=Path,
+        help="File holding the external server's token; copied to external-token (0600) beside"
+        " desktop.toml.",
+    )
+    desktop_config.add_argument(
+        "--autostart", choices=("on", "off"), help="Start the program at login."
+    )
+
     hook = sub.add_parser("hook", help="Forward one hook event from stdin (command hook).")
     hook.add_argument("--home", type=Path, help="Data directory.")
     hook.add_argument("--port", type=int, help="Port (default 8765).")
@@ -215,6 +247,23 @@ def running_token_id(settings: Settings) -> str | None:
 
 def cmd_token(settings: Settings, rotate: bool) -> int:
     path = settings.token_path
+    if settings.external_url:
+        # desktop.toml points at an external server: its token is a copy, never generated here.
+        if rotate:
+            print(
+                f"relaybay token: the token belongs to the external server {settings.base_url};"
+                " rotate it there and save the new one with 'relaybay desktop config"
+                " --token-file'.",
+                file=sys.stderr,
+            )
+            return 2
+        if not path.is_file():
+            print(
+                f"relaybay token: {path} is missing: save the external server's token with"
+                " 'relaybay desktop config --token-file <file>'.",
+                file=sys.stderr,
+            )
+            return 2
     token = rotate_token(path) if rotate else load_or_create_token(path)
     print(token)
     print()
@@ -240,6 +289,13 @@ def cmd_token(settings: Settings, rotate: bool) -> int:
 
 
 def cmd_setup(settings: Settings, args: argparse.Namespace) -> int:
+    if settings.external_url and not settings.token_path.is_file():
+        print(
+            f"relaybay setup: {settings.token_path} is missing: save the external server's token"
+            " with 'relaybay desktop config --token-file <file>'.",
+            file=sys.stderr,
+        )
+        return 2
     token = load_or_create_token(settings.token_path)
     paths = claude_paths(settings.claude_home)
     if args.check:
@@ -378,10 +434,85 @@ def cmd_hook(settings: Settings) -> int:
     return hook_client.main(["--url", url, "--token-file", str(settings.token_path)])
 
 
+def cmd_desktop_config(args: argparse.Namespace) -> int:
+    from relaybay.config import resolve_home
+    from relaybay.desktop import settings as desktop
+    from relaybay.desktop.autostart import Autostart, launch_command
+
+    folder = desktop.config_dir()
+    changed = any(
+        value is not None
+        for value in (args.home, args.url, args.mode, args.token_file, args.autostart)
+    )
+    try:
+        current = desktop.load_desktop_settings(folder)
+    except (ValueError, OSError) as exc:
+        if not changed:
+            print(
+                f"relaybay desktop config: {exc}. Fix the file, or write it anew with options.",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"relaybay desktop config: {exc}; the file is written anew from these options.",
+            file=sys.stderr,
+        )
+        current = desktop.DesktopSettings()
+    try:
+        if args.home is not None:
+            current.data_dir = None if str(args.home) == "-" else args.home.expanduser().resolve()
+        if args.url is not None:
+            current.server_url = "" if args.url == "-" else desktop.check_url(args.url)
+        if args.mode is not None:
+            current.server_mode = args.mode
+        token = None
+        if args.token_file is not None:
+            token = args.token_file.expanduser().read_text(encoding="utf-8").strip()
+            if not token:
+                raise ValueError(f"{args.token_file} is empty")
+        if current.server_mode == "external":
+            if not current.server_url:
+                raise ValueError("--mode external needs --url")
+            if token is None and not desktop.external_token_path(folder).is_file():
+                raise ValueError("--mode external needs --token-file (the server's token)")
+    except (ValueError, OSError) as exc:
+        print(f"relaybay desktop config: {exc}", file=sys.stderr)
+        return 2
+    if args.autostart is not None:
+        current.autostart = args.autostart == "on"
+    autostart = Autostart()
+    try:
+        if token is not None:
+            desktop.write_external_token(folder, token)
+        if changed:
+            desktop.save_desktop_settings(folder, current)
+        if args.autostart == "on":
+            autostart.enable(launch_command())
+        elif args.autostart == "off":
+            autostart.disable()
+    except OSError as exc:
+        print(f"relaybay desktop config: {exc}", file=sys.stderr)
+        return 1
+    home, source = resolve_home(None, os.environ, current)
+    token_path = desktop.external_token_path(folder)
+    print(f"Settings file: {desktop.settings_path(folder)}" + ("" if changed else " (unchanged)"))
+    print(f"Data folder:   {home} ({source})")
+    print(f"Server:        {current.server_mode}")
+    if current.server_mode == "external" or current.server_url:
+        print(f"Server URL:    {current.server_url or '-'}")
+        print(f"Server token:  {token_path if token_path.is_file() else 'missing'}")
+    entry = autostart.command()
+    print(f"Autostart:     {'on (' + autostart.location() + ')' if entry else 'off'}")
+    warning = desktop.cleartext_warning(current)
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    return 0
+
+
 def cmd_serve(settings: Settings, reload: bool) -> int:
     import uvicorn
 
-    from relaybay.app import create_app
+    from relaybay.app import create_app, server_options
     from relaybay.logs import uvicorn_log_config
 
     token = load_or_create_token(settings.token_path)
@@ -397,15 +528,7 @@ def cmd_serve(settings: Settings, reload: bool) -> int:
     print(f"MCP:    {settings.base_url}/mcp  (run 'relaybay token' for the setup command)")
     print(flush=True)
 
-    common = {
-        "host": settings.host,
-        "port": settings.port,
-        "proxy_headers": False,
-        "server_header": False,
-        # SSE and MCP streams never finish on their own; do not wait for them on Ctrl+C.
-        "timeout_graceful_shutdown": 2,
-        "log_config": uvicorn_log_config(),
-    }
+    common = {**server_options(settings), "log_config": uvicorn_log_config()}
     if reload:
         # The reloader imports the app in a child process; pass resolved settings via env.
         os.environ["RELAYBAY_HOME"] = str(settings.home)
@@ -427,12 +550,19 @@ def cmd_serve(settings: Settings, reload: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     command = args.command or "serve"
+    if command == "desktop":
+        if args.desktop_command == "config":
+            return cmd_desktop_config(args)
+        from relaybay.desktop.app import run
+
+        return run(background=args.background, exit_after=args.exit_after, quit=args.quit)
     try:
         settings = load_settings(
             home=getattr(args, "home", None),
             host=getattr(args, "host", None),
             port=getattr(args, "port", None),
             claude_home=getattr(args, "claude_home", None),
+            serving=command == "serve",
         )
     except (ValueError, OSError) as exc:
         if command == "hook":

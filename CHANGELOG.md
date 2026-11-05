@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Desktop program, preview (design 0016): `relaybay desktop` shows the board in a window of the
+  system web view with a tray icon (Open board, Open in browser, Restart server, Logs, Settings, Quit)
+  and runs the server in the same process; closing the window hides it to the tray. One program per
+  user: a second start shows the running window, `relaybay desktop --quit` stops it. Start at login
+  (Windows Run key, macOS LaunchAgent, Linux XDG autostart), `--background` starts hidden. Logs go to
+  `<data dir>/logs/relaybay.log` (rotating, login token redacted). Needs the optional extra:
+  `relaybay[desktop]` (pywebview, pystray, Pillow).
+- `desktop.toml` in the per-user config folder (or `RELAYBAY_CONFIG_DIR`), shown and changed with
+  `relaybay desktop config` or the program's Settings window: `data_dir` (the data folder when neither
+  `--home` nor `RELAYBAY_HOME` is set; nothing is moved), `autostart`, and an external server mode
+  (`server_mode = "external"`, `server_url`, token in `external-token`) that the program and the CLI
+  (`token`, `hook`, `setup`, `doctor`) use; `relaybay serve` ignores it.
+- Entry points `relaybay-hook` (the hook forwarder) and `relaybay-desktop` (windowed).
+- An icon: `packaging/icons/` (SVG source, PNG, ICO, ICNS, drawn by `make_icons.py`); the board's
+  favicon uses it.
+
 ## [0.5.0] - 2026-11-05
 
 Intake: messages from a chat or a mailbox come in through a watcher over MCP, are tied to the task

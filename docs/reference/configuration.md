@@ -10,7 +10,7 @@ stops `relaybay serve` with a message that names the key.
 
 | Key (`config.toml`) | Default | Environment | Flag | Meaning |
 |---|---|---|---|---|
-| — | per-user data dir (`platformdirs`) | `RELAYBAY_HOME` | `--home` | Data directory: `relaybay.sqlite`, `token`, `config.toml`. |
+| — | `data_dir` in `desktop.toml`, else the per-user data dir (`platformdirs`) | `RELAYBAY_HOME` | `--home` | Data directory: `relaybay.sqlite`, `token`, `config.toml`. |
 | `host` | `127.0.0.1` | `RELAYBAY_HOST` | `--host` | Bind address. Anything but loopback prints a warning. |
 | `port` | `8765` | `RELAYBAY_PORT` | `--port` | Port. |
 | `allowed_hosts` | `[]` | `RELAYBAY_ALLOWED_HOSTS` | — | Extra names accepted in the `Host` header (LAN names); the environment variable is comma-separated. |
@@ -72,3 +72,22 @@ sizes = ["S", "M", "L"]
 test = [{ kind = "report_since_stage_change" }]
 done = [{ kind = "field_present", field = "progress" }]
 ```
+
+## Desktop program (`desktop.toml`)
+
+`desktop.toml` lives in the per-user config folder (`platformdirs`: on Windows
+`%LOCALAPPDATA%\relaybay`, on macOS `~/Library/Application Support/relaybay`, on
+Linux `~/.config/relaybay`), or in the folder `RELAYBAY_CONFIG_DIR` names. The program
+and the CLI both read it; `relaybay desktop config` shows and changes it. Beside it:
+`external-token` (0600, the external server's token) and the program's `desktop.lock`
+and `desktop.ipc`.
+
+The data folder is `--home`, else `RELAYBAY_HOME`, else `data_dir` here, else the
+per-user data dir.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `data_dir` | unset: the per-user data dir | Data folder (an absolute path) for the program and the CLI when neither `--home` nor `RELAYBAY_HOME` is given. Pointing it at another folder moves nothing. |
+| `autostart` | `false` | Start the program at login (hidden, tray icon only). Each start rewrites the entry with the current executable. |
+| `server_mode` | `embedded` | `embedded`: the program runs the server itself. `external`: it opens `server_url` with the token in `external-token`, and the CLI (`token`, `hook`, `setup`, `doctor`) talks to that server too; `relaybay serve` ignores it. Plain `http://` to another machine warns: the token travels in clear text. |
+| `server_url` | `''` | Base URL of the external server (`http://` or `https://`). |
