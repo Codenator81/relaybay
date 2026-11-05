@@ -61,7 +61,7 @@ Ships when a coordinator runs its daily work from relaybay.
 | Ctrl+K quick switcher, saved filters | done | [0004](design/0004-navigation.md) |
 | Project documents in the database (SPEC, STATUS, TASK) and moving a markdown coordinator setup over | done | [0011](design/0011-docs-in-database.md) |
 
-## 0.5.0 — intake
+## 0.5.0 — intake (released 2026-11-05)
 
 | Item | Status | Design |
 |---|---|---|
