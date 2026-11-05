@@ -512,7 +512,9 @@ def test_desktop_loop_survives_a_failure_and_caps_the_wait(
     controller.update_loop()
     assert calls == [1, 1]  # the loop went on after the first failure
     assert waits[0] == updates.START_DELAY
-    assert waits[1:] == [threading.TIMEOUT_MAX, threading.TIMEOUT_MAX]
+    # The cap is the platform's: Windows allows about 49 days, POSIX far more than the hours set.
+    capped = min(10**6 * 3600, threading.TIMEOUT_MAX)
+    assert waits[1:] == [capped, capped]
 
 
 def test_defaults_are_not_written_so_an_older_program_reads_the_file(tmp_path: Path) -> None:
