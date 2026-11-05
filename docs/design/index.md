@@ -16,7 +16,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0008 | [Memory and context](0008-memory-and-context.md) | Accepted (11.6a, 11.6b built) | 0.3.0 |
 | 0009 | [Screenshot annotations](0009-screenshot-annotations.md) | Implemented (unreleased) | 0.4.0 |
 | 0010 | [Map and Usage](0010-map-and-usage.md) | Implemented | 0.4.0 |
-| 0011 | [Project documents in the database](0011-docs-in-database.md) | Accepted (scope) | 0.4.0 |
+| 0011 | [Project documents in the database](0011-docs-in-database.md) | Implemented (unreleased) | 0.4.0 |
 | 0012 | [Runner and embedded terminal](0012-runner-and-embedded-terminal.md) | Accepted (direction) | 0.6+ |
 | 0013 | [Policy as data](0013-policy-as-data.md) | Implemented (unreleased) | 0.2.0 |
 | 0014 | [Task plan and checkpoints](0014-task-plan.md) | Implemented (unreleased) | 0.3.0 |

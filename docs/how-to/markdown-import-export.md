@@ -28,7 +28,7 @@ at.
 | File | Becomes |
 |---|---|
 | `projects/<slug>.md` | The project (created if missing, named after the first `# Heading`) and its document `brief`: the whole file, contacts included. Bullets under `## Decisions` become project decisions with the source `message:import <path>`. |
-| `projects/<slug>/docs/<doc>.md` | Document `<doc>`. The kind comes from the name: `spec`, `status`, `runbook`, `adr`, anything else `doc`. |
+| `projects/<slug>/docs/<doc>.md` | Document `<doc>`. The kind comes from the name: `spec`, `status`, `task`, `brief`, `runbook`, `adr`, `retro`, anything else `doc`. |
 | `TASKS.md` | Tasks. Columns: project, task (the title), stage, waiting on, next step, document, and an optional ref. |
 | `projects/<slug>/tasks/<ref>/TASK.md` | The matching task's description (the `## Task` section, else the first paragraph), its `## Decisions` bullets as task decisions, and the whole file as document `task-<ref>`, linked through the task's document field as `relaybay://doc/<slug>/task-<ref>`. A folder with no registry row creates the task in stage plan. |
 | `memory/<name>.md` | A global note: title from `name` or the first heading, kind from `metadata.type` (`user`, `feedback`, `project`, `reference`; anything else is `reference`), the `description` as the first line of the body if it is not already, `[[links]]` kept in the note's links. `metadata.role` makes it a role note. |
@@ -104,6 +104,9 @@ field alone).
 
 A note's kind and role stay as they were created. Removing a row or a file removes nothing.
 
+A document that lives in a repository (it has a `source_url` on the board) is not taken from the
+folder: a changed file of it is `skipped`, also with `--overwrite`. Change it in its repository.
+
 ## Conflicts
 
 The board is never overwritten silently. When a target changed since its last import, or exists on
@@ -140,7 +143,8 @@ relaybay export ./notes            # what would change
 relaybay export ./notes --apply    # write it
 ```
 
-Export writes documents, current and superseded decisions (`projects/<slug>/decisions.md`), current
+Export writes documents (a document that lives in a repository only when it has text of its own),
+current and superseded decisions (`projects/<slug>/decisions.md`), current
 notes and the task registry to the same layout. A document goes back to the file it was imported from.
 It reads a copy of the database, so it changes nothing on the board. The output is deterministic
 (sorted, no times but the stored ones), so git diffs stay small, and an import of an export changes
@@ -188,6 +192,8 @@ schtasks /Create /TN "relaybay export" /SC DAILY /ST 06:00 /TR "relaybay export 
 Commit the folder afterwards if you want the history in git.
 
 ## Moving a coordinator over
+
+The full walk-through: [Coordinate many projects](coordinator.md#move-a-markdown-coordinator-over).
 
 1. Dry run, fix what is refused, map your column and stage names with `--aliases`.
 2. Apply. Check the board and **Docs & rules** of a project or two.

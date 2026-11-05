@@ -1371,6 +1371,33 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .diff .diff-del { background: rgb(201 42 42 / 14%); }
 .diff .diff-hunk { color: var(--muted); }
 .diff .diff-file { color: var(--muted); font-weight: 600; }
+.doc-kind { margin: 12px 0 4px; font-size: 14px; text-transform: capitalize; }
+.doc-add > summary { cursor: pointer; }
+.doc-add[open] > summary { margin-bottom: 10px; }
+.section-edit { margin-left: 6px; font-size: 12px; font-weight: 400; }
+.doc-source { overflow-wrap: anywhere; }
+.doc-link-mark {
+  padding: 0 6px;
+  border: 1px dashed var(--warn);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.doc-current-text {
+  max-height: 24em;
+  overflow: auto;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.doc-edit-form textarea { font-family: var(--mono); font-size: 13px; }
+.task-doc > summary { cursor: pointer; }
+.task-doc > summary h2 { display: inline; }
+.task-doc .doc-body { max-height: 32em; overflow: auto; }
 
 /* --- Map ------------------------------------------------------------------ */
 

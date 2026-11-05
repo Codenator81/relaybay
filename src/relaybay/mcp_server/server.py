@@ -945,14 +945,30 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         ] = None,
         kind: Annotated[
             str | None,
-            Field(description="spec, status, brief, runbook, adr… (default doc)."),
+            Field(
+                description="spec, status, task, brief, runbook, adr, retro or your own"
+                " (default doc)."
+            ),
         ] = None,
+        source_url: Annotated[
+            str | None,
+            Field(
+                description="http(s) link when the document lives in a repository: the board"
+                " links there and later writes need force; '-' unlinks."
+            ),
+        ] = None,
+        force: Annotated[
+            bool, Field(description="Write a document that lives in a repository anyway.")
+        ] = False,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
         """Write a new version of a project document (base_version 0 creates it). If it changed
-        since you read it, nothing is saved and the current text comes back to merge."""
+        since you read it, nothing is saved and the current text comes back to merge. A task's
+        document is `task-<ref>`; point the task at it with task_update(doc_path=
+        'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body
+        '-' (no text of its own)."""
         saved = await run(
             service.update_document(
                 project,
@@ -963,6 +979,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 section=section or None,
                 title=title or None,
                 kind=kind or None,
+                source_url=source_url or None,
+                force=force,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,

@@ -634,6 +634,7 @@ def documents(project: Project, items: list[Document]) -> str:
     lines.extend(
         f"- {d.slug} — {d.title} ({d.kind}, version {d.version},"
         f" updated {d.updated_at[:16]}Z) relaybay://doc/{project.slug}/{d.slug}"
+        + (f" · lives in the repository: {d.source_url}" if d.source_url else "")
         for d in items
     )
     return "\n".join(lines)
@@ -653,7 +654,8 @@ def document(doc: Document, text: str, section: str | None) -> str:
     )
     anchors = [s.anchor for s in sections(doc.body)] if not section else []
     tail = [f"\n<!-- sections: {', '.join(anchors)} -->"] if anchors else []
-    return "\n".join([head, text, *tail])
+    source = [f"<!-- lives in the repository: {doc.source_url} · doc_update needs force -->"]
+    return "\n".join([head, *(source if doc.source_url else []), text, *tail])
 
 
 def document_saved(doc: Document) -> str:

@@ -390,7 +390,7 @@ A project document as markdown (or one section of it), with its current version 
 
 ### `doc_update`
 
-Write a new version of a project document (base_version 0 creates it). If it changed since you read it, nothing is saved and the current text comes back to merge.
+Write a new version of a project document (base_version 0 creates it). If it changed since you read it, nothing is saved and the current text comes back to merge. A task's document is `task-<ref>`; point the task at it with task_update(doc_path= 'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body '-' (no text of its own).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -401,7 +401,9 @@ Write a new version of a project document (base_version 0 creates it). If it cha
 | `base_version` | integer | yes | The version you read (doc_get shows it); 0 creates the document. |
 | `section` | string or null | no | Replace only this section (its anchor). |
 | `title` | string or null | no | Title; default: the first '# ' heading. |
-| `kind` | string or null | no | spec, status, brief, runbook, adr… (default doc). |
+| `kind` | string or null | no | spec, status, task, brief, runbook, adr, retro or your own (default doc). |
+| `source_url` | string or null | no | http(s) link when the document lives in a repository: the board links there and later writes need force; '-' unlinks. |
+| `force` | boolean | no | Write a document that lives in a repository anyway. Default: `False`. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

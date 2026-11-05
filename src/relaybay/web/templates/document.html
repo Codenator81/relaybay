@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {#- One project document. Expects: project, doc (with shown_version and author), body_html,
-    sections (of the shown text), versions (newest first). -#}
+    sections (of the shown text), versions (newest first), edit_url (None for an older version
+    or a document that lives in a repository), optional message. -#}
 {%- macro version_select(name, selected) -%}
 <select name="{{ name }}">
   {% for v in versions %}<option value="{{ v.version }}"{% if v.version == selected %} selected{% endif %}>v{{ v.version }}</option>{% endfor %}
@@ -13,7 +14,12 @@
   <div class="page-head">
     <h1>{{ doc.title }}</h1>
     <span class="muted doc-meta"><code>{{ doc.slug }}</code> · {{ doc.kind }} · {% if doc.shown_version == doc.version %}version {{ doc.version }}{% else %}<strong>version {{ doc.shown_version }}</strong> of {{ doc.version }} · <a href="/p/{{ project.slug }}/docs/{{ doc.slug }}">current</a>{% endif %} · by {{ doc.author }}</span>
+    {% if edit_url %}<a class="btn" href="{{ edit_url }}">Edit</a>{% endif %}
   </div>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if doc.source_url %}{% set repo_href = doc.source_url|http_url %}
+  <p class="panel doc-source">Lives in the repository: {% if repo_href %}<a href="{{ repo_href }}" target="_blank" rel="noopener noreferrer">{{ doc.source_url }}</a>{% else %}<code>{{ doc.source_url }}</code>{% endif %}. Change it there; the board does not edit it.</p>
+  {% endif %}
   {% if sections %}
   <nav class="panel doc-toc" aria-label="Sections">
     <h2>Sections</h2>
@@ -22,7 +28,7 @@
     </ul>
   </nav>
   {% endif %}
-  <article class="panel markdown doc-body">{{ body_html }}</article>
+  {% if doc.body or not doc.source_url %}<article class="panel markdown doc-body">{{ body_html }}</article>{% endif %}
 
   <section class="panel" id="history">
     <h2>History <span class="col-count">{{ versions|length }}</span></h2>

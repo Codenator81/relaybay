@@ -551,6 +551,17 @@ def doc_links(*texts: str | None) -> list[DocLink]:
     return list(dict.fromkeys(DocLink(m[1], m[2], m[3]) for m in found))
 
 
+def doc_link(value: str | None) -> DocLink | None:
+    """`value` as a document link when it is exactly one (a task's document field)."""
+    m = _DOC_LINK_RE.fullmatch((value or "").strip())
+    return DocLink(m[1], m[2], m[3]) if m else None
+
+
+def doc_link_spans(text: str) -> list[tuple[int, int, DocLink]]:
+    """(start, end, link) of each document link in `text`, in order."""
+    return [(m.start(), m.end(), DocLink(m[1], m[2], m[3])) for m in _DOC_LINK_RE.finditer(text)]
+
+
 @dataclass(slots=True)
 class TaskData:
     task: Task

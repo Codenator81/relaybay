@@ -13,6 +13,7 @@ from relaybay.domain.switcher import fuzzy_score
 from relaybay.security import CSRF_FIELD, csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, run_in_app
+from tests.test_migrations import LATEST
 
 DESKTOP = "local_00000000-0000-0000-0000-00000000000d"
 HTMX = {"HX-Request": "true"}
@@ -196,7 +197,7 @@ async def test_upgrade_adds_the_filter_table_and_project_removal_cascades(tmp_pa
 
 
 async def test_migrate_is_idempotent(service: Service) -> None:
-    assert await migrate(service._write_conn) == 19
+    assert await migrate(service._write_conn) == LATEST
 
 
 # --- board -------------------------------------------------------------------------------------

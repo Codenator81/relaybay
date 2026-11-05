@@ -357,6 +357,10 @@ class _Planner:
             same=current is not None and text == body,
             overwrite=self.overwrite,
         )
+        if current is not None and current.source_url and action in ("update", "conflict"):
+            detail = f"lives in the repository ({current.source_url}); change it there"
+            self.add("document", name, file.rel, "skipped", detail)
+            return
         diff = []
         if current and action in ("update", "conflict"):
             diff = diff_lines(text, body, f"{name} (board)", file.rel)

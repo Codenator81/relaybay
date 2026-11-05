@@ -9,6 +9,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Project documents in the database (design 0011, migration `0020_document_source`, additive): the
+  well-known kinds `spec`, `status`, `task`, `brief`, `runbook`, `adr`, `retro` (others stay free
+  text), grouped by kind on Docs & rules; import names a `docs/<doc>.md` file after them too. The board edits a document, whole or one section from its
+  heading, with a required reason through `doc_update`'s optimistic locking; a conflict keeps the
+  typed text and shows the current one to merge. **New document** on Docs & rules.
+- `relaybay://doc/<project>/<doc>#<anchor>` in a task's description, progress, reports and comments
+  becomes a link to that section on the board; a missing section links to the document with a mark.
+  A task whose document field is such a link shows the document or section in the task dialog, with
+  a link to its history.
+- Documents that live in a repository: `doc_update(source_url=...)` (http or https) links one; the
+  board shows "lives in the repository" and does not edit it, `doc_update` refuses it without
+  `force`, export leaves it out when it has no text, import skips a changed file of it. The demo has a
+  spec section linked from a task and a runbook that lives in a repository.
+- How-to: moving a coordinator's markdown setup over, step by step.
+
 - Rules versions (design 0002 1.5b-c, migration `0018_rule_versions`, additive): `rule_set`,
   `rule_version`, `rule_proposal`, `rule_seen`. The rules from `config.toml` and each `project_rules`
   row become version 1 at the first start; an edited `[rules]` table becomes a new global version with
@@ -59,6 +74,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `tracker_url` and the new `source_url` refuse control and invisible characters (NUL,
+  bidi overrides, zero-width), so a link cannot read as something other than where it goes.
 - The viewer's image no longer collapses on phones, where hidden arrows moved it out of its grid
   cell.
 

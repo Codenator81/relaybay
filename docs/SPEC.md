@@ -358,7 +358,7 @@ posts; events `filter.saved`, `filter.deleted`.
 | Usage | `/usage` | Tokens per session, model, project, day and week ([below](#spec-usage)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
-| Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)). |
+| Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/edit[?section=]`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)); editing a document ([§8](#spec-documents-edit)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Notifications | `/settings/notifications` | Browser notifications: state and the button that asks for the permission ([below](#spec-board-notify)). |
 | Screenshot | `/files/<id>` | One stored image behind the board cookie ([§9](#spec-security)). |
@@ -393,7 +393,8 @@ dialog on its Plan tab.
 
 **Task dialog / page** shows every field (stage with note, waiting on, next step, branch, tracker,
 document path, updated time and version), description and progress in full, the latest reports
-with state and size badges, decisions, the bound session with its hook status and last activity,
+with state and size badges (document links in the texts point at their sections,
+[§8](#spec-documents-links)), the linked document's panel, decisions, the bound session with its hook status and last activity,
 "Open in desktop" and "Copy link", the session binding history, the tracker history, an
 **Unbind session** button (with confirmation), a session picker (**Bind a session** menu, one click binds; title first, kind, id and status small: the project's sessions
 first, then the others, most recently seen first; the same binding history and
@@ -1443,6 +1444,52 @@ its heading and everything until the next heading of the same or a higher level.
 the new text replaces that section: starting with a heading it replaces the heading too,
 otherwise only the text under it. A diff between any two versions is `difflib.unified_diff`.
 
+<a id="spec-documents-kinds"></a>
+
+**Kinds.** The well-known kinds are `spec`, `status`, `task`, `brief`, `runbook`, `adr` and `retro`;
+any other kind is free text (default `doc`). Documents are free markdown: no section is structured,
+and decisions have their own table ([below](#spec-memory-decisions)). A task's document is named
+`task-<ref>` (import makes it so); a task created on the board or through MCP gets one with
+`doc_update` and `task_update(doc_path="relaybay://doc/<project>/task-<ref>")`.
+
+<a id="spec-documents-repo"></a>
+
+**Documents that live in a repository.** `document.source_url` (an http or https link, at most 500
+characters, secret-scanned) marks a document whose source is a repository. `doc_update` sets it with
+`source_url` and removes it with `"-"`; a write to a linked document is refused without `force`, the
+error naming the link, and so is body `"-"` on an existing document (it would drop its text). Like
+`tracker_url`, the link may hold no control or invisible character (Unicode `Cc`, `Cf`). A linked document may have no text of its own (`body` `"-"`, stored as an
+empty version); an unlinked one may not. The board shows "lives in the repository" with the link and no
+edit, `doc_get` and `doc_list` name the link, export leaves a linked document without text out of the
+layout (with text it is written as usual), and import lists a changed file of a linked document as
+`skipped` ("lives in the repository"), also with `--overwrite`.
+
+<a id="spec-documents-edit"></a>
+
+**Editing on the board.** The document page has **Edit** (the whole markdown) and an `edit` link at
+each heading that starts a section (that section only, `?section=<anchor>`), neither for an older
+version or a linked document. Heading ids and edit links come from the section list above, matched
+by line: a heading it does not count (setext, inside a quote) gets no id and no edit link. The form holds the text, a required reason and the base version; a save goes through
+`doc_update` with author `owner`, from a signed-in browser only (board cookie and CSRF, no Bearer).
+A conflict answers 409 with the typed text and reason kept, the current text (or section) shown to
+merge and the base version moved to the current one, both from one read, so the next save is the
+merge; a section that is gone by then turns the form into a whole-document edit, with a note; another refusal
+answers 400 with the text kept. **New document** on Docs & rules creates one (name, kind, title,
+optional repository link, text, reason) the same way.
+
+<a id="spec-documents-links"></a>
+
+**Links to sections.** `relaybay://doc/<project>/<doc>` with an optional `#<anchor>`, in a task's
+description, progress, reports and comments, becomes a link to `/p/<project>/docs/<doc>#<anchor>` when
+the board renders them, written as plain text or as a markdown link; inside a code span it stays code.
+An anchor compares without case; a missing section links to the document and gets the mark
+`no such section`, a missing document stays text with `no such document`. Only this scheme is touched, the
+renderer keeps raw HTML off, and the target comes from the slug and anchor characters the pattern
+allows. Links are resolved on render: one read per linked document per page, whatever the number of
+links. A task whose document field is exactly such a link shows it as a link in the task dialog and a
+collapsible panel with the document (or the section; the whole document when the section is missing)
+and a link to its history; any other value of the field is shown as text, never fetched or opened.
+
 <a id="spec-memory-decisions"></a>
 
 **Decisions** carry `scope` (`task` when a task is set, else `project`), a source (`report`,
@@ -1502,7 +1549,8 @@ notes and decisions are left out unless asked for.
 
 **Docs & rules page** (`/p/<slug>/docs`): a search box over the index; the project's pulse with its
 age and stale mark ([below](#spec-digest-pulse)); the project's documents
-(title, name, kind, version, last change); decisions (current, superseded ones collapsed with
+grouped by kind, the well-known kinds first, then the others by name (title, name, version, last
+change, "lives in the repository"), and **New document** ([above](#spec-documents-edit)); decisions (current, superseded ones collapsed with
 "superseded by #n"); memory notes of the project plus global and role notes (superseded ones
 collapsed); blocks of the project and global ones, each with an edit form for the owner (text,
 description, limit, owner-only; CSRF and the board cookie like other forms, a refused write keeps
@@ -1616,8 +1664,8 @@ decisions, notes and tasks and back. Guide with the layout and examples:
 
 **Mapping.** `projects/<slug>.md`: the project (created if missing) and document `brief`; bullets
 under a `## Decisions` heading become project decisions with the source `message:import <path>`.
-`projects/<slug>/docs/<doc>.md`: document `<doc>`, kind `spec`, `status`, `runbook` or `adr` from the
-name, else `doc`. `TASKS.md`: one task per row of every table with a project and a task column, with
+`projects/<slug>/docs/<doc>.md`: document `<doc>`, its kind the name when that is a well-known kind
+([above](#spec-documents-kinds)), else `doc`. `TASKS.md`: one task per row of every table with a project and a task column, with
 the columns stage, waiting on, next step, document and ref. The leading stage word (up to three words
 are tried) goes through an alias map and the rest, without one leading separator, is the stage note;
 an unknown word gives stage `plan`, the whole text as the note and a warning. `--aliases <file>` adds
@@ -1681,7 +1729,8 @@ markdown files there are `skipped`, also `memory/MEMORY.md`, an index.
 <a id="spec-import-export"></a>
 
 **Export.** `relaybay export <root>` writes documents (to the file they were imported from, else their
-place in the layout; a task document no task links to under `docs/`), current and superseded decisions
+place in the layout; a task document no task links to under `docs/`; a document that lives in a
+repository only when it has text), current and superseded decisions
 to `projects/<slug>/decisions.md`, current notes and the registry with a `ref` column. It reads a copy
 of the database. The same data gives the same bytes: sorted, no times but stored ones; an import of an
 export changes nothing. Dry run by default, `--apply` writes. The manifest `.relaybay-export.json`
@@ -1835,6 +1884,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0017_usage` | `session.transcript_path`; `usage_file` (path, session, parent file for a subagent's, read offset, skipping, unknown lines, error, created at, read at), `usage_day` (file, day, session, model, input, output, cache read, cache write, messages; primary key file + day + model), `usage_message` (message id, file). Additive only |
 | `0018_rule_versions` | `rule_set` (display scope, project, current version, config hash), `rule_version` (set, number, body, rendered markdown, author, session, reason, diff, open notice, created at), `rule_proposal` (scope, project, patch, reason, proposed by, session, status `open` / `accepted` / `rejected`, version made, created / decided at, decided by), `rule_seen` (session, project or 0 for global, version). Additive only; the first start fills them ([§6](#spec-rules-versions)) |
 | `0019_saved_filters` | `saved_filter` (project, name unique per project, stage, waiting on, session, text, created at). Additive only |
+| `0020_document_source` | `document.source_url` (a document that lives in a repository, [§8](#spec-documents-repo)). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

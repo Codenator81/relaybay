@@ -86,7 +86,7 @@ decision      id, task_id, project_id, text, decided_by, created_at, scope (proj
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
               valid_to, recorded_at, superseded_at, superseded_by (decision.id)
 document      id, project_id, slug (UNIQUE per project), title, kind, version, created_at,
-              updated_at
+              updated_at, source_url (set: lives in a repository)
 document_version  id, document_id, version (UNIQUE per document), body, author, reason,
               base_version, section, created_at
 memory        id, scope (global|role|project), project_id, role, kind

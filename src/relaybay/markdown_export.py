@@ -128,6 +128,8 @@ async def gather(service: Service) -> tuple[dict[str, Wanted], list[FileAction]]
         _, documents = await service.list_documents(project.slug)
         for document in sorted(documents, key=lambda d: d.slug):
             _, body = await service.get_document(project.slug, document.slug)
+            if document.source_url and not body.strip():
+                continue  # lives in a repository with no text here: nothing to write
             mark = tracked.get(("document", document.id))
             path = _doc_path(project.slug, document.slug, mark, linked)
             places = [path, f"projects/{project.slug}/docs/{document.slug}.md"]

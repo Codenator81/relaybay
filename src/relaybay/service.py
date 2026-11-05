@@ -13,6 +13,7 @@ import re
 import secrets
 import tempfile
 import time
+import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -267,6 +268,20 @@ class TaskDetail:
     plan: Plan = field(default_factory=lambda: Plan(None, None, None))
     todo: list[TodoItem] = field(default_factory=list)  # the bound session's Claude Code todo
     plan_history: list[tuple[PlanRevision, list[str]]] = field(default_factory=list)
+    # Board targets of the document links in the description, progress, reports and comments.
+    doc_refs: dict[str, mem.DocRef] = field(default_factory=dict)
+    document: "TaskDocument | None" = None  # when the document field is a relaybay://doc link
+
+
+@dataclass(slots=True)
+class TaskDocument:
+    """A task's document field as a link to a board document: the document (None when it does
+    not exist) and the text shown, the linked section or the whole current text."""
+
+    link: digests.DocLink
+    ref: mem.DocRef
+    doc: mem.Document | None
+    text: str
 
 
 @dataclass(slots=True)
@@ -361,9 +376,19 @@ def _clean_bool(value: Any, name: str) -> bool:
     raise ValidationError(f"{name} must be true or false.")
 
 
+def has_hidden_chars(text: str) -> bool:
+    """Control or format characters (NUL, bidi overrides, zero-width): a link holding one can
+    read as something other than where it goes."""
+    return any(unicodedata.category(c) in ("Cc", "Cf") for c in text)
+
+
 def _clean_url(value: Any, name: str) -> str | None:
     url = _clean_text(value, name)
-    if url is not None and not HTTP_URL_RE.fullmatch(url):
+    if url is None:
+        return None
+    if has_hidden_chars(url):
+        raise ValidationError(f"{name} holds a control or invisible character.")
+    if not HTTP_URL_RE.fullmatch(url):
         raise ValidationError(f"{name} must be an http:// or https:// link, got {url!r}.")
     return url
 
@@ -640,6 +665,21 @@ def _scan(rules: SecretRules, **texts: str | None) -> None:
     for name, text in texts.items():
         if text:
             envs.check_secret(name, text, rules)
+
+
+def _doc_ref(link: digests.DocLink, body: str | None) -> mem.DocRef:
+    """The board target of a document link, given the document's current text (None when the
+    document does not exist)."""
+    if body is None:
+        return mem.DocRef(None, "no such document")
+    href = f"/p/{link.project}/docs/{link.doc}"
+    if not link.anchor:
+        return mem.DocRef(href)
+    wanted = link.anchor.casefold()
+    found = next((s for s in mem.sections(body) if s.anchor == wanted), None)
+    if found is None:
+        return mem.DocRef(href, "no such section")
+    return mem.DocRef(f"{href}#{found.anchor}")
 
 
 def _first_words(text: str, limit: int = 80) -> str:
@@ -1938,13 +1978,21 @@ class Service:
 
     async def task_detail(self, ref: str | int, reports: int = 5) -> TaskDetail:
         task = await self.get_task(ref)
+        shown_reports = await repo.list_reports(self._r, task.id, reports)
+        comments = await repo.list_comments(self._r, task.id)
+        texts = [r.body_md for r in shown_reports] + [c.body_md for c in comments]
+        cache: dict[tuple[str, str], tuple[mem.Document, str] | None] = {}
         return TaskDetail(
             task=task,
-            reports=await repo.list_reports(self._r, task.id, reports),
+            reports=shown_reports,
             decisions=await repo.list_decisions(self._r, task_id=task.id, limit=10),
             bindings=await repo.list_bindings(self._r, task.id),
             tracker_history=await repo.list_tracker_entries(self._r, task.id),
-            comments=await repo.list_comments(self._r, task.id),
+            comments=comments,
+            doc_refs=await self.resolve_doc_links(
+                task.description, task.progress, *texts, cache=cache
+            ),
+            document=await self._task_document(task.doc_path, cache),
             live_actions=await repo.task_events(self._r, task.id, LIVE_ACTION, 20),
             review=await self._load_review(self._r, task.id),
             bind_choices=await self._bind_choices(task),
@@ -2841,6 +2889,52 @@ class Service:
         )
         return found, lines
 
+    async def _current_text(
+        self, project: str, doc: str, cache: dict[tuple[str, str], tuple[mem.Document, str] | None]
+    ) -> tuple[mem.Document, str] | None:
+        """A document and its current text, read once per `cache` (one page)."""
+        key = (project, doc)
+        if key not in cache:
+            proj = await repo.get_project(self._r, project)
+            found = await repo.get_document(self._r, proj.id, doc) if proj else None
+            row = (
+                await repo.get_document_version(self._r, found.id, found.version) if found else None
+            )
+            cache[key] = (found, row.body) if found and row else None
+        return cache[key]
+
+    async def resolve_doc_links(
+        self,
+        *texts: str | None,
+        cache: dict[tuple[str, str], tuple[mem.Document, str] | None] | None = None,
+    ) -> dict[str, mem.DocRef]:
+        """Where each `relaybay://doc/<project>/<doc>[#<anchor>]` link in `texts` points on the
+        board, by link text. A missing section still points at the document, marked broken."""
+        cache = {} if cache is None else cache
+        refs: dict[str, mem.DocRef] = {}
+        for link in digests.doc_links(*texts):
+            loaded = await self._current_text(link.project, link.doc, cache)
+            refs[link.uri] = _doc_ref(link, loaded[1] if loaded else None)
+        return refs
+
+    async def _task_document(
+        self,
+        doc_path: str | None,
+        cache: dict[tuple[str, str], tuple[mem.Document, str] | None],
+    ) -> TaskDocument | None:
+        link = digests.doc_link(doc_path)
+        if link is None:
+            return None
+        loaded = await self._current_text(link.project, link.doc, cache)
+        ref = _doc_ref(link, loaded[1] if loaded else None)
+        if loaded is None:
+            return TaskDocument(link, ref, None, "")
+        found, body = loaded
+        text = body
+        if link.anchor and not ref.broken:
+            text = mem.section_text(body, link.anchor)
+        return TaskDocument(link, ref, found, text)
+
     async def update_document(
         self,
         project: str,
@@ -2852,6 +2946,8 @@ class Service:
         section: str | None = None,
         title: str | None = None,
         kind: str | None = None,
+        source_url: str | None = None,
+        force: bool = False,
         author: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
@@ -2859,11 +2955,20 @@ class Service:
     ) -> mem.Document:
         """Write a new version of a document; `base_version` 0 creates it. With `section`, the
         text replaces only that section. A `base_version` other than the current version is a
-        conflict whose message holds the current text to merge."""
+        conflict whose message holds the current text to merge. `source_url` links the document
+        to its repository ('-' unlinks it); a linked document changes only with `force`, and its
+        body may be '-' (no text of its own)."""
         slug = _clean_doc_slug(doc)
-        text = _clean_text(body, "body", mem.DOC_BODY_MAX)
-        if not text:
+        no_text = str(body or "").strip() == "-"
+        text = "" if no_text else _clean_text(body, "body", mem.DOC_BODY_MAX) or ""
+        if not text and not no_text:
             raise ValidationError("body must not be empty.")
+        if no_text and section:
+            raise ValidationError("A section needs text; '-' empties a linked document only.")
+        unlink = str(source_url or "").strip() == "-"
+        link = None if unlink else _clean_url(source_url, "source_url")
+        if link is not None and len(link) > mem.SOURCE_URL_MAX:
+            raise ValidationError(f"source_url is longer than {mem.SOURCE_URL_MAX} characters.")
         why = _clean_text(reason, "reason", mem.REASON_MAX)
         if not why:
             raise ValidationError("reason must say what changed and why.")
@@ -2879,6 +2984,7 @@ class Service:
                 title=new_title,
                 kind=new_kind,
                 reason=why,
+                source_url=link,
             )
             found = await repo.get_document(tx.conn, proj.id, slug)
             current = ""
@@ -2891,11 +2997,27 @@ class Service:
                     raise ValidationError("A new document is written whole, without section.")
                 heading = next((s.title for s in mem.sections(text) if s.level == 1), None)
                 doc_id = await repo.insert_document(
-                    tx.conn, proj.id, slug, new_title or heading or slug, new_kind or "doc", tx.now
+                    tx.conn,
+                    proj.id,
+                    slug,
+                    new_title or heading or slug,
+                    new_kind or "doc",
+                    tx.now,
+                    link,
                 )
                 found = await repo.get_document(tx.conn, proj.id, slug)
                 assert found is not None and found.id == doc_id
             else:
+                if found.source_url and not force:
+                    raise ValidationError(
+                        f"{proj.slug}/{found.slug} lives in the repository: {found.source_url}."
+                        " Change it there; pass force to write this copy anyway."
+                    )
+                if no_text and link and not force:
+                    raise ValidationError(
+                        f"body '-' drops the text of {proj.slug}/{found.slug}; pass force to link"
+                        " it to its repository without the text kept here."
+                    )
                 latest = await repo.get_document_version(tx.conn, found.id, found.version)
                 assert latest is not None
                 current = latest.body
@@ -2917,10 +3039,14 @@ class Service:
                 raise ValidationError(f"The document would exceed {mem.DOC_BODY_MAX} characters.")
             final_title = new_title or found.title
             final_kind = new_kind or found.kind
-            if found.version and (new_body, final_title, final_kind) == (
+            final_link = None if unlink else link or found.source_url
+            if not new_body and not final_link:
+                raise ValidationError("Only a document linked with source_url may have no text.")
+            if found.version and (new_body, final_title, final_kind, final_link) == (
                 current,
                 found.title,
                 found.kind,
+                found.source_url,
             ):
                 _note(f"{found.slug} is unchanged; it stays at version {found.version}.")
                 return found
@@ -2939,6 +3065,7 @@ class Service:
                 section=anchor,
                 title=final_title,
                 kind=final_kind,
+                source_url=final_link,
                 now=tx.now,
             )
             await self._index(tx, "doc", found.id)

@@ -14,7 +14,7 @@
     <h2>Review</h2>
     {% with t = detail.task, review = detail.review %}{% include "_review.html" %}{% endwith %}
   </section>
-  {% with t = detail.task, comments = detail.comments %}{% include "_comments.html" %}{% endwith %}
+  {% with t = detail.task, comments = detail.comments, doc_refs = detail.doc_refs %}{% include "_comments.html" %}{% endwith %}
   {% include "_viewer.html" %}
 </main>
 {% endblock %}

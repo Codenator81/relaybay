@@ -60,7 +60,7 @@ from relaybay.security import (
     session_cookie_value,
     token_id,
 )
-from relaybay.service import HTTP_URL_RE, Inbox, Service
+from relaybay.service import HTTP_URL_RE, Inbox, Service, has_hidden_chars
 from relaybay.web.markdown import render_document, render_markdown
 from relaybay.web.sse import event_stream
 
@@ -170,6 +170,7 @@ BOARD_ONLY = (
 ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "level")
 JOURNAL_LIMIT = 20
 DOCS_DECISIONS = 200
+DOC_NEW_FIELDS = ("doc", "title", "kind", "source_url", "body", "reason")
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
@@ -232,7 +233,9 @@ def utcnow() -> datetime:
 def http_url(value: str | None) -> str | None:
     """`value` when it is an http(s) link, else None. Writes validate it already; this keeps a
     hand-edited database from turning into a `javascript:` link."""
-    return value if value and HTTP_URL_RE.fullmatch(value) else None
+    if not value or has_hidden_chars(value):
+        return None
+    return value if HTTP_URL_RE.fullmatch(value) else None
 
 
 def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
@@ -261,6 +264,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.globals["static_url"] = static_url
     env.filters["age"] = age
     env.filters["markdown"] = render_markdown
+    env.filters["document"] = render_document
     env.filters["http_url"] = http_url
     env.filters["event_detail"] = event_detail
     env.filters["event_subject"] = event_subject
@@ -963,7 +967,15 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         request: Request, task: Task, error: str | None = None, saved: bool = False
     ) -> HTMLResponse:
         _, comments = await service.list_comments(task.key)
-        response = render(request, "_comment_thread.html", t=task, comments=comments, error=error)
+        doc_refs = await service.resolve_doc_links(*(c.body_md for c in comments))
+        response = render(
+            request,
+            "_comment_thread.html",
+            t=task,
+            comments=comments,
+            error=error,
+            doc_refs=doc_refs,
+        )
         if saved:
             response.headers["X-Relaybay-Comment"] = "saved"  # app.js clears the form
         return response
@@ -1508,6 +1520,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return {
             "project": project,
             "documents": documents,
+            "document_groups": mem.group_documents(documents),
             "decisions": [d for d in decisions if d.current],
             "superseded": [d for d in decisions if not d.current],
             "notes": [n for n in notes if n.current],
@@ -1542,6 +1555,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             project.slug,
             status=status,
             **context,
+            doc_kinds=mem.DOC_KINDS,
             blocks=await service.list_blocks(project.slug),
             global_blocks=await service.list_blocks(None),
             rules=fmt.rules_text(await service.rules(project.slug)),
@@ -1604,22 +1618,161 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             request, f"/p/{slug}/docs{anchor}", message=f"Block {saved.label} saved."
         )
 
+    @router.post("/p/{slug}/docs/new")
+    async def new_document(
+        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        board_only(request, csrf)
+        form = await request.form()
+        fields = {name: str(form.get(name) or "") for name in DOC_NEW_FIELDS}
+        try:
+            saved = await service.update_document(
+                slug,
+                fields["doc"].strip().lower(),
+                fields["body"],
+                fields["reason"],
+                0,
+                title=fields["title"] or None,
+                kind=fields["kind"].strip().lower() or None,
+                source_url=fields["source_url"] or None,
+                author="owner",
+            )
+        except DomainError as exc:
+            await service.get_project(slug)  # an unknown project stays a 404
+            return await docs_page(
+                request,
+                slug,
+                error=str(exc),
+                error_target="doc-new",
+                draft={f"doc-new-{name}": value for name, value in fields.items()},
+                status=400,
+            )
+        return flash_redirect(
+            request, f"/p/{slug}/docs/{saved.slug}", message=f"Document {saved.slug} created."
+        )
+
     @router.get("/p/{slug}/docs/{doc}", response_class=HTMLResponse)
     async def document_page(request: Request, slug: str, doc: str, version: int | None = None):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
         found, text = await service.get_document(slug, doc, version=version)
         _, versions = await service.document_history(slug, doc)
-        return await page(
+        editable = found.shown_version == found.version and not found.source_url
+        edit_url = f"/p/{found.project_slug}/docs/{found.slug}/edit" if editable else None
+        flash = take_flash(request)
+        response = await page(
             request,
             "document.html",
             "docs",
             found.project_slug,
             project=await service.get_project(slug),
             doc=found,
-            body_html=render_document(text),
+            body_html=render_document(text, edit_url),
             sections=mem.sections(text),
             versions=versions,
+            edit_url=edit_url,
+            message=flash.get("message"),
             last_event_id=last_event_id,
+        )
+        return shown_once(request, response)
+
+    async def document_edit_page(
+        request: Request,
+        found: mem.Document,
+        section: str | None,
+        text: str,
+        base_version: int,
+        *,
+        reason: str = "",
+        error: str | None = None,
+        note: str | None = None,
+        current: str | None = None,
+        status: int = 200,
+    ) -> HTMLResponse:
+        """The edit form. `found`, `base_version` and `current` come from one read, so the text
+        shown to merge and the version the next save starts from always belong together."""
+        return await page(
+            request,
+            "document_edit.html",
+            "docs",
+            found.project_slug,
+            status=status,
+            project=await service.get_project(found.project_slug),
+            doc=found,
+            section=section,
+            text=text,
+            base_version=base_version,
+            reason=reason,
+            error=error,
+            note=note,
+            current=current,
+        )
+
+    @router.get("/p/{slug}/docs/{doc}/edit", response_class=HTMLResponse)
+    async def document_edit(request: Request, slug: str, doc: str, section: str = ""):
+        wanted = section.strip().lstrip("#").casefold() or None
+        found, text = await service.get_document(slug, doc, section=wanted)
+        if found.source_url:
+            return flash_redirect(
+                request,
+                f"/p/{found.project_slug}/docs/{found.slug}",
+                message="This document lives in the repository; change it there.",
+            )
+        return await document_edit_page(request, found, wanted, text, found.version)
+
+    @router.post("/p/{slug}/docs/{doc}/edit", response_class=HTMLResponse)
+    async def save_document(
+        request: Request, slug: str, doc: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        board_only(request, csrf)
+        form = await request.form()
+        body = str(form.get("body") or "")
+        reason = str(form.get("reason") or "")
+        section = str(form.get("section") or "").strip().lstrip("#").casefold() or None
+        base_text = str(form.get("base_version") or "").strip()
+        base = int(base_text) if base_text.isdigit() else -1
+        try:
+            saved = await service.update_document(
+                slug, doc, body, reason, base, section=section, author="owner"
+            )
+        except NotFoundError:
+            raise
+        except ConflictError:
+            found, current = await service.get_document(slug, doc)
+            note = None
+            if section and any(s.anchor == section for s in mem.sections(current)):
+                current = mem.section_text(current, section)
+            elif section:
+                note = (
+                    f"Section #{section} is no longer in the document: this is now an edit of"
+                    " the whole document. Your text is the section you typed; merge it into the"
+                    " current text."
+                )
+                section = None
+            part = "section" if section else "text"
+            return await document_edit_page(
+                request,
+                found,
+                section,
+                body,
+                found.version,
+                reason=reason,
+                error=f"{found.slug} is at version {found.version}, not {base}: someone changed"
+                f" it while you were editing. Merge the current {part} below into yours and"
+                " save again.",
+                note=note,
+                current=current,
+                status=409,
+            )
+        except DomainError as exc:
+            found, _ = await service.get_document(slug, doc)
+            return await document_edit_page(
+                request, found, section, body, base, reason=reason, error=str(exc), status=400
+            )
+        anchor = f"#{section}" if section else ""
+        return flash_redirect(
+            request,
+            f"/p/{slug}/docs/{saved.slug}{anchor}",
+            message=f"Saved as version {saved.version}.",
         )
 
     @router.get("/p/{slug}/docs/{doc}/diff", response_class=HTMLResponse)

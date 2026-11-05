@@ -1,5 +1,5 @@
 {#- A task's comment thread, refetched on live events. Expects: t (the task), comments, optional
-    error. The form that adds a comment lives outside it (_comments.html), so a draft survives. -#}
+    error and doc_refs (board targets of document links). The form that adds a comment lives outside it (_comments.html), so a draft survives. -#}
 {%- macro stamp(ts) -%}<time datetime="{{ ts }}" title="{{ ts[:19]|replace('T', ' ') }} UTC" data-age>{{ ts|age }}</time>{%- endmacro -%}
 <div class="comment-thread" id="comments-{{ t.key }}"
      hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/comments" hx-trigger="rb:refresh" hx-swap="outerHTML">
@@ -12,7 +12,7 @@
         <span class="comment-author">{{ "You" if c.from_owner else c.author }}</span>
         <span class="muted">#{{ c.id }}{% if c.in_reply_to %} · re #{{ c.in_reply_to }}{% endif %}</span>
       </header>
-      <div class="markdown comment-body">{{ c.body_md|markdown }}</div>
+      <div class="markdown comment-body">{{ c.body_md|markdown(doc_refs) }}</div>
       <p class="comment-marks muted">
         {%- if c.from_owner %}
         <span class="mark mark-sent">sent {{ stamp(c.created_at) }}</span>
