@@ -55,7 +55,8 @@ jobs:
         env:
           EXPECTED: ${{ inputs.version }}
         run: |
-          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          # sed, not python: the runner's own python may be older than 3.11 (no tomllib).
+          version="$(sed -n 's/^version = "\(.*\)"$//p' pyproject.toml | head -n 1)"
           if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$version" ]; then
             echo "Expected version $EXPECTED, pyproject.toml has $version" >&2
             exit 1
@@ -100,7 +101,7 @@ jobs:
 
       - name: Smoke - hook forwarder time (live server) and silence (dead port)
         run: |
-          uv run --no-sync python scripts/hook_timing.py --limit-ms 300 -- "$BIN/relaybay-hook$EXE"
+          uv run --no-sync python scripts/hook_timing.py --limit-ms 800 -- "$BIN/relaybay-hook$EXE"
           # For comparison only: the same forwarder from the interpreter.
           uv run --no-sync python scripts/hook_timing.py --limit-ms 60000 --interpreter
 

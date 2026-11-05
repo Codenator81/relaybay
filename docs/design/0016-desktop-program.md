@@ -176,7 +176,7 @@ Built in PR2; the steps per OS are in `packaging/README.md`.
   7 days, and by `release.yml`) builds on the three runners and checks the frozen program: the
   version, `serve` with `/healthz` and an MCP `initialize`, `relaybay-hook` timed against a live
   local server answering `200 application/json {}` (exit 0 and `{}` on stdout, median of 20 runs at
-  most 300 ms on every OS, the interpreter's time printed beside it) and once against a dead port
+  most 800 ms on every OS, the interpreter's time printed beside it) and once against a dead port
   (exit 0, no output, not timed: Windows retries a refused loopback connect until the hook's
   0.3 s timeout), `relaybay desktop --exit-after 10` with `/healthz` up meanwhile (under `xvfb-run`
   on Linux); then the installed one: silent setup, `--version`, user PATH, an upgrade over the

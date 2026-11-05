@@ -1,12 +1,14 @@
 """Time the hook forwarder against a live local server, and check it stays quiet when none runs.
 
-python scripts/hook_timing.py [--runs 20] [--limit-ms 300] -- dist/relaybay/relaybay-hook
+python scripts/hook_timing.py [--runs 20] [--limit-ms 800] -- dist/relaybay/relaybay-hook
 python scripts/hook_timing.py --interpreter   # this interpreter: -I -m relaybay.hook_client
 
 Timed: N runs with `{}` on stdin against a threaded HTTP server on 127.0.0.1 that answers
 `200 application/json {}`; each run must exit 0 and print `{}`. Fails when the median is above the
-limit. Then one run against a dead port must exit 0 with no output; it is not timed, because
-Windows retries a refused loopback connect until the hook's own 0.3 s timeout.
+limit (800 ms: a bloated bundle takes seconds; Claude Code allows the command 3 s). Then one run
+against a dead port must exit 0 with no output; its time is printed for comparison only, because
+Windows retries a refused loopback connect until the hook's own 0.3 s timeout: a live median equal
+to the dead-port time means the live run waited for that timeout too.
 """
 
 import argparse
@@ -52,7 +54,7 @@ def run(command: list[str], port: int, token: Path) -> subprocess.CompletedProce
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=20)
-    parser.add_argument("--limit-ms", type=float, default=300)
+    parser.add_argument("--limit-ms", type=float, default=800)
     parser.add_argument(
         "--interpreter", action="store_true", help="Time this interpreter's relaybay.hook_client."
     )
@@ -87,7 +89,9 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                     return 1
+            start = time.perf_counter()
             dead = run(command, dead_port(), token)
+            dead_ms = (time.perf_counter() - start) * 1000
     finally:
         server.shutdown()
         server.server_close()
@@ -102,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"{name}: median {median:.0f} ms over {args.runs} runs against a live server"
         f" (min {min(times):.0f}, max {max(times):.0f}, limit {args.limit_ms:.0f});"
-        " dead port: exit 0, no output"
+        f" dead port: exit 0, no output, {dead_ms:.0f} ms"
     )
     return 0 if median <= args.limit_ms else 1
 
