@@ -68,7 +68,7 @@ Ships when a coordinator runs its daily work from relaybay.
 | Intake from chats and e-mail: sources, matching to the waiting task, "answer received", autonomy switch per project and task, example Telegram and e-mail watchers | in progress | [0015](design/0015-intake-and-autonomy.md) |
 | Backlog: findings of sessions and reviews, intake proposals, "To plan" creates the task, `backlog.md` import and export | in progress | [0015](design/0015-intake-and-autonomy.md#backlog) |
 
-## 0.6.0 — desktop program
+## 0.6.0 — desktop program (released 2026-11-05)
 
 | Item | Status | Design |
 |---|---|---|
