@@ -119,7 +119,8 @@ tray icon) come with 0.6.0.
   rolls back in Settings → Rules. A stage move that misses a rule succeeds with a warning (or is refused with
   `rules_mode = "strict"`), in MCP responses and on the board.
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
-  no outbound calls, no CDN.
+  no CDN. The only outbound call is a daily check of the latest GitHub release (a line in the Inbox
+  when a newer one is out); `update_check = false` in `config.toml` turns it off.
 
 ## Try it with demo data
 
@@ -198,8 +199,9 @@ variables, then command-line flags.
 | extra folders `attach_file` may read screenshots from (besides the project repository and the temp folder) | none | `RELAYBAY_ATTACHMENT_ROOTS` (comma-separated) | — |
 | largest screenshot / screenshots per task, MB | `10` / `200` | `RELAYBAY_ATTACHMENTS_MAX_MB` / `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — |
 
-The data directory holds `relaybay.sqlite`, the `token` file, `attachments/` (screenshots), the
-optional `config.toml` and the optional `policy.json` (what agents may do; see
+The data directory holds `relaybay.sqlite`, the `token` file, `attachments/` (screenshots),
+`backups/` (taken when a new version starts), the optional `config.toml` and the optional
+`policy.json` (what agents may do; see
 [Full access on a trusted local machine](https://codenator81.github.io/relaybay/how-to/trusted-machine/)
 for an example):
 

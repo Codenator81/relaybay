@@ -24,6 +24,7 @@ from urllib.parse import urlencode
 
 import aiosqlite
 
+from relaybay import updates
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain import annotations as ann
@@ -169,6 +170,7 @@ from relaybay.domain.task_fields import (
 )
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
+from relaybay.install import install_kind
 from relaybay.policy import (
     DEFAULT_PRESET,
     EffectivePolicy,
@@ -316,6 +318,8 @@ class Inbox:
     answers: list[Task] = field(default_factory=list)  # tasks with "answer received"
     backlog_new: int = 0  # one Inbox line, however many items
     tie_choices: list[Task] = field(default_factory=list)  # "Tie to a task": waiting ones first
+    # A newer relaybay release: one line on the Inbox page, not counted (badge, digests).
+    update: updates.UpdateNotice | None = None
 
     @property
     def count(self) -> int:
@@ -873,6 +877,7 @@ class Service:
         self._message_written: dict[int, dict[str, float]] = {}
         self._transcript_checked: dict[str, bool] = {}
         self._usage_capped: dict[int, int] = {}
+        self.update = updates.UpdateStatus()  # the last update check, in memory only
         # Projects whose missing or stale pulse a stage move already mentioned in this run.
         self._pulse_noted: set[int] = set()
 
@@ -1759,7 +1764,33 @@ class Service:
             [t for t in tasks if t.answer_received_at and t.stage != Stage.DONE],
             sum((await repo.backlog_new_counts(self._r)).values()),
             _tie_choices(tasks),
+            self.update_notice(),
         )
+
+    def update_notice(self) -> updates.UpdateNotice | None:
+        """The Inbox line about a newer release, with the upgrade command of this install."""
+        latest = self.update.latest
+        if latest is None or not self.update.available:
+            return None
+        command = updates.upgrade_hint(install_kind(), latest.version)
+        return updates.UpdateNotice(latest.version, latest.url, command)
+
+    async def check_update(self, opener: updates.Opener | None = None) -> updates.UpdateStatus:
+        """One update check now; a failure is kept in the status and logged at debug level."""
+        await asyncio.to_thread(updates.check, self.update, opener)
+        if self.update.error:
+            logger.debug("Update check failed: %s", self.update.error)
+        return self.update
+
+    async def update_loop(self, hours: float, delay: float = updates.START_DELAY) -> None:
+        """Check for a newer release `delay` seconds after the start, then every `hours`."""
+        await asyncio.sleep(delay)
+        while True:
+            try:
+                await self.check_update()
+            except Exception:
+                logger.exception("The update check failed; the next one tries again")
+            await asyncio.sleep(hours * 3600)
 
     async def list_sessions(self, project: str | None = None, limit: int = 200) -> list[SessionRow]:
         """Sessions with the tasks bound to them now; with `project`, the sessions of that

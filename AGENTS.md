@@ -29,7 +29,8 @@ setting or an MCP tool, regenerate the reference pages (`--check` runs in CI).
 - Writes go only through `src/relaybay/service.py` (state change + `event` row in one transaction,
   then publish on the bus). Do not write SQL from web routes or MCP tools.
 - Keep runtime dependencies few; adding one needs a reason in the pull request.
-- No CDN or outbound network calls at runtime; front-end assets are vendored.
+- No CDN or outbound network calls at runtime besides the opt-out update check
+  (`src/relaybay/updates.py`); front-end assets are vendored. Tests never reach the network.
 - Agent-provided text is untrusted: render markdown with raw HTML disabled, escape everything else.
 - Cross-platform: `pathlib`, explicit UTF-8, no shell-specific behaviour; CI runs Linux, macOS and
   Windows.

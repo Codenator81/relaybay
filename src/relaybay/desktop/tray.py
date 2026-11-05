@@ -14,6 +14,7 @@ from typing import Any
 SEPARATOR = "-"
 PERSONALIZE = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 SM_CXSMICON = 49
+UPDATE_DOT = "#c77700"  # the board's --warn (light theme)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,7 @@ class MenuState:
     server_mode: str  # embedded | external
     autostart: bool
     has_window: bool  # False: no web view (Linux without WebKitGTK), the board opens in a browser
+    update_version: str | None = None  # a newer release the program found
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +36,11 @@ class Entry:
 
 def build_menu(state: MenuState) -> tuple[Entry, ...]:
     restart = "Restart server" if state.server_mode == "embedded" else "Reconnect"
+    update = (
+        (Entry(f"Update to {state.update_version}", "install_update"),)
+        if state.update_version
+        else ()
+    )
     return (
         Entry("Open board", "show_window", default=True),
         Entry("Open in browser", "open_in_browser"),
@@ -46,8 +53,10 @@ def build_menu(state: MenuState) -> tuple[Entry, ...]:
                 Entry("Start at login", "toggle_autostart", checked=state.autostart),
                 Entry("Data folder...", "open_settings"),
                 Entry("Server...", "open_settings"),
+                Entry("Check for updates", "check_updates"),
             ),
         ),
+        *update,
         Entry(SEPARATOR),
         Entry("Quit relaybay", "quit"),
     )
@@ -91,13 +100,22 @@ def small_icons() -> bool:
     return ctypes.windll.user32.GetSystemMetrics(SM_CXSMICON) <= 16
 
 
-def icon_image() -> Any:
-    from PIL import Image
+def icon_image(update: bool = False) -> Any:
+    """The tray icon; with `update`, a warn-coloured dot in the lower right corner."""
+    from PIL import Image, ImageDraw
 
     name = icon_file(panel_theme(), small_icons())
     with files("relaybay.desktop").joinpath("icons", name).open("rb") as fh:
         image = Image.open(fh)
         image.load()
+    if update:
+        image = image.convert("RGBA")
+        size = min(image.size)
+        dot = max(size * 3 // 8, 6)
+        box = (image.width - dot, image.height - dot, image.width - 1, image.height - 1)
+        ImageDraw.Draw(image).ellipse(
+            box, fill=UPDATE_DOT, outline="white", width=max(size // 16, 1)
+        )
     return image
 
 

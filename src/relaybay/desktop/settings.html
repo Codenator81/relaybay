@@ -42,6 +42,7 @@ form { display: grid; gap: 14px; max-width: 560px; }
   </div>
 
   <label class="field field-check"><input id="autostart" type="checkbox"> Start at login</label>
+  <label class="field field-check"><input id="update_check" type="checkbox"> Check for updates (asks GitHub for the latest release; nothing installs until you click Update in the tray menu)</label>
 
   <div class="row">
     <button class="btn primary" type="submit">Save</button>
@@ -61,6 +62,7 @@ window.addEventListener("pywebviewready", async () => {
   $("server_mode").value = s.server_mode;
   $("server_url").value = s.server_url;
   $("autostart").checked = s.autostart;
+  $("update_check").checked = s.update_check;
   showMode();
 });
 $("server_mode").addEventListener("change", showMode);
@@ -78,6 +80,7 @@ $("form").addEventListener("submit", async (event) => {
     server_url: $("server_url").value,
     token: $("token").value,
     autostart: $("autostart").checked,
+    update_check: $("update_check").checked,
   });
   $("token").value = "";
   say(result.message, !result.ok);

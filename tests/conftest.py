@@ -29,6 +29,19 @@ def desktop_config_dir(
     return folder
 
 
+class _NoNetwork:
+    def open(self, request: object, timeout: float) -> None:
+        raise AssertionError(f"a test reached the network: {getattr(request, 'full_url', '')}")
+
+
+@pytest.fixture(autouse=True)
+def no_update_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test asks GitHub: the default opener fails, and servers in subprocesses skip the
+    update check."""
+    monkeypatch.setattr("relaybay.updates.default_opener", _NoNetwork)
+    monkeypatch.setenv("RELAYBAY_UPDATE_CHECK", "false")
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return load_settings(home=tmp_path, environ={})

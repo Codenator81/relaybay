@@ -1,7 +1,7 @@
 # 0016 — Desktop program: tray, window, autostart, installers
 
 - Status: **Accepted**, planned for 0.6.0. PR1 (tray, window, autostart, external client mode) and
-  PR2 (frozen builds, installers, CI; see Packaging) are built; the preview behaviour is in [SPEC §13](../SPEC.md#spec-desktop). This design is frozen in
+  PR2 (frozen builds, installers, CI; see Packaging) and PR2b (see Updates and backups) are built; the preview behaviour is in [SPEC §13](../SPEC.md#spec-desktop). This design is frozen in
   the last PR of 0.6.
 - Size: four pull requests (below), about 6 agent-days.
 
@@ -45,7 +45,8 @@ not in the data folder, because one of its keys says where the data folder is:
   `config.load_settings`: `--home` > `RELAYBAY_HOME` > `desktop.toml data_dir` > the per-user data dir.
 - `autostart` (bool), `server_mode` (`embedded` | `external`), `server_url`.
 - The external server's token lives in `external-token` beside it (0600), never in the TOML.
-- PR2b adds `update_check` and `update_check_hours`; a later agent runtime is a separate key.
+- `update_check` and `update_check_hours`: the program's own update check (see Updates and
+  backups); a later agent runtime is a separate key.
 
 External mode: `Settings.base_url` and `token_path` return `server_url` and `external-token`, so
 `relaybay token`, `hook`, `setup` and `doctor` talk to the remote server; `relaybay serve` and the
@@ -93,7 +94,7 @@ Package `relaybay.desktop`: `settings` (desktop.toml), `app` (`DesktopController
 - **Tray menu** (built as data from the state, then turned into pystray items): Open board (default
   item), Open in browser (the login link exactly as `relaybay token` prints it), Restart server
   (Reconnect in external mode), Logs, Settings → (Start at login [checkbox], Data folder..., Server...),
-  Quit relaybay. PR2b adds "Update to X.Y.Z" and "Check for updates".
+  Settings → Check for updates, "Update to X.Y.Z" (only when a newer release is out), Quit relaybay.
 - **Restart.** Embedded: stop the server, read the settings again (desktop.toml, config.toml, the
   rules), start, reload the window. External: read the settings, reload the window.
 - **Quit.** Wait for a restart in progress (up to 60 s), stop the server, stop the tray, destroy the
@@ -127,6 +128,43 @@ nodes radius 10, ring stroke 7, corner 16). The tray uses monochrome variants wi
 (dark figure for a light panel, white for a dark one, 32 px and a 16 px drawing for 100 % scale)
 chosen by the panel theme the OS reports (Windows `SystemUsesLightTheme`, macOS
 `AppleInterfaceStyle`), else the colour icon. Generated files are committed.
+
+### Updates and backups
+
+Built in PR2b; the behaviour is in [SPEC §13](../SPEC.md#spec-updates).
+
+- **Check.** `relaybay/updates.py`: one unauthenticated `GET` of
+  `api.github.com/repos/Codenator81/relaybay/releases/latest` (`User-Agent: relaybay/<version>`,
+  5 s, the system proxy since it is not loopback), versions compared in PEP 440 order by a small
+  parser (no `packaging` dependency). The server runs it as `Service.update_loop` beside the usage
+  reader: 30 s after the start, then every `update_check_hours`; `update_check = false` in
+  `config.toml` turns it off. The state lives in memory; a failure is a debug log line. The
+  program runs its own check in a thread with the keys of `desktop.toml`, so in external mode the
+  tray speaks for the program and the Inbox for the server; in embedded mode both ask (at most two
+  requests per period), which keeps the two independent.
+- **Inbox.** `Inbox.update`, one line on the Inbox page, not counted in the badge or the digests
+  (an update is not something an agent waits on). The hint is this install's upgrade command
+  (`install.install_kind()`: the frozen program per OS, Docker by `RELAYBAY_DISTRIBUTION=docker`
+  in the image, a uv tool, pipx, uvx, a checkout, pip); the installed program has no command, the
+  line points to the tray. The Update action lives only in the program (tray menu): the board
+  never starts an installer.
+- **Update.** The release's installer for this OS and CPU by its stable name, at most 200 MB over
+  HTTPS from the project's release download URLs, into the per-user cache folder (earlier
+  downloads deleted first; one Update at a time, `SetupMutex` in setup); checked against
+  `SHA256SUMS.txt` of the same release, deleted on a mismatch. That hash is integrity only, since
+  nothing is signed: someone who can publish a release can publish both. Windows runs
+  `setup.exe /SILENT /CURRENTUSER` and leaves the quitting to setup (its `PrepareToInstall` sends
+  `desktop --quit` and starts the new program afterwards only when it found one running, so the
+  program must not quit first); macOS opens the `.dmg`, Linux the `.deb`, and the program quits.
+  Outside the installed program the Update item shows the upgrade command.
+- **Backup.** `relaybay/backup.py`, called in the app's lifespan before `Service.start()` (which
+  migrates), and in `import --apply`'s `open_board`, so `serve`, the program, Docker and an
+  import are covered: `last_version` missing (with a
+  database) or different starts a copy (SQLite backup API, `config.toml`, `policy.json`, `token`)
+  into `backups/<old>-to-<new>-<time>/`, keeping `backup_keep` (default 5); `last_version` is
+  written after the migration. A step that already has its backup is not copied again (repeated
+  failed starts keep the real copy); rotation deletes folder by folder and only logs a failure.
+  Attachments are not copied (they can be large and never migrate).
 
 ### Packaging
 

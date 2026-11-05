@@ -16,6 +16,6 @@ Remove the MCP server from Claude Code:
 claude mcp remove relaybay --scope user
 ```
 
-Your data stays in the data folder (`relaybay.sqlite`, `token`, `config.toml`) printed by
+Your data stays in the data folder (`relaybay.sqlite`, `token`, `config.toml`, `backups/`) printed by
 `relaybay serve`; delete the folder to remove it. Backups of the settings file are next to it as
 `settings.json.relaybay-backup-<timestamp>`.

@@ -10,6 +10,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from relaybay import __version__
+from relaybay.backup import backup_before_upgrade, record_version
 from relaybay.config import Settings, load_settings
 from relaybay.domain.errors import DomainError, NotFoundError
 from relaybay.domain.review import MB
@@ -49,22 +50,27 @@ def create_app(settings: Settings) -> FastAPI:
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 
+    service.update.enabled = settings.update_check
+
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Before start(), which migrates the database; the version is recorded only after it.
+        backup_before_upgrade(settings)
         await service.start()
-        reader = (
-            asyncio.create_task(service.usage_loop(settings.usage_interval_seconds))
-            if settings.usage_enabled
-            else None
-        )
+        record_version(settings.home)
+        loops = []
+        if settings.usage_enabled:
+            loops.append(asyncio.create_task(service.usage_loop(settings.usage_interval_seconds)))
+        if settings.update_check:
+            loops.append(asyncio.create_task(service.update_loop(settings.update_check_hours)))
         try:
             async with mcp.session_manager.run():
                 yield
         finally:
-            if reader is not None:
-                reader.cancel()
+            for loop in loops:
+                loop.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await reader
+                    await loop
             await service.close()
 
     app = FastAPI(

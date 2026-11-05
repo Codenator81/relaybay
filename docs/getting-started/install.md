@@ -70,8 +70,9 @@ sign-in page where you can paste the token.
 
 The data folder is your per-user data directory (for example `~/.local/share/relaybay` on Linux,
 `~/Library/Application Support/relaybay` on macOS, `%LOCALAPPDATA%\relaybay` on Windows), or the
-one you pass with `--home` / `RELAYBAY_HOME`. It holds `relaybay.sqlite`, the `token` file and the
-optional `config.toml`.
+one you pass with `--home` / `RELAYBAY_HOME`. It holds `relaybay.sqlite`, the `token` file, the
+optional `config.toml` and `backups/`: before a new version migrates the database, relaybay copies
+it there with the settings files and keeps the newest five.
 
 `relaybay token` prints the token again with the command that connects Claude Code:
 

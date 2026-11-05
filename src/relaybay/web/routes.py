@@ -618,6 +618,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         items = [asdict(item) for item in await service.switcher(q)]
         return JSONResponse({"items": items}, headers={"Cache-Control": "no-store"})
 
+    @router.get("/update")
+    async def update_status() -> JSONResponse:
+        """The last update check of this server (signed in: the board cookie or the token)."""
+        notice = service.update_notice()
+        data = service.update.as_dict() | {"command": notice.command if notice else None}
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
     @router.get("/t/{key}", response_class=HTMLResponse)
     async def task_page(request: Request, key: str):
         last_event_id = await service.last_event_id()  # before the data, see projects_page

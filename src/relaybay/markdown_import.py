@@ -17,6 +17,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from relaybay.backup import backup_before_upgrade, record_version
 from relaybay.config import Settings
 from relaybay.domain import backlog
 from relaybay.domain.backlog import BacklogItem
@@ -1306,7 +1307,10 @@ async def open_copy(settings: Settings) -> AsyncIterator[Service]:
 async def open_board(settings: Settings) -> AsyncIterator[Service]:
     with tempfile.TemporaryDirectory(prefix="relaybay-") as folder:
         service = _service(settings, settings.db_path, Path(folder) / "attachments")
+        # The real database migrates here as on a server start: the same backup first.
+        backup_before_upgrade(settings)
         await service.start()
+        record_version(settings.home)
         try:
             yield service
         finally:

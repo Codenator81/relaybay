@@ -40,6 +40,7 @@ from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
 from relaybay.domain.usage import DEFAULT_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS
 from relaybay.policy import PolicyFile
+from relaybay.updates import HOURS_MAX
 
 log = logging.getLogger(__name__)
 
@@ -317,6 +318,34 @@ class Settings:
             default="your home directory",
         ),
     )
+    update_check: bool = field(
+        default=True,
+        metadata=_doc(
+            "Ask GitHub for the latest release (one unauthenticated request, no data sent but"
+            " the version in the `User-Agent`) shortly after the start and every"
+            " `update_check_hours`; a newer one shows a line in the Inbox. A failed check is"
+            " silent. `false` turns it off.",
+            key="update_check",
+            env="RELAYBAY_UPDATE_CHECK",
+        ),
+    )
+    update_check_hours: int = field(
+        default=24,
+        metadata=_doc(
+            f"Hours between update checks (whole number from 1 to {HOURS_MAX}).",
+            key="update_check_hours",
+            env="RELAYBAY_UPDATE_CHECK_HOURS",
+        ),
+    )
+    backup_keep: int = field(
+        default=5,
+        metadata=_doc(
+            "Backups kept in `backups/` of the data directory; one is taken when a new version"
+            " starts, before it migrates the database (whole number >= 0; 0 takes none).",
+            key="backup_keep",
+            env="RELAYBAY_BACKUP_KEEP",
+        ),
+    )
     # internal: set from desktop.toml when server_mode = "external" (never for `serve`); the
     # CLI and the program then talk to that server with the token kept beside desktop.toml.
     external_url: str = ""
@@ -453,6 +482,8 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         ("digest_budget_chars", BUDGET_MIN, BUDGET_MAX),
         ("session_context_project_chars", BUDGET_MIN, BUDGET_MAX),
         ("usage_interval_seconds", MIN_INTERVAL_SECONDS, None),
+        ("update_check_hours", 1, HOURS_MAX),
+        ("backup_keep", 0, None),
     ):
         if key in data:
             value = data[key]
@@ -481,7 +512,7 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         if not isinstance(roots, list) or not all(isinstance(r, str) and r.strip() for r in roots):
             raise ValueError(f"{source}: attachment_roots must be a list of folders, got {value!r}")
         settings.attachment_roots = [Path(r.strip()).expanduser() for r in roots]
-    for key in ("require_tracker_log", "usage_enabled"):
+    for key in ("require_tracker_log", "usage_enabled", "update_check"):
         if key in data:
             value = data[key]
             if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:

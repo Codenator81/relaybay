@@ -13,6 +13,7 @@ LABEL org.opencontainers.image.title="relaybay" \
       org.opencontainers.image.licenses="MIT"
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    RELAYBAY_DISTRIBUTION=docker \
     RELAYBAY_HOME=/data \
     RELAYBAY_HOST=0.0.0.0 \
     RELAYBAY_PORT=8765

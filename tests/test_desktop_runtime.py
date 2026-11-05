@@ -381,7 +381,8 @@ def test_menu_from_state() -> None:
     assert entries[0].default
     flat = _flat(entries)
     assert ("Start at login", "toggle_autostart", True) in flat
-    assert not [t for t, _a, _c in flat if "update" in t.lower()]  # update items come later
+    assert ("Check for updates", "check_updates", None) in flat
+    assert not [a for _t, a, _c in flat if a == "install_update"]  # only with a newer release
     external = build_menu(MenuState(server_mode="external", autostart=False, has_window=False))
     assert "Reconnect" in [e.text for e in external]
     assert ("Start at login", "toggle_autostart", False) in _flat(external)

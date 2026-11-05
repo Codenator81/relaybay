@@ -4,8 +4,9 @@ A live board and MCP server for people who run many Claude Code sessions across 
 Sessions report their work through MCP tools and Claude Code hooks; you watch
 **projects → tasks → stages → reports** update in the browser, on the desktop or on your phone.
 
-Local and private: one process, SQLite, bound to `127.0.0.1`, token-protected, no telemetry, no
-outbound calls.
+Local and private: one process, SQLite, bound to `127.0.0.1`, token-protected, no telemetry. The
+only outbound call is a daily check of the latest release on GitHub; `update_check = false` turns it
+off.
 
 ## Where to start
 

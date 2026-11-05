@@ -1821,6 +1821,12 @@ Nothing of this leaves the machine.
     `Content-Disposition: inline`, `nosniff` and the CSP above, so a file is never run as a page.
     `GET /files/<id>/annotated` answers the same way with `image/png`; its upload and the viewer's
     other writes need the board cookie and the CSRF header ([Annotations](#spec-annotations)).
+11. **Backups and updates:** a backup before a new version copies the database, `config.toml`,
+    `policy.json` and the `token` into `backups/` of the data folder (created 0700 on POSIX), so
+    it is as sensitive as the data folder itself ([§13](#spec-backups)). An installer is run only
+    after its SHA-256 matches `SHA256SUMS.txt` of the same release: that checks integrity, not
+    authenticity, since nothing is signed; downloads come only from the project's GitHub release
+    URLs over HTTPS ([§13](#spec-updates)).
 
 <a id="spec-security-forms"></a>
 
@@ -1833,9 +1839,14 @@ the page shows once and deletes. A refused write still renders the page with the
 
 <a id="spec-no-telemetry"></a>
 
-**No telemetry.** relaybay sends nothing anywhere: no analytics, no update checks, no outbound calls
-at runtime, no CDN. The only network clients in the code talk to relaybay's own local server
-(`relaybay token`, `relaybay setup --check`, the command hook), and they bypass system proxies.
+**No telemetry.** relaybay sends nothing about you or your board anywhere: no analytics, no CDN.
+The one outbound call is the update check ([§13](#spec-updates)): an unauthenticated `GET` of the
+latest GitHub release with `User-Agent: relaybay/<version>` and nothing else, at most once per
+`update_check_hours` (default 24) by the server and once by the desktop program;
+`update_check = false` in `config.toml` (and in `desktop.toml` for the program) turns it off. The
+program downloads an installer only on a click of Update. The other network clients in the code
+talk to relaybay's own server (`relaybay token`, `relaybay setup --check`, the command hook), and
+they bypass system proxies for a loopback address.
 
 <a id="spec-threat-model"></a>
 
@@ -1855,8 +1866,9 @@ token file. The identity passed as `session` is for display, never for authorisa
 Settings come from defaults, then `config.toml` in the data directory, then `RELAYBAY_*` environment
 variables, then command-line flags. The data directory (per-user data dir via `platformdirs`, or
 `RELAYBAY_HOME` / `--home`) holds `relaybay.sqlite`, `token`, the optional `config.toml`, the
-optional global policy `policy.json` ([§7](#spec-policy)) and `attachments/` (screenshots,
-[§1](#spec-attachments)). An invalid value stops the start with a
+optional global policy `policy.json` ([§7](#spec-policy)), `attachments/` (screenshots,
+[§1](#spec-attachments)), `last_version` and `backups/` (the backup before a new version,
+[§13](#spec-backups)). An invalid value stops the start with a
 message naming the key (an invalid policy file: its path and the problem). Keys, variables and
 flags: [configuration reference](reference/configuration.md); policy keys:
 [policy reference](reference/policy.md).
@@ -2075,7 +2087,8 @@ web view) and a tray icon. The window signs in with the login link and keeps no 
 hides it, **Quit relaybay** in the tray stops the server and the program. The tray menu: Open board,
 Open in browser (the link `relaybay token` prints), Restart server (Reconnect for an external
 server), Logs (`<data dir>/logs/relaybay.log`, 5 x 1 MB, the login token redacted), Settings (Start
-at login, the data folder and the server, in a local form) and Quit. When the port is taken the
+at login, the data folder, the server and the update check in a local form; Check for updates),
+Update to X.Y.Z when a newer release is out ([below](#spec-updates)) and Quit. When the port is taken the
 program starts no second server: the window names the holder (another relaybay and its version, or
 another program). One program per user: a second start shows the first one's window and exits;
 `relaybay desktop --quit` asks the running one to quit. `--background` starts hidden; start at login
@@ -2096,3 +2109,58 @@ log): the token travels in clear text. `data_dir` must be an absolute path. A se
 over `desktop.toml`: keys of a newer version are skipped, a broken file is a logged warning and its
 settings are left out; the CLI names the problem, and `relaybay desktop config` with options writes
 the file anew. Keys: [configuration reference](reference/configuration.md#desktop-program-desktoptoml).
+
+<a id="spec-updates"></a>
+
+**Update check.** Every server (`serve`, the program's embedded server, Docker) asks
+`https://api.github.com/repos/Codenator81/relaybay/releases/latest` 30 s after the start and then
+every `update_check_hours` (default 24, from 1 to 720), without a token, with `User-Agent: relaybay/<version>`, a
+5 s timeout and the system proxy; `update_check = false` in `config.toml` (or
+`RELAYBAY_UPDATE_CHECK=false`) turns it off. The answer is kept in memory only. A failure (offline,
+the API's rate limit, a malformed answer) is a debug log line and keeps the last answer. Versions
+compare in PEP 440 order (`0.6.0rc1` < `0.6.0`); GitHub's latest release leaves pre-releases out.
+A newer release shows one line at the top of the Inbox, not counted in its badge or in the
+digests: "relaybay X.Y.Z available", linked to the release page with its notes, and the upgrade
+command of this install: `uv tool upgrade relaybay`, `pipx upgrade relaybay`,
+`pip install -U relaybay`, `uvx relaybay@latest`,
+`docker pull ghcr.io/codenator81/relaybay:X.Y.Z`, `git pull && uv sync` in a checkout; the
+installed program says "use Update to X.Y.Z in the relaybay tray menu, or Settings → Check for
+updates".
+`GET /update` (board cookie or token) answers the same state as JSON: `current`, `latest`,
+`available`, `url`, `checked_at`, `error`, `enabled`, `command`.
+
+The program checks its own version the same way (`update_check` and `update_check_hours` in
+`desktop.toml`; at their defaults these keys are not written, so an older program still reads
+the file), so in external mode the tray speaks for the program and the Inbox for the server.
+A newer release puts a dot on the tray icon and **Update to X.Y.Z** in the tray menu; Settings →
+**Check for updates** checks now and answers in a notification. Update (a click, never on its own)
+in the installed program downloads this system's installer (`relaybay-X.Y.Z-windows-x64-setup.exe`,
+`relaybay-X.Y.Z-macos-arm64.dmg`, `relaybay_X.Y.Z_amd64.deb`; at most 200 MB, HTTPS, only from the
+project's release download URLs) into the per-user cache folder (`updates/`, emptied of earlier
+downloads first), checks its SHA-256
+against `SHA256SUMS.txt` of the same release and deletes it on a mismatch or when it is not
+listed: that file never runs, and the tray says why. A verified installer starts detached: Windows
+runs `setup.exe /SILENT /CURRENTUSER`, which quits the running program itself and starts the new
+one afterwards; macOS opens the `.dmg` and Linux the `.deb` with the OS's opener, and the program
+quits. The SHA-256 from the same release is integrity only: nothing is signed. A program that is
+not the installed one (run from a uv tool, pipx or a checkout) shows its upgrade command instead.
+A second click while a download or an installer runs is ignored, and Windows setup runs one at a
+time (`SetupMutex`).
+
+<a id="spec-backups"></a>
+
+**Backup before a new version.** `<data>/last_version` holds the version that last started. When a
+database exists and `last_version` is missing or names another version, the server copies the
+database (SQLite's backup API, consistent while a WAL is live), `config.toml`, `policy.json` and
+`token` into `<data>/backups/<old>-to-<new>-<YYYYMMDD-HHMMSS>/` (`unknown` when there was no
+`last_version` or it is not a version; `-2`, `-3` appended when the name is taken) before it
+migrates; `last_version` is written only after the migration succeeded. A step that already has
+its backup (the same `<old>-to-<new>`, left by a start that failed) is not copied again, so
+repeated failed starts never rotate the real pre-upgrade copy away. Only the newest `backup_keep`
+(default 5) of these folders are kept, deleted one by one: a folder that cannot be deleted (a file
+held open) is a logged warning and never stops the start. Only names of that exact pattern with
+real version numbers count; anything else under `backups/` or in the data folder (hand-made
+backups) is never touched or counted. `backup_keep = 0` takes none. A failed copy stops the start
+and leaves no partial folder. Attachments are not copied. This covers `serve`, the program, Docker
+and `relaybay import --apply` (which migrates the real database too); to go back, stop the server
+and copy the files from a backup folder into the data folder.

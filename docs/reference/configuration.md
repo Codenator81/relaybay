@@ -39,6 +39,9 @@ stops `relaybay serve` with a message that names the key.
 | `usage_enabled` | `true` | `RELAYBAY_USAGE_ENABLED` | — | Read token usage from the Claude Code transcripts the hooks report (only `usage` numbers and the model name are kept; no network call). `false` stops the reading and the keeping of transcript paths; the Usage page shows what was read before. |
 | `usage_interval_seconds` | `300` | `RELAYBAY_USAGE_INTERVAL_SECONDS` | — | Seconds between passes of the background usage reader (whole number >= 10). |
 | `claude_home` | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` | Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor, Integrations). |
+| `update_check` | `true` | `RELAYBAY_UPDATE_CHECK` | — | Ask GitHub for the latest release (one unauthenticated request, no data sent but the version in the `User-Agent`) shortly after the start and every `update_check_hours`; a newer one shows a line in the Inbox. A failed check is silent. `false` turns it off. |
+| `update_check_hours` | `24` | `RELAYBAY_UPDATE_CHECK_HOURS` | — | Hours between update checks (whole number from 1 to 720). |
+| `backup_keep` | `5` | `RELAYBAY_BACKUP_KEEP` | — | Backups kept in `backups/` of the data directory; one is taken when a new version starts, before it migrates the database (whole number >= 0; 0 takes none). |
 
 ## Example `config.toml`
 
@@ -91,3 +94,5 @@ per-user data dir.
 | `autostart` | `false` | Start the program at login (hidden, tray icon only). Each start rewrites the entry with the current executable. |
 | `server_mode` | `embedded` | `embedded`: the program runs the server itself. `external`: it opens `server_url` with the token in `external-token`, and the CLI (`token`, `hook`, `setup`, `doctor`) talks to that server too; `relaybay serve` ignores it. Plain `http://` to another machine warns: the token travels in clear text. |
 | `server_url` | `''` | Base URL of the external server (`http://` or `https://`). |
+| `update_check` | `true` | The program asks GitHub for the latest release shortly after the start and every `update_check_hours`; a newer one puts a dot on the tray icon and Update to X.Y.Z in its menu. Settings → Check for updates checks now either way. The server's own check is `update_check` in `config.toml`. |
+| `update_check_hours` | `24` | Hours between the program's update checks (whole number from 1 to 720). |

@@ -50,6 +50,8 @@ WizardStyle=modern
 ; No AppMutex: Inno checks it at start-up with an OK/Cancel box, and its order against our [Code]
 ; is not documented. PrepareToInstall and InitializeUninstall send `desktop --quit` and wait on the
 ; program's mutex instead; the Restart Manager (CloseApplications) handles one that does not answer.
+; One setup at a time: a second one (another Update click, a double start) waits or stops.
+SetupMutex=relaybay-setup
 CloseApplications=yes
 RestartApplications=no
 ChangesEnvironment=yes

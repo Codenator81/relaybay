@@ -217,6 +217,7 @@ def test_settings_form_warns_about_clear_text(tmp_path: Path) -> None:
 
     class Controller:
         config_dir = tmp_path
+        desktop = DesktopSettings()
 
         def set_autostart(self, on: bool) -> None:
             pass
@@ -235,7 +236,7 @@ def test_serve_survives_a_broken_or_newer_desktop_toml(
 ) -> None:
     data = tmp_path / "data"
     settings_path(desktop_config_dir).write_text(
-        f'data_dir = "{data.as_posix()}"\nupdate_check = true\n', encoding="utf-8"
+        f'data_dir = "{data.as_posix()}"\nagent_runtime = "local"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match="unknown key"):
         load_settings(environ={})  # the CLI names the problem
