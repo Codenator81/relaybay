@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Desktop program: the starting and problem pages set their own colours for light and dark, instead
+  of dark text on a dark window, and the window background before a page paints follows the machine's
+  theme, so a dark machine sees no white flash.
+- Desktop program on Windows: the tray menu follows the system theme (dark on a dark machine).
+- Desktop program: opening a maximized window from the tray no longer brings it back at the default
+  size. The board window's size, position and maximized flag now survive a restart, in
+  `window-state.json` beside `desktop.toml`.
+- `relaybay setup` in the installed program names `relaybay-hook` as the forwarder instead of "this
+  Python".
+
 ## [0.6.0] - 2026-11-05
 
 Desktop program: relaybay installs with an installer on Windows, macOS and Linux (macOS and Linux are

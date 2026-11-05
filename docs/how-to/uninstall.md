@@ -66,7 +66,7 @@ claude mcp remove relaybay --scope user
 
 Uninstalling never deletes your data. The data folder (`relaybay.sqlite`, `token`, `config.toml`,
 `backups/`, `logs/`) is printed by `relaybay serve` and `relaybay doctor`; delete it to remove the
-board. The desktop program's settings (`desktop.toml`, `external-token`) are in your per-user config
+board. The desktop program's settings (`desktop.toml`, `external-token`, `window-state.json`) are in your per-user config
 folder (`relaybay doctor` shows the path in its `desktop` line); a reinstall picks them up again,
 start at login included. Backups of the Claude Code settings file are next to it as
 `settings.json.relaybay-backup-<timestamp>`.

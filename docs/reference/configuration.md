@@ -82,8 +82,9 @@ done = [{ kind = "field_present", field = "progress" }]
 `%LOCALAPPDATA%\relaybay`, on macOS `~/Library/Application Support/relaybay`, on
 Linux `~/.config/relaybay`), or in the folder `RELAYBAY_CONFIG_DIR` names. The program
 and the CLI both read it; `relaybay desktop config` shows and changes it. Beside it:
-`external-token` (0600, the external server's token) and the program's `desktop.lock`
-and `desktop.ipc`.
+`external-token` (0600, the external server's token), `window-state.json` (the board
+window's size, position and maximized flag, written by the program) and the program's
+`desktop.lock` and `desktop.ipc`.
 
 The data folder is `--home`, else `RELAYBAY_HOME`, else `data_dir` here, else the
 per-user data dir.

@@ -4,6 +4,8 @@ The menu is first built as plain data from the program's state (`build_menu`), t
 pystray objects (`to_pystray`), so it is testable without a display or pystray.
 """
 
+import ctypes
+import logging
 import subprocess
 import sys
 from collections.abc import Callable
@@ -11,10 +13,14 @@ from dataclasses import dataclass
 from importlib.resources import files
 from typing import Any
 
+log = logging.getLogger("relaybay.desktop")
+
 SEPARATOR = "-"
 PERSONALIZE = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 SM_CXSMICON = 49
 UPDATE_DOT = "#c77700"  # the board's --warn (light theme)
+DARK_MENUS_MIN_BUILD = 18362  # Windows 10 1903
+APP_MODE_FORCE_DARK = 2  # needs no per-window call, unlike 1 (allow dark)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,17 +68,15 @@ def build_menu(state: MenuState) -> tuple[Entry, ...]:
     )
 
 
-def panel_theme() -> str | None:
-    """`light` or `dark`: the colour of the panel the tray icon sits on, where the OS tells it
-    (Windows taskbar, macOS menu bar); None elsewhere, which means the colour icon."""
+def _os_theme(windows_value: str) -> str | None:
     if sys.platform == "win32":
         import winreg
 
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, PERSONALIZE) as key:
-                value, _kind = winreg.QueryValueEx(key, "SystemUsesLightTheme")
+                value, _kind = winreg.QueryValueEx(key, windows_value)
         except FileNotFoundError:
-            return None  # Windows before 10 1903: no light taskbar
+            return None  # a Windows older than this setting
         return "light" if value else "dark"
     if sys.platform == "darwin":
         result = subprocess.run(
@@ -81,6 +85,45 @@ def panel_theme() -> str | None:
         # The key exists only in dark mode; "does not exist" means light.
         return "dark" if result.stdout.strip() == "Dark" else "light"
     return None
+
+
+def panel_theme() -> str | None:
+    """`light` or `dark`: the colour of the panel the tray icon sits on, where the OS tells it
+    (Windows taskbar, macOS menu bar); None elsewhere, which means the colour icon."""
+    return _os_theme("SystemUsesLightTheme")
+
+
+def app_theme() -> str | None:
+    """`light` or `dark`: the theme for application windows, where the OS tells it; on Windows it
+    is set apart from the taskbar's. None elsewhere."""
+    return _os_theme("AppsUseLightTheme")
+
+
+def follow_system_menu_theme(
+    windows_build: Callable[[], int] = lambda: sys.getwindowsversion().build,
+    load_library: Callable[[str], Any] = lambda name: ctypes.WinDLL(name),
+    theme: Callable[[], str | None] = app_theme,
+) -> None:
+    """Make this process's native popup menus dark on a machine in the dark theme (Windows), read
+    once at start; a light machine is left alone. Any failure leaves the light menu and a debug
+    line.
+
+    Undocumented uxtheme.dll exports, by ordinal, used widely in native apps: 135 is
+    SetPreferredAppMode only from build 18362 on (it means something else before), 136 is
+    FlushMenuThemes. The mode is process-wide, so the thread that calls does not matter.
+    """
+    try:
+        if theme() != "dark":
+            return
+        build = windows_build()
+        if build < DARK_MENUS_MIN_BUILD:
+            log.debug("Windows build %s: the tray menu stays light", build)
+            return
+        uxtheme = load_library("uxtheme")
+        uxtheme[135](APP_MODE_FORCE_DARK)
+        uxtheme[136]()
+    except Exception as exc:
+        log.debug("the tray menu stays light: %s", exc)
 
 
 def icon_file(theme: str | None, small: bool) -> str:
@@ -95,8 +138,6 @@ def small_icons() -> bool:
     """Windows at 100 % scale draws tray icons at 16 px: use the drawing made for 16 px."""
     if sys.platform != "win32":
         return False
-    import ctypes
-
     return ctypes.windll.user32.GetSystemMetrics(SM_CXSMICON) <= 16
 
 
@@ -143,4 +184,6 @@ def to_pystray(entries: tuple[Entry, ...], dispatch: Callable[[str], None]) -> A
 def create_icon(entries: tuple[Entry, ...], dispatch: Callable[[str], None]) -> Any:
     import pystray
 
+    if sys.platform == "win32":
+        follow_system_menu_theme()  # pystray builds its first HMENU when its thread starts
     return pystray.Icon("relaybay", icon_image(), "relaybay", menu=to_pystray(entries, dispatch))

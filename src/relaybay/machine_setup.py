@@ -171,6 +171,14 @@ MODE_REASONS = {
     "command": "a small forwarder run by this Python; silent when relaybay is down",
     "http": "Claude Code posts to relaybay itself; needs RELAYBAY_TOKEN in its environment",
 }
+FROZEN_COMMAND_REASON = "a small forwarder, relaybay-hook; silent when relaybay is down"
+
+
+def mode_reason(mode: str, python: str | None = None) -> str:
+    """Why this hook type, in words true for the forwarder `hook_program(python)` starts."""
+    if mode == "command" and python is None and hook_executable() is not None:
+        return FROZEN_COMMAND_REASON
+    return MODE_REASONS[mode]
 
 
 def mode_notes(
@@ -730,7 +738,7 @@ def make_plan(
     return Plan(
         detection=detection,
         mode=mode,
-        mode_reason=MODE_REASONS[mode],
+        mode_reason=mode_reason(mode, python),
         paths=paths,
         hooks=hooks,
         error=error,
