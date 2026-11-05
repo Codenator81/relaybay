@@ -31,6 +31,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/usr/bin/relaybay`; tray and browser, no window yet). `THIRD_PARTY_LICENSES.txt` lists what the
   builds bundle. CI builds all three on every pull request and smoke-tests the frozen and the installed
   program (`.github/workflows/desktop.yml`); a release attaches them with `SHA256SUMS.txt`.
+- Update check (SPEC §13): the server asks GitHub for the latest release 30 s after the start and
+  every `update_check_hours` (default 24; no token, only the version in the `User-Agent`), and a
+  newer one shows a line in the Inbox with the release notes link and this install's upgrade
+  command; `GET /update` returns the state as JSON. `update_check = false` turns it off. The
+  desktop program checks its own version too (`update_check`, `update_check_hours` in
+  `desktop.toml`): a dot on the tray icon, **Update to X.Y.Z** in the menu and Settings → Check for
+  updates. Update downloads this system's installer, runs it only when its SHA-256 matches the
+  release's `SHA256SUMS.txt` (integrity, not a signature) and starts it.
+- Backup before a new version: when the data folder was last run by another version
+  (`last_version`), the server copies the database (SQLite backup API), `config.toml`,
+  `policy.json` and `token` into `backups/<old>-to-<new>-<time>/` before it migrates (once per
+  step, also for `relaybay import --apply`) and keeps the newest `backup_keep` (default 5).
+- The Docker image sets `RELAYBAY_DISTRIBUTION=docker`, so the Inbox suggests `docker pull`.
+
+### Changed
+
+- relaybay now makes one outbound call: the update check above (opt-out). It still sends no
+  telemetry.
 
 ## [0.5.0] - 2026-11-05
 

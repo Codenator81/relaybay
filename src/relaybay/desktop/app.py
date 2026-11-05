@@ -19,7 +19,9 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-from relaybay import __version__
+import platformdirs
+
+from relaybay import __version__, updates
 from relaybay.config import Settings, load_settings
 from relaybay.desktop import add_run_arguments, single_instance
 from relaybay.desktop.autostart import Autostart, launch_command
@@ -32,6 +34,7 @@ from relaybay.desktop.settings import (
     save_desktop_settings,
     settings_path,
 )
+from relaybay.install import DESKTOP_KINDS, install_kind
 from relaybay.logs import desktop_log_config
 from relaybay.security import load_or_create_token
 
@@ -86,6 +89,9 @@ class DesktopController:
         self.has_window = False
         self.quitting = False
         self._restart_lock = threading.Lock()
+        self.update = updates.UpdateStatus()  # the program's own version against the release
+        self._stopped = threading.Event()  # set by Quit: ends the update loop's wait
+        self._updating = threading.Lock()  # held while Update downloads or runs an installer
 
     # --- state -------------------------------------------------------------
 
@@ -248,10 +254,12 @@ class DesktopController:
     def menu_entries(self) -> Any:
         from relaybay.desktop.tray import MenuState, build_menu
 
+        latest = self.update.latest
         state = MenuState(
             server_mode=self.desktop.server_mode,
             autostart=self.autostart.is_enabled(),
             has_window=self.has_window,
+            update_version=latest.version if latest and self.update.available else None,
         )
         return build_menu(state)
 
@@ -262,6 +270,90 @@ class DesktopController:
 
         self.icon.menu = to_pystray(self.menu_entries(), self.dispatch)
         self.icon.update_menu()
+
+    def notify(self, message: str) -> None:
+        log.info("%s", message)
+        if self.icon is not None:
+            self.icon.notify(message, "relaybay")
+
+    # --- updates -------------------------------------------------------------
+
+    def _check_update(self) -> None:
+        was = self.update.available
+        updates.check(self.update)
+        if self.update.error:
+            log.debug("update check failed: %s", self.update.error)
+        if self.update.available != was:
+            from relaybay.desktop.tray import icon_image
+
+            if self.icon is not None:
+                self.icon.icon = icon_image(update=self.update.available)
+            self.refresh_menu()
+
+    def check_updates(self) -> None:
+        """Settings → Check for updates: a check now, with its answer as a notification."""
+        self._check_update()
+        latest = self.update.latest
+        if self.update.error:
+            self.notify(f"The update check failed: {self.update.error}")
+        elif latest is not None and self.update.available:
+            self.notify(f"relaybay {latest.version} is available: tray menu, Update.")
+        else:
+            self.notify(f"relaybay {__version__} is the latest version.")
+
+    def update_loop(self) -> None:
+        """The program's own check: shortly after the start, then every `update_check_hours`
+        while `update_check` is on in desktop.toml; a failure is only logged."""
+        wait = updates.START_DELAY
+        while not self._stopped.wait(wait):
+            try:
+                if self.desktop.update_check:
+                    self._check_update()
+            except Exception:
+                log.exception("the update check failed; the next one tries again")
+            # Event.wait raises OverflowError above TIMEOUT_MAX (about 49 days on Windows).
+            wait = min(self.desktop.update_check_hours * 3600, threading.TIMEOUT_MAX)
+
+    def install_update(self) -> None:
+        """Download this system's installer of the newer release, verify it against the
+        release's SHA256SUMS.txt and start it; a file that fails the check never runs. A second
+        click while one download or install runs is ignored."""
+        if not self._updating.acquire(blocking=False):
+            self.notify("The update is already running.")
+            return
+        started = False
+        try:
+            started = self._install_update()
+        finally:
+            # A started installer keeps the flag: the program is about to be replaced.
+            if not started:
+                self._updating.release()
+
+    def _install_update(self) -> bool:
+        latest = self.update.latest
+        if latest is None or not self.update.available:
+            self.notify(f"relaybay {__version__} is the latest version.")
+            return False
+        kind = install_kind()
+        if kind not in DESKTOP_KINDS:
+            # Not the installed program (a uv tool, pipx, a checkout): its own upgrade command.
+            command = updates.upgrade_hint(kind, latest.version)
+            self.notify(f"relaybay {latest.version} is available; upgrade with: {command}")
+            return False
+        folder = Path(platformdirs.user_cache_dir("relaybay", appauthor=False)) / "updates"
+        self.notify(f"Downloading relaybay {latest.version}...")
+        try:
+            path = updates.prepare_installer(latest, kind, updates.machine_arch(), folder)
+        except updates.UpdateError as exc:
+            self.show_problem(f"relaybay {latest.version} was not installed: {exc}")
+            return False
+        log.info("starting the installer %s", path)
+        updates.launch_installer(path, kind)
+        if kind != "desktop-windows":
+            self.quit()
+        # Windows: setup itself asks this program to quit (desktop --quit) and starts the new
+        # one afterwards, which it does only when it found one running.
+        return True
 
     def dispatch(self, action: str) -> None:
         """Run a menu action off the tray thread, so a restart never freezes the menu."""
@@ -279,6 +371,7 @@ class DesktopController:
         if self.quitting:
             return
         self.quitting = True
+        self._stopped.set()
         log.info("quit")
         # A restart in progress would start the server again after we stopped it: wait for it.
         locked = self._restart_lock.acquire(timeout=QUIT_WAIT)
@@ -315,6 +408,7 @@ class DesktopController:
             self.autostart.enable(launch_command())
         self.has_window = window.window_available()
         self.icon = tray.create_icon(self.menu_entries(), self.dispatch)
+        threading.Thread(target=self.update_loop, name="relaybay-updates", daemon=True).start()
         if self.quitting:  # --quit or Quit arrived during start-up
             return 0
         if not self.has_window:

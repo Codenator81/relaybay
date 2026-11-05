@@ -47,6 +47,8 @@ def apply_form(folder: Path, data: dict[str, Any]) -> tuple[DesktopSettings, Des
         autostart=bool(data.get("autostart")),
         server_mode=mode,
         server_url=check_url(url) if url else "",
+        update_check=bool(data.get("update_check", before.update_check)),
+        update_check_hours=before.update_check_hours,
     )
     if mode == "external":
         if not after.server_url:
@@ -73,6 +75,7 @@ class SettingsApi:
             "server_mode": current.server_mode,
             "server_url": current.server_url,
             "autostart": self._controller.autostart.is_enabled(),
+            "update_check": current.update_check,
         }
 
     def browse(self, start: str) -> str | None:
@@ -91,6 +94,7 @@ class SettingsApi:
         except (ValueError, OSError) as exc:
             return {"ok": False, "message": str(exc)}
         controller.set_autostart(after.autostart)
+        controller.desktop.update_check = after.update_check
         server_changed = (before.data_dir, before.server_mode, before.server_url) != (
             after.data_dir,
             after.server_mode,

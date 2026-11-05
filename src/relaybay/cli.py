@@ -503,6 +503,8 @@ def cmd_desktop_config(args: argparse.Namespace) -> int:
         print(f"Server token:  {token_path if token_path.is_file() else 'missing'}")
     entry = autostart.command()
     print(f"Autostart:     {'on (' + autostart.location() + ')' if entry else 'off'}")
+    every = f"on (every {current.update_check_hours} h)" if current.update_check else "off"
+    print(f"Update check:  {every}")
     warning = desktop.cleartext_warning(current)
     if warning:
         print(f"WARNING: {warning}", file=sys.stderr)

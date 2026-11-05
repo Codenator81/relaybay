@@ -18,11 +18,13 @@ from urllib.parse import urlsplit
 import platformdirs
 
 from relaybay.security import _write_private
+from relaybay.updates import HOURS_MAX
 
 SERVER_MODES = ("embedded", "external")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 FILE_NAME = "desktop.toml"
 EXTERNAL_TOKEN = "external-token"
+OMIT_AT_DEFAULT = ("update_check", "update_check_hours")  # keys added after 0.5
 
 
 def _doc(meaning: str, default: str | None = None) -> dict[str, str | None]:
@@ -59,6 +61,19 @@ class DesktopSettings:
     server_url: str = field(
         default="",
         metadata=_doc("Base URL of the external server (`http://` or `https://`).", default="`''`"),
+    )
+    update_check: bool = field(
+        default=True,
+        metadata=_doc(
+            "The program asks GitHub for the latest release shortly after the start and every"
+            " `update_check_hours`; a newer one puts a dot on the tray icon and Update to X.Y.Z"
+            " in its menu. Settings → Check for updates checks now either way. The server's own"
+            " check is `update_check` in `config.toml`."
+        ),
+    )
+    update_check_hours: int = field(
+        default=24,
+        metadata=_doc("Hours between the program's update checks (whole number from 1 to 720)."),
     )
 
 
@@ -133,6 +148,20 @@ def load_desktop_settings(folder: Path, ignore_unknown: bool = False) -> Desktop
         if not isinstance(data["autostart"], bool):
             raise ValueError(f"{path}: autostart must be true or false, got {data['autostart']!r}")
         settings.autostart = data["autostart"]
+    if "update_check" in data:
+        if not isinstance(data["update_check"], bool):
+            raise ValueError(
+                f"{path}: update_check must be true or false, got {data['update_check']!r}"
+            )
+        settings.update_check = data["update_check"]
+    if "update_check_hours" in data:
+        hours = data["update_check_hours"]
+        if not isinstance(hours, int) or isinstance(hours, bool) or not 1 <= hours <= HOURS_MAX:
+            raise ValueError(
+                f"{path}: update_check_hours must be a whole number from 1 to {HOURS_MAX},"
+                f" got {hours!r}"
+            )
+        settings.update_check_hours = hours
     if "server_mode" in data:
         mode = str(data["server_mode"]).strip().lower()
         if mode not in SERVER_MODES:
@@ -154,16 +183,22 @@ def load_desktop_settings(folder: Path, ignore_unknown: bool = False) -> Desktop
 def _toml_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
     # A JSON string with ASCII escapes is a valid TOML basic string.
     return json.dumps(str(value))
 
 
 def save_desktop_settings(folder: Path, settings: DesktopSettings) -> Path:
-    """Write `desktop.toml` atomically (temp file + rename); unset keys are left out."""
+    """Write `desktop.toml` atomically (temp file + rename); unset keys are left out, and so are
+    the update keys at their defaults, so an older program (which refuses unknown keys) still
+    reads the file."""
     lines = ["# relaybay desktop program settings (relaybay desktop config)"]
     for f in fields(DesktopSettings):
         value = getattr(settings, f.name)
         if value is None or value == "":
+            continue
+        if f.name in OMIT_AT_DEFAULT and value == f.default:
             continue
         lines.append(f"{f.name} = {_toml_value(value)}")
     path = settings_path(folder)

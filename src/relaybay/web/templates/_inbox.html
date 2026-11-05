@@ -17,6 +17,13 @@
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
 
+  {% if inbox.update %}
+  {%- set u = inbox.update %}
+  <section class="panel inbox-group" id="inbox-update">
+    <p class="inbox-note"><a href="{{ u.url }}" target="_blank" rel="noopener">relaybay {{ u.version }} available</a> <span class="muted">· {% if u.command %}upgrade with <code>{{ u.command }}</code>{% else %}use <em>Update to {{ u.version }}</em> in the relaybay tray menu, or Settings → Check for updates{% endif %} · the release notes are on the release page</span></p>
+  </section>
+  {% endif %}
+
   {% if inbox.answers %}
   <section class="panel inbox-group" id="inbox-answers">
     <h2>Answers <span class="col-count">{{ inbox.answers|length }}</span></h2>
