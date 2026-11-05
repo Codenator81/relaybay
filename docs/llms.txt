@@ -24,4 +24,6 @@ Stages are plan, dev, review, test, live, done. Every session should read `proje
 - [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/): `relaybay doctor --json` and what each failing item means
 - [Import and export markdown](https://codenator81.github.io/relaybay/how-to/markdown-import-export/): `relaybay import` and `export`, layout, dry run, conflicts
 - [Intake from chats and e-mail](https://codenator81.github.io/relaybay/how-to/intake/): watchers, matching to the waiting task, the autonomy switch, the backlog
+- [Move to the desktop program](https://codenator81.github.io/relaybay/how-to/desktop-from-source-server/): from a server run in a source checkout to the installed program, same data folder, hooks via `relaybay-hook`, roll back
+- [Docker server, desktop client](https://codenator81.github.io/relaybay/how-to/docker-server-with-desktop-client/): compose file, token from the volume, external mode, TLS or SSH tunnel, `allowed_hosts`
 - [Source code](https://github.com/Codenator81/relaybay)

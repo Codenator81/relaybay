@@ -20,6 +20,7 @@ from relaybay.desktop.settings import (
     settings_path,
     write_external_token,
 )
+from relaybay.machine_setup import SetupError, format_plan
 from relaybay.web.routes import STATIC_DIR
 
 if TYPE_CHECKING:
@@ -106,6 +107,27 @@ class SettingsApi:
             return {"ok": True, "message": "Saved." + note}
         controller.restart_async()
         return {"ok": True, "message": "Saved. The server restarts with the new settings." + note}
+
+    def reconnect_plan(self) -> dict[str, Any]:
+        """The plan and diff, exactly as `relaybay setup` prints them; nothing is written."""
+        try:
+            plan = self._controller.reconnect_plan()
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "message": str(exc)}
+        hooks = plan.hooks
+        return {
+            "ok": plan.error is None,
+            "text": "\n".join(format_plan(plan)),
+            "hash": hooks.plan_hash if hooks is not None and hooks.changed else "",
+            "message": plan.error or (hooks.summary if hooks is not None else ""),
+        }
+
+    def reconnect_apply(self, expect: str) -> dict[str, Any]:
+        try:
+            message = self._controller.reconnect_apply(str(expect))
+        except (SetupError, ValueError, OSError) as exc:
+            return {"ok": False, "message": str(exc)}
+        return {"ok": True, "message": message}
 
     def close(self) -> None:
         if self._window is not None:

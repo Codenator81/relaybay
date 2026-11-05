@@ -27,8 +27,33 @@ the `claude mcp add …` command for Claude Code. Docker, Windows/macOS/Linux de
 your coding agent can follow for you:
 [Install](https://codenator81.github.io/relaybay/getting-started/install/) ·
 [Install with your coding agent](https://codenator81.github.io/relaybay/getting-started/agent-install/).
-Something off? `relaybay doctor`. Installers for Windows, macOS and Linux (a desktop program with a
-tray icon) come with 0.6.0.
+Something off? `relaybay doctor`.
+
+## Install
+
+**The desktop program** (a tray icon, the board in a window, the server inside, start at login)
+comes as an installer on each [release](https://github.com/Codenator81/relaybay/releases/latest).
+The installers are not signed with a certificate, so the OS warns once:
+
+- **Windows** (x64): run `relaybay-<version>-windows-x64-setup.exe`. It installs for your user only,
+  without admin rights, into `%LOCALAPPDATA%\Programs\relaybay`. SmartScreen says "Windows protected
+  your PC": click **More info**, then **Run anyway**.
+- **macOS** (Apple silicon, beta): open `relaybay-<version>-macos-arm64.dmg` and drag relaybay to
+  Applications. The first start is blocked: System Settings → Privacy & Security → **Open Anyway**
+  (macOS 15 no longer offers right-click → Open), or run
+  `xattr -dr com.apple.quarantine /Applications/relaybay.app`.
+- **Linux** (amd64 `.deb`, beta): `sudo apt install ./relaybay_<version>_amd64.deb`. A tray icon and
+  the board in your browser (no window yet); GNOME needs the AppIndicator extension for the tray.
+
+Then connect Claude Code from the installed program: `relaybay setup`, then
+`relaybay setup --apply --expect <hash>` (or Settings → Reconnect Claude Code in the program).
+Check the files with `SHA256SUMS.txt` from the same release if you like.
+
+**The command line** (any OS, Python 3.12+): `uv tool install relaybay`, `pipx install relaybay`,
+`uvx relaybay`, or the Docker image `ghcr.io/codenator81/relaybay`. Details:
+[Install](https://codenator81.github.io/relaybay/getting-started/install/); a server in Docker with the
+program as its client:
+[how-to](https://codenator81.github.io/relaybay/how-to/docker-server-with-desktop-client/).
 
 **Documentation:** [codenator81.github.io/relaybay](https://codenator81.github.io/relaybay/) ·
 [Specification](docs/SPEC.md) (how it behaves now) · [Roadmap](docs/ROADMAP.md) ·
@@ -183,7 +208,7 @@ variables, then command-line flags.
 
 | Setting | Default | Env | Flag |
 |---|---|---|---|
-| data directory | per-user data dir (`platformdirs`) | `RELAYBAY_HOME` | `--home` |
+| data directory | `data_dir` in the desktop program's `desktop.toml`, else the per-user data dir (`platformdirs`) | `RELAYBAY_HOME` | `--home` |
 | bind address | `127.0.0.1` | `RELAYBAY_HOST` | `--host` |
 | port | `8765` | `RELAYBAY_PORT` | `--port` |
 | extra allowed Host names | none | `RELAYBAY_ALLOWED_HOSTS` (comma-separated) | — |
@@ -262,6 +287,7 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.3.0** — review checklist with screenshots, memory and documents.
 - **0.4.0** — map and usage, rules versioning, screenshot annotations, documents on the board.
 - **0.5.0** — intake from chats and e-mail with an autonomy switch, the backlog.
+- **0.6.0** — the desktop program: installers, tray, window, autostart, updates.
 - **Later** — agents started from relaybay.
 
 Details and status: [docs/ROADMAP.md](docs/ROADMAP.md). Designs of upcoming steps are in

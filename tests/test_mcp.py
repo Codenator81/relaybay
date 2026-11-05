@@ -1,8 +1,11 @@
 """End to end through the official SDK client over Streamable HTTP against a real server."""
 
+import itertools
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 import httpx2
+import pytest
 from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
 
@@ -301,8 +304,16 @@ async def test_alias_tracker_and_dash_clears(live_server: Callable[[], LiveServe
 
 
 async def test_stage_and_report_keep_next_step_current(
-    live_server: Callable[[], LiveServer],
+    live_server: Callable[[], LiveServer], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # "(stale)" compares millisecond timestamps of two writes; a strictly increasing clock keeps
+    # a create and a stage move in the same millisecond from tying.
+    ticks = itertools.count()
+    start = datetime(2026, 11, 5, tzinfo=UTC)
+    monkeypatch.setattr(
+        "relaybay.service.now_iso",
+        lambda: (start + timedelta(milliseconds=next(ticks))).isoformat(timespec="milliseconds"),
+    )
     live = live_server()
     async with connect(live) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}

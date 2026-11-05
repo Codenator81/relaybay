@@ -1,8 +1,8 @@
 # Architecture
 
 How relaybay is built. Behaviour is specified in [SPEC.md](SPEC.md); upcoming work is in the
-[roadmap](ROADMAP.md) and the [design documents](design/index.md); single decisions are
-[ADRs](adr/0001-htmx-sse.md).
+[roadmap](ROADMAP.md) and the [design documents](design/index.md); single decisions are ADRs
+([HTMX + SSE](adr/0001-htmx-sse.md), [desktop shell](adr/0002-desktop-shell.md)).
 
 ## Goal and boundaries
 
@@ -219,7 +219,8 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
 - Default: a `command` hook per event that runs `<python> -I -m relaybay.hook_client --url
   …/hooks/claude-code --token-file …` with the interpreter that runs relaybay (isolated mode, nothing
   on `PATH` needed). It reads the token file itself, so no token or environment variable is in the
-  settings file, and it is silent when relaybay is down.
+  settings file, and it is silent when relaybay is down. From a frozen build the command is the
+  bundled `relaybay-hook` (the same module, frozen alone) by its full path.
 - Optional `http` hooks (`relaybay setup --mode http`): Claude Code posts directly with
   `Authorization: Bearer ${RELAYBAY_TOKEN}` and `allowedEnvVars`.
 - `POST /hooks/claude-code` reads at most 256 KB, keeps only session id, event, `cwd`, source, tool
@@ -251,9 +252,26 @@ threat model and non-goals: [SPEC §9](SPEC.md#spec-security).
   site: the optional `docs` group (`mkdocs-material`).
 - All file I/O is explicit UTF-8; `pathlib` everywhere; Windows, macOS and Linux run in CI with
   Python 3.12 and 3.13.
-- No OS service: the user starts `relaybay serve` (or runs the Docker image). Wheel and sdist,
-  `uv tool install` / `uvx` / `pipx`, the Docker image and the tag-driven release workflow follow the
-  [packaging design](design/0003-packaging-and-release.md).
+- No OS service: the user starts `relaybay serve`, runs the Docker image, or starts the desktop
+  program. Wheel and sdist, `uv tool install` / `uvx` / `pipx`, the Docker image and the tag-driven
+  release workflow follow the [packaging design](design/0003-packaging-and-release.md).
+- `install.py` tells how this copy was installed (`install_kind()`: the desktop program per OS,
+  Docker, a uv tool, pipx, uvx, a checkout, pip). Upgrade hints, the updater, `doctor` and the hook
+  command depend on it.
+
+## Desktop program
+
+`relaybay.desktop` ([design 0016](design/0016-desktop-program.md),
+[ADR-0002](adr/0002-desktop-shell.md)) runs the same `create_app(settings)` in a server thread
+(`EmbeddedServer`) inside a process whose main thread belongs to the GUI loop (pywebview); a pystray
+icon carries the menu. `desktop.toml` in the per-user config folder holds the data folder, the
+server mode (embedded, or external: the program and the CLI talk to a remote server with a saved
+token) and start at login; `config.load_settings` reads it, so the CLI and the program find the same
+data. The frozen builds (PyInstaller onedir, `packaging/`) carry three executables:
+`relaybay`, `relaybay-desktop` and `relaybay-hook` (the hook forwarder alone, standard library
+only). From a frozen build, `relaybay setup` writes hooks that start that `relaybay-hook` by its full
+path; the program checks them read-only at each start and offers Settings → Reconnect Claude Code,
+which runs the same plan and write as `relaybay setup`.
 
 ## Repository layout
 
@@ -264,7 +282,10 @@ pyproject.toml  uv.lock  .github/workflows/{ci.yml, docs.yml, release.yml}  .git
 scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py record_gif.md
 src/relaybay/   cli.py config.py app.py security.py service.py events.py machine_setup.py
                 doctor.py demo.py markdown_import.py markdown_export.py hook_client.py logs.py
-                db/  domain/  mcp_server/  web/
+                install.py updates.py backup.py
+                db/  desktop/  domain/  mcp_server/  web/
+packaging/      relaybay.spec  launchers/  icons/  windows/  macos/  linux/
+examples/       intake/ (watchers)  compose.yaml (Docker server for the desktop client)
 tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/
 docs/           index.md SPEC.md ROADMAP.md architecture.md mcp-tools.md connect-claude-code.md
                 design/ adr/ reference/ getting-started/ how-to/ llms.txt PLAN.md (pointer)

@@ -1,0 +1,20 @@
+# relaybay server in Docker, for the desktop program in external mode on the same machine or on
+# a LAN. See docs/how-to/docker-server-with-desktop-client.md.
+#
+#   docker compose -f examples/compose.yaml up -d
+#   docker compose -f examples/compose.yaml exec -T relaybay relaybay token   # the token and links
+services:
+  relaybay:
+    image: ghcr.io/codenator81/relaybay:latest   # pin a version, for example :0.6.0
+    restart: unless-stopped
+    ports:
+      # Loopback only: reach it from other machines through TLS or an SSH tunnel (see the guide).
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - relaybay-data:/data   # relaybay.sqlite, token, config.toml, backups/
+    environment:
+      # Host names clients use in the URL, besides localhost and 127.0.0.1 (comma-separated).
+      RELAYBAY_ALLOWED_HOSTS: "board.example.lan"
+
+volumes:
+  relaybay-data:

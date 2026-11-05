@@ -66,7 +66,9 @@ nav:
       - Screenshots for review: how-to/screenshots-for-review.md
       - Troubleshooting: how-to/troubleshooting.md
       - Full access on a trusted machine: how-to/trusted-machine.md
-      - Remove the integration: how-to/uninstall.md
+      - Move to the desktop program: how-to/desktop-from-source-server.md
+      - Docker server, desktop client: how-to/docker-server-with-desktop-client.md
+      - Uninstall: how-to/uninstall.md
   - Reference:
       - Specification: SPEC.md
       - MCP tools guide: mcp-tools.md
@@ -98,4 +100,5 @@ nav:
           - Desktop program: design/0016-desktop-program.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
+          - Desktop shell: adr/0002-desktop-shell.md
       - Former plan: PLAN.md

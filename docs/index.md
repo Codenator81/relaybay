@@ -15,7 +15,10 @@ off.
   [install with your coding agent](getting-started/agent-install.md).
 - **How-to guides** — [troubleshooting](how-to/troubleshooting.md),
   [import and export markdown](how-to/markdown-import-export.md),
-  [phone and LAN access](how-to/lan-access.md), [remove the integration](how-to/uninstall.md).
+  [phone and LAN access](how-to/lan-access.md),
+  [move to the desktop program](how-to/desktop-from-source-server.md),
+  [Docker server with the desktop client](how-to/docker-server-with-desktop-client.md),
+  [uninstall](how-to/uninstall.md).
 - **Reference** — [specification](SPEC.md), [MCP tools guide](mcp-tools.md),
   [MCP reference](reference/mcp.md), [CLI](reference/cli.md),
   [configuration](reference/configuration.md).

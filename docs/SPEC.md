@@ -20,7 +20,7 @@ Contents:
 [10. Configuration](#spec-config) ·
 [11. Data model and migrations](#spec-data) ·
 [12. Intake and backlog](#spec-intake) ·
-[13. Desktop program (preview)](#spec-desktop)
+[13. Desktop program](#spec-desktop)
 
 <a id="spec-concepts"></a>
 
@@ -930,26 +930,31 @@ with matcher `*`). An installation without `PostToolUse` shows as "some events a
 check until apply runs again. With `--wake`, one more group in `Stop` for the wake-up hook.
 
 - `command` mode (default): runs the interpreter that runs relaybay, `<python> -I -m
-  relaybay.hook_client --url <base>/hooks/claude-code --token-file <data dir>/token`, 3 s timeout.
+  relaybay.hook_client --url <base>/hooks/claude-code --token-file <data dir>/token`, 3 s timeout;
+  from the installed program ([§13](#spec-desktop-setup)) the forwarder next to it instead,
+  `<install folder>/relaybay-hook --url <base>/hooks/claude-code --token-file <token file>`.
   Needs nothing on `PATH` and no environment variable. Shell quoting: single quotes on macOS and
-  Linux for paths with spaces, `$` or backticks; double quotes on Windows (a path with `$` or a
-  backtick is not supported there).
+  Linux for paths with spaces, `$` or backticks; double quotes on Windows, where a path with `$` or a
+  backtick makes the plan an error (nothing is written): both shells would expand it.
 - `http` mode: Claude Code posts itself to `<base>/hooks/claude-code` with
   `Authorization: Bearer ${RELAYBAY_TOKEN}` and `allowedEnvVars`, 2 s timeout; `RELAYBAY_TOKEN` must
   be set in Claude Code's environment.
 - **Marker:** an entry is relaybay's only when it is a command hook running `-m
-  relaybay.hook_client` (or `relaybay hook`) with `--url <scheme>://<host>:<port>/hooks/claude-code`,
+  relaybay.hook_client`, `relaybay-hook` (`relaybay-hook.exe`) or `relaybay hook` with `--url <scheme>://<host>:<port>/hooks/claude-code`,
   or an http hook whose URL path is exactly `/hooks/claude-code` on a loopback address or the
   configured host. The wake-up hook is relaybay's when it is that command with the
   `/hooks/claude-code/wait` URL followed by exactly `--wait`. No extra property is written; similar
   user hooks are never claimed.
 - Nothing else in the file is changed, reordered or removed; indentation and line endings are kept;
-  a symlinked file is written through to its target. Running apply again changes nothing; a new port
-  or data folder updates only relaybay's entries.
+  a symlinked file is written through to its target. Running apply again changes nothing; a new port,
+  data folder or install updates only relaybay's entries, in place (the entries of a source checkout
+  or another install become this install's, never a second set). An existing wake-up hook is
+  rewritten with this install's forwarder too, so it never keeps a stale path.
 - **Backup** before every write: `settings.json.relaybay-backup-<YYYYMMDD-HHMMSS>` next to the file
   (`-<n>` appended if the name exists).
 - Refused: a file that is not UTF-8, not valid JSON, or whose `hooks` are not in the documented
-  shape. The token is never written into the settings.
+  shape; an apply from an installed program that runs from a place that goes away
+  ([§13](#spec-desktop-setup)). The token is never written into the settings.
 - **Approved plan:** with `--expect <hash>` (and always from the board) the write happens only if
   the file and the plan still hash to what was shown; without it, only changes during the run are
   detected.
@@ -963,7 +968,8 @@ check until apply runs again. With `--wake`, one more group in `Stop` for the wa
 **Check items:** relaybay server reachable with the same token (`/healthz` `token_id`); MCP
 `initialize` accepted with the token; a synthetic hook event accepted; relaybay's hooks present in
 the user settings for this base URL; in command mode, the hook's interpreter imports
-`relaybay.hook_client`; in http mode, `RELAYBAY_TOKEN` set to the token in this environment; the
+`relaybay.hook_client` (a `relaybay-hook` answers `--version` with this relaybay's version;
+another version means the hooks point at another install); in http mode, `RELAYBAY_TOKEN` set to the token in this environment; the
 wake-up hook (an ok line naming the verified Claude Code version and the fallback risk, only when installed;
 also in `doctor`); the MCP server registered for Claude Code.
 
@@ -971,8 +977,15 @@ also in `doctor`); the MCP server registered for Claude Code.
 
 **`relaybay doctor [--json]`** (`--home`, `--port`, `--claude-home`) reads and never writes; unlike
 `setup --check` it never creates the token and it reports Claude Code's files even when the server
-is down. Items, in order: `relaybay` (version and interpreter), `Python` (at least 3.12), `OS`,
-`data folder` (exists, writable, whether `config.toml` is there), `token file` (present, not empty,
+is down. Items, in order: `relaybay` (`<version> (<install kind>: <executable>)`, the kind one of
+`desktop-windows`, `desktop-macos`, `desktop-deb`, `docker`, `uv-tool`, `pipx`, `uvx`, `source`,
+`pip`), `install` (kind and folder; fails when the installed program runs from a place that goes
+away), `Python` (at least 3.12), `OS`,
+`data folder` (exists, writable, whether `config.toml` is there), `data folder source` (`--home`,
+`RELAYBAY_HOME`, `data_dir` in `desktop.toml` or the default), `server mode`
+(`embedded (<base url>)` or `external <url> (desktop.toml)`), `hook executable` (the installed program's
+`relaybay-hook` exists and answers `--version` with the same version; informational elsewhere),
+`desktop` (start at login on or off and where, the `desktop.toml` path), `token file` (present, not empty,
 on POSIX not readable by others), `Claude Code` (on `PATH`, version at least the minimum supported),
 `desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
@@ -1875,12 +1888,19 @@ flags: [configuration reference](reference/configuration.md); policy keys:
 
 <a id="spec-distribution"></a>
 
+The data directory itself is `--home`, else `RELAYBAY_HOME`, else `data_dir` in `desktop.toml`
+([§13](#spec-desktop-settings)), else the per-user data dir; `relaybay doctor` names which one.
+
 **Distribution.** The version lives only in `pyproject.toml`; `relaybay --version`, `/healthz` and
-the MCP server info read it from the installed package. The wheel and sdist carry the templates,
+the MCP server info read it from the installed package (the frozen program carries the package
+metadata). The wheel and sdist carry the templates,
 static assets and migrations; `python -m relaybay` is the same as `relaybay`. The Docker image
 (`ghcr.io/codenator81/relaybay`, `linux/amd64` and `linux/arm64`) runs `relaybay serve` as a
 non-root user with `RELAYBAY_HOME=/data` (a volume), `RELAYBAY_HOST=0.0.0.0`, port 8765 and a
-`/healthz` health check.
+`/healthz` health check, and sets `RELAYBAY_DISTRIBUTION=docker` so it knows its install kind. The
+desktop program ships as installers ([§13](#spec-desktop-install)) built from one frozen folder with
+three executables: `relaybay` (the command line), `relaybay-desktop` (the program) and
+`relaybay-hook` (the hook forwarder, standard library only).
 
 <a id="spec-data"></a>
 
@@ -2078,22 +2098,41 @@ import of the export changes nothing.
 
 <a id="spec-desktop"></a>
 
-## 13. Desktop program (preview)
+## 13. Desktop program
 
-The full section comes with the installers; the design is [0016](design/0016-desktop-program.md).
-`relaybay desktop` (needs the `relaybay[desktop]` extra, else it prints how to install it and exits
-`2`) runs the server of `relaybay serve` in a thread of a program with a board window (the system
+The design is [0016](design/0016-desktop-program.md). macOS and Linux builds are beta: checked by
+CI smoke tests only.
+
+The installed program (`relaybay-desktop`) and `relaybay desktop` (needs the `relaybay[desktop]`
+extra, else it prints how to install it and exits `2`) run the server of `relaybay serve` in a thread of a program with a board window (the system
 web view) and a tray icon. The window signs in with the login link and keeps no cookies; closing it
 hides it, **Quit relaybay** in the tray stops the server and the program. The tray menu: Open board,
 Open in browser (the link `relaybay token` prints), Restart server (Reconnect for an external
 server), Logs (`<data dir>/logs/relaybay.log`, 5 x 1 MB, the login token redacted), Settings (Start
-at login, the data folder, the server and the update check in a local form; Check for updates),
+at login, the data folder, the server and the update check in a local form, and Reconnect Claude
+Code, [below](#spec-desktop-setup); Check for updates),
 Update to X.Y.Z when a newer release is out ([below](#spec-updates)) and Quit. When the port is taken the
 program starts no second server: the window names the holder (another relaybay and its version, or
 another program). One program per user: a second start shows the first one's window and exits;
 `relaybay desktop --quit` asks the running one to quit. `--background` starts hidden; start at login
 writes the Windows Run key, a macOS LaunchAgent or an XDG autostart file, rewritten with the current
 executable on each start.
+
+<a id="spec-desktop-install"></a>
+
+**Installers.** A release attaches `relaybay-<v>-windows-x64-setup.exe`,
+`relaybay-<v>-macos-arm64.dmg` and `relaybay_<v>_amd64.deb` with `SHA256SUMS.txt`; none is signed
+with a certificate. The program is `relaybay-desktop` (the bundle's executable on macOS); the
+command line `relaybay` and the hook forwarder `relaybay-hook` sit next to it.
+
+| OS | Installed to | Notes |
+|---|---|---|
+| Windows x64 | `%LOCALAPPDATA%\Programs\relaybay` (per user, no admin rights) | Start Menu entry; options "Start relaybay at login" (off) and "Add relaybay to PATH for this user" (on). SmartScreen warns about an unknown publisher: **More info → Run anyway**. |
+| macOS arm64 (beta) | `/Applications/relaybay.app` (dragged from the `.dmg`) | Ad-hoc signed, not notarized: the first start is blocked; System Settings → Privacy & Security → **Open Anyway**, or `xattr -dr com.apple.quarantine /Applications/relaybay.app`. |
+| Linux amd64 `.deb` (beta) | `/opt/relaybay`, `/usr/bin/relaybay` | `sudo apt install ./relaybay_<v>_amd64.deb`. Tray icon and the board in the browser, no window; GNOME shows the tray only with the AppIndicator extension. |
+
+Uninstalling (Windows: Settings → Apps; macOS: delete the app; Linux: `sudo apt remove relaybay`)
+keeps the data folder and `desktop.toml`; `relaybay setup --remove` takes the hooks out first.
 
 <a id="spec-desktop-settings"></a>
 
@@ -2109,6 +2148,31 @@ log): the token travels in clear text. `data_dir` must be an absolute path. A se
 over `desktop.toml`: keys of a newer version are skipped, a broken file is a logged warning and its
 settings are left out; the CLI names the problem, and `relaybay desktop config` with options writes
 the file anew. Keys: [configuration reference](reference/configuration.md#desktop-program-desktoptoml).
+
+<a id="spec-desktop-setup"></a>
+
+**Setup from the installed program.** `relaybay setup` run by the installed `relaybay`, the
+board's Integrations page of its embedded server and Reconnect (below) write command hooks that
+start the `relaybay-hook` next to the program by its full path ([§5](#spec-setup-writes)):
+`%LOCALAPPDATA%\Programs\relaybay\relaybay-hook.exe` on Windows,
+`/Applications/relaybay.app/Contents/MacOS/relaybay-hook` on macOS, `/opt/relaybay/relaybay-hook`
+on Linux. Entries of a source checkout or another install are replaced in place. Setup writes
+nothing (an error in the plan) while the program runs from a place that goes away: a macOS bundle
+under `/Volumes/` (the mounted disk image) or in `AppTranslocation` ("move relaybay.app to
+/Applications first"), or a program under the temp folder or `Downloads` (install it with the
+setup program or the `.deb`); `--remove` always works. In external mode the hooks point at
+`server_url` and the `external-token` file, and the MCP registration stays the printed
+`claude mcp add` command with the external URL.
+
+**Start-up check and Reconnect.** At each start the program reads relaybay's entries in Claude
+Code's files (the Claude Code items of `doctor`; a failing item is a log line). When the command
+hooks start a forwarder that is missing, fails or answers another version, or, in the installed
+program, is not its own `relaybay-hook`, the tray shows "Claude Code hooks point to `<path>`: open
+Settings -> Reconnect". The program never writes them on its own. Settings → **Reconnect Claude
+Code** shows the plan and diff of `relaybay setup` for this program (its forwarder, its server URL
+and token file, the hook type already installed or command) and writes on **Apply** exactly the
+plan shown (its hash), with the backup of [§5](#spec-setup-writes); a file changed meanwhile is
+refused.
 
 <a id="spec-updates"></a>
 

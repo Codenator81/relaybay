@@ -7,14 +7,14 @@ creates the token, and it reports the Claude Code files even when the server is 
 import json
 import os
 import platform
-import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import OpenerDirector, ProxyHandler, build_opener
 
-from relaybay import __version__
+from relaybay import install
 from relaybay.config import Settings
 from relaybay.domain.rules import Rules
 from relaybay.machine_setup import (
@@ -24,6 +24,8 @@ from relaybay.machine_setup import (
     claude_paths,
     config_checks,
     detect,
+    hook_program_check,
+    run_quiet,
     server_checks,
 )
 
@@ -104,20 +106,70 @@ def _rules_check(settings: Settings, health: dict[str, Any] | None) -> Check:
     )
 
 
+HOME_SOURCES = {
+    "flag": "--home",
+    "environment": "RELAYBAY_HOME",
+    "desktop.toml": "data_dir in desktop.toml",
+    "default": "the per-user data folder (no --home, RELAYBAY_HOME or desktop.toml data_dir)",
+}
+
+
+def _install_check() -> Check:
+    where = f"{install.install_kind()} at {install.install_path()}"
+    problem = install.location_problem()
+    if problem:
+        return Check(False, "install", f"{where}: {problem}")
+    return Check(True, "install", f"{where} (stable location)")
+
+
+def _server_mode_check(settings: Settings) -> Check:
+    if settings.external_url:
+        return Check(True, "server mode", f"external {settings.external_url} (desktop.toml)")
+    return Check(True, "server mode", f"embedded ({settings.base_url})")
+
+
+def _hook_executable_check(run: Callable[..., Any]) -> Check:
+    name = "hook executable"
+    executable = install.hook_executable()
+    if executable is None:
+        python = Path(sys.executable).as_posix()
+        detail = f"not a frozen build: hooks run {python} -I -m relaybay.hook_client"
+        return Check(True, name, detail)
+    if not executable.is_file():
+        return Check(False, name, f"{executable} is missing; reinstall relaybay")
+    return hook_program_check(str(executable), run, name)
+
+
+def _desktop_check(environ: Mapping[str, str]) -> Check:
+    from relaybay.desktop.autostart import Autostart
+    from relaybay.desktop.settings import config_dir, settings_path
+
+    path = settings_path(config_dir(environ))
+    file = str(path) if path.is_file() else f"{path} (not written yet)"
+    try:
+        entry = Autostart()
+        autostart = f"on ({entry.location()})" if entry.is_enabled() else "off"
+    except (OSError, ValueError, KeyError) as exc:
+        # A broken LaunchAgent plist (macOS) is reported here, never a doctor crash.
+        autostart = f"unknown ({exc!r})"
+    return Check(True, "desktop", f"start at login {autostart}; settings {file}")
+
+
 def doctor_checks(
     settings: Settings,
     *,
     detection: Detection | None = None,
     opener: OpenerDirector | None = None,
     environ: Mapping[str, str] = os.environ,
-    run: Callable[..., Any] = subprocess.run,
+    run: Callable[..., Any] = run_quiet,
 ) -> list[Check]:
     """All items, each green or red. Reads files and talks to the server; writes nothing."""
     opener = opener or build_opener(ProxyHandler({}))  # localhost: never through a proxy
     found = detection if detection is not None else detect()
     python = sys.version_info[:3]
     checks = [
-        Check(True, "relaybay", f"{__version__} ({sys.executable})"),
+        Check(True, "relaybay", install.where()),
+        _install_check(),
         Check(
             python >= MIN_PYTHON,
             "Python",
@@ -125,6 +177,10 @@ def doctor_checks(
         ),
         Check(True, "OS", f"{platform.system()} {platform.release()} ({sys.platform})"),
         _data_dir_check(settings),
+        Check(True, "data folder source", HOME_SOURCES.get(settings.home_source, "?")),
+        _server_mode_check(settings),
+        _hook_executable_check(run),
+        _desktop_check(environ),
     ]
     token_item, token = _token_check(settings)
     checks.append(token_item)

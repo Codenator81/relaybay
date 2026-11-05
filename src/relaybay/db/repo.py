@@ -2040,7 +2040,7 @@ async def switcher_tasks(conn: aiosqlite.Connection, limit: int) -> list[tuple[s
     rows = await _all(
         conn,
         "SELECT t.key, t.title, t.stage, p.slug FROM task t JOIN project p ON p.id = t.project_id"
-        " ORDER BY t.updated_at DESC LIMIT ?",
+        " ORDER BY t.updated_at DESC, t.id DESC LIMIT ?",
         (limit,),
     )
     return [(r["key"], r["title"], r["stage"], r["slug"]) for r in rows]

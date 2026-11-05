@@ -99,13 +99,14 @@ What it writes, and what it never touches:
 
 - One hook entry for each of `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
   `Notification`, `Stop` and `SessionEnd`, appended after the hooks you already have. An entry is relaybay's only
-  when it is a command hook that runs `-m relaybay.hook_client` (or `relaybay hook`) with
+  when it is a command hook that runs `-m relaybay.hook_client`, `relaybay-hook` (or `relaybay hook`) with
   `--url <scheme>://<host>:<port>/hooks/claude-code`, or an http hook whose URL path is exactly
   `/hooks/claude-code` on a loopback address or relaybay's configured host. Your own hooks with a
   similar name or path are never claimed. Nothing else in the file is changed, reordered or
   removed, and the file keeps its indentation and line endings; a symlinked settings file is
   written through to its target. Running `--apply`
-  again changes nothing; a new port or data folder updates only relaybay's entries.
+  again changes nothing; a new port, data folder or install updates only relaybay's entries, in
+  place (moving from a source checkout to the desktop program never leaves two sets).
 - Every changed file is copied first to `settings.json.relaybay-backup-<timestamp>`. A file that
   is not UTF-8, not valid JSON, or whose `hooks` are not in the documented shape, is left
   alone.
@@ -114,15 +115,19 @@ What it writes, and what it never touches:
   `RELAYBAY_TOKEN` must be set in the environment Claude Code starts with (for the desktop app: a
   user environment variable). The **command hook** runs a small forwarder with the Python that runs
   relaybay (`<python> -I -m relaybay.hook_client --url … --token-file …`), which reads the token
-  file itself; nothing has to be on `PATH`.
+  file itself; nothing has to be on `PATH`. From the installed desktop program it runs the bundled
+  forwarder instead (`<install folder>/relaybay-hook --url … --token-file …`), which starts faster.
+  Setup refuses to write that while the program runs from a mounted disk image, macOS's
+  translocation, the temp or the Downloads folder: install it first.
 - The command hook is the default: it needs no environment variable and is silent when
   relaybay is down. `--mode http` (or the Hook type select on the board) writes http hooks instead;
   the plan then lists what they need.
 - Shell quoting: on macOS and Linux, paths with spaces, `$` or backticks are single-quoted. On
   Windows Claude Code runs the command through Git Bash or PowerShell; paths with spaces are
-  double-quoted (a Python path with `$` or a backtick is not supported there), and PowerShell
+  double-quoted (a path with `$` or a backtick is refused: the plan shows an error), and PowerShell
   needs the interpreter path without spaces. `--check` runs the hook's interpreter once
-  (`-I -c "import relaybay.hook_client"`) to prove it still works.
+  (`-I -c "import relaybay.hook_client"`) to prove it still works, or asks
+  `relaybay-hook --version` and compares the version with its own.
 - The MCP server is not written: `~/.claude.json` belongs to Claude Code. Setup checks whether a
   user-scope `relaybay` server is registered there and otherwise prints the `claude mcp add`
   command from step 1.

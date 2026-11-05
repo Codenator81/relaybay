@@ -11,6 +11,8 @@ form { display: grid; gap: 14px; max-width: 560px; }
 .row .field { flex: 1; }
 .status { min-height: 1.4em; }
 .status.bad { color: var(--bad); }
+#claude { margin-top: 18px; max-width: 560px; }
+#plan { max-height: 260px; overflow: auto; white-space: pre; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -50,6 +52,17 @@ form { display: grid; gap: 14px; max-width: 560px; }
   </div>
   <p id="status" class="status" role="status"></p>
 </form>
+
+<div id="claude" class="panel">
+  <h2>Claude Code</h2>
+  <p class="muted">Hooks in Claude Code's user settings start the forwarder of this program and send to its server. Reconnect shows the change first, the same plan as <code>relaybay setup</code>; nothing is written until you click Apply (with a backup).</p>
+  <div class="row">
+    <button class="btn" type="button" id="reconnect">Reconnect Claude Code</button>
+    <button class="btn primary" type="button" id="apply" hidden>Apply</button>
+  </div>
+  <pre id="plan" hidden></pre>
+  <p id="claude_status" class="status" role="status"></p>
+</div>
 <script>
 const $ = (id) => document.getElementById(id);
 function showMode() { $("external").hidden = $("server_mode").value !== "external"; }
@@ -84,6 +97,30 @@ $("form").addEventListener("submit", async (event) => {
   });
   $("token").value = "";
   say(result.message, !result.ok);
+});
+
+let planHash = "";
+function sayClaude(text, bad) { $("claude_status").textContent = text; $("claude_status").className = "status" + (bad ? " bad" : ""); }
+$("reconnect").addEventListener("click", async () => {
+  sayClaude("Reading the settings...");
+  $("apply").hidden = true;
+  const plan = await pywebview.api.reconnect_plan();
+  $("plan").textContent = plan.text || "";
+  $("plan").hidden = !plan.text;
+  planHash = plan.hash || "";
+  $("apply").disabled = false;
+  $("apply").hidden = !(plan.ok && planHash);
+  sayClaude(plan.message, !plan.ok);
+});
+$("apply").addEventListener("click", async () => {
+  // Disabled before the call: a second click must not write (or be refused) a second time.
+  $("apply").disabled = true;
+  const expect = planHash;
+  planHash = "";
+  sayClaude("Writing...");
+  const result = await pywebview.api.reconnect_apply(expect);
+  $("apply").hidden = true;
+  sayClaude(result.message, !result.ok);
 });
 </script>
 </body>
