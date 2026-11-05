@@ -83,8 +83,9 @@ Something off? `relaybay doctor`.
   Policy, `policy_get`). A trusted machine can give agents full access with the guard only
   journaling and keep harmless test passwords on local and test stands (masked, not sent to agents
   unless you say so, never on live). Agents propose changes with `policy_propose`.
-- **Docs & rules** — per project, versioned documents (spec, status, runbooks) with section
-  anchors and diffs, decisions that supersede each other instead of being deleted, memory notes
+- **Docs & rules** — per project, versioned documents (spec, status, task notes, runbooks) with
+  section anchors and diffs, edited on the board or by agents, linked from tasks down to a section,
+  or pointing at the repository they live in; decisions that supersede each other instead of being deleted, memory notes
   and blocks agents keep for the next session, full-text search over all of it, and the rules.
 - **Plan and checkpoints** — agents write the task's plan (`plan_set`) and mark each step done
   with one line, `as planned` or `deviation: why`; you accept the plan in the task's Plan tab,

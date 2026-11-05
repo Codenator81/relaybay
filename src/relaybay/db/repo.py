@@ -2464,6 +2464,7 @@ def _document(row: aiosqlite.Row) -> Document:
         version=row["version"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        source_url=row["source_url"],
     )
 
 
@@ -2520,13 +2521,19 @@ async def list_document_versions(
 
 
 async def insert_document(
-    conn: aiosqlite.Connection, project_id: int, slug: str, title: str, kind: str, now: str
+    conn: aiosqlite.Connection,
+    project_id: int,
+    slug: str,
+    title: str,
+    kind: str,
+    now: str,
+    source_url: str | None = None,
 ) -> int:
     """A document without versions yet (version 0); `add_document_version` gives it text."""
     cur = await conn.execute(
-        "INSERT INTO document (project_id, slug, title, kind, version, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, 0, ?, ?)",
-        (project_id, slug, title, kind, now, now),
+        "INSERT INTO document (project_id, slug, title, kind, version, created_at, updated_at,"
+        " source_url) VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+        (project_id, slug, title, kind, now, now, source_url),
     )
     return int(cur.lastrowid or 0)
 
@@ -2543,6 +2550,7 @@ async def add_document_version(
     section: str | None,
     title: str,
     kind: str,
+    source_url: str | None,
     now: str,
 ) -> None:
     await conn.execute(
@@ -2551,8 +2559,9 @@ async def add_document_version(
         (document_id, version, body, author, reason, base_version, section, now),
     )
     await conn.execute(
-        "UPDATE document SET version = ?, title = ?, kind = ?, updated_at = ? WHERE id = ?",
-        (version, title, kind, now, document_id),
+        "UPDATE document SET version = ?, title = ?, kind = ?, source_url = ?, updated_at = ?"
+        " WHERE id = ?",
+        (version, title, kind, source_url, now, document_id),
     )
 
 

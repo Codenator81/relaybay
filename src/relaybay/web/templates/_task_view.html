@@ -18,9 +18,20 @@
       {%- if t.tracker_url and not t.tracker_ref %}{% set href = t.tracker_url|http_url %}{% if href %} <a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ t.tracker_name or href }}</a>{% endif %}{% endif %}
       {%- if t.tracker_ref and not t.tracker_logged and not is_done %} <span class="muted">work log not entered yet</span>{% endif %}</dd>
     {% endif %}
-    {% if t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code></dd>{% endif %}
+    {%- set d = detail.document %}
+    {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
+    {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
     <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
   </dl>
+
+  {% if d and d.doc %}
+  <details class="panel task-doc">
+    <summary><h2>Document: {{ d.doc.title }}{% if d.link.anchor and not d.ref.broken %} · #{{ d.link.anchor }}{% endif %}</h2></summary>
+    <p class="muted doc-meta"><code>{{ d.doc.slug }}</code> · {{ d.doc.kind }} · version {{ d.doc.version }} · <a href="/p/{{ d.doc.project_slug }}/docs/{{ d.doc.slug }}#history">history</a>{% if d.doc.source_url and d.doc.source_url|http_url %} · lives in the repository: <a href="{{ d.doc.source_url|http_url }}" target="_blank" rel="noopener noreferrer">{{ d.doc.source_url }}</a>{% endif %}</p>
+    {% if d.ref.broken %}<p class="muted">No section <code>#{{ d.link.anchor }}</code>; the whole document follows.</p>{% endif %}
+    {% if d.text %}<div class="markdown doc-body">{{ d.text|document }}</div>{% else %}<p class="muted">No text here.</p>{% endif %}
+  </details>
+  {% endif %}
 
   {% if detail.tracker_history %}
   <section class="panel">
@@ -106,13 +117,13 @@
 
   <section class="panel">
     <h2>Description</h2>
-    {% if t.description %}<div class="markdown task-description">{{ t.description|markdown }}</div>
+    {% if t.description %}<div class="markdown task-description">{{ t.description|markdown(detail.doc_refs) }}</div>
     {% else %}<p class="muted">No description yet.</p>{% endif %}
   </section>
 
   <section class="panel">
     <h2>Done so far</h2>
-    {% if t.progress %}<div class="markdown task-progress">{{ t.progress|markdown }}</div>
+    {% if t.progress %}<div class="markdown task-progress">{{ t.progress|markdown(detail.doc_refs) }}</div>
     {% else %}<p class="muted">No progress summary yet.</p>{% endif %}
   </section>
 
@@ -125,7 +136,7 @@
         {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
         <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
       </header>
-      <div class="markdown">{{ r.body_md|markdown }}</div>
+      <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
     </article>
     {% else %}
     <p class="muted">No reports yet.</p>

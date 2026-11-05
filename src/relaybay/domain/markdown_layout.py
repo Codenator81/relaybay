@@ -8,7 +8,7 @@ from collections.abc import Container
 from dataclasses import dataclass, field
 from typing import Any
 
-from relaybay.domain.memory import NOTE_KINDS, sections
+from relaybay.domain.memory import DOC_KINDS, NOTE_KINDS, sections
 from relaybay.domain.models import Decision, Task
 from relaybay.domain.stages import Stage
 
@@ -23,8 +23,6 @@ TITLE_SLUG_MAX = 60
 _RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul", "memory", *(f"{d}{n}" for d in ("com", "lpt") for n in range(10))}
 )
-
-DOC_KINDS = ("spec", "status", "runbook", "adr")
 
 COLUMNS = ("project", "ref", "task", "stage", "waiting_on", "next_step", "document")
 COLUMN_ALIASES = {

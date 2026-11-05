@@ -19,6 +19,10 @@ SEARCH_KINDS = ("note", "decision", "doc", "report", "comment")
 DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 DOC_BODY_MAX = 200_000
 DOC_KIND_MAX = 40
+# Well-known kinds, in the order the Docs & rules page groups them; any other kind is free text
+# and its group follows these, by name.
+DOC_KINDS = ("spec", "status", "task", "brief", "runbook", "adr", "retro")
+SOURCE_URL_MAX = 500
 TITLE_MAX = 200
 REASON_MAX = 500
 NOTE_BODY_MAX = 8_000
@@ -48,9 +52,28 @@ class Document:
     version: int
     created_at: str
     updated_at: str
+    source_url: str | None = None  # set: the document lives in a repository, see there
     body: str = ""  # the text of the version that was loaded (current unless asked otherwise)
     shown_version: int = 0
     author: str | None = None  # of the shown version
+
+
+@dataclass(frozen=True, slots=True)
+class DocRef:
+    """Where a `relaybay://doc/...` link points on the board: the document page (with the
+    section's anchor), or nowhere when the document does not exist; `broken` says what is wrong."""
+
+    href: str | None
+    broken: str | None = None
+
+
+def group_documents(items: list[Document]) -> list[tuple[str, list[Document]]]:
+    """Documents by kind: the well-known kinds in their order, then the others by name."""
+    groups: dict[str, list[Document]] = {}
+    for d in items:
+        groups.setdefault(d.kind, []).append(d)
+    known = [k for k in DOC_KINDS if k in groups]
+    return [(k, groups[k]) for k in [*known, *sorted(k for k in groups if k not in DOC_KINDS)]]
 
 
 @dataclass(slots=True)

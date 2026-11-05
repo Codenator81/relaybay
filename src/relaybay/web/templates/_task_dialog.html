@@ -15,7 +15,7 @@
   </header>
   <div class="dialog-body" role="tabpanel" id="panel-overview-{{ t.key }}" aria-labelledby="tab-overview-{{ t.key }}"{% if on_review or on_plan %} hidden{% endif %}>
     {% include "_task_view.html" %}
-    {% with t = detail.task, comments = detail.comments %}{% include "_comments.html" %}{% endwith %}
+    {% with t = detail.task, comments = detail.comments, doc_refs = detail.doc_refs %}{% include "_comments.html" %}{% endwith %}
     <details class="panel dialog-edit">
       <summary>Edit task</summary>
       {% with t = detail.task %}{% include "_task_form.html" %}{% endwith %}

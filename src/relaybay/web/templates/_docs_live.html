@@ -1,5 +1,5 @@
 {#- Docs & rules, the live part: documents, decisions, memory notes. Expects: project,
-    documents, decisions (current), superseded, notes (current), old_notes. Refetched on
+    documents, document_groups (by kind), decisions (current), superseded, notes (current), old_notes. Refetched on
     document.*, decision.*, memory.*, project.pulse_set events. -#}
 <div id="docs-live" hx-get="/p/{{ project.slug }}/docs-live" hx-trigger="rb:refresh" hx-swap="outerHTML">
   <section class="panel" id="pulse">
@@ -15,14 +15,17 @@
   <section class="panel" id="documents">
     <h2>Documents <span class="col-count">{{ documents|length }}</span></h2>
     {% if documents %}
+    {% for kind, items in document_groups %}
+    <h3 class="doc-kind">{{ kind }} <span class="col-count">{{ items|length }}</span></h3>
     <ul class="inbox-list doc-list">
-      {% for d in documents %}
+      {% for d in items %}
       <li class="inbox-row doc-row">
         <a class="inbox-title doc-title" href="/p/{{ project.slug }}/docs/{{ d.slug }}"><strong>{{ d.title }}</strong></a>
-        <span class="muted doc-meta"><code>{{ d.slug }}</code> · {{ d.kind }} · version {{ d.version }} · updated <time datetime="{{ d.updated_at }}" data-age title="{{ d.updated_at[:19] }}Z">{{ d.updated_at|age }}</time></span>
+        <span class="muted doc-meta"><code>{{ d.slug }}</code> · version {{ d.version }} · updated <time datetime="{{ d.updated_at }}" data-age title="{{ d.updated_at[:19] }}Z">{{ d.updated_at|age }}</time>{% if d.source_url %} · lives in the repository{% endif %}</span>
       </li>
       {% endfor %}
     </ul>
+    {% endfor %}
     {% else %}
     <p class="muted">No documents yet. Agents write them with <code>doc_update</code> (base_version 0 creates one).</p>
     {% endif %}

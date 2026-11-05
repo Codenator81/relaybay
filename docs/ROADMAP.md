@@ -59,7 +59,7 @@ Ships when a coordinator runs its daily work from relaybay.
 | Map (structure and "now" views) and Usage | done | [0010](design/0010-map-and-usage.md) |
 | Rules versioning, `rules_update` / `rules_propose`, Settings → Rules, MCP prompts (1.5b–c) | done | [0002](design/0002-working-rules.md) |
 | Ctrl+K quick switcher, saved filters | done | [0004](design/0004-navigation.md) |
-| Project documents in the database (SPEC, STATUS, TASK) and moving a markdown coordinator setup over | later | [0011](design/0011-docs-in-database.md) |
+| Project documents in the database (SPEC, STATUS, TASK) and moving a markdown coordinator setup over | done | [0011](design/0011-docs-in-database.md) |
 
 ## 0.5.0 — intake
 

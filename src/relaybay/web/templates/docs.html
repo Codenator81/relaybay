@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {#- Project → Docs & rules. Expects: project, documents, decisions, superseded, notes,
-    old_notes, blocks, global_blocks, rules (markdown), q, hits, search_error, optional error +
-    error_target (the block form it belongs to), draft (block body by target), message.
-    Block edits are plain form posts from a browser (cookie + CSRF). -#}
+    old_notes, document_groups, doc_kinds, blocks, global_blocks, rules (markdown), q, hits,
+    search_error, optional error + error_target (the form it belongs to), draft (typed text by
+    target; `doc-new-<field>` for the new document form), message.
+    Block and document edits are plain form posts from a browser (cookie + CSRF). -#}
 {%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
 {%- macro block_form(b, scope) -%}
 {%- set target = ("block-" ~ scope ~ "-" ~ b.label) if b else "block-new" %}
@@ -90,6 +91,36 @@
     {% endif %}
   </section>
   {% endif %}
+
+  <details class="panel doc-add" id="doc-new"{% if error and error_target == "doc-new" %} open{% endif %}>
+    <summary class="btn">New document</summary>
+    <form class="task-form doc-new-form" method="post" action="/p/{{ project.slug }}/docs/new">
+      {{ hidden_csrf() }}
+      {% if error and error_target == "doc-new" %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+      <div class="field-row">
+        <label class="field"><span>Name</span>
+          <input name="doc" required maxlength="63" pattern="[a-z0-9][a-z0-9\-]*" placeholder="spec" spellcheck="false" value="{{ draft.get('doc-new-doc', '') }}">
+        </label>
+        <label class="field"><span>Kind</span>
+          <input name="kind" maxlength="40" list="doc-kinds" placeholder="spec" spellcheck="false" value="{{ draft.get('doc-new-kind', '') }}">
+          <datalist id="doc-kinds">{% for k in doc_kinds %}<option value="{{ k }}">{% endfor %}</datalist>
+        </label>
+      </div>
+      <label class="field"><span>Title <span class="muted">· default: the first <code>#</code> heading</span></span>
+        <input name="title" maxlength="200" value="{{ draft.get('doc-new-title', '') }}">
+      </label>
+      <label class="field"><span>Lives in a repository <span class="muted">· optional http(s) link; the board then links to it and does not edit it</span></span>
+        <input name="source_url" type="url" maxlength="500" placeholder="https://git.example.com/acme-shop/blob/main/docs/deploy.md" value="{{ draft.get('doc-new-source_url', '') }}">
+      </label>
+      <label class="field"><span>Text <span class="muted">· markdown; <code>-</code> for none when it lives in a repository</span></span>
+        <textarea name="body" rows="10" required>{{ draft.get('doc-new-body', '') }}</textarea>
+      </label>
+      <label class="field"><span>Reason</span>
+        <input name="reason" required maxlength="500" placeholder="First draft" value="{{ draft.get('doc-new-reason', '') }}">
+      </label>
+      <div class="form-actions"><button type="submit" class="btn primary">Create document</button></div>
+    </form>
+  </details>
 
   {% include "_docs_live.html" %}
 

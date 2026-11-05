@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{#- Edit a project document, whole or one section. Expects: project, doc, section (anchor or
+    None), text (the textarea), base_version (the version the save starts from), reason,
+    optional error, note and current (the current text after a conflict, read together with
+    base_version, shown to merge). A plain form post (cookie + CSRF). -#}
+{% block title %}Edit {{ doc.title }} · {{ project.name }} · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ project.slug }}">{{ project.name }}</a><span class="crumb-sep">/</span><a class="crumb" href="/p/{{ project.slug }}/docs">Docs &amp; rules</a><span class="crumb-sep">/</span><a class="crumb" href="/p/{{ project.slug }}/docs/{{ doc.slug }}">{{ doc.slug }}</a><span class="crumb-sep">/</span><span class="crumb">edit</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" data-project="{{ project.slug }}">
+  <div class="page-head">
+    <h1>Edit {{ doc.title }}{% if section %} · <code>#{{ section }}</code>{% endif %}</h1>
+    <a class="action" href="/p/{{ project.slug }}/docs/{{ doc.slug }}{% if section %}#{{ section }}{% endif %}">Cancel</a>
+  </div>
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {% if note %}<p class="form-warning" role="status">{{ note }}</p>{% endif %}
+  {% if current is not none %}
+  <section class="panel doc-current">
+    <h2>Current {{ "section" if section else "text" }}, version {{ base_version }}</h2>
+    <p class="muted">Someone saved a newer version while you were editing. Your text is kept below: merge the current one into it and save again.</p>
+    <pre class="doc-current-text">{{ current }}</pre>
+  </section>
+  {% endif %}
+  <form class="task-form doc-edit-form" method="post" action="/p/{{ project.slug }}/docs/{{ doc.slug }}/edit">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="base_version" value="{{ base_version }}">
+    {% if section %}<input type="hidden" name="section" value="{{ section }}">{% endif %}
+    <label class="field"><span>{{ "Section" if section else "Document" }} <span class="muted">· markdown{% if section %}; start with a heading to rename the section, or write only the text under it{% endif %}</span></span>
+      <textarea name="body" rows="24" required spellcheck="false">{{ text }}</textarea>
+    </label>
+    <label class="field"><span>Reason <span class="muted">· what changed and why, one line</span></span>
+      <input name="reason" required maxlength="500" value="{{ reason }}">
+    </label>
+    <div class="form-actions"><button type="submit" class="btn primary">Save</button></div>
+  </form>
+</main>
+{% endblock %}

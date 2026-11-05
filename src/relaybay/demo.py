@@ -120,7 +120,8 @@ async def seed(service: Service) -> int:
         "acme-shop",
         "Gift cards at checkout",
         description="Let shoppers pay part of an order with a gift card. Needs a decision on"
-        " partial refunds.",
+        " partial refunds: relaybay://doc/acme-shop/spec#gift-cards",
+        doc_path="relaybay://doc/acme-shop/spec#gift-cards",
         waiting_on="owner",
         next_step="Decide how partial refunds of gift-card orders work.",
         tracker_ref="SHOP-51",
@@ -492,8 +493,8 @@ Suggestions while typing, at most 8 products.
 
 
 async def seed_memory(service: Service) -> None:
-    """Docs & rules of acme-shop: a spec with two versions, a superseded decision, two notes
-    and a project block."""
+    """Docs & rules of acme-shop: a spec with two versions, a runbook that lives in the
+    repository, a superseded decision, two notes and a project block."""
     await service.update_document(
         "acme-shop", "spec", DEMO_SPEC, "First draft", 0, kind="spec", author="demo"
     )
@@ -505,6 +506,17 @@ async def seed_memory(service: Service) -> None:
         "Partial refunds decided",
         1,
         section="gift-cards",
+        author="demo",
+    )
+    await service.update_document(
+        "acme-shop",
+        "deploy",
+        "-",
+        "Kept in the repository next to the code",
+        0,
+        title="Deploy runbook",
+        kind="runbook",
+        source_url="https://git.example.com/acme-shop/blob/main/docs/deploy.md",
         author="demo",
     )
     first = await service.add_decision(
