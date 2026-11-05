@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-05
+
+Desktop program: relaybay installs with an installer on Windows, macOS and Linux (macOS and Linux are
+beta and not signed), lives in the tray, opens the board in its own window (on Linux in the browser),
+starts at login if asked, checks for updates and updates itself, backs the data up before a new
+version, and can be a client of a relaybay running elsewhere. `pip`, `uvx` and Docker stay.
+
 ### Added
 
 - Desktop program, preview (design 0016): `relaybay desktop` shows the board in a window of the
@@ -577,7 +584,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.3.0
