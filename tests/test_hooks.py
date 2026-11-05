@@ -311,7 +311,12 @@ async def test_activity_is_coalesced_per_window(tmp_path: Path) -> None:
                 await svc.record_hook(hook("PreToolUse", tool_name=tool))
             assert sub.queue.qsize() == 0  # held back inside the window
             assert (await svc.get_task(task.key)).session_activity == "started (startup)"
-            await asyncio.sleep(0.5)
+            # The window ends at 0.3 s; the flush then writes in the background, which a busy
+            # CI runner may take a while for.
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                if sub.queue.qsize():
+                    break
             events = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
         assert [e.payload["activity"] for e in events] == ["Bash"]  # only the latest
         assert (await svc.get_task(task.key)).session_activity == "Bash"

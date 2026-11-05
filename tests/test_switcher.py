@@ -126,7 +126,8 @@ def test_the_login_page_has_no_switcher(client: TestClient) -> None:
 
 def test_script_writes_results_as_text_and_leaves_fields_alone(board: TestClient) -> None:
     """The contract of the script: no HTML from results; the shortcut stays out of fields."""
-    script = board.get("/static/switcher.js").text
+    # A checkout with CRLF line endings (git on Windows) must read the same.
+    script = board.get("/static/switcher.js").text.replace("\r\n", "\n")
     assert "innerHTML" not in script and "textContent" in script
     guard = script.index('closest("input, textarea, select, [contenteditable]")')
     assert guard < script.index("event.preventDefault();\n    open();")
