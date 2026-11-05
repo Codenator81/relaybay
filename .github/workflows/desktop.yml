@@ -56,7 +56,7 @@ jobs:
           EXPECTED: ${{ inputs.version }}
         run: |
           # sed, not python: the runner's own python may be older than 3.11 (no tomllib).
-          version="$(sed -n 's/^version = "\(.*\)"$//p' pyproject.toml | head -n 1)"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
           if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$version" ]; then
             echo "Expected version $EXPECTED, pyproject.toml has $version" >&2
             exit 1
