@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import urlencode
 
 import aiosqlite
 
@@ -50,7 +51,13 @@ from relaybay.domain.environments import (
     Proposal,
     SecretRules,
 )
-from relaybay.domain.errors import ConfirmationNeeded, ConflictError, NotFoundError, ValidationError
+from relaybay.domain.errors import (
+    ConfirmationNeeded,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    ValidationError,
+)
 from relaybay.domain.hooks import (
     CC_ID_MAX,
     CONTINUED_END_REASONS,
@@ -69,6 +76,7 @@ from relaybay.domain.models import (
     ImportItem,
     Project,
     Report,
+    SavedFilter,
     Session,
     Task,
     TrackerEntry,
@@ -119,16 +127,35 @@ from relaybay.domain.rules import (
     DEFAULT_RULES,
     REPORT_SINCE_STAGE_CHANGE,
     RULES_MODES,
+    TRACKER_LOG_LABEL,
+    RuleProposal,
     Rules,
+    RuleVersion,
+    check_patch_keys,
     merge_project_rules,
+    merge_rules,
     refusal_text,
+    report_format_problem,
+    rules_diff,
+    rules_hash,
     rules_line,
+    rules_markdown,
+    stored_global_rules,
     unmet,
     validate_rules,
     warning_text,
 )
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
+from relaybay.domain.switcher import (
+    EMPTY_QUERY_TASKS,
+    QUERY_MAX,
+    RESULTS_MAX,
+    SESSIONS_SCANNED,
+    TASKS_SCANNED,
+    SwitcherItem,
+    fuzzy_score,
+)
 from relaybay.domain.task_fields import BY_NAME, FIELD_NAMES, NAME_MAX, TEXT_MAX, TITLE_MAX
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
@@ -256,6 +283,8 @@ class Inbox:
     proposals: list[Proposal] = field(default_factory=list)
     policy_proposals: list[PolicyProposal] = field(default_factory=list)
     review: list[Task] = field(default_factory=list)  # tasks in review/test with a checklist
+    rule_proposals: list[RuleProposal] = field(default_factory=list)
+    rule_notices: list[RuleVersion] = field(default_factory=list)  # direct rules_update, unread
 
     @property
     def count(self) -> int:
@@ -267,6 +296,8 @@ class Inbox:
             + len(self.replies)
             + len(self.proposals)
             + len(self.policy_proposals)
+            + len(self.rule_proposals)
+            + len(self.rule_notices)
             + len(self.review)
         )
 
@@ -275,6 +306,10 @@ class Inbox:
 class SessionRow:
     session: Session
     tasks: list[Task]  # bound to the session now
+
+
+FILTER_NAME_MAX = 60
+FILTER_TEXT_MAX = 200
 
 
 class Saved(NamedTuple):
@@ -649,6 +684,8 @@ class Service:
         session_context: str = "auto",
         session_context_project_chars: int = limits.DEFAULT_SESSION_PROJECT_CHARS,
         usage_enabled: bool = True,
+        coordinators: list[str] | None = None,
+        rules_table: dict[str, Any] | None = None,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -666,8 +703,20 @@ class Service:
         self._logged_policy_errors: set[str] = set()
         if rules_mode not in RULES_MODES:
             raise ValueError(f"rules_mode must be one of: {', '.join(RULES_MODES)}.")
-        self.global_rules = Rules(rules if rules is not None else DEFAULT_RULES, mode=rules_mode)
+        # What config.toml says; until start() reads the current version it is also in effect.
+        self.config_rules = Rules(
+            rules if rules is not None else DEFAULT_RULES,
+            mode=rules_mode,
+            require_tracker_log=require_tracker_log,
+        )
+        self.global_rules = self.config_rules
+        # What a config change is measured by: the [rules] table itself, not its merge with the
+        # defaults, so a release that changes a default never replaces accepted rules.
+        table = rules_table if rules_table is not None else (rules if rules is not None else {})
+        self._config_table_hash = rules_hash(table)
         self.rules_mode = rules_mode
+        self.coordinators = [c.strip() for c in coordinators or [] if c.strip()]
+        self.rules_changed: Callable[[], None] | None = None
         self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
         self.attachments_dir = attachments_dir or db_path.parent / "attachments"
@@ -726,6 +775,7 @@ class Service:
             async with self._tx() as tx:
                 count = await repo.rebuild_search_index(tx.conn)
             logger.info("Search index rebuilt: %d item(s).", count)
+        await self._sync_rule_versions()
         # A broken project override is reported now; it never stops the server or the project.
         for slug, body in await repo.list_project_rules(self._read_conn):
             self._merged_rules(slug, body)
@@ -1574,8 +1624,11 @@ class Service:
                 waiting.append(task)
             move = moves.get(task.id)
             # Shown until the task moves again: the warning is about the move into this stage.
-            if move and move.payload.get("warnings") and move.payload.get("to") == task.stage:
-                warned.append((task, list(move.payload["warnings"])))
+            if move and move.payload.get("to") == task.stage:
+                # A done task without the mark is already under "not logged", until it is marked.
+                shown = [w for w in move.payload.get("warnings", []) if TRACKER_LOG_LABEL not in w]
+                if shown:
+                    warned.append((task, shown))
         by_id = {t.id: t for t in tasks}
         replies: dict[int, list[Comment]] = {}
         for reply in await repo.unread_agent_replies(self._r):
@@ -1589,6 +1642,8 @@ class Service:
             await repo.list_proposals(self._r),
             await repo.list_policy_proposals(self._r),
             await repo.review_queue(self._r),
+            await repo.list_rule_proposals(self._r),
+            await repo.list_rule_notices(self._r),
         )
 
     async def list_sessions(self, project: str | None = None, limit: int = 200) -> list[SessionRow]:
@@ -1906,12 +1961,17 @@ class Service:
         others = [s for s in await repo.list_sessions(self._r, None, limit) if s.id not in seen]
         return [s for s in [*own, *others] if s.id != task.session_id][:limit]
 
-    def _merged_rules(self, slug: str, body: str | None) -> Rules:
+    def _merged_rules(self, slug: str, body: str | None, project_version: int = 0) -> Rules:
         """The global rules with the project's override on top; a broken override is logged
         (once) and ignored, so the global rules apply and the reason is shown with them."""
         base = self.global_rules.body
+        versions = {
+            "global_version": self.global_rules.global_version,
+            "project_version": project_version,
+            "require_tracker_log": self.global_rules.require_tracker_log,
+        }
         if body is None:
-            return Rules(base, slug, self.rules_mode)
+            return Rules(base, slug, self.rules_mode, **versions)
         try:
             override = _project_override(slug, body)
         except ValueError as exc:
@@ -1919,11 +1979,15 @@ class Service:
             if error not in self._logged_rule_errors:
                 self._logged_rule_errors.add(error)
                 logger.warning("%s The global rules apply to %s instead.", error, slug)
-            return Rules(base, slug, self.rules_mode, override_error=error)
-        return Rules(merge_project_rules(base, override), slug, self.rules_mode)
+            return Rules(base, slug, self.rules_mode, override_error=error, **versions)
+        return Rules(merge_project_rules(base, override), slug, self.rules_mode, **versions)
 
     async def _rules(self, conn: aiosqlite.Connection, project: Project) -> Rules:
-        return self._merged_rules(project.slug, await repo.get_project_rules(conn, project.id))
+        return self._merged_rules(
+            project.slug,
+            await repo.get_project_rules(conn, project.id),
+            await repo.rule_set_version(conn, project.id),
+        )
 
     async def rules(self, project: str | None = None) -> Rules:
         """The global rules, or a project's rules merged on top of them."""
@@ -2427,6 +2491,12 @@ class Service:
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
+            rules = await self._rules(tx.conn, await self.get_project(task.project_slug, tx.conn))
+            problem = report_format_problem(body, rules.body["report_format"])
+            if problem and self.rules_mode == "strict":
+                raise ValidationError(f"Rules: {problem} Nothing changed.")
+            if problem:
+                _note(f"Warning (rules): {problem}")
             if size and not task.size:
                 clean["size"] = size  # the first report's size sizes a task that has none
             sess = await self._session(tx, session, session_title, hook_session)
@@ -2472,6 +2542,7 @@ class Service:
                 summary=summary,
                 state=state,
                 size=size,
+                **({"warnings": [f"Warning (rules): {problem}"]} if problem else {}),
             )
             await self._index(tx, "report", report_id)
             report = (await repo.list_reports(tx.conn, task.id, 1))[0]
@@ -3532,6 +3603,7 @@ class Service:
             pulse_stale_days=self.pulse_stale_days,
             task_stale_days=self.task_stale_days,
             now=now,
+            rules_line=rules_line(self.global_rules),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.portfolio_text(data, footer, self._budget(budget))
@@ -3573,6 +3645,7 @@ class Service:
             changes=changes,
             pulse_stale_days=self.pulse_stale_days,
             now=datetime.now(UTC),
+            rules_line=rules_line(await self._rules(self._r, project)),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.project_text(data, footer, budget)
@@ -5810,3 +5883,655 @@ class Service:
                 )
             raise
         return decided
+
+    # --- rule versions -------------------------------------------------------------------------
+
+    def _set_global_rules(self, body: dict[str, Any], number: int) -> None:
+        self.global_rules = Rules(
+            body,
+            mode=self.rules_mode,
+            global_version=number,
+            require_tracker_log=self.config_rules.require_tracker_log,
+        )
+        if self.rules_changed is None:
+            return
+        # Runs after a commit, or during the start: it must fail neither.
+        try:
+            self.rules_changed()
+        except Exception as exc:
+            logger.warning("Could not refresh what follows the global rules: %r.", exc)
+
+    @staticmethod
+    def _scope_name(project: Project | None) -> str:
+        """`global`, or a project's slug; a project called `global` is `project:global`."""
+        if project is None:
+            return "global"
+        return f"project:{project.slug}" if project.slug == "global" else project.slug
+
+    async def _valid_rule_body(
+        self, conn: aiosqlite.Connection, project: Project | None
+    ) -> tuple[dict[str, Any] | None, int, list[str]]:
+        """The scope's newest version that validates (None: no such version) and its number, and
+        what is wrong with the newer ones. A version edited by hand never stops the server."""
+        rule_set = await repo.get_rule_set(conn, project.id if project else None)
+        problems: list[str] = []
+        if rule_set is None:
+            return None, 0, problems
+        for version in await repo.list_rule_versions(conn, rule_set.id):
+            source = f"rule_version #{version.id} ({version.scope} v{version.number})"
+            try:
+                if version.body_error:
+                    raise ValueError(f"{source}: {version.body_error}")
+                if project is None:
+                    return stored_global_rules(version.body, source), version.number, problems
+                return validate_rules(version.body, source), version.number, problems
+            except ValueError as exc:
+                problems.append(str(exc))
+        return None, 0, problems
+
+    async def _rule_body(
+        self, conn: aiosqlite.Connection, project: Project | None
+    ) -> dict[str, Any]:
+        """What a patch merges on and a diff compares with: the newest valid version; without
+        one, the config for the global scope and an empty override for a project."""
+        body, _, _ = await self._valid_rule_body(conn, project)
+        if body is not None:
+            return body
+        return self.config_rules.body if project is None else {}
+
+    async def rule_version_error(self, scope: str) -> str | None:
+        """Why the scope's newest versions are not in force, for Settings → Rules."""
+        _, project = await self._rules_scope(self._r, scope)
+        body, number, problems = await self._valid_rule_body(self._r, project)
+        if not problems:
+            return None
+        fallback = f"v{number} is in force" if body is not None else "the config is in force"
+        if body is None and project is not None:
+            fallback = "the project_rules row is in force"
+        return f"{' '.join(problems)} Ignored: {fallback}."
+
+    async def _new_rule_version(
+        self,
+        tx: _Tx,
+        project: Project | None,
+        body: dict[str, Any],
+        *,
+        author: str,
+        reason: str,
+        session_id: int | None = None,
+        announce: bool = True,
+        notice: bool = False,
+    ) -> int:
+        """Store `body` as the next version of the scope. A project's version also replaces its
+        `project_rules` row, the one its rules are read from; the caller of a global version
+        calls `_set_global_rules` after the commit."""
+        scope = self._scope_name(project)
+        found = await repo.get_rule_set(tx.conn, project.id if project else None)
+        rule_set = found or await repo.insert_rule_set(
+            tx.conn, scope, project.id if project else None, tx.now
+        )
+        previous = await self._rule_body(tx.conn, project) if found else {}
+        if project is None:
+            rendered = Rules(body, mode=self.rules_mode)
+        else:
+            rendered = Rules(merge_project_rules(self.global_rules.body, body), project.slug)
+        number = await repo.insert_rule_version(
+            tx.conn,
+            rule_set,
+            body,
+            rules_markdown(rendered),
+            author,
+            session_id,
+            reason,
+            rules_diff(previous, body),
+            tx.now,
+            notice=notice,
+        )
+        if project is not None:
+            text = json.dumps(body, ensure_ascii=False)
+            await repo.set_project_rules(tx.conn, project.id, text, tx.now)
+        if announce:
+            await tx.event(
+                "rules.updated",
+                author,
+                project_id=project.id if project else None,
+                session_id=session_id,
+                scope=scope,
+                **({"project": project.slug} if project else {}),
+                version=number,
+                reason=reason,
+            )
+        return number
+
+    async def _sync_rule_versions(self) -> None:
+        """Make the database agree with `config.toml` and the `project_rules` rows.
+
+        The first start makes each of them version 1. Later a `[rules]` table whose hash differs
+        from the one last turned into a version becomes a new global version (author `config`),
+        replacing what earlier versions changed; an unchanged table leaves accepted versions in
+        force, also when a release changes the built-in defaults. A `project_rules` row edited by
+        hand becomes a new project version the same way. Versions that do not validate are logged
+        and skipped.
+        """
+        config_body = self.config_rules.body
+        async with self._tx() as tx:
+            rule_set = await repo.get_rule_set(tx.conn, None)
+            if rule_set is None:
+                number = await self._new_rule_version(
+                    tx,
+                    None,
+                    config_body,
+                    author="config",
+                    reason="The rules at the first start with versions.",
+                    announce=False,
+                )
+                body = config_body
+            else:
+                found, number, problems = await self._valid_rule_body(tx.conn, None)
+                for problem in problems:
+                    logger.error("%s Ignored: the newest valid rules are in force.", problem)
+                body = found if found is not None else config_body
+                if found is None:
+                    number = rule_set.current_version
+                changed = rule_set.config_hash != self._config_table_hash
+                if changed and (found is None or body != config_body):
+                    number = await self._new_rule_version(
+                        tx,
+                        None,
+                        config_body,
+                        author="config",
+                        reason="config.toml [rules] changed.",
+                    )
+                    body = config_body
+                    logger.warning(
+                        "The [rules] in config.toml changed: they are now global rules version %d.",
+                        number,
+                    )
+            stored = await repo.get_rule_set(tx.conn, None)
+            assert stored is not None
+            await repo.set_rules_config_hash(tx.conn, stored.id, self._config_table_hash)
+            self._set_global_rules(body, number)
+            await self._sync_project_rule_versions(tx)
+
+    async def _sync_project_rule_versions(self, tx: _Tx) -> None:
+        rows = dict(await repo.list_project_rules(tx.conn))
+        for slug, text in rows.items():
+            try:
+                override = _project_override(slug, text)
+            except ValueError:
+                continue  # logged by _merged_rules; not a version, the history stays as it was
+            project = await self.get_project(slug, tx.conn)
+            first = await repo.get_rule_set(tx.conn, project.id) is None
+            if not first and await self._rule_body(tx.conn, project) == override:
+                continue
+            await self._new_rule_version(
+                tx,
+                project,
+                override,
+                author="project_rules",
+                reason=(
+                    "The project's rules at the first start with versions."
+                    if first
+                    else "The project_rules row differs from the last version (edited by hand)."
+                ),
+                announce=not first,
+            )
+        for rule_set in await repo.list_project_rule_sets(tx.conn):
+            project = await repo.get_project_by_id(tx.conn, rule_set.project_id)
+            assert project is not None
+            _, _, problems = await self._valid_rule_body(tx.conn, project)
+            for problem in problems:
+                logger.error("%s Ignored: the project_rules row is in force.", problem)
+            if project.slug not in rows and await self._rule_body(tx.conn, project):
+                await self._new_rule_version(
+                    tx,
+                    project,
+                    {},
+                    author="project_rules",
+                    reason="The project_rules row was removed by hand.",
+                )
+
+    async def _is_coordinator(
+        self, conn: aiosqlite.Connection, value: str | None, hook_session: str | None
+    ) -> bool:
+        """Is the caller an entry of `coordinators`? Asked before the call's own `hook_session`
+        is linked, or it would prove itself. A desktop id needs that session's exact hook id,
+        which no tool prints; a name or an alias only has to be passed, so it guards against
+        mistakes, it is not access control: all clients share one token."""
+        needle = (value or "").strip()
+        if not needle:
+            return False
+        session = await self._known_session(needle, conn)
+        cc_id = (hook_session or "").strip()
+        for entry in self.coordinators:
+            desktop = parse_session_id(entry)
+            if desktop is not None:
+                if (
+                    session is not None
+                    and session.external_id == desktop
+                    and session.cc_exact
+                    and cc_id
+                    and session.cc_session_id == cc_id
+                ):
+                    return True
+                continue
+            if needle == entry or (session is not None and session.name == entry):
+                return True
+            aliased = await repo.get_session_by_alias(conn, entry)
+            if aliased is not None and session is not None and aliased.id == session.id:
+                return True
+        return False
+
+    async def _rules_scope(
+        self, conn: aiosqlite.Connection, scope: str
+    ) -> tuple[str, Project | None]:
+        """`global` is always the global rules; `project:<slug>` names a project, the only way
+        to reach one called `global`."""
+        text = str(scope or "").strip()
+        if text.lower() == "global":
+            return "global", None
+        slug = text.removeprefix("project:")
+        if not slug or "/" in slug:
+            raise ValidationError(f"scope must be 'global' or a project slug, got {scope!r}.")
+        project = await self.get_project(slug, conn)
+        return self._scope_name(project), project
+
+    async def rules_of_scope(self, scope: str) -> Rules:
+        _, project = await self._rules_scope(self._r, scope)
+        return self.global_rules if project is None else await self._rules(self._r, project)
+
+    async def rule_scopes(self) -> list[str]:
+        projects = [self._scope_name(item.project) for item in await self.list_projects()]
+        return ["global", *projects]
+
+    async def _patched_rules(
+        self, conn: aiosqlite.Connection, scope: str, patch: Any
+    ) -> tuple[str, Project | None, dict[str, Any]]:
+        """The scope's next document: `patch` merged on top of the current version and validated
+        as a whole, with its free text scanned for secrets."""
+        canonical, project = await self._rules_scope(conn, scope)
+        if not isinstance(patch, dict) or not patch:
+            raise ValidationError(
+                "patch must be a non-empty object merged into the rules, e.g."
+                " {'stage_requirements': {'test': []}}."
+            )
+        current = await self._rule_body(conn, project)
+        source = f"rules patch for {canonical}"
+        try:
+            check_patch_keys(patch, source)
+            clean = validate_rules(apply_patch(current, patch), source)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from None
+        body = clean if project is not None else merge_rules(DEFAULT_RULES, clean)
+        if body == current:
+            raise ValidationError(f"This patch changes nothing in the {canonical} rules.")
+        # Only what this patch changes: text already in force is not the proposer's to answer for.
+        texts = {
+            "guidance": body.get("guidance"),
+            "description_template": body.get("description_template"),
+            "first_line": body.get("report_format", {}).get("first_line"),
+        }
+        before = {**current, **current.get("report_format", {})}
+        _scan(
+            await self._secret_rules(conn, project),
+            **{name: text for name, text in texts.items() if text != before.get(name)},
+        )
+        return canonical, project, body
+
+    @staticmethod
+    def _rule_reason(reason: Any) -> str:
+        text = _clean_text(reason, "reason", envs.REASON_MAX)
+        if not text:
+            raise ValidationError("reason must say why the change is needed.")
+        envs.check_secret("reason", text)
+        return text
+
+    def _not_a_coordinator(self) -> ValidationError:
+        if self.coordinators:
+            return ValidationError(
+                "rules_update is only for the coordinator sessions named in the server's config;"
+                " a desktop id also needs that session's own hook_session. Nothing changed. Use"
+                " rules_propose: the owner accepts it on the board."
+            )
+        return ValidationError(
+            "No coordinator is configured, so every change of the rules is a proposal; nothing"
+            " changed. Use rules_propose: the owner accepts it on the board."
+        )
+
+    async def update_rules(
+        self,
+        scope: str,
+        patch: Any,
+        reason: str,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[str, int]:
+        """A new version of the scope's rules, for a coordinator session; returns the canonical
+        scope and the version. The owner sees it in the Inbox until it is marked read."""
+        async with self._tx() as tx:
+            if not await self._is_coordinator(tx.conn, session, hook_session):
+                raise self._not_a_coordinator()
+            sess = await self._session(tx, session, session_title, hook_session)
+            assert sess is not None
+            text = self._rule_reason(reason)
+            canonical, project, body = await self._patched_rules(tx.conn, scope, patch)
+            number = await self._new_rule_version(
+                tx,
+                project,
+                body,
+                author=sess.name,
+                reason=text,
+                session_id=sess.id,
+                notice=True,
+            )
+            # The caller knows: no "rules updated" line on its own change.
+            await repo.set_rule_seen(tx.conn, sess.id, project.id if project else 0, number)
+        if project is None:
+            self._set_global_rules(body, number)
+        return canonical, number
+
+    async def close_rule_notice(self, version_id: int, *, actor: str = "board") -> None:
+        """The owner has read about a direct `rules_update`. Board only."""
+        async with self._tx() as tx:
+            version = await repo.get_rule_version_by_id(tx.conn, version_id)
+            if version is None:
+                raise NotFoundError(f"Rule version #{version_id} not found.")
+            if version.notice_open:
+                await repo.close_rule_notice(tx.conn, version_id)
+                await tx.event(
+                    "rules.notice_read", actor, scope=version.scope, version=version.number
+                )
+
+    async def propose_rules(
+        self,
+        scope: str,
+        patch: Any,
+        reason: str,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> RuleProposal:
+        """An agent's proposed change of the rules: recorded for the owner, nothing else changes.
+        Validated now and again when it is accepted."""
+        text = self._rule_reason(reason)
+        async with self._tx() as tx:
+            canonical, project, _ = await self._patched_rules(tx.conn, scope, patch)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            proposal_id = await repo.insert_rule_proposal(
+                tx.conn,
+                canonical,
+                project.id if project else None,
+                patch,
+                text,
+                actor,
+                sess.id if sess else None,
+                tx.now,
+            )
+            await tx.event(
+                "rules.proposed",
+                actor,
+                project_id=project.id if project else None,
+                session_id=sess.id if sess else None,
+                scope=canonical,
+                **({"project": project.slug} if project else {}),
+                proposal_id=proposal_id,
+                change=", ".join(_patch_summary(patch)),
+            )
+            proposal = await repo.get_rule_proposal(tx.conn, proposal_id)
+            assert proposal is not None
+            return proposal
+
+    async def decide_rule_proposal(
+        self, proposal_id: int, accept: bool, *, actor: str = "board"
+    ) -> RuleProposal:
+        """Accept (a new version made from the patch on top of the current version, checked
+        again here) or reject a proposal; a rejected one stays in the history. Board only."""
+        body, number, project = None, 0, None
+        async with self._tx() as tx:
+            proposal = await repo.get_rule_proposal(tx.conn, proposal_id)
+            if proposal is None:
+                raise NotFoundError(f"Rules proposal #{proposal_id} not found.")
+            if proposal.status != "open":
+                raise ConflictError(f"Rules proposal #{proposal_id} is already {proposal.status}.")
+            version = None
+            if accept:
+                _, project, body = await self._patched_rules(
+                    tx.conn, proposal.scope, proposal.patch
+                )
+                number = version = await self._new_rule_version(
+                    tx,
+                    project,
+                    body,
+                    author=f"{proposal.proposed_by}, accepted by {actor}",
+                    reason=proposal.reason,
+                    session_id=proposal.session_id,
+                )
+            status = "accepted" if accept else "rejected"
+            await repo.decide_rule_proposal(tx.conn, proposal.id, status, version, actor, tx.now)
+            await tx.event(
+                f"rules.proposal_{status}",
+                actor,
+                project_id=proposal.project_id,
+                scope=proposal.scope,
+                proposal_id=proposal.id,
+                change=", ".join(_patch_summary(proposal.patch)),
+            )
+            decided = await repo.get_rule_proposal(tx.conn, proposal.id)
+            assert decided is not None
+        if body is not None and project is None:
+            self._set_global_rules(body, number)
+        return decided
+
+    async def rollback_rules(
+        self, scope: str, number: int, *, confirmed: bool = False, actor: str = "board"
+    ) -> tuple[str, int]:
+        """A new version with the body of version `number`; history is never rewritten. Board
+        only, and it asks for a confirmation first."""
+        async with self._tx() as tx:
+            canonical, project = await self._rules_scope(tx.conn, scope)
+            rule_set = await repo.get_rule_set(tx.conn, project.id if project else None)
+            target = await repo.get_rule_version(tx.conn, rule_set.id, number) if rule_set else None
+            if target is None:
+                raise NotFoundError(f"The {canonical} rules have no version {number}.")
+            source = f"rule_version #{target.id} ({canonical} v{number})"
+            try:
+                if target.body_error:
+                    raise ValueError(f"{source}: {target.body_error}")
+                body = (
+                    validate_rules(target.body, source)
+                    if project
+                    else stored_global_rules(target.body, source)
+                )
+            except ValueError as exc:
+                raise ValidationError(f"Cannot roll back to a broken version. {exc}") from None
+            if body == await self._rule_body(tx.conn, project):
+                raise ConflictError(f"The {canonical} rules already equal version {number}.")
+            if not confirmed:
+                raise ConfirmationNeeded(
+                    f"Roll the {canonical} rules back to v{number}? A new version with the same"
+                    " rules is created; the history stays."
+                )
+            made = await self._new_rule_version(
+                tx, project, body, author=actor, reason=f"Rolled back to v{number}."
+            )
+        if project is None:
+            self._set_global_rules(body, made)
+        return canonical, made
+
+    async def rule_proposal(self, proposal_id: int) -> RuleProposal:
+        proposal = await repo.get_rule_proposal(self._r, proposal_id)
+        if proposal is None:
+            raise NotFoundError(f"Rules proposal #{proposal_id} not found.")
+        return proposal
+
+    async def rule_proposal_diffs(self) -> dict[int, str]:
+        """Per open proposal, what accepting it would change now, or why it no longer applies."""
+        diffs: dict[int, str] = {}
+        for proposal in await repo.list_rule_proposals(self._r):
+            try:
+                _, project, body = await self._patched_rules(
+                    self._r, proposal.scope, proposal.patch
+                )
+            except DomainError as exc:
+                diffs[proposal.id] = f"No longer applies: {exc}"
+                continue
+            diffs[proposal.id] = rules_diff(await self._rule_body(self._r, project), body)
+        return diffs
+
+    async def rule_proposals(self) -> list[RuleProposal]:
+        return await repo.list_rule_proposals(self._r)
+
+    async def decided_rule_proposals(self, scope: str) -> list[RuleProposal]:
+        return await repo.decided_rule_proposals(self._r, scope)
+
+    async def rule_versions(self, scope: str) -> list[RuleVersion]:
+        _, project = await self._rules_scope(self._r, scope)
+        rule_set = await repo.get_rule_set(self._r, project.id if project else None)
+        return await repo.list_rule_versions(self._r, rule_set.id) if rule_set else []
+
+    async def _known_session(
+        self, value: str, conn: aiosqlite.Connection | None = None
+    ) -> Session | None:
+        """The session a write named, without creating or touching it; None for an id that
+        cannot be anyone's."""
+        conn = conn or self._r
+        try:
+            external_id = parse_session_id(value)
+        except ValidationError:
+            return None
+        if external_id is not None:
+            return await repo.get_session_by_external_id(conn, external_id)
+        aliased = await repo.get_session_by_alias(conn, value)
+        return aliased or await repo.get_session_by_name(conn, value)
+
+    async def note_rules_update(
+        self, session: str | None, project: str | None = None, task: str | None = None
+    ) -> None:
+        """After a write: one note when the rules have a newer version than this session was
+        last told about. The first time a session is met nothing is said, it reads them anyway.
+        A global change is said once, whichever project the session writes to next."""
+        value = (session or "").strip()
+        found = await self._known_session(value) if value else None
+        if found is None:
+            return
+        proj = await repo.get_project(self._r, project.strip().lower()) if project else None
+        if proj is None and task:
+            # `task` is what the write just used; only a task deleted meanwhile is missing.
+            with contextlib.suppress(NotFoundError):
+                proj = await self.get_project((await self.get_task(task)).project_slug)
+        rules = await self._rules(self._r, proj) if proj else self.global_rules
+        layers = [(0, rules.global_version)]
+        if proj is not None:
+            layers.append((proj.id, rules.project_version))
+        stale, unseen = False, []
+        for project_id, current in layers:
+            seen = await repo.rule_seen(self._r, found.id, project_id)
+            if seen is None or seen < current:
+                unseen.append((project_id, current))
+                stale = stale or seen is not None
+        if unseen:
+            async with self._tx() as tx:
+                for project_id, current in unseen:
+                    await repo.set_rule_seen(tx.conn, found.id, project_id, current)
+        if stale:
+            _note(f"rules updated to v{rules.version}: re-read {rules.uri}")
+
+    # --- quick switcher and saved filters ------------------------------------------------------
+
+    async def switcher(self, query: str) -> list[SwitcherItem]:
+        """Tasks, projects and sessions matching `query`, best first; with nothing typed, the
+        tasks changed last and the projects."""
+        text = query.strip()[:QUERY_MAX]
+        if not text:
+            return await self._switcher_start()
+        items: list[tuple[int, SwitcherItem]] = []
+        for key, title, stage, slug in await repo.switcher_tasks(self._r, TASKS_SCANNED):
+            score = fuzzy_score(text, key, title)
+            if score is not None:
+                url = f"/p/{slug}?{urlencode({'task': key})}"
+                items.append((score, SwitcherItem("task", title, f"{stage} · {slug}", url, key)))
+        for summary in await self.list_projects():
+            p = summary.project
+            score = fuzzy_score(text, p.slug, p.name)
+            if score is not None:
+                items.append((score, SwitcherItem("project", p.name, p.slug, f"/p/{p.slug}")))
+        for session in await repo.list_sessions(self._r, None, SESSIONS_SCANNED):
+            score = fuzzy_score(text, session.name, session.external_id)
+            if score is not None:
+                detail = session.status or session.kind or "session"
+                url = f"/sessions#session-{session.id}"
+                items.append((score, SwitcherItem("session", session.name, detail, url)))
+        # sorted() is stable: equal scores keep the most recently changed first.
+        ranked = sorted(items, key=lambda pair: -pair[0])
+        return [item for _, item in ranked[:RESULTS_MAX]]
+
+    async def _switcher_start(self) -> list[SwitcherItem]:
+        """With nothing typed: the tasks changed last, then every project."""
+        tasks = await repo.switcher_tasks(self._r, EMPTY_QUERY_TASKS)
+        return [
+            *(
+                SwitcherItem(
+                    "task", title, f"{stage} · {slug}", f"/p/{slug}?{urlencode({'task': key})}", key
+                )
+                for key, title, stage, slug in tasks
+            ),
+            *(
+                SwitcherItem("project", s.project.name, s.project.slug, f"/p/{s.project.slug}")
+                for s in await self.list_projects()
+            ),
+        ]
+
+    async def saved_filters(self, project: str | None = None) -> list[SavedFilter]:
+        project_id = (await self.get_project(project)).id if project else None
+        return await repo.list_saved_filters(self._r, project_id)
+
+    async def save_filter(
+        self,
+        project: str,
+        name: str,
+        *,
+        stage: str | None = None,
+        waiting_on: str | None = None,
+        session: str | None = None,
+        q: str | None = None,
+        actor: str = "board",
+    ) -> SavedFilter:
+        """A named board query; the name is unique within the project."""
+        clean_name = _clean_text(name, "name", FILTER_NAME_MAX)
+        if not clean_name:
+            raise ValidationError("A saved filter needs a name.")
+        query = {
+            "stage": parse_stage(stage).value if stage and stage.strip() else "",
+            "waiting_on": _clean_text(waiting_on, "waiting on", FILTER_TEXT_MAX) or "",
+            "session": _clean_text(session, "session", NAME_MAX) or "",
+            "q": _clean_text(q, "search text", FILTER_TEXT_MAX) or "",
+        }
+        query = {key: value for key, value in query.items() if value}
+        if not query:
+            raise ValidationError("Set a stage, waiting on, session or search text first.")
+        async with self._tx() as tx:
+            proj = await self.get_project(project, tx.conn)
+            if await repo.saved_filter_named(tx.conn, proj.id, clean_name) is not None:
+                raise ConflictError(f"{proj.slug} already has a saved filter {clean_name!r}.")
+            filter_id = await repo.insert_saved_filter(tx.conn, proj.id, clean_name, query, tx.now)
+            await tx.event(
+                "filter.saved", actor, project_id=proj.id, project=proj.slug, name=clean_name
+            )
+            saved = await repo.get_saved_filter(tx.conn, filter_id)
+            assert saved is not None
+            return saved
+
+    async def delete_filter(self, project: str, filter_id: int, *, actor: str = "board") -> None:
+        async with self._tx() as tx:
+            proj = await self.get_project(project, tx.conn)
+            found = await repo.get_saved_filter(tx.conn, filter_id)
+            if found is None or found.project_id != proj.id:
+                raise NotFoundError(f"{proj.slug} has no saved filter #{filter_id}.")
+            await repo.delete_saved_filter(tx.conn, filter_id)
+            await tx.event(
+                "filter.deleted", actor, project_id=proj.id, project=proj.slug, name=found.name
+            )

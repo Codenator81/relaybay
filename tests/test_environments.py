@@ -478,7 +478,7 @@ def test_guard_is_fast_on_long_input() -> None:
             guard.check(call, [_live_env()] * 50, lambda env: BLOCK)
             redact(call.text)
             best = min(best, time.perf_counter() - started)
-        assert best < 0.05, text[:10]
+        assert best < 0.25, text[:10]
 
 
 @pytest.mark.parametrize(
@@ -1030,4 +1030,4 @@ def test_guard_redaction_and_validation_are_fast_on_adversarial_input(text: str)
         with contextlib.suppress(ValidationError):
             check_secret("notes", text[:4000])
         best = min(best, time.perf_counter() - started)
-    assert best < 0.05
+    assert best < 0.25

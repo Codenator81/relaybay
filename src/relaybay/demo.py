@@ -2,7 +2,9 @@
 
 import asyncio
 import base64
+import contextlib
 import json
+import sqlite3
 import struct
 import zlib
 from dataclasses import dataclass
@@ -63,13 +65,20 @@ class DemoResult:
     tasks: int
 
 
+def _has_rows(db_path: Path) -> bool:
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        return any(
+            conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+            for table in ("project", "event")
+            if table in tables
+        )
+
+
 async def _has_board(db_path: Path) -> bool:
-    service = Service(db_path)
-    await service.start()
-    try:
-        return bool(await service.list_projects()) or await service.last_event_id() > 0
-    finally:
-        await service.close()
+    """Read-only: a refused demo leaves the database as it found it, no migration, no rule sync."""
+    return await asyncio.to_thread(_has_rows, db_path)
 
 
 def _move_aside(db_path: Path, now: datetime) -> Path:
@@ -553,11 +562,30 @@ async def seed_memory(service: Service) -> None:
     )
 
 
+async def seed_rules_and_filters(service: Service) -> None:
+    """A second global rules version, one open proposal and one saved filter."""
+    accepted = await service.propose_rules(
+        "global",
+        {"guidance": "Report at the end of every stage. Keep progress and next step current."},
+        "Shorter guidance: the owner reads it on a phone.",
+        session="receipts-agent",
+    )
+    await service.decide_rule_proposal(accepted.id, True, actor="owner")
+    await service.propose_rules(
+        "acme-shop",
+        {"stage_requirements": {"review": [{"kind": "report_since_stage_change"}]}},
+        "Reviews went out without a report twice; ask for one before review too.",
+        session="checkout-agent",
+    )
+    await service.save_filter("acme-shop", "Waiting on me", waiting_on="owner", actor="owner")
+
+
 async def _seed_new(db_path: Path) -> tuple[int, int]:
     service = Service(db_path)
     await service.start()
     try:
         tasks = await seed(service)
+        await seed_rules_and_filters(service)
         projects = len(await service.list_projects())
     finally:
         await service.close()

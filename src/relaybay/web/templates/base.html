@@ -14,6 +14,7 @@
   <script src="{{ static_url("sse.js") }}" defer></script>
   <script src="{{ static_url("annotate.js") }}" defer></script>
   <script src="{{ static_url("app.js") }}" defer></script>
+  {% if nav %}<script src="{{ static_url("switcher.js") }}" defer></script>{% endif %}
   {% block scripts %}{% endblock %}
 </head>
 <body{% if nav %} class="has-nav"{% endif %}>
@@ -27,6 +28,12 @@
       {% endif %}
       <a class="brand" href="/">relaybay</a>
       {% block crumbs %}{% endblock %}
+      {% if nav %}
+      <button type="button" class="switcher-open" aria-haspopup="dialog" aria-controls="switcher" title="Quick switcher: tasks, projects, sessions (Ctrl+K)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg>
+        <span class="switcher-label">Search</span><kbd>Ctrl K</kbd>
+      </button>
+      {% endif %}
       {% block live %}
       <span class="live-status" id="live-status" data-state="connecting" title="Live updates">
         <span class="dot"></span><span class="live-label">connecting</span>
@@ -35,5 +42,14 @@
     </header>
     {% block content %}{% endblock %}
   </div>
+  {% if nav %}
+  <dialog class="switcher" id="switcher" aria-label="Quick switcher">
+    <input class="switcher-input" type="search" maxlength="200" autocomplete="off" spellcheck="false"
+           placeholder="Task, project or session" aria-label="Search tasks, projects and sessions"
+           role="combobox" aria-expanded="true" aria-controls="switcher-results" aria-autocomplete="list">
+    <ul class="switcher-results" id="switcher-results" role="listbox" aria-label="Results"></ul>
+    <p class="switcher-status muted" role="status"></p>
+  </dialog>
+  {% endif %}
 </body>
 </html>

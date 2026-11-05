@@ -146,6 +146,15 @@ policy_layer  id, project_id, environment_id (NULL = the project layer), body (J
               updated_at, updated_by   -- UNIQUE (project_id, COALESCE(environment_id, 0))
 policy_proposal       id, scope (global|<project>|<project>/<environment>), project_id, patch
               (JSON), reason, proposed_by, session_id, status, created_at, decided_at, decided_by
+rule_set      id, scope (display name), project_id (NULL = global), current_version, config_hash
+              -- UNIQUE scope, UNIQUE COALESCE(project_id, 0)
+rule_version  id, rule_set_id, number, body (JSON), rendered, author, session_id, reason, diff,
+              notice_open, created_at   -- UNIQUE (rule_set_id, number)
+rule_proposal id, scope, project_id, patch (JSON), reason, proposed_by, session_id, status
+              (open|accepted|rejected), version, created_at, decided_at, decided_by
+rule_seen     session_id, project_id (0 = global), version   -- PRIMARY KEY (session_id, project_id)
+saved_filter  id, project_id, name, stage, waiting_on, session, q, created_at
+              -- UNIQUE (project_id, name)
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
 import_item   kind (document|task|task_note|decision|note), item, source_path, target_id,
               content_hash, target_hash, imported_at

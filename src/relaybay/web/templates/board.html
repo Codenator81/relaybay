@@ -7,9 +7,18 @@
   <form class="board-tools" method="get" action="/p/{{ project.slug }}" role="search">
     <input class="board-search" type="search" name="q" value="{{ q }}" maxlength="200"
            placeholder="Search key or title" aria-label="Search tasks by key or title">
+    <select class="board-filter" name="stage" aria-label="Stage">
+      <option value="">Any stage</option>
+      {% for s in stages %}<option value="{{ s }}"{% if s == stage_filter %} selected{% endif %}>{{ label(s) }}</option>{% endfor %}
+    </select>
+    <input class="board-filter" type="search" name="waiting_on" value="{{ waiting_filter }}" maxlength="200"
+           placeholder="Waiting on" aria-label="Waiting on" list="waiting-values">
+    <datalist id="waiting-values">{% for w in waiting_values %}<option value="{{ w }}"></option>{% endfor %}</datalist>
+    <input class="board-filter" type="search" name="session" value="{{ session_filter }}" maxlength="200"
+           placeholder="Session" aria-label="Session (name, alias or desktop id)">
     <label class="board-archived"><input type="checkbox" name="archived" value="1"{% if archived %} checked{% endif %}> Show archived</label>
     <button type="submit" class="btn">Filter</button>
-    {% if q or archived %}<a class="action" href="/p/{{ project.slug }}">Clear</a>{% endif %}
+    {% if view_qs %}<a class="action" href="/p/{{ project.slug }}">Clear</a>{% endif %}
     {#- Pages of the board on wide screens; ←/→ switch them too (app.js). #}
     <span class="board-pager">
       {%- for stages_of_page in board_pages %}
@@ -20,6 +29,29 @@
       {%- endfor %}
     </span>
   </form>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {% if saved_filters or filter_query %}
+  <div class="saved-filters">
+    {% for f in saved_filters %}
+    <span class="saved-filter">
+      <a class="chip" href="/p/{{ project.slug }}?{{ f.qs }}">{{ f.name }}</a>
+      <form method="post" action="/p/{{ project.slug }}/filters/{{ f.id }}/delete" data-confirm="Delete the saved filter {{ f.name }}?">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        <button type="submit" class="saved-filter-delete" aria-label="Delete the saved filter {{ f.name }}" title="Delete this saved filter">×</button>
+      </form>
+    </span>
+    {% endfor %}
+    {% if filter_query %}
+    <form class="saved-filter-new" method="post" action="/p/{{ project.slug }}/filters">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      {% for name, value in filter_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+      <input class="board-filter" type="text" name="name" maxlength="60" required placeholder="Name this filter" aria-label="Name of the saved filter">
+      <button type="submit" class="btn">Save filter</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
   {#- Radios drive the phone layout (one stage at a time) without JavaScript. #}
   {% for stage in stages %}
   <input class="stage-radio" type="radio" name="stage-tab" id="tab-{{ stage }}" value="{{ stage }}"{% if stage == active_stage %} checked{% endif %}>
@@ -29,7 +61,7 @@
     <label for="tab-{{ stage }}" class="stage-tab tab-{{ stage }}">{{ label(stage) }}</label>
     {% endfor %}
   </nav>
-  <div id="board" class="board" data-page="{{ board_page }}">
+  <div id="board" class="board" data-page="{{ board_page }}"{% if filter_query %} data-filtered="1"{% endif %}>
     {% include "_columns.html" %}
   </div>
   {#- Opened by app.js; with ?task=<key> the content is rendered here and opened on load. #}

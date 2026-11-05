@@ -19,10 +19,11 @@ stops `relaybay serve` with a message that names the key.
 | `[reports.hints]` | built-in | — | — | Tooltips of report badges. |
 | `desktop_link_template` | `claude://claude.ai/epitaxy/{id}` | `RELAYBAY_DESKTOP_LINK_TEMPLATE` | — | Link for a desktop session id; must contain `{id}`. |
 | `done_window_days` | `7` | `RELAYBAY_DONE_WINDOW_DAYS` | — | Days a done task stays in the done column (whole number >= 1). |
-| `require_tracker_log` | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — | Done tasks without the tracker mark show "not logged" and are never archived. |
+| `require_tracker_log` | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — | Done tasks without the tracker mark show "not logged" and are never archived. Moving to `done` needs the mark: a `Warning (rules)` line, and `rules_mode = "strict"` refuses the move. |
 | `owner_names` | `["owner", "me", "you"]` | `RELAYBAY_OWNER_NAMES` | — | Names that mean you in a task's `waiting_on` (case-insensitive): those tasks are listed in the Inbox. The environment variable is comma-separated. |
 | `[rules]` | built-in rules | — | — | Global working rules merged over the defaults ([SPEC §6](../SPEC.md#spec-rules)). |
-| `rules_mode` | `warn` | `RELAYBAY_RULES_MODE` | — | `warn` or `strict`: what a stage move that misses a rule does. |
+| `rules_mode` | `warn` | `RELAYBAY_RULES_MODE` | — | `warn` or `strict`: what a stage move or a report that misses a rule does. |
+| `coordinators` | `[]` | `RELAYBAY_COORDINATORS` | — | Sessions allowed to change the rules directly with `rules_update`: a desktop session id (`local_…`, the call must also pass that session's own `hook_session`), an alias or a name. A guard against mistakes, not access control: all MCP clients share one token. Empty: every change is a proposal. The environment variable is comma-separated. |
 | `[permission_defaults]` | `local = "full"`, `test = "full"`, `live = "read"` | — | — | Legacy: agents' level per environment kind (`none`, `read`, `ask`, `full`); a layer under `policy.json` ([policy reference](policy.md)). |
 | `guard_mode` | `warn` | `RELAYBAY_GUARD_MODE` | — | Legacy: `off`, `log`, `warn` or `block`, the guard mode; a layer under `policy.json` ([policy reference](policy.md)). |
 | `policy_file` | `policy.json` in the data directory | `RELAYBAY_POLICY_FILE` | — | The global policy layer (JSON, [policy reference](policy.md)); a relative path is read from the data directory. A missing file means the `default` preset. |

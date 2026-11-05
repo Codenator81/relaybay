@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{#- Settings → Rules. Expects: scope, scopes, rules (effective Rules of the scope), rules_md,
+    versions (newest first), proposals (open, all scopes), decided (of this scope), coordinators,
+    config_differs, diffs, version_error, optional error, confirm, message. Writes are plain form posts from this page
+    in a browser (cookie + CSRF). -#}
+{%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
+{% block title %}Rules · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/settings/integrations">Settings</a><span class="crumb-sep">/</span><span class="crumb">Rules</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Rules</h1>
+  {% with tab = "rules" %}{% include "_settings_tabs.html" %}{% endwith %}
+  <p class="muted env-intro">The working rules agents read and stage moves are checked against, with every version kept. {% if coordinators %}Agents propose changes; the coordinator sessions named in <code>config.toml</code> may also change them directly.{% else %}No coordinator is configured, so every change an agent wants is a proposal.{% endif %}</p>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+  {% if confirm %}
+  <section class="panel env-confirm" id="confirm" role="alertdialog" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Confirm</h2>
+    <p class="form-warning">{{ confirm.message }}</p>
+    <div class="form-actions">
+      <form method="post" action="{{ confirm.action }}">
+        {{ hidden_csrf() }}
+        {% for name, value in confirm.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+        <input type="hidden" name="confirm_live" value="1">
+        <button type="submit" class="btn danger">Roll back</button>
+      </form>
+      <a class="btn" href="/settings/rules?scope={{ scope }}">Cancel</a>
+    </div>
+  </section>
+  {% endif %}
+
+  {% include "_rule_proposals.html" %}
+
+  <section class="panel" id="rules-current">
+    <h2>Current rules</h2>
+    <form class="field-inline" method="get" action="/settings/rules">
+      <label class="field-inline">Scope
+        <select name="scope">
+          {% for s in scopes %}<option value="{{ s }}"{% if s == scope %} selected{% endif %}>{{ s }}</option>{% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn">Show</button>
+    </form>
+    <p><strong>{{ rules.version_text }}</strong> <span class="muted">· hash <code>{{ rules.hash }}</code> · {{ rules.mode }} mode</span></p>
+    {% if rules.override_error %}<p class="form-error" role="alert">Project override ignored: {{ rules.override_error }}</p>{% endif %}
+    {% if version_error %}<p class="form-error" role="alert">Broken version: {{ version_error }}</p>{% endif %}
+    {% if config_differs %}<p class="muted">Changed since <code>config.toml</code> was read: the versions below are in force. A later change of <code>[rules]</code> in the file makes a new version that replaces them.</p>{% endif %}
+    <div class="markdown">{{ rules_md|markdown }}</div>
+  </section>
+
+  <section class="panel" id="rules-history">
+    <h2>History of {{ scope }}</h2>
+    {% if versions %}
+    <ul class="access-list">
+      {% for v in versions %}
+      <li class="access-row" id="rule-version-{{ v.number }}">
+        <strong>v{{ v.number }}</strong>{% if loop.first %} <span class="badge">current</span>{% endif %}{% if v.body_error %} <span class="badge">broken</span>{% endif %}
+        <span class="muted">{{ v.author }} · <time datetime="{{ v.created_at }}" data-age>{{ v.created_at|age }}</time></span>
+        <p class="inbox-note">{{ v.reason }}</p>
+        {% if v.diff %}
+        <details class="rule-diff">
+          <summary>Diff</summary>
+          <pre class="policy-json">{{ v.diff }}</pre>
+        </details>
+        {% endif %}
+        {% if not loop.first and not v.body_error %}
+        <form method="post" action="/settings/rules/rollback">
+          {{ hidden_csrf() }}
+          <input type="hidden" name="scope" value="{{ scope }}">
+          <input type="hidden" name="number" value="{{ v.number }}">
+          <button type="submit" class="btn">Roll back to v{{ v.number }}</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">This project has no rules of its own: it follows the global rules.</p>
+    {% endif %}
+  </section>
+
+  {% if decided %}
+  <section class="panel" id="rules-decided">
+    <h2>Decided proposals</h2>
+    <ul class="access-list">
+      {% for p in decided %}
+      <li class="access-row">
+        <strong>#{{ p.id }}</strong> <span class="badge">{{ p.status }}{% if p.version %} as v{{ p.version }}{% endif %}</span>
+        <span class="muted">{{ p.proposed_by }}; decided by {{ p.decided_by }} <time datetime="{{ p.decided_at }}" data-age>{{ p.decided_at|age }}</time></span>
+        <pre class="policy-json">{{ p.patch|tojson_compact }}</pre>
+        <p class="inbox-note">{{ p.reason }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</main>
+{% endblock %}

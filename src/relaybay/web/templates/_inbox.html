@@ -94,6 +94,42 @@
   </section>
   {% endif %}
 
+  {% if inbox.rule_proposals %}
+  <section class="panel inbox-group" id="inbox-rule-proposals">
+    <h2>Rules proposals <span class="col-count">{{ inbox.rule_proposals|length }}</span></h2>
+    <p class="muted inbox-hint">Changes agents propose to the working rules; accept or reject them in Settings → Rules.</p>
+    <ul class="inbox-list">
+      {% for p in inbox.rule_proposals %}
+      <li class="inbox-row">
+        <a class="inbox-link" href="/settings/rules?scope={{ p.scope|urlencode }}#rule-proposal-{{ p.id }}"><span class="card-key">#{{ p.id }}</span> <span class="inbox-title">{{ p.scope }}: {{ p.patch|tojson_compact }}</span></a>
+        <p class="inbox-note clamp clamp-2">{{ p.reason }}</p>
+        <span class="inbox-meta muted">{{ p.proposed_by }} · <time datetime="{{ p.created_at }}" data-age>{{ p.created_at|age }}</time></span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.rule_notices %}
+  <section class="panel inbox-group" id="inbox-rule-notices">
+    <h2>Rules changed directly <span class="col-count">{{ inbox.rule_notices|length }}</span></h2>
+    <p class="muted inbox-hint">A coordinator session changed the rules with <code>rules_update</code>. Read the diff in Settings → Rules; you can roll back there.</p>
+    <ul class="inbox-list">
+      {% for v in inbox.rule_notices %}
+      <li class="inbox-row">
+        <a class="inbox-link" href="/settings/rules?scope={{ v.scope|urlencode }}#rule-version-{{ v.number }}"><span class="card-key">v{{ v.number }}</span> <span class="inbox-title">{{ v.scope }}</span></a>
+        <p class="inbox-note clamp clamp-2">{{ v.reason }}</p>
+        <span class="inbox-meta muted">{{ v.author }} · <time datetime="{{ v.created_at }}" data-age>{{ v.created_at|age }}</time></span>
+        <form method="post" action="/settings/rules/notices/{{ v.id }}/read">
+          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+          <button type="submit" class="btn">Mark read</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   {% if inbox.rule_warnings %}
   <section class="panel inbox-group" id="inbox-rules">
     <h2>Rule warnings <span class="col-count">{{ inbox.rule_warnings|length }}</span></h2>

@@ -1,6 +1,7 @@
 """MCP server (official SDK 2.x `MCPServer`) served over Streamable HTTP at `/mcp`."""
 
 import functools
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
@@ -8,7 +9,8 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError, ToolError
 from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
+from mcp.shared.exceptions import MCPError
+from mcp.types import INVALID_PARAMS, ToolAnnotations
 from pydantic import Field
 from starlette.routing import BaseRoute
 
@@ -17,6 +19,8 @@ from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
 from relaybay.mcp_server import format as fmt
 from relaybay.service import Service, collect_notes
+
+logger = logging.getLogger("relaybay")
 
 
 def instructions(rules: Rules) -> str:
@@ -48,7 +52,10 @@ def instructions(rules: Rules) -> str:
             "6. If your tool's parameters lack a field, use task_patch (allowed fields:"
             " relaybay://schema/task).",
             "7. A response line starting with 'Warning (rules)' names a rule the write did not"
-            " meet: fix it (e.g. add the missing report) rather than ignore it.",
+            " meet: fix it (e.g. add the missing report) rather than ignore it. A line 'rules"
+            " updated to vN: re-read relaybay://rules…' means they changed: read them again. To"
+            " change them, use rules_propose (the owner decides); rules_update is only for"
+            " coordinator sessions named in the server's config.",
             "8. When a hook gives you owner comments ('Owner comment on …'), handle them like a"
             " message from the user and call comment_ack (or answer with comment_add).",
             "9. Before you touch a server, cluster or database, read environments_get for the"
@@ -160,14 +167,34 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         name="relaybay", version=__version__, instructions=instructions(service.global_rules)
     )
 
+    def refresh_instructions() -> None:
+        # The SDK has no setter: the text it sends on connect is this attribute. Without this a
+        # new session would read the report format of config.toml, not of the current version.
+        try:
+            mcp._lowlevel_server.instructions = instructions(service.global_rules)
+        except AttributeError as exc:
+            logger.warning("Could not refresh the MCP instructions after an SDK change: %s.", exc)
+
+    service.rules_changed = refresh_instructions
+
     def write(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
         """A write tool: lines the service noted without failing (a hook_session that was not
-        linked) are appended to its result."""
+        linked, a missed report format, newer rules) are appended to its result."""
 
         @functools.wraps(fn)
         async def tool(*args: Any, **kwargs: Any) -> str:
             with collect_notes() as notes:
                 text = await fn(*args, **kwargs)
+                # In these two `session` names another session, not the caller.
+                if fn.__name__ not in ("task_bind_session", "task_unbind_session"):
+                    place = kwargs.get("project") or kwargs.get("slug") or kwargs.get("scope")
+                    # The write is committed: a hint that fails must not turn it into an error.
+                    try:
+                        await service.note_rules_update(
+                            kwargs.get("session"), place, kwargs.get("task")
+                        )
+                    except Exception:
+                        logger.exception("Could not work out the rules-updated hint.")
             return "\n".join([text, *notes])
 
         return mcp.tool(annotations=WRITE, structured_output=False)(tool)
@@ -1098,9 +1125,71 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     ) -> str:
         """The working rules: report format (first line, states, sizes), what a stage move
         needs (e.g. a report before test, progress before done), the description template and
-        guidance, with the rules hash. Call it at the start of a session, or when the hash in
-        project_snapshot changed since you last read them."""
+        guidance, with the version and the rules hash. Call it at the start of a session, or when
+        the version in project_snapshot changed or a response says the rules were updated."""
         return fmt.rules_text(await run(service.rules(project or None)))
+
+    RulesScope = Annotated[str, Field(description="'global' or a project slug.")]
+    RulesPatch = Annotated[
+        dict[str, Any],
+        Field(
+            description="Merged on top of the scope's current version: objects key by key, other"
+            " values (lists included) replace, null removes a key (a project then follows the"
+            " global rules, the global rules the built-in default). Keys: report_format"
+            " ({first_line, states, sizes}), stage_requirements ({stage: [requirement]}; [] drops"
+            " a stage's requirements), description_template, guidance. The result must be valid"
+            " rules (rules_get shows the current ones)."
+        ),
+    ]
+
+    @write
+    async def rules_update(
+        scope: RulesScope,
+        patch: RulesPatch,
+        reason: Annotated[str, Field(description="Why the rules change; kept in the history.")],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Change the working rules directly: a new version of the scope. Only for coordinator
+        sessions named in the server's config; everyone else gets an error and uses
+        rules_propose. An invalid patch is refused with the reason."""
+        canonical, number = await run(
+            service.update_rules(
+                scope,
+                patch,
+                reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        rules = await run(service.rules_of_scope(canonical))
+        return fmt.rules_saved(canonical, number, rules)
+
+    @write
+    async def rules_propose(
+        scope: RulesScope,
+        patch: RulesPatch,
+        reason: Annotated[str, Field(description="Why the change is needed, for the owner.")],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Propose a change to the working rules. Nothing changes until the owner accepts it on
+        the board (Inbox, Settings → Rules); it is checked again against the current version
+        then. A rejected proposal stays in the history."""
+        proposal = await run(
+            service.propose_rules(
+                scope,
+                patch,
+                reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.rule_proposal_saved(proposal)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def events_since(
@@ -1595,6 +1684,42 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     )
     async def task_schema_resource() -> str:
         return fmt.task_schema()
+
+    async def prompt_context(project: str, task: str) -> tuple[Any, Any]:
+        # Only an MCPError keeps its message: the SDK turns anything else into "Error rendering".
+        try:
+            rules = await service.rules(project)
+            found = await service.get_task(task.strip()) if task.strip() else None
+        except DomainError as exc:
+            raise MCPError(INVALID_PARAMS, str(exc)) from exc
+        if found is not None and found.project_slug != rules.project:
+            message = f"Task {found.key} is not in project {rules.project}."
+            raise MCPError(INVALID_PARAMS, message)
+        return rules, found
+
+    @mcp.prompt(
+        name="start_task",
+        title="Start a task",
+        description="The project's current working rules and a checklist for starting a task.",
+    )
+    async def start_task(
+        project: Annotated[str, Field(description="Project slug such as 'acme-shop'.")],
+        task: Annotated[str, Field(description="Task key; empty to pick or create one.")] = "",
+    ) -> str:
+        rules, found = await prompt_context(project, task)
+        return fmt.start_task_prompt(rules, found)
+
+    @mcp.prompt(
+        name="finish_stage",
+        title="Finish a stage",
+        description="The project's current working rules and a checklist for ending a stage.",
+    )
+    async def finish_stage(
+        project: Annotated[str, Field(description="Project slug such as 'acme-shop'.")],
+        task: Annotated[str, Field(description="Task key of the task whose stage ends.")] = "",
+    ) -> str:
+        rules, found = await prompt_context(project, task)
+        return fmt.finish_stage_prompt(rules, found)
 
     return mcp
 

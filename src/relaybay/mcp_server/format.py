@@ -33,7 +33,13 @@ from relaybay.domain.models import (
 )
 from relaybay.domain.plan import Plan, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, Review, ReviewStep
-from relaybay.domain.rules import Rules, requirement_label, rules_line
+from relaybay.domain.rules import (
+    RuleProposal,
+    Rules,
+    requirement_label,
+    rules_line,
+    rules_markdown,
+)
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
 from relaybay.domain.usage import UsageReport, UsageTotal
@@ -346,37 +352,94 @@ def pulse_saved(p: Project) -> str:
 
 def rules_text(rules: Rules) -> str:
     """The merged rules as markdown (resource `relaybay://rules[/{project}]`, `rules_get`)."""
-    body = rules.body
     if rules.project is None:
         scope = "global"
     elif rules.override_error:
         scope = f"project {rules.project} (global rules only)"
     else:
         scope = f"project {rules.project} (global + project override)"
-    report_format = body["report_format"]
     lines = [
         f"# Rules (hash {rules.hash})",
+        *([f"- version: {rules.version_text}"] if rules.version else []),
         f"- scope: {scope}",
         f"- mode: {rules.mode} — {MODE_HELP[rules.mode]}",
         *([f"- project override ignored: {rules.override_error}"] if rules.override_error else []),
         "",
-        "## Report format",
-        f"- first line: `{report_format['first_line']}`",
-        f"- states: {', '.join(report_format['states'])}",
-        f"- sizes: {', '.join(report_format['sizes'])}",
-        "",
-        "## Stage requirements",
+        rules_markdown(rules),
     ]
-    reqs = [(stage, rules.requirements(stage)) for stage in STAGES]
-    reqs = [(stage, items) for stage, items in reqs if items]
-    if not reqs:
-        lines.append("- none")
-    for stage, items in reqs:
-        lines.append(f"- moving to {stage} needs {' and '.join(map(requirement_label, items))}")
-    if body.get("description_template"):
-        lines += ["", "## Description template", body["description_template"]]
-    if body.get("guidance"):
-        lines += ["", "## Guidance", body["guidance"]]
+    return "\n".join(lines)
+
+
+def rules_saved(scope: str, number: int, rules: Rules) -> str:
+    return f"Rules of {scope} are now version {number}: {rules.version_text}."
+
+
+def rule_proposal_saved(p: RuleProposal) -> str:
+    return (
+        f"Rules proposal #{p.id} for {p.scope} recorded. Nothing changed yet: the owner accepts or"
+        " rejects it on the board (Settings → Rules or the Inbox)."
+    )
+
+
+def _next_stage(stage: str) -> str | None:
+    at = STAGES.index(stage)
+    return STAGES[at + 1] if at + 1 < len(STAGES) else None
+
+
+def _prompt_task(task: Task | None) -> list[str]:
+    if task is None:
+        return []
+    return [f"Task: **{task.key}** — {task.title} (stage {task.stage.value})", ""]
+
+
+def start_task_prompt(rules: Rules, task: Task | None) -> str:
+    target = (
+        f'task_context("{task.key}")'
+        if task is not None
+        else "project_digest, then pick a task or create one with task_create,"
+    )
+    lines = [
+        "Start this task under the project's working rules.",
+        "",
+        *_prompt_task(task),
+        "Checklist:",
+        f"1. Read {target} and the rules below.",
+        "2. Pass `session` (your own id or name) on every write so the board shows who works.",
+        "3. Write the plan with plan_set (2-5 steps); S tasks need at least a todo.",
+        "4. Set next_step and waiting_on, then move the task with task_set_stage.",
+        "5. Fix every line starting with 'Warning (rules)'; re-read the rules when a response says"
+        " they were updated.",
+        "",
+        rules_text(rules),
+    ]
+    return "\n".join(lines)
+
+
+def finish_stage_prompt(rules: Rules, task: Task | None) -> str:
+    next_stage = _next_stage(task.stage.value) if task is not None else None
+    needs = rules.requirements(next_stage) if next_stage else []
+    moving = (
+        f"3. Moving to {next_stage} needs: {' and '.join(map(requirement_label, needs))}."
+        if needs
+        else "3. Check what the next stage needs under Stage requirements below."
+    )
+    report = rules.body["report_format"]
+    lines = [
+        "Finish the current stage under the project's working rules.",
+        "",
+        *_prompt_task(task),
+        "Checklist:",
+        "1. Mark the plan steps you finished with plan_step_update: 'as planned' or"
+        " 'deviation: why'.",
+        f"2. Add a report with report_add whose first line is `{report['first_line']}`, and keep"
+        " progress, next_step and waiting_on current in the same call.",
+        moving,
+        "4. Before review or test, write what the owner checks by eye with review_steps_set and"
+        " attach screenshots with attach_file.",
+        "5. Move the task with task_set_stage and fix any 'Warning (rules)' line.",
+        "",
+        rules_text(rules),
+    ]
     return "\n".join(lines)
 
 
@@ -901,6 +964,14 @@ def event_detail(e: Event) -> str:
         return str(p.get("scope", ""))
     if e.kind.startswith("policy.propos"):
         return f"#{p.get('proposal_id')} {p.get('scope')}: {p.get('change') or ''}".rstrip()
+    if e.kind == "rules.notice_read":
+        return f"{p.get('scope')} v{p.get('version')}"
+    if e.kind == "rules.updated":
+        return f"{p.get('scope')} v{p.get('version')}: {p.get('reason') or ''}".rstrip()
+    if e.kind.startswith("rules.propos"):
+        return f"#{p.get('proposal_id')} {p.get('scope')}: {p.get('change') or ''}".rstrip()
+    if e.kind.startswith("filter."):
+        return str(p.get("name", ""))
     if e.kind == "session.seen":
         reason = p.get("unlinked_reason")
         return f"{p.get('session')}" + (f" (unlinked: {reason})" if reason else "")

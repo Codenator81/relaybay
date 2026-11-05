@@ -346,6 +346,7 @@ class PortfolioData:
     pulse_stale_days: int
     task_stale_days: int
     now: datetime
+    rules_line: str = ""
 
 
 def _project_line(project: Project, counts: dict[str, int], stale_days: int, now: datetime) -> str:
@@ -363,6 +364,8 @@ def inbox_lines(inbox: "Inbox") -> list[str]:
     lines += [f"- agent reply: {_task_ref(t)} ({len(c)} unread)" for t, c in inbox.replies]
     lines += [f"- environment proposal #{p.id} in {p.project_slug}" for p in inbox.proposals]
     lines += [f"- policy proposal #{p.id} on {p.scope}" for p in inbox.policy_proposals]
+    lines += [f"- rules proposal #{p.id} on {p.scope}" for p in inbox.rule_proposals]
+    lines += [f"- rules changed directly: {v.scope} v{v.number}" for v in inbox.rule_notices]
     lines += [f"- rule warning: {_task_ref(t)}: {_clip(w[0], 120)}" for t, w in inbox.rule_warnings]
     lines += [f"- work log not entered: {_task_ref(t)}" for t in inbox.not_logged]
     lines += [f"- unlinked hook session: {_clip(s.name, 60)}" for s in inbox.unlinked]
@@ -377,7 +380,8 @@ def portfolio_text(data: PortfolioData, footer: Callable[[bool], str], budget: i
             "# Portfolio",
             [
                 f"{len(data.projects)} project(s) · {open_tasks} open task(s)"
-                f" · {data.inbox.count} waiting for the owner"
+                f" · {data.inbox.count} waiting for the owner",
+                *([data.rules_line] if data.rules_line else []),
             ],
             "project_digest(project) for one project",
             0,
@@ -438,6 +442,7 @@ class ProjectData:
     changes: Changes
     pulse_stale_days: int
     now: datetime
+    rules_line: str = ""
 
 
 def waits_for_owner(task: Task, owner_names: set[str]) -> bool:
@@ -454,6 +459,7 @@ def project_text(data: ProjectData, footer: Callable[[bool], str], budget: int) 
         _pulse_mark(p, data.pulse_stale_days, now).capitalize()
         + (f", by {_clip(p.pulse_by, 40)}:" if p.pulse_by else ""),
         *(p.pulse or "").split("\n"),
+        *([data.rules_line] if data.rules_line else []),
     ]
     sections = [Section(f"# {slug} — {p.name}", head, f'project_snapshot("{slug}")', 0)]
     rank = {stage: n for n, stage in enumerate(_STAGE_ORDER)}

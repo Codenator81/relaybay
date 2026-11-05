@@ -34,12 +34,14 @@ from relaybay.domain.models import (
     ImportItem,
     Project,
     Report,
+    SavedFilter,
     Session,
     Task,
     TrackerEntry,
 )
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, ReviewStep
+from relaybay.domain.rules import RuleProposal, RuleVersion
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile
 
@@ -207,6 +209,11 @@ async def update_project(
         f"UPDATE project SET {sets}, updated_at = ? WHERE id = ?",
         (*changes.values(), now, project_id),
     )
+
+
+async def get_project_by_id(conn: aiosqlite.Connection, project_id: int) -> Project | None:
+    row = await _one(conn, "SELECT * FROM project WHERE id = ?", (project_id,))
+    return _project(row) if row else None
 
 
 async def next_task_number(conn: aiosqlite.Connection, project_id: int) -> int:
@@ -1674,6 +1681,358 @@ async def list_project_rules(conn: aiosqlite.Connection) -> list[tuple[str, str]
         " ORDER BY p.slug",
     )
     return [(r["slug"], r["body"]) for r in rows]
+
+
+async def set_project_rules(
+    conn: aiosqlite.Connection, project_id: int, body: str, now: str
+) -> None:
+    await conn.execute(
+        "INSERT INTO project_rules (project_id, body, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT (project_id) DO UPDATE SET body = excluded.body,"
+        " updated_at = excluded.updated_at",
+        (project_id, body, now),
+    )
+
+
+# --- rule versions ---------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RuleSetRow:
+    id: int
+    scope: str
+    project_id: int | None
+    current_version: int
+    config_hash: str | None
+
+
+def _rule_set(row: aiosqlite.Row) -> RuleSetRow:
+    return RuleSetRow(
+        row["id"], row["scope"], row["project_id"], row["current_version"], row["config_hash"]
+    )
+
+
+async def get_rule_set(conn: aiosqlite.Connection, project_id: int | None) -> RuleSetRow | None:
+    """A project's set, or the global one with `project_id` None; never by name, a project may
+    be called `global`."""
+    where = "project_id IS NULL" if project_id is None else "project_id = ?"
+    params = () if project_id is None else (project_id,)
+    row = await _one(conn, f"SELECT * FROM rule_set WHERE {where}", params)
+    return _rule_set(row) if row else None
+
+
+async def list_project_rule_sets(conn: aiosqlite.Connection) -> list[RuleSetRow]:
+    rows = await _all(conn, "SELECT * FROM rule_set WHERE project_id IS NOT NULL ORDER BY scope")
+    return [_rule_set(r) for r in rows]
+
+
+async def rule_set_version(conn: aiosqlite.Connection, project_id: int | None) -> int:
+    found = await get_rule_set(conn, project_id)
+    return found.current_version if found else 0
+
+
+async def insert_rule_set(
+    conn: aiosqlite.Connection, scope: str, project_id: int | None, now: str
+) -> RuleSetRow:
+    await conn.execute(
+        "INSERT INTO rule_set (scope, project_id, created_at) VALUES (?, ?, ?)",
+        (scope, project_id, now),
+    )
+    found = await get_rule_set(conn, project_id)
+    assert found is not None
+    return found
+
+
+async def set_rules_config_hash(conn: aiosqlite.Connection, set_id: int, value: str) -> None:
+    await conn.execute("UPDATE rule_set SET config_hash = ? WHERE id = ?", (value, set_id))
+
+
+def _rule_version(row: aiosqlite.Row) -> RuleVersion:
+    """A stored version; a body that is not JSON (edited by hand) is reported, never raised."""
+    body, error = {}, None
+    try:
+        body = json.loads(row["body"])
+    except ValueError as exc:
+        error = f"not valid JSON ({exc})"
+    return RuleVersion(
+        id=row["id"],
+        scope=row["scope"],
+        number=row["number"],
+        body=body,
+        rendered=row["rendered"],
+        author=row["author"],
+        session_id=row["session_id"],
+        reason=row["reason"],
+        diff=row["diff"],
+        created_at=row["created_at"],
+        notice_open=bool(row["notice_open"]),
+        body_error=error,
+    )
+
+
+_RULE_VERSION_SELECT = (
+    "SELECT v.*, s.scope FROM rule_version v JOIN rule_set s ON s.id = v.rule_set_id"
+)
+
+
+async def insert_rule_version(
+    conn: aiosqlite.Connection,
+    rule_set: RuleSetRow,
+    body: dict[str, Any],
+    rendered: str,
+    author: str,
+    session_id: int | None,
+    reason: str,
+    diff: str,
+    now: str,
+    *,
+    notice: bool = False,
+) -> int:
+    """The next version of the set, made current; returns its number. The number comes from the
+    rows, so a `current_version` edited by hand cannot make two versions collide."""
+    row = await _one(
+        conn,
+        "SELECT COALESCE(MAX(number), 0) AS top FROM rule_version WHERE rule_set_id = ?",
+        (rule_set.id,),
+    )
+    number = row["top"] + 1
+    await conn.execute(
+        "INSERT INTO rule_version (rule_set_id, number, body, rendered, author, session_id,"
+        " reason, diff, notice_open, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            rule_set.id,
+            number,
+            json.dumps(body, ensure_ascii=False),
+            rendered,
+            author,
+            session_id,
+            reason,
+            diff,
+            int(notice),
+            now,
+        ),
+    )
+    await conn.execute(
+        "UPDATE rule_set SET current_version = ? WHERE id = ?", (number, rule_set.id)
+    )
+    return number
+
+
+async def get_rule_version(
+    conn: aiosqlite.Connection, set_id: int, number: int
+) -> RuleVersion | None:
+    row = await _one(
+        conn, f"{_RULE_VERSION_SELECT} WHERE v.rule_set_id = ? AND v.number = ?", (set_id, number)
+    )
+    return _rule_version(row) if row else None
+
+
+async def get_rule_version_by_id(conn: aiosqlite.Connection, version_id: int) -> RuleVersion | None:
+    row = await _one(conn, f"{_RULE_VERSION_SELECT} WHERE v.id = ?", (version_id,))
+    return _rule_version(row) if row else None
+
+
+async def list_rule_versions(
+    conn: aiosqlite.Connection, set_id: int, limit: int = 100
+) -> list[RuleVersion]:
+    rows = await _all(
+        conn,
+        f"{_RULE_VERSION_SELECT} WHERE v.rule_set_id = ? ORDER BY v.number DESC LIMIT ?",
+        (set_id, limit),
+    )
+    return [_rule_version(r) for r in rows]
+
+
+async def list_rule_notices(conn: aiosqlite.Connection) -> list[RuleVersion]:
+    rows = await _all(conn, f"{_RULE_VERSION_SELECT} WHERE v.notice_open = 1 ORDER BY v.id")
+    return [_rule_version(r) for r in rows]
+
+
+async def close_rule_notice(conn: aiosqlite.Connection, version_id: int) -> None:
+    await conn.execute("UPDATE rule_version SET notice_open = 0 WHERE id = ?", (version_id,))
+
+
+def _rule_proposal(row: aiosqlite.Row) -> RuleProposal:
+    return RuleProposal(
+        id=row["id"],
+        scope=row["scope"],
+        project_id=row["project_id"],
+        patch=json.loads(row["patch"]),
+        reason=row["reason"],
+        proposed_by=row["proposed_by"],
+        session_id=row["session_id"],
+        status=row["status"],
+        version=row["version"],
+        created_at=row["created_at"],
+        decided_at=row["decided_at"],
+        decided_by=row["decided_by"],
+    )
+
+
+async def insert_rule_proposal(
+    conn: aiosqlite.Connection,
+    scope: str,
+    project_id: int | None,
+    patch: dict[str, Any],
+    reason: str,
+    proposed_by: str,
+    session_id: int | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO rule_proposal (scope, project_id, patch, reason, proposed_by, session_id,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            scope,
+            project_id,
+            json.dumps(patch, ensure_ascii=False),
+            reason,
+            proposed_by,
+            session_id,
+            now,
+        ),
+    )
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+async def get_rule_proposal(conn: aiosqlite.Connection, proposal_id: int) -> RuleProposal | None:
+    row = await _one(conn, "SELECT * FROM rule_proposal WHERE id = ?", (proposal_id,))
+    return _rule_proposal(row) if row else None
+
+
+async def list_rule_proposals(conn: aiosqlite.Connection, limit: int = 200) -> list[RuleProposal]:
+    rows = await _all(
+        conn, "SELECT * FROM rule_proposal WHERE status = 'open' ORDER BY id LIMIT ?", (limit,)
+    )
+    return [_rule_proposal(r) for r in rows]
+
+
+async def decided_rule_proposals(
+    conn: aiosqlite.Connection, scope: str, limit: int = 100
+) -> list[RuleProposal]:
+    rows = await _all(
+        conn,
+        "SELECT * FROM rule_proposal WHERE scope = ? AND status <> 'open' ORDER BY id DESC LIMIT ?",
+        (scope, limit),
+    )
+    return [_rule_proposal(r) for r in rows]
+
+
+async def decide_rule_proposal(
+    conn: aiosqlite.Connection,
+    proposal_id: int,
+    status: str,
+    version: int | None,
+    decided_by: str,
+    now: str,
+) -> None:
+    await conn.execute(
+        "UPDATE rule_proposal SET status = ?, version = ?, decided_at = ?, decided_by = ?"
+        " WHERE id = ?",
+        (status, version, now, decided_by, proposal_id),
+    )
+
+
+async def rule_seen(conn: aiosqlite.Connection, session_id: int, project_id: int) -> int | None:
+    row = await _one(
+        conn,
+        "SELECT version FROM rule_seen WHERE session_id = ? AND project_id = ?",
+        (session_id, project_id),
+    )
+    return row["version"] if row else None
+
+
+async def set_rule_seen(
+    conn: aiosqlite.Connection, session_id: int, project_id: int, version: int
+) -> None:
+    await conn.execute(
+        "INSERT INTO rule_seen (session_id, project_id, version) VALUES (?, ?, ?)"
+        " ON CONFLICT (session_id, project_id) DO UPDATE SET version = excluded.version",
+        (session_id, project_id, version),
+    )
+
+
+# --- saved filters ---------------------------------------------------------
+
+
+def _saved_filter(row: aiosqlite.Row) -> SavedFilter:
+    return SavedFilter(
+        id=row["id"],
+        project_id=row["project_id"],
+        project_slug=row["slug"],
+        name=row["name"],
+        stage=row["stage"],
+        waiting_on=row["waiting_on"],
+        session=row["session"],
+        q=row["q"],
+        created_at=row["created_at"],
+    )
+
+
+_SAVED_FILTER_SELECT = (
+    "SELECT f.*, p.slug FROM saved_filter f JOIN project p ON p.id = f.project_id"
+)
+
+
+async def list_saved_filters(
+    conn: aiosqlite.Connection, project_id: int | None = None
+) -> list[SavedFilter]:
+    where, params = ("", ()) if project_id is None else (" WHERE f.project_id = ?", (project_id,))
+    rows = await _all(conn, f"{_SAVED_FILTER_SELECT}{where} ORDER BY f.name COLLATE NOCASE", params)
+    return [_saved_filter(r) for r in rows]
+
+
+async def get_saved_filter(conn: aiosqlite.Connection, filter_id: int) -> SavedFilter | None:
+    row = await _one(conn, f"{_SAVED_FILTER_SELECT} WHERE f.id = ?", (filter_id,))
+    return _saved_filter(row) if row else None
+
+
+async def saved_filter_named(
+    conn: aiosqlite.Connection, project_id: int, name: str
+) -> SavedFilter | None:
+    row = await _one(
+        conn, f"{_SAVED_FILTER_SELECT} WHERE f.project_id = ? AND f.name = ?", (project_id, name)
+    )
+    return _saved_filter(row) if row else None
+
+
+async def insert_saved_filter(
+    conn: aiosqlite.Connection, project_id: int, name: str, query: dict[str, str], now: str
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO saved_filter (project_id, name, stage, waiting_on, session, q, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            project_id,
+            name,
+            query.get("stage"),
+            query.get("waiting_on"),
+            query.get("session"),
+            query.get("q"),
+            now,
+        ),
+    )
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+async def delete_saved_filter(conn: aiosqlite.Connection, filter_id: int) -> None:
+    await conn.execute("DELETE FROM saved_filter WHERE id = ?", (filter_id,))
+
+
+# --- quick switcher --------------------------------------------------------
+
+
+async def switcher_tasks(conn: aiosqlite.Connection, limit: int) -> list[tuple[str, str, str, str]]:
+    """(key, title, stage, project slug) of the most recently changed tasks."""
+    rows = await _all(
+        conn,
+        "SELECT t.key, t.title, t.stage, p.slug FROM task t JOIN project p ON p.id = t.project_id"
+        " ORDER BY t.updated_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [(r["key"], r["title"], r["stage"], r["slug"]) for r in rows]
 
 
 # --- environments ----------------------------------------------------------

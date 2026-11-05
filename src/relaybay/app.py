@@ -25,6 +25,7 @@ def create_app(settings: Settings) -> FastAPI:
         settings.db_path,
         desktop_link_template=settings.desktop_link_template,
         rules=settings.rules,
+        rules_table=settings.rules_table,
         rules_mode=settings.rules_mode,
         permission_defaults=settings.policy_config.get("permission_defaults"),
         guard_mode=settings.policy_config.get("guard_mode"),
@@ -43,6 +44,7 @@ def create_app(settings: Settings) -> FastAPI:
         session_context=settings.session_context,
         session_context_project_chars=settings.session_context_project_chars,
         usage_enabled=settings.usage_enabled,
+        coordinators=settings.coordinators,
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 

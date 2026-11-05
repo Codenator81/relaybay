@@ -25,12 +25,13 @@ from relaybay.domain.environments import (
     KINDS,
     LEVELS,
 )
+from relaybay.domain.errors import ValidationError
 from relaybay.domain.hooks import WAKE_HOLD_SECONDS
 from relaybay.domain.plan import DEFAULT_REMINDER_EVERY
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.review import DEFAULT_FILE_MAX_MB, DEFAULT_TASK_MAX_MB
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
-from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE
+from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
 from relaybay.domain.usage import DEFAULT_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS
@@ -125,7 +126,9 @@ class Settings:
     require_tracker_log: bool = field(
         default=False,
         metadata=_doc(
-            'Done tasks without the tracker mark show "not logged" and are never archived.',
+            'Done tasks without the tracker mark show "not logged" and are never archived. Moving'
+            ' to `done` needs the mark: a `Warning (rules)` line, and `rules_mode = "strict"`'
+            " refuses the move.",
             key="require_tracker_log",
             env="RELAYBAY_REQUIRE_TRACKER_LOG",
         ),
@@ -151,9 +154,22 @@ class Settings:
     rules_mode: str = field(
         default="warn",
         metadata=_doc(
-            "`warn` or `strict`: what a stage move that misses a rule does.",
+            "`warn` or `strict`: what a stage move or a report that misses a rule does.",
             key="rules_mode",
             env="RELAYBAY_RULES_MODE",
+        ),
+    )
+    coordinators: list[str] = field(
+        default_factory=list,
+        metadata=_doc(
+            "Sessions allowed to change the rules directly with `rules_update`: a desktop session"
+            " id (`local_…`, the call must also pass that session's own `hook_session`), an alias"
+            " or a name. A guard against mistakes, not access control: all MCP clients share one"
+            " token. Empty: every change is a proposal. The environment variable is"
+            " comma-separated.",
+            key="coordinators",
+            env="RELAYBAY_COORDINATORS",
+            default="`[]`",
         ),
     )
     permission_defaults: dict[str, str] = field(
@@ -298,6 +314,7 @@ class Settings:
     # internal: the legacy guard_mode / [permission_defaults] as a policy layer, only the keys
     # that config.toml or the environment set (so a preset is not overridden by defaults).
     policy_config: dict[str, Any] = field(default_factory=dict)
+    rules_table: dict[str, Any] = field(default_factory=dict)  # [rules] before the defaults
     replay_limit: int = 5000  # internal: not configurable
     heartbeat_seconds: float = 15.0  # internal: not configurable
     wake_hold_seconds: float = WAKE_HOLD_SECONDS  # internal: wake-up hook long poll
@@ -487,6 +504,17 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
     if "allowed_hosts" in data:
         value = data["allowed_hosts"]
         settings.allowed_hosts = _split_list(value) if isinstance(value, str) else list(value)
+    if "coordinators" in data:
+        value = data["coordinators"]
+        names = _split_list(value) if isinstance(value, str) else value
+        if not isinstance(names, list) or not all(isinstance(n, str) and n.strip() for n in names):
+            raise ValueError(f"{source}: coordinators must be a list of sessions, got {value!r}")
+        settings.coordinators = [n.strip() for n in names]
+        for name in settings.coordinators:
+            try:
+                parse_session_id(name)
+            except ValidationError as exc:
+                raise ValueError(f"{source}: coordinators: {exc}") from None
     if "owner_names" in data:
         value = data["owner_names"]
         names = _split_list(value) if isinstance(value, str) else value
@@ -539,6 +567,7 @@ def load_settings(
         settings.report_hints = {str(k): str(v) for k, v in reports.get("hints", {}).items()}
         if "rules" in data:
             override = validate_rules(data["rules"], f"{settings.config_path} [rules]")
+            settings.rules_table = override
             settings.rules = merge_rules(DEFAULT_RULES, override)
 
     _apply(
