@@ -77,6 +77,12 @@ Ships when a coordinator runs its daily work from relaybay.
 | PR2b: update check, in-app update, backup before a new version | done | [0016](design/0016-desktop-program.md#pull-requests) |
 | PR3: setup and doctor for the installed program (`relaybay-hook`, Reconnect), install and migration how-tos, ADR-0002 | done | [0016](design/0016-desktop-program.md#pull-requests) |
 
+## 0.6.1 — desktop fixes (released 2026-11-05)
+
+| Item | Status | Design |
+|---|---|---|
+| The program follows the machine's light or dark theme, the window keeps its state | done | [0016](design/0016-desktop-program.md) |
+
 ## 0.7+ — agents inside
 
 | Item | Status | Design |
