@@ -10,6 +10,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -183,6 +184,31 @@ def test_wrong_key_is_refused(tmp_path: Path) -> None:
         assert wait_for(lambda: raised == [1])
     finally:
         server.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the installer's AppMutex is Windows only")
+def test_app_mutex_is_visible_to_the_installer() -> None:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenMutexW.restype = ctypes.c_void_p
+    single_instance.hold_app_mutex()
+    handle = kernel32.OpenMutexW(0x00100000, False, single_instance.APP_MUTEX)  # SYNCHRONIZE
+    assert handle
+    kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the installer's mutex is Windows only")
+def test_a_failed_mutex_is_a_warning_not_a_failed_start(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import ctypes
+
+    kernel32 = types.SimpleNamespace(CreateMutexW=lambda *args: 0)  # NULL: the call failed
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel32)
+    with caplog.at_level(logging.WARNING, logger=single_instance.__name__):
+        single_instance.hold_app_mutex()
+    assert "could not create the mutex" in caplog.text
 
 
 # --- embedded server --------------------------------------------------------

@@ -96,11 +96,21 @@ jobs:
             ghcr.io/codenator81/relaybay:${{ needs.build.outputs.version }}
             ghcr.io/codenator81/relaybay:latest
 
+  desktop:
+    name: Desktop builds
+    needs: build
+    uses: ./.github/workflows/desktop.yml
+    with:
+      version: ${{ needs.build.outputs.version }}
+      retention-days: 30
+
   github-release:
     name: GitHub Release
-    # Only after the build: the release (with the wheel and sdist) exists even while PyPI
+    # After the build and the installers, not after PyPI: the release exists even while PyPI
     # publishing is not set up yet.
-    needs: build
+    needs: [build, desktop]
+    # A red macOS build never blocks the release; the Windows and Linux installers are checked below.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -112,6 +122,22 @@ jobs:
         with:
           name: dist
           path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: installers/
+          merge-multiple: true
+      - name: Checksums
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          for required in "relaybay-$VERSION-windows-x64-setup.exe" "relaybay_${VERSION}_amd64.deb"; do
+            test -f "installers/$required" || { echo "missing installer $required" >&2; exit 1; }
+          done
+          test -f "installers/relaybay-$VERSION-macos-arm64.dmg" || echo "::warning::no macOS dmg in this release"
+          (cd dist && sha256sum -- *) > SHA256SUMS.txt
+          (cd installers && sha256sum -- *) >> SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -119,7 +145,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           python3 scripts/changelog_notes.py "$VERSION" > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          gh release create "$GITHUB_REF_NAME" dist/* installers/* SHA256SUMS.txt \
             --title "relaybay $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             --verify-tag

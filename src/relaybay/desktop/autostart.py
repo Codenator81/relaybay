@@ -22,7 +22,9 @@ def launch_command() -> list[str]:
     """How this program is started again, hidden: the frozen or `relaybay-desktop` executable,
     else this interpreter (`pythonw` on Windows, no console) with `-m relaybay.desktop`."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--background"]
+        # `relaybay desktop` from the console executable still registers the windowed sibling.
+        name = "relaybay-desktop.exe" if sys.platform == "win32" else "relaybay-desktop"
+        return [str(Path(sys.executable).with_name(name)), "--background"]
     script = Path(sys.argv[0]) if sys.argv and sys.argv[0] else None
     if script is not None and script.stem == "relaybay-desktop" and script.exists():
         return [str(script.resolve()), "--background"]

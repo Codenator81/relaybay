@@ -366,6 +366,7 @@ def run(background: bool = False, exit_after: float | None = None, quit: bool = 
             file=sys.stderr,
         )
         return 1
+    single_instance.hold_app_mutex()
     controller = DesktopController(folder, background=background)
     ipc = single_instance.serve_raise(folder, controller.show_window, controller.quit)
     try:

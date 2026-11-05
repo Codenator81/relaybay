@@ -1,0 +1,99 @@
+relaybay: third-party components in the installers and frozen builds
+====================================================================
+
+relaybay itself is MIT licensed (see LICENSE). The installers (Windows setup, macOS app and dmg,
+Linux deb) carry a frozen copy of the program built with PyInstaller, which bundles the components
+below. The versions are the ones pinned in uv.lock of the release. The Python wheel and the Docker
+image install these packages from PyPI instead and bundle nothing.
+
+The frozen builds are PyInstaller "onedir" folders, never a single packed executable: every
+bundled Python package stays a separate set of files in the _internal folder (in relaybay.app:
+Contents/Frameworks and Contents/Resources). The LGPL components (pystray; python-xlib on Linux)
+can therefore be replaced by the user with a modified version of the same files, as the LGPL
+requires. Their source code: https://github.com/moses-palmer/pystray and
+https://github.com/python-xlib/python-xlib (the exact versions are on PyPI).
+
+
+Python packages
+---------------
+
+Package                                   Licence                      Platforms
+aiosqlite                                 MIT                          all
+annotated-doc                             MIT                          all
+annotated-types                           MIT                          all
+anyio                                     MIT                          all
+attrs                                     MIT                          all
+bottle                                    MIT                          all
+cffi                                      MIT-0                        all
+click                                     BSD-3-Clause                 all
+clr-loader                                MIT                          Windows
+cryptography                              Apache-2.0 OR BSD-3-Clause   all
+fastapi                                   MIT                          all
+h11                                       MIT                          all
+httpcore2                                 BSD-3-Clause                 all
+httpx2                                    BSD-3-Clause                 all
+idna                                      BSD-3-Clause                 all
+jinja2                                    BSD-3-Clause                 all
+jsonschema                                MIT                          all
+jsonschema-specifications                 MIT                          all
+markdown-it-py                            MIT                          all
+markupsafe                                BSD-3-Clause                 all
+mcp                                       MIT                          all
+mcp-types                                 MIT                          all
+mdurl                                     MIT                          all
+opentelemetry-api                         Apache-2.0                   all
+pillow                                    MIT-CMU (HPND)               all
+platformdirs                              MIT                          all
+proxy-tools                               MIT                          all
+pycparser                                 BSD-3-Clause                 all
+pydantic                                  MIT                          all
+pydantic-core                             MIT                          all
+pyjwt                                     MIT                          all
+pyobjc-core                               MIT                          macOS
+pyobjc-framework-cocoa                    MIT                          macOS
+pyobjc-framework-quartz                   MIT                          macOS
+pyobjc-framework-security                 MIT                          macOS
+pyobjc-framework-uniformtypeidentifiers   MIT                          macOS
+pyobjc-framework-webkit                   MIT                          macOS
+pystray                                   LGPL-3.0                     all
+python-multipart                          Apache-2.0                   all
+python-xlib                               LGPL-2.1-or-later            Linux
+pythonnet                                 MIT                          Windows
+pywebview                                 BSD-3-Clause                 all
+pywin32                                   PSF-2.0                      Windows
+referencing                               MIT                          all
+regex                                     Apache-2.0 AND CNRI-Python   all
+rpds-py                                   MIT                          all
+six                                       MIT                          all
+snowballstemmer                           BSD-3-Clause                 all
+sse-starlette                             BSD-3-Clause                 all
+starlette                                 BSD-3-Clause                 all
+truststore                                MIT                          all
+typing-extensions                         PSF-2.0                      all
+typing-inspection                         MIT                          all
+uvicorn                                   BSD-3-Clause                 all
+
+
+Other components
+----------------
+
+CPython 3.12 runtime and standard library   PSF-2.0, with the libraries it links: OpenSSL 3
+                                            (Apache-2.0), SQLite (public domain), libffi (MIT),
+                                            zlib (Zlib), bzip2 (bzip2-1.0.6), xz / liblzma (0BSD),
+                                            expat (MIT), mpdecimal (BSD-2-Clause)
+PyInstaller bootloader                      GPL-2.0-or-later with the PyInstaller bootloader
+                                            exception, which allows distributing the bundled
+                                            program under its own licence
+Microsoft Visual C++ runtime (Windows)      vcruntime140.dll, Microsoft Visual C++
+                                            Redistributable licence
+Microsoft Edge WebView2 SDK (Windows)       Microsoft.Web.WebView2.Core.dll,
+                                            Microsoft.Web.WebView2.WinForms.dll, WebView2Loader.dll,
+                                            shipped with pywebview: BSD-3-Clause style licence by
+                                            Microsoft. The WebView2 runtime is part of Windows and
+                                            is not bundled
+htmx and its SSE extension (the board)      0BSD
+Cytoscape.js (the map)                      MIT
+
+On Linux PyInstaller may also copy shared libraries of the build system (Ubuntu 22.04) that the
+modules above link against; each keeps the licence of its Ubuntu package. The WebKitGTK, GTK and
+AppIndicator libraries are not bundled.
