@@ -89,6 +89,12 @@ uv run --no-sync python scripts/hook_timing.py -- dist/relaybay/relaybay-hook
 CI builds and smoke-tests them on Windows, macOS and Linux (`.github/workflows/desktop.yml`). A new
 runtime dependency adds a line to `THIRD_PARTY_LICENSES.txt` (a test checks it against `uv.lock`).
 
+To try setup from a frozen build, run its `relaybay` against a scratch Claude Code folder, never
+your real one: `dist/relaybay/relaybay setup --claude-home <scratch folder>`, then `doctor` with the
+same option. Setup refuses to write hooks for a build that runs from the temp or Downloads folder,
+so build into the repository's `dist/` (the default). Tests simulate a frozen build with
+`sys.frozen` and `sys.executable` (`tests/test_installed_setup.py`).
+
 ## Releases
 
 Maintainers only. Set the version in `pyproject.toml` (the only place), run `uv lock`, move

@@ -1,12 +1,60 @@
 # Install and run
 
-relaybay is a Python package (Python 3.12+) with one command, `relaybay`. It runs on Windows, macOS
-and Linux. Pick one way to install it; [uv](https://docs.astral.sh/uv/) is the easiest, because it
-also brings a suitable Python.
+relaybay runs on Windows, macOS and Linux, as a desktop program from an installer or as a Python
+package (Python 3.12+) with one command, `relaybay`. Pick one way to install it: the desktop
+program if you want a tray icon and a window without a terminal, [uv](https://docs.astral.sh/uv/)
+if you live in one (it also brings a suitable Python).
 
 ## 1. Install
 
-=== "uv (recommended)"
+=== "Desktop program"
+
+    Download the installer for your system from the
+    [latest release](https://github.com/Codenator81/relaybay/releases/latest). Each release also
+    has `SHA256SUMS.txt` to check the download. The installers are not signed with a certificate,
+    so each OS warns the first time; the steps below get past it. macOS and Linux builds are
+    **beta**: CI tests them, but they get less use than the Windows one.
+
+    **Windows (x64).** Run `relaybay-<version>-windows-x64-setup.exe`. It installs for your user
+    only, without admin rights, into `%LOCALAPPDATA%\Programs\relaybay`, with a Start Menu entry
+    and two options: start relaybay at login (off) and add `relaybay` to your `PATH` (on).
+    SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**.
+    A silent install for scripts: `relaybay-<version>-windows-x64-setup.exe /VERYSILENT`.
+
+    **macOS (Apple silicon, beta).** Open `relaybay-<version>-macos-arm64.dmg` and drag
+    relaybay to **Applications**; start it from there, not from the disk image (setup refuses a
+    program that runs from the image). The app is not notarized, so the first start is blocked.
+    On macOS 15 the right-click **Open** bypass is gone: open System Settings → Privacy & Security,
+    scroll to the message about relaybay and click **Open Anyway**. Or, in a terminal:
+
+    ```bash
+    xattr -dr com.apple.quarantine /Applications/relaybay.app
+    ```
+
+    The command line is inside the bundle:
+    `/Applications/relaybay.app/Contents/MacOS/relaybay`.
+
+    **Linux (amd64, `.deb`, beta).** Ubuntu 22.04 or newer, Debian 12 or newer:
+
+    ```bash
+    sudo apt install ./relaybay_<version>_amd64.deb
+    ```
+
+    It installs into `/opt/relaybay` with `relaybay` in `/usr/bin`. You get the tray icon and the
+    board in your browser; a board window on Linux comes later. GNOME shows tray icons only with
+    the AppIndicator extension.
+
+    The program runs the same server as `relaybay serve` on `127.0.0.1:8765`, so a `relaybay serve`
+    you run yourself must be stopped first (the program says so when the port is taken). Its tray
+    menu has Open board, Restart server, Logs, Settings and Quit; closing the window keeps it
+    running in the tray. Updates: the tray offers **Update to X.Y.Z** when a release is out.
+
+    Moving from a server you ran from a source checkout? See
+    [Move to the desktop program](../how-to/desktop-from-source-server.md). A server in Docker
+    with the program as its client:
+    [Docker server, desktop client](../how-to/docker-server-with-desktop-client.md).
+
+=== "uv"
 
     Install uv once ([instructions](https://docs.astral.sh/uv/getting-started/installation/)),
     then:
@@ -70,7 +118,8 @@ sign-in page where you can paste the token.
 
 The data folder is your per-user data directory (for example `~/.local/share/relaybay` on Linux,
 `~/Library/Application Support/relaybay` on macOS, `%LOCALAPPDATA%\relaybay` on Windows), or the
-one you pass with `--home` / `RELAYBAY_HOME`. It holds `relaybay.sqlite`, the `token` file, the
+one you pass with `--home` / `RELAYBAY_HOME`, or the desktop program's data folder setting
+(`data_dir` in `desktop.toml`, which the command line reads too). It holds `relaybay.sqlite`, the `token` file, the
 optional `config.toml` and `backups/`: before a new version migrates the database, relaybay copies
 it there with the settings files and keeps the newest five.
 
@@ -93,7 +142,11 @@ relaybay setup --check
 ```
 
 `relaybay setup` adds only relaybay's own hook entries (with a backup) and never writes the token
-into the file. Details: [Connect Claude Code](../connect-claude-code.md). Prefer to let your agent
+into the file. Run it with the `relaybay` of the install you use: from the desktop program, the
+hooks start its `relaybay-hook` (for example
+`%LOCALAPPDATA%\Programs\relaybay\relaybay-hook.exe`); from a uv tool or pipx, that Python. The
+program also has **Settings → Reconnect Claude Code**, which shows the same plan and diff and
+writes it when you click Apply, and it tells you in the tray when the hooks point somewhere else. Details: [Connect Claude Code](../connect-claude-code.md). Prefer to let your agent
 do it? See [Install with your coding agent](agent-install.md).
 
 ## 4. The first task from a session

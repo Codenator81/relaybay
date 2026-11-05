@@ -44,8 +44,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `policy.json` and `token` into `backups/<old>-to-<new>-<time>/` before it migrates (once per
   step, also for `relaybay import --apply`) and keeps the newest `backup_keep` (default 5).
 - The Docker image sets `RELAYBAY_DISTRIBUTION=docker`, so the Inbox suggests `docker pull`.
+- Setup from the installed program (SPEC §5, §13): `relaybay setup`, the Integrations page and the
+  program write command hooks that start the bundled `relaybay-hook` by its full path; entries of a
+  source checkout (`-m relaybay.hook_client`) or another install are replaced in place, an existing
+  wake-up hook moves along. Setup refuses while the program runs from a place that goes away (a
+  mounted `.dmg`, macOS translocation, the temp or Downloads folder). `relaybay-hook --version`.
+- The program checks Claude Code's hooks at each start (read-only) and says in the tray when they
+  point at a missing or another install's forwarder; Settings → **Reconnect Claude Code** shows the
+  plan and diff of `relaybay setup` and writes it on Apply.
+- `relaybay doctor`: the `relaybay` line names the install kind and executable; new items `install`,
+  `data folder source`, `server mode`, `hook executable` and `desktop`.
+- Docs: install per OS (SmartScreen, Gatekeeper, `apt install` of the `.deb`), how-tos "Move to the
+  desktop program" and "Docker server, desktop client" with `examples/compose.yaml`, uninstall per
+  OS, ADR-0002 (desktop shell).
 
 ### Changed
+
+- SPEC §13 "Desktop program" is no longer a preview; design 0016 is frozen.
 
 - relaybay now makes one outbound call: the update check above (opt-out). It still sends no
   telemetry.

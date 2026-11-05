@@ -22,7 +22,9 @@ MCP registration. The exit code is `1` when an item fails. Pass the same `--home
 | `rules hash` … restart | `config.toml` changed after the server started: restart `relaybay serve`. |
 | `Claude Code` | Not on `PATH`, or older than the minimum supported version: update Claude Code. |
 | `hooks in user settings` | Run `relaybay setup`, then `relaybay setup --apply --expect <hash>`. |
-| `command hook runs` | The Python the hooks point at moved (venv deleted, upgrade): run `relaybay setup --apply` again. |
+| `command hook runs` | The Python the hooks point at moved (venv deleted, upgrade), or the `relaybay-hook` they start belongs to another install or version: run `relaybay setup --apply` again with the `relaybay` you use (the desktop program: Settings → Reconnect Claude Code). |
+| `install` | The desktop program runs from a mounted disk image, macOS's translocation, the temp or the Downloads folder: install it (macOS: move relaybay.app to Applications) and start it from there. |
+| `hook executable` | The installed program's `relaybay-hook` is missing or answers another version: reinstall the program. |
 | `MCP registered for Claude Code` | Run the `claude mcp add …` line that `relaybay token` prints. |
 
 ## "token not valid"

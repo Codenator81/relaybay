@@ -63,6 +63,13 @@ def with_host_session(body: bytes) -> bytes:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args_in = sys.argv[1:] if argv is None else argv
+    if args_in == ["--version"]:
+        # `doctor` and `setup --check` compare this with their own version (a stale hook path).
+        from relaybay import __version__
+
+        sys.stdout.write(f"relaybay-hook {__version__}\n")
+        return 0
     parser = argparse.ArgumentParser(prog="relaybay hook", description=__doc__)
     parser.add_argument("--url", required=True, help="relaybay hook URL (…/hooks/claude-code).")
     parser.add_argument("--token-file", type=Path, required=True, help="relaybay token file.")
@@ -70,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         "--wait", action="store_true", help="Wake-up hook: wait for an owner comment."
     )
     try:
-        args = parser.parse_args(argv)
+        args = parser.parse_args(args_in)
     except SystemExit:
         return 0  # a broken hook entry must not show errors in the session either
     try:

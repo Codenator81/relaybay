@@ -72,10 +72,10 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| PR1: tray, window, autostart, external server mode, `desktop.toml` | in progress | [0016](design/0016-desktop-program.md) |
-| PR2: frozen builds and installers for Windows, macOS and Linux | planned | [0016](design/0016-desktop-program.md#pull-requests) |
-| PR2b: update check, in-app update, backup before a new version | in progress | [0016](design/0016-desktop-program.md#pull-requests) |
-| PR3: setup and doctor for the installed program, desktop docs | planned | [0016](design/0016-desktop-program.md#pull-requests) |
+| PR1: tray, window, autostart, external server mode, `desktop.toml` | done | [0016](design/0016-desktop-program.md) |
+| PR2: frozen builds and installers for Windows, macOS and Linux | done | [0016](design/0016-desktop-program.md#pull-requests) |
+| PR2b: update check, in-app update, backup before a new version | done | [0016](design/0016-desktop-program.md#pull-requests) |
+| PR3: setup and doctor for the installed program (`relaybay-hook`, Reconnect), install and migration how-tos, ADR-0002 | done | [0016](design/0016-desktop-program.md#pull-requests) |
 
 ## 0.7+ — agents inside
 

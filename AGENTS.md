@@ -19,7 +19,12 @@ uv run pytest                # tests
 uv run relaybay serve --home ./.dev-data
 uv run relaybay demo --home ./.demo-data       # demo workspace in a separate folder
 uv run python scripts/gen_reference.py         # regenerate docs/reference/*.md
+uv sync --extra desktop --group build          # the desktop program and its build tools
+uv run --no-sync pyinstaller --noconfirm packaging/relaybay.spec   # frozen build in dist/relaybay/
 ```
+
+Installers per OS: `packaging/README.md`. The desktop program, `desktop.toml`, the frozen
+`relaybay-hook` and setup from an installed program: `docs/design/0016-desktop-program.md`.
 
 All three checks must pass before you report a change as done; after changing a command, a
 setting or an MCP tool, regenerate the reference pages (`--check` runs in CI).

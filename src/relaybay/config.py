@@ -350,6 +350,8 @@ class Settings:
     # CLI and the program then talk to that server with the token kept beside desktop.toml.
     external_url: str = ""
     external_token_path: Path | None = None
+    # internal: where `home` came from (flag, environment, desktop.toml, default), for doctor.
+    home_source: str = "default"
     # internal: the legacy guard_mode / [permission_defaults] as a policy layer, only the keys
     # that config.toml or the environment set (so a preset is not overridden by defaults).
     policy_config: dict[str, Any] = field(default_factory=dict)
@@ -611,8 +613,8 @@ def load_settings(
             desktop = DesktopSettings()
     else:
         desktop = desktop_settings.load_desktop_settings(folder)
-    home, _source = resolve_home(home, env, desktop)
-    settings = Settings(home=home.resolve())
+    home, source = resolve_home(home, env, desktop)
+    settings = Settings(home=home.resolve(), home_source=source)
     if desktop.server_mode == "external" and not serving:
         settings.external_url = desktop.server_url
         settings.external_token_path = desktop_settings.external_token_path(folder)

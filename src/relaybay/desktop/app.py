@@ -21,7 +21,7 @@ from typing import Any
 
 import platformdirs
 
-from relaybay import __version__, updates
+from relaybay import __version__, machine_setup, updates
 from relaybay.config import Settings, load_settings
 from relaybay.desktop import add_run_arguments, single_instance
 from relaybay.desktop.autostart import Autostart, launch_command
@@ -34,7 +34,7 @@ from relaybay.desktop.settings import (
     save_desktop_settings,
     settings_path,
 )
-from relaybay.install import DESKTOP_KINDS, install_kind
+from relaybay.install import DESKTOP_KINDS, hook_executable, install_kind
 from relaybay.logs import desktop_log_config
 from relaybay.security import load_or_create_token
 
@@ -390,12 +390,75 @@ class DesktopController:
 
     # --- run ---------------------------------------------------------------
 
+    # --- Claude Code ---------------------------------------------------------
+
+    def check_hooks(self) -> None:
+        """At start, read-only: relaybay's entries in Claude Code's files (the `config_checks`
+        of doctor). Hooks that start a missing or another install's forwarder become a notice
+        pointing to Settings; nothing is ever written from here."""
+        settings = self.settings
+        if settings is None:
+            return
+        paths = machine_setup.claude_paths(settings.claude_home)
+        checks = machine_setup.config_checks(base_url=settings.base_url, token=None, paths=paths)
+        for check in checks:
+            if not check.ok:
+                log.info("Claude Code setup: %s: %s", check.name, check.detail)
+        target = machine_setup.reconnect_target(checks, paths, settings.base_url, hook_executable())
+        if target:
+            self.notify(f"Claude Code hooks point to {target}: open Settings -> Reconnect")
+
+    def reconnect_plan(self) -> machine_setup.Plan:
+        """Settings -> Reconnect Claude Code: the plan of `relaybay setup` and the Integrations
+        page for this program (its forwarder, its server URL and token file), in the hook type
+        already installed (command when there are none)."""
+        if self.settings is None:
+            raise ValueError(self.problem or "The settings could not be read.")
+        settings = self.settings
+        paths = machine_setup.claude_paths(settings.claude_home)
+        try:
+            _, data = machine_setup.read_json(paths.settings)
+            installed = machine_setup.installed_mode(
+                data, machine_setup.owned_hosts(settings.base_url)
+            )
+        except (machine_setup.SetupError, OSError):
+            installed = None  # make_plan below reports the same error in the plan
+        mode = "http" if installed == "http" else machine_setup.DEFAULT_MODE
+        return machine_setup.make_plan(
+            base_url=settings.base_url,
+            token=self.token(),
+            token_path=settings.token_path,
+            paths=paths,
+            detection=machine_setup.detect(),
+            mode=mode,
+        )
+
+    def reconnect_apply(self, expect: str) -> str:
+        """Write the plan the user saw (`expect` is its hash), with a backup; the message for
+        the Settings window. Raises SetupError or ValueError when it cannot."""
+        plan = self.reconnect_plan()
+        if plan.error or plan.hooks is None:
+            raise ValueError(plan.error or "Nothing to apply.")
+        backup = machine_setup.write_change(plan.hooks, expect=expect)
+        if not plan.hooks.changed:
+            return "Nothing to change."
+        return f"Wrote {plan.hooks.path}" + (f" (backup: {backup.name})" if backup else "")
+
     def on_ready(self, exit_after: float | None) -> None:
         if exit_after:
             timer = threading.Timer(exit_after, self.quit)
             timer.daemon = True
             timer.start()
         self._start_and_load()
+        threading.Thread(
+            target=self._check_hooks_logged, name="relaybay-hooks", daemon=True
+        ).start()
+
+    def _check_hooks_logged(self) -> None:
+        try:
+            self.check_hooks()
+        except Exception:
+            log.exception("the check of Claude Code's hooks failed")
 
     def run(self, exit_after: float | None = None) -> int:
         from relaybay.desktop import tray, window

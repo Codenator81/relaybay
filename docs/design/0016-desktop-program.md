@@ -1,8 +1,8 @@
 # 0016 — Desktop program: tray, window, autostart, installers
 
-- Status: **Accepted**, planned for 0.6.0. PR1 (tray, window, autostart, external client mode) and
-  PR2 (frozen builds, installers, CI; see Packaging) and PR2b (see Updates and backups) are built; the preview behaviour is in [SPEC §13](../SPEC.md#spec-desktop). This design is frozen in
-  the last PR of 0.6.
+- Status: **Implemented (unreleased)**, for 0.6.0. All four pull requests are built; the behaviour
+  is in [SPEC §13](../SPEC.md#spec-desktop). This design is frozen: changes go into SPEC and new
+  designs. The decision record is [ADR-0002](../adr/0002-desktop-shell.md).
 - Size: four pull requests (below), about 6 agent-days.
 
 ## Problem
@@ -222,6 +222,41 @@ Built in PR2; the steps per OS are in `packaging/README.md`.
   files and PATH entry removed); the mounted `.dmg`; `dpkg -i`. The macOS job may fail without
   failing the run (`continue-on-error`), and a release goes out without the `.dmg` then; the
   Windows and Linux installers are required.
+
+### Setup and doctor from the installed program (as built)
+
+Built in PR3; the behaviour is in [SPEC §5](../SPEC.md#spec-setup-writes) and
+[§13](../SPEC.md#spec-desktop-setup).
+
+- **Install kind.** `relaybay/install.py`: `install_kind()` (`desktop-windows`, `desktop-macos`,
+  `desktop-deb` for a frozen build by OS; `docker` by `RELAYBAY_DISTRIBUTION`; `uv-tool`, `pipx`,
+  `uvx`, `source`, `pip` by where the environment lives), `hook_executable()` (the frozen
+  `relaybay-hook[.exe]` next to `sys.executable`), `install_path()`, `where()` for doctor's first
+  line, and `location_problem()` / `stable_location()`.
+- **Unstable locations** (decided in PR3): a macOS bundle under `/Volumes/` or in
+  `AppTranslocation` ("move relaybay.app to /Applications first"); on every OS a frozen program
+  under the temp folder or `~/Downloads` (an unpacked CI artifact, a build output). Outside a frozen
+  build nothing is checked. `make_plan` puts the reason into the plan's error, so the CLI, the
+  Integrations page and Reconnect all refuse an apply (both hook types); `--remove` is never
+  refused.
+- **Hook command.** `machine_setup.hook_program()`: the frozen forwarder's full path, else
+  `<python> -I -m relaybay.hook_client`; quoting as before (`_arg`). `_command_role` also accepts a
+  first word `relaybay-hook` / `relaybay-hook.exe` under any folder, so every form is relaybay's
+  and a re-apply replaces another install's entries in place. Without `--wake` / `--no-wake`, an
+  existing wake-up hook is rewritten with this install's forwarder.
+- **Version check.** `relaybay-hook --version` (exactly that argument, before any other work)
+  prints `relaybay-hook <version>`; `command hook runs` and doctor's `hook executable` compare it
+  with the running version.
+- **doctor.** New items `install`, `data folder source` (`Settings.home_source`), `server mode`,
+  `hook executable`, `desktop` (autostart and `desktop.toml`); the `relaybay` item reads
+  `<version> (<kind>: <executable>)`.
+- **Program.** After the start, a thread runs `config_checks` (read-only, failures logged) and
+  `reconnect_target()`: command hooks whose forwarder fails the check or, frozen, is not this
+  program's `relaybay-hook` give the tray notice. Settings → Reconnect Claude Code calls
+  `DesktopController.reconnect_plan()` / `reconnect_apply(hash)`, the same `make_plan` and
+  `write_change(expect=...)` as `relaybay setup` and the Integrations page, keeping an installed
+  http hook type. It goes through Python directly rather than the board's endpoints, since in
+  external mode the board belongs to another machine.
 
 ## Pull requests
 

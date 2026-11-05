@@ -1,7 +1,8 @@
 """The desktop program: a tray icon, a board window and an embedded server (`relaybay desktop`).
 
-The rest of relaybay imports only `settings` (the data folder, the external server) and
-`add_run_arguments`; the GUI libraries of the `desktop` extra load lazily.
+The rest of relaybay imports only `settings` (the data folder, the external server),
+`autostart` (read by `doctor`) and `add_run_arguments`; the GUI libraries of the `desktop` extra
+load lazily.
 """
 
 import argparse

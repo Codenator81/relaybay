@@ -35,6 +35,7 @@ from relaybay.domain.hooks import (
     HOST_SESSION_HEADER,
     WAKE_PATH,
 )
+from relaybay.install import hook_executable, location_problem
 from relaybay.security import token_id
 
 # The hooks reference documents `http` hooks without the version that introduced them; this is
@@ -61,7 +62,18 @@ DEFAULT_MODE = "command"
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 BACKUP_INFIX = ".relaybay-backup-"
 MCP_NAME = "relaybay"
+HOOK_PROGRAMS = ("relaybay-hook", "relaybay-hook.exe")
+# subprocess.CREATE_NO_WINDOW exists only on Windows; the value is the documented flag.
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def run_quiet(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+    """`subprocess.run` without a console window on Windows: the windowed desktop program would
+    otherwise flash one for every child (`claude --version`, the hook interpreter check)."""
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
+    return subprocess.run(*args, **kwargs)
 
 
 class SetupError(Exception):
@@ -109,7 +121,7 @@ def _desktop_app(platform: str, environ: Mapping[str, str], home: Path) -> str |
 def detect(
     *,
     which: Callable[[str], str | None] = shutil.which,
-    run: Callable[..., Any] = subprocess.run,
+    run: Callable[..., Any] = run_quiet,
     platform: str = sys.platform,
     environ: Mapping[str, str] = os.environ,
     home: Path | None = None,
@@ -190,12 +202,28 @@ _SPECIAL = re.compile(r"[\s\"'$`;&|<>()\\]")
 def _arg(value: str, platform: str) -> str:
     """Quote a value for the shell Claude Code runs the command in. POSIX shells: single quotes,
     so `$` and backticks stay literal. Windows (Git Bash or PowerShell): double quotes, which
-    both accept around a path; a Windows path with `$` or a backtick is not supported."""
+    both accept around a path; a Windows path with `$` or a backtick is refused (SetupError,
+    which the plan shows as its error): inside double quotes both shells would expand it."""
     if not _SPECIAL.search(value):
         return value
     if platform == "win32":
+        if "$" in value or "`" in value:
+            raise SetupError(
+                f"{value} holds '$' or a backtick, which the shell Claude Code runs hooks in"
+                " expands on Windows; use a path without them (the data folder or the install)"
+            )
         return f'"{value}"'
     return "'" + value.replace("'", "'\\''") + "'"
+
+
+def hook_program(python: str | None = None) -> list[str]:
+    """The words that start the forwarder: the frozen program's `relaybay-hook` (when `python`
+    is not given), else this interpreter with `-I -m relaybay.hook_client`. Either way nothing
+    has to be on PATH."""
+    executable = None if python is not None else hook_executable()
+    if executable is not None:
+        return [executable.as_posix()]
+    return [Path(python or sys.executable).as_posix(), "-I", "-m", "relaybay.hook_client"]
 
 
 def hook_command(
@@ -205,13 +233,12 @@ def hook_command(
     platform: str = sys.platform,
     wait: bool = False,
 ) -> str:
-    """The command hook: this interpreter runs the stdlib-only forwarder, so nothing has to be
-    on PATH. Paths use forward slashes, which every shell on every OS accepts. With `wait`, the
-    wake-up hook's command (long poll at WAKE_PATH)."""
-    interpreter = Path(python or sys.executable).as_posix()
+    """The command hook (see `hook_program`). Paths use forward slashes, which every shell on
+    every OS accepts. With `wait`, the wake-up hook's command (long poll at WAKE_PATH)."""
+    program = hook_program(python)
     words = [
-        _arg(interpreter, platform),
-        "-I -m relaybay.hook_client",
+        _arg(program[0], platform),
+        *program[1:],
         "--url",
         _arg(base_url + (WAKE_PATH if wait else HOOK_PATH), platform),
         "--token-file",
@@ -279,16 +306,24 @@ def _our_hook_url(url: str, path: str = HOOK_PATH) -> bool:
     )
 
 
+def _is_hook_program(word: str) -> bool:
+    """The frozen forwarder, under any folder (`/` or `\\` separators)."""
+    return word.replace("\\", "/").rsplit("/", 1)[-1].lower() in HOOK_PROGRAMS
+
+
 def _command_role(command: str) -> str | None:
-    """Only the exact commands relaybay writes count: `<python> [-I] -m relaybay.hook_client` or
-    `relaybay hook`, followed by exactly `--url <hook url> --token-file <path>` ('hook'), or by
-    `--url <wait url> --token-file <path> --wait` ('wake'), and nothing else. A compound
-    command (`a && b`), a wrapper or extra words make it the user's."""
+    """Only the exact commands relaybay writes count: `<python> [-I] -m relaybay.hook_client`,
+    the frozen `relaybay-hook` or `relaybay hook`, followed by exactly `--url <hook url>
+    --token-file <path>` ('hook'), or by `--url <wait url> --token-file <path> --wait`
+    ('wake'), and nothing else. A compound command (`a && b`), a wrapper or extra words make it
+    the user's. Every form counts, so a re-apply replaces an entry of another install in place."""
     try:
         words = shlex.split(command)
     except ValueError:
         return None
-    if len(words) >= 4 and words[1:4] == ["-I", "-m", "relaybay.hook_client"]:
+    if words and _is_hook_program(words[0]):
+        rest = words[1:]
+    elif len(words) >= 4 and words[1:4] == ["-I", "-m", "relaybay.hook_client"]:
         rest = words[4:]
     elif len(words) >= 3 and words[1:3] == ["-m", "relaybay.hook_client"]:
         rest = words[3:]
@@ -667,9 +702,12 @@ def make_plan(
     hosts = owned_hosts(base_url)
     hooks, error = None, None
     notes = mode_notes(mode, detection, environ, token)
+    problem = location_problem() if python is None else None
     try:
         if remove:
             hooks = plan_remove(paths.settings, hosts)
+        elif problem:
+            error = problem
         elif wake and mode != "command":
             error = (
                 "--wake needs --mode command: Claude Code runs asyncRewake only for command hooks"
@@ -678,7 +716,11 @@ def make_plan(
             error = WAKE_REFUSAL
         else:
             groups = desired_groups(hook_handler(mode, base_url, token_path, python))
-            wake_entry = wake_handler(base_url, token_path, python) if wake else wake
+            if wake is None and _has_wake(paths.settings, hosts):
+                # Kept as it is, but with this install's forwarder (a move or a new install).
+                wake_entry: dict | bool | None = wake_handler(base_url, token_path, python)
+            else:
+                wake_entry = wake_handler(base_url, token_path, python) if wake else wake
             hooks = plan_apply(paths.settings, groups, hosts, wake_entry)
             if wake:
                 notes.append(WAKE_NOTE)
@@ -699,6 +741,11 @@ def make_plan(
         wake=wake,
         force_wake=force_wake,
     )
+
+
+def _has_wake(path: Path, hosts: frozenset[str]) -> bool:
+    _, data = read_json(path)
+    return bool(our_handlers(data, WAKE_EVENT, hosts, role="wake"))
 
 
 def async_rewake_known(detection: Detection) -> bool:
@@ -789,12 +836,38 @@ def _request(
         return exc.code, dict(exc.headers), exc.read()
 
 
+def hook_program_check(executable: str, run: Callable[..., Any], name: str) -> Check:
+    """A frozen `relaybay-hook` answers `--version` with this relaybay's version; another
+    version means the hooks point at an older or another install (a stale path)."""
+    try:
+        result = run(
+            [executable, "--version"], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return Check(False, name, f"{executable}: {exc}")
+    words = (result.stdout or "").split()
+    found = words[1] if len(words) == 2 and words[0] == "relaybay-hook" else None
+    if result.returncode != 0 or found is None:
+        return Check(False, name, f"{executable} does not answer --version like relaybay-hook")
+    if found != __version__:
+        return Check(
+            False,
+            name,
+            f"{executable} is relaybay-hook {found}, this relaybay is {__version__}: the hooks"
+            " point at another install; run 'relaybay setup' again from this one",
+        )
+    return Check(True, name, f"{executable} ({found}, the same version)")
+
+
 def _interpreter_check(command: str, run: Callable[..., Any]) -> Check:
-    """The command hook's interpreter can still import the forwarder (moved venv, upgrade)."""
+    """The command hook's interpreter can still import the forwarder (moved venv, upgrade); a
+    frozen `relaybay-hook` answers with the same version."""
     name = "command hook runs"
     interpreter = hook_interpreter(command)
     if interpreter is None:
         return Check(False, name, "cannot read the interpreter from the hook command")
+    if _is_hook_program(interpreter):
+        return hook_program_check(interpreter, run, name)
     try:
         result = run(
             [interpreter, "-I", "-c", "import relaybay.hook_client"],
@@ -811,6 +884,32 @@ def _interpreter_check(command: str, run: Callable[..., Any]) -> Check:
     return Check(True, name, f"{interpreter} imports relaybay.hook_client")
 
 
+def reconnect_target(
+    checks: list[Check], paths: ClaudePaths, base_url: str, expected: Path | None
+) -> str | None:
+    """The forwarder relaybay's command hooks start, when they need a re-apply: it failed the
+    `config_checks` item "command hook runs" (missing, cannot import, another version), or it
+    is not `expected` (the frozen program's own `relaybay-hook`). None otherwise, also for
+    http hooks and when there are no hooks. Reads the settings file only."""
+    try:
+        _, data = read_json(paths.settings)
+    except (SetupError, OSError):
+        return None
+    hosts = owned_hosts(base_url)
+    handlers = [h for h in our_handlers(data, HOOK_EVENTS[0], hosts) if h["type"] == "command"]
+    target = hook_interpreter(handlers[0]["command"]) if handlers else None
+    if target is None:
+        return None
+    broken = any(c.name == "command hook runs" and not c.ok for c in checks)
+    foreign = expected is not None and not _same_path(target, expected.as_posix())
+    return target if broken or foreign else None
+
+
+def _same_path(a: str, b: str) -> bool:
+    a, b = a.replace("\\", "/"), b.replace("\\", "/")
+    return a.lower() == b.lower() if sys.platform in ("win32", "darwin") else a == b
+
+
 def run_check(
     *,
     base_url: str,
@@ -818,7 +917,7 @@ def run_check(
     paths: ClaudePaths,
     environ: Mapping[str, str] = os.environ,
     opener: OpenerDirector | None = None,
-    run: Callable[..., Any] = subprocess.run,
+    run: Callable[..., Any] = run_quiet,
 ) -> list[Check]:
     """End-to-end checks, each green or red: the running server over HTTP, then (when it
     answers) the hook entries and the MCP registration in Claude Code's files."""
@@ -887,7 +986,7 @@ def config_checks(
     token: str | None,
     paths: ClaudePaths,
     environ: Mapping[str, str] = os.environ,
-    run: Callable[..., Any] = subprocess.run,
+    run: Callable[..., Any] = run_quiet,
 ) -> list[Check]:
     """relaybay's hooks in the user settings (and what they need to run) and the MCP entry in
     `~/.claude.json`. Reads files only; nothing is written. Without a token, http hooks count

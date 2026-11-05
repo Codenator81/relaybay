@@ -81,6 +81,16 @@ async def test_empty_search_shows_recent_tasks_and_projects_not_sessions(service
     assert tasks == ["demo-api-1", "acme-shop-1"]  # the last changed first
 
 
+async def test_empty_search_breaks_a_timestamp_tie_by_the_newer_task(
+    service: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two writes in the same millisecond share updated_at; the later task must still come first.
+    monkeypatch.setattr("relaybay.service.now_iso", lambda: "2026-11-05T10:00:00.000+00:00")
+    await seed(service)
+    tasks = [i.key for i in await service.switcher("") if i.kind == "task"]
+    assert tasks == ["demo-api-1", "acme-shop-1"]
+
+
 async def test_empty_search_keeps_the_projects_with_many_tasks(service: Service) -> None:
     await service.upsert_project("acme-shop")
     await service.upsert_project("demo-api")
