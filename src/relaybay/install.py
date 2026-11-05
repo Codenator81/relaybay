@@ -79,17 +79,15 @@ def location_problem(
                 f"relaybay runs from {executable}, which goes away after this run: move"
                 " relaybay.app to /Applications first, start it from there and run setup again"
             )
-        return None
     where = PurePath(executable)
     folders = [Path(temp or tempfile.gettempdir()), (home or Path.home()) / "Downloads"]
     for folder in folders:
         if _inside(where, folder, platform):
-            fix = (
-                "install it with relaybay-<version>-windows-x64-setup.exe and start it from the"
-                " Start menu"
-                if platform == "win32"
-                else "install the .deb package (it goes to /opt/relaybay)"
-            )
+            fix = {
+                "win32": "install it with relaybay-<version>-windows-x64-setup.exe and start it"
+                " from the Start menu",
+                "darwin": "move relaybay.app to /Applications and start it from there",
+            }.get(platform, "install the .deb package (it goes to /opt/relaybay)")
             return (
                 f"relaybay runs from {executable}, a temporary place: {fix}, then run setup again"
             )

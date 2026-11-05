@@ -325,6 +325,8 @@ def test_doctor_items_of_the_installed_program(
     platform: str,
     kind: str,
 ) -> None:
+    if platform == "win32" and sys.platform != "win32":
+        pytest.skip("the standard library cannot pretend to be Windows here (ssl, shutil)")
     folder = tmp_path / "Programs" / "relaybay"
     folder.mkdir(parents=True)
     exe = folder / ("relaybay.exe" if platform == "win32" else "relaybay")
@@ -515,6 +517,20 @@ def recording_run(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     return seen
 
 
+@pytest.mark.parametrize("folder", ["/scratch/tmp", "/Users/demo/Downloads"])
+def test_a_macos_bundle_in_temp_or_downloads_is_unstable(folder: str) -> None:
+    problem = install.location_problem(
+        f"{folder}/relaybay.app/Contents/MacOS/relaybay",
+        platform="darwin",
+        temp="/scratch/tmp",
+        home=Path("/Users/demo"),
+    )
+    assert problem is not None
+    assert "temporary place" in problem
+    assert "/Applications" in problem
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the flag exists on Windows only")
 def test_children_get_no_console_window_on_windows(
     tmp_path: Path, claude_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
