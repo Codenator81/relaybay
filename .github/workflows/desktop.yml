@@ -146,7 +146,9 @@ jobs:
           }
           function Program { Get-Process relaybay-desktop -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$dir\*" } }
           function Install([string]$log) {
-            $p = Start-Process $setup -Wait -PassThru -ArgumentList '/VERYSILENT', '/CURRENTUSER', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", "/LOG=$log"
+            # Not -Wait: that waits for the whole process tree, and setup restarts the program as a child.
+            $p = Start-Process $setup -PassThru -ArgumentList '/VERYSILENT', '/CURRENTUSER', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", "/LOG=$log"
+            if (-not $p.WaitForExit(600000)) { Get-Content $log; throw "setup did not finish within 10 minutes" }
             if ($p.ExitCode -ne 0) { Get-Content $log; throw "setup exited $($p.ExitCode)" }
             if (-not (Select-String -Path $log -Pattern 'Installation process succeeded' -Quiet)) { Get-Content $log; throw "setup did not complete" }
           }
