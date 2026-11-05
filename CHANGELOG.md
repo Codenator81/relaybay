@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-05
+
+Intake: messages from a chat or a mailbox come in through a watcher over MCP, are tied to the task
+that waits for an answer and can propose work; one autonomy rule lets a trusted source wake the
+bound agent when the owner switched it on, off by default; a backlog per project collects findings
+from sessions, reviews and intake until the owner plans or declines them.
+
 ### Added
 
 - Intake from chats and e-mail (design 0015, migration `0021_intake`): a watcher the user runs posts
@@ -512,7 +519,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.2.0
