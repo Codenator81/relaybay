@@ -67,8 +67,9 @@ file; the program's Settings window does the same.
 ## Runtime
 
 Package `relaybay.desktop`: `settings` (desktop.toml), `app` (`DesktopController`, `main`),
-`server_thread` (`EmbeddedServer`), `tray` (menu model and pystray), `window`, `settings_window` with
-`settings.html`, `autostart`, `single_instance`.
+`server_thread` (`EmbeddedServer`), `tray` (menu model and pystray), `window`, `window_state`
+(`window-state.json` and the tracker, no pywebview), `settings_window` with `settings.html`,
+`autostart`, `single_instance`.
 
 - **Threads.** The GUI loop (pywebview) owns the main thread. Windows: the tray runs in its own
   thread (`icon.run()`). macOS and Linux: `icon.run_detached()` before `webview.start()`, so the tray
@@ -91,6 +92,29 @@ Package `relaybay.desktop`: `settings` (desktop.toml), `app` (`DesktopController
   `webbrowser.open`). A `claude://` link is a plain navigation that pywebview does not intercept;
   WebView2 hands an unknown scheme to the OS with its own consent prompt (unverified on this
   machine, see open questions).
+- **Window state** ([SPEC §13](../SPEC.md#spec-desktop-window)). `show()` calls `window.restore()`
+  only for a minimized window, and `maximize()` when it was maximized before: on WinForms `restore()`
+  sets `WindowState = Normal`, which un-maximizes; hide and show alone keep the state.
+  `WindowTracker` (pure, no pywebview) follows the events. What pywebview 6.2 does here (WinForms):
+  each of `moved`, `maximized`, `minimized`, `restored`, `resized` runs on a new thread, so order is not
+  guaranteed; `on_move` runs before `on_resize`, so a maximize is Move (-8, -8), `maximized`, `resized`
+  (the screen) and a minimize is Move (-32000, -32000), `minimized`, `resized` (the stub); minimized to
+  maximized raises `maximized` and never `restored`. Hence geometry is held for 1 s and dropped when a
+  maximize or minimize arrives. Values are logical in both directions (physical / `GetDpiForWindow` in
+  events, logical x scale in the constructor), each truncated, so a restored size never grows at 125 or
+  150 %. `webview.screens` is read before the first window: pywebview calls `SetProcessDPIAware` when
+  it creates one, and before that Windows reports screens in the same logical pixels. `hidden` with
+  `maximized`: the form gets `WindowState = Maximized` in its constructor and is shown and hidden at
+  opacity 0; `Form.Show` later shows it by that state. On macOS "maximized" means full screen and its
+  maximize is a plain resize no event reports, so the flag is not restored there.
+- **Theme.** `background_color` of the window comes from `AppsUseLightTheme` (macOS
+  `AppleInterfaceStyle`). The tray menu is a native popup: uxtheme.dll's ordinals 135
+  (`SetPreferredAppMode`, 2 = force dark, only when `AppsUseLightTheme` says dark; 1 = allow dark also
+  needs a per-window call) and 136 (`FlushMenuThemes`) are
+  undocumented exports used widely in native apps. Ordinal 135 has this meaning only from build 18362,
+  so the call is guarded by the build, and any failure logs at debug and leaves the light menu. The
+  mode is process-wide; it is set in `create_icon` on the main thread, before pystray creates its first
+  `HMENU` (`_mark_ready` on the tray thread).
 - **Tray menu** (built as data from the state, then turned into pystray items): Open board (default
   item), Open in browser (the login link exactly as `relaybay token` prints it), Restart server
   (Reconnect in external mode), Logs, Settings → (Start at login [checkbox], Data folder..., Server...),

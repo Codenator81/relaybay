@@ -82,6 +82,36 @@ def commands(path: Path) -> dict[str, list[str]]:
 # --- the frozen hook command ---------------------------------------------------
 
 
+def test_setup_wording_names_the_forwarder_of_this_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = machine_setup.mode_reason("command")
+    assert "this Python" in source
+    frozen_at(monkeypatch, POSIX_EXE)
+    frozen = machine_setup.mode_reason("command")
+    assert "relaybay-hook" in frozen and "Python" not in frozen
+    # An explicit interpreter starts that interpreter, also in a frozen build.
+    assert machine_setup.mode_reason("command", "/usr/bin/python3") == source
+    assert machine_setup.mode_reason("http") == machine_setup.MODE_REASONS["http"]
+
+
+def test_setup_plan_prints_the_frozen_wording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, claude_home: Path
+) -> None:
+    paths = machine_setup.claude_paths(claude_home)
+    arguments = {
+        "base_url": BASE,
+        "token": "t",
+        "token_path": tmp_path / "token",
+        "paths": paths,
+        "detection": NEW,
+        "environ": {},
+    }
+    assert "this Python" in make_plan(**arguments).mode_reason
+    frozen_at(monkeypatch, POSIX_EXE)
+    assert "relaybay-hook" in make_plan(**arguments).mode_reason
+
+
 def test_frozen_hook_command_on_windows_quotes_the_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

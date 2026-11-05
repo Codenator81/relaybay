@@ -34,6 +34,8 @@ from relaybay.desktop.settings import (
     save_desktop_settings,
     settings_path,
 )
+from relaybay.desktop.window import DARK_BACKGROUND, DARK_TEXT, LIGHT_BACKGROUND, LIGHT_TEXT
+from relaybay.desktop.window_state import WindowState, WindowTracker, save_state
 from relaybay.install import DESKTOP_KINDS, hook_executable, install_kind
 from relaybay.logs import desktop_log_config
 from relaybay.security import load_or_create_token
@@ -63,9 +65,13 @@ def open_path(path: Path) -> None:
 
 def _page(title: str, body: str) -> str:
     return (
-        "<!doctype html><meta charset='utf-8'><title>relaybay</title>"
-        "<body style='font:15px system-ui,sans-serif;margin:40px;max-width:640px'>"
-        f"<h2>{html.escape(title)}</h2>{body}</body>"
+        "<!doctype html><meta charset='utf-8'><title>relaybay</title><style>"
+        ":root{color-scheme:light dark}"
+        f"html{{background:{LIGHT_BACKGROUND};color:{LIGHT_TEXT}}}"
+        f"@media (prefers-color-scheme:dark){{html{{background:{DARK_BACKGROUND};"
+        f"color:{DARK_TEXT}}}}}"
+        "body{font:15px system-ui,sans-serif;margin:40px;max-width:640px}"
+        f"</style><body><h2>{html.escape(title)}</h2>{body}</body>"
     )
 
 
@@ -84,6 +90,7 @@ class DesktopController:
         self.problem: str | None = None
         self.server: EmbeddedServer | None = None
         self.window: Any = None
+        self.window_tracker = WindowTracker(WindowState())
         self.settings_window: Any = None
         self.icon: Any = None
         self.has_window = False
@@ -216,7 +223,17 @@ class DesktopController:
             return
         from relaybay.desktop import window
 
-        window.show(self.window)
+        window.show(self.window, self.window_tracker)
+
+    def save_window_state(self) -> None:
+        """Keep the window's state for the next start; a failure costs only that, so it never
+        stands in the way of hiding or quitting."""
+        if self.window is None:  # no window yet: the saved file is still the truth
+            return
+        try:
+            save_state(self.config_dir, self.window_tracker.snapshot())
+        except OSError as exc:
+            log.warning("the window state was not saved: %s", exc)
 
     def open_in_browser(self) -> None:
         webbrowser.open(self.browser_url())
@@ -385,6 +402,8 @@ class DesktopController:
         if self.has_window:
             import webview
 
+            # Not left to the closing event: Cocoa and GTK do not raise it for destroy().
+            self.save_window_state()
             for window in list(webview.windows):
                 window.destroy()
 
@@ -481,8 +500,13 @@ class DesktopController:
 
         import webview
 
+        self.window_tracker = WindowTracker(window.saved_state(self.config_dir))
         self.window = window.create_window(
-            STARTING_PAGE, hidden=self.background, keep_open=lambda: not self.quitting
+            STARTING_PAGE,
+            hidden=self.background,
+            keep_open=lambda: not self.quitting,
+            tracker=self.window_tracker,
+            save_state=self.save_window_state,
         )
         if sys.platform == "win32":
             threading.Thread(target=self.icon.run, name="relaybay-tray", daemon=True).start()

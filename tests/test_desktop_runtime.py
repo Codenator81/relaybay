@@ -16,11 +16,12 @@ from pathlib import Path
 import pytest
 
 from relaybay.config import load_settings
-from relaybay.desktop import single_instance
-from relaybay.desktop.app import DesktopController
+from relaybay.desktop import single_instance, tray, window, window_state
+from relaybay.desktop.app import STARTING_PAGE, DesktopController, _page
 from relaybay.desktop.autostart import Autostart
 from relaybay.desktop.server_thread import EmbeddedServer, PortTaken, healthz
 from relaybay.desktop.tray import SEPARATOR, MenuState, build_menu
+from relaybay.desktop.window_state import WindowState, WindowTracker
 from relaybay.logs import REDACTED, desktop_log_config
 
 
@@ -461,6 +462,481 @@ def test_desktop_exit_after_runs_the_window(tmp_path: Path) -> None:
         process.kill()
     assert healthz(f"http://127.0.0.1:{port}") is None
     assert (tmp_path / "data" / "logs" / "relaybay.log").is_file()
+
+
+# --- the machine's theme ----------------------------------------------------
+
+
+@pytest.mark.parametrize("page", [STARTING_PAGE, _page("relaybay cannot show", "<p>why</p>")])
+def test_pages_set_colours_for_both_schemes(page: str) -> None:
+    light, dark = page.split("@media (prefers-color-scheme:dark)")
+    assert "color-scheme:light dark" in light
+    assert window.LIGHT_BACKGROUND in light and window.LIGHT_TEXT in light
+    assert window.DARK_BACKGROUND in dark and window.DARK_TEXT in dark
+
+
+def test_window_background_follows_the_apps_theme(monkeypatch: pytest.MonkeyPatch) -> None:
+    for theme, colour in (
+        ("dark", window.DARK_BACKGROUND),
+        ("light", window.LIGHT_BACKGROUND),
+        (None, window.LIGHT_BACKGROUND),
+    ):
+        monkeypatch.setattr(window, "app_theme", lambda theme=theme: theme)
+        assert window.background_color() == colour
+
+
+class FakeUxtheme:
+    def __init__(self, missing: int | None = None) -> None:
+        self.calls: list[tuple] = []
+        self.missing = missing
+
+    def __getitem__(self, ordinal: int):
+        if ordinal == self.missing:
+            raise AttributeError(f"function ordinal {ordinal} not found")
+        return lambda *args: self.calls.append((ordinal, *args))
+
+
+def test_menu_theme_sets_the_mode_then_flushes() -> None:
+    uxtheme = FakeUxtheme()
+    loaded = []
+
+    def load(name: str) -> FakeUxtheme:
+        loaded.append(name)
+        return uxtheme
+
+    tray.follow_system_menu_theme(lambda: tray.DARK_MENUS_MIN_BUILD, load, lambda: "dark")
+    assert loaded == ["uxtheme"]
+    assert uxtheme.calls == [(135, tray.APP_MODE_FORCE_DARK), (136,)]
+
+
+@pytest.mark.parametrize("theme", ["light", None])
+def test_menu_theme_leaves_a_light_machine_alone(theme: str | None) -> None:
+    def load(name: str) -> None:
+        raise AssertionError("no dark mode on a light machine")
+
+    tray.follow_system_menu_theme(lambda: tray.DARK_MENUS_MIN_BUILD, load, lambda: theme)
+
+
+def test_menu_theme_leaves_an_old_build_alone() -> None:
+    def load(name: str) -> None:
+        raise AssertionError("ordinal 135 means something else before build 18362")
+
+    tray.follow_system_menu_theme(lambda: tray.DARK_MENUS_MIN_BUILD - 1, load, lambda: "dark")
+
+
+def test_menu_theme_survives_any_failure(caplog: pytest.LogCaptureFixture) -> None:
+    def no_library(name: str) -> None:
+        raise OSError("no uxtheme")
+
+    def no_version() -> int:
+        raise AttributeError("getwindowsversion")
+
+    with caplog.at_level(logging.DEBUG, logger="relaybay.desktop"):
+        dark = lambda: "dark"  # noqa: E731
+        tray.follow_system_menu_theme(lambda: 22000, no_library, dark)
+        tray.follow_system_menu_theme(no_version, no_library, dark)
+        tray.follow_system_menu_theme(lambda: 22000, lambda name: FakeUxtheme(missing=135), dark)
+        partial = FakeUxtheme(missing=136)
+        tray.follow_system_menu_theme(lambda: 22000, lambda name: partial, dark)
+    assert partial.calls == [(135, tray.APP_MODE_FORCE_DARK)]
+    assert caplog.text.count("the tray menu stays light") == 4
+
+
+# --- the window's state -----------------------------------------------------
+
+SCREENS = [types.SimpleNamespace(x=0, y=0, width=1920, height=1080)]
+
+
+def write_state(folder: Path, **values) -> None:
+    (folder / window_state.FILE_NAME).write_text(json.dumps(values), encoding="utf-8")
+
+
+def test_state_missing_file_means_the_defaults(tmp_path: Path) -> None:
+    state = window_state.load_state(tmp_path, SCREENS)
+    assert state == WindowState(width=1280, height=860, x=None, y=None, maximized=False)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"{not json", b"\xff\xfe\x00", b"[1, 2]", b"null", b""],
+    ids=["broken", "not utf-8", "a list", "null", "empty"],
+)
+def test_state_corrupt_file_means_the_defaults(tmp_path: Path, content: bytes) -> None:
+    (tmp_path / window_state.FILE_NAME).write_bytes(content)
+    assert window_state.load_state(tmp_path, SCREENS) == WindowState()
+
+
+def test_state_bad_values_are_left_out(tmp_path: Path) -> None:
+    write_state(tmp_path, width="wide", height=True, x=10**12, y=5, maximized="yes")
+    assert window_state.load_state(tmp_path, SCREENS) == WindowState()
+
+
+def test_state_too_small_is_raised_to_the_minimum(tmp_path: Path) -> None:
+    write_state(tmp_path, width=100, height=-5)
+    state = window_state.load_state(tmp_path, SCREENS)
+    assert (state.width, state.height) == window_state.MIN_SIZE
+
+
+def test_state_larger_than_every_screen_is_lowered(tmp_path: Path) -> None:
+    write_state(tmp_path, width=3000, height=2000, x=0, y=0)
+    state = window_state.load_state(tmp_path, SCREENS)
+    assert (state.width, state.height) == (1920, 1080)
+    second = types.SimpleNamespace(x=1920, y=0, width=2560, height=1440)
+    state = window_state.load_state(tmp_path, [*SCREENS, second])
+    assert (state.width, state.height) == (2560, 1440)
+    state = window_state.load_state(tmp_path, [])
+    assert (state.width, state.height) == (3000, 2000)
+
+
+def test_state_round_trip(tmp_path: Path) -> None:
+    saved = WindowState(width=1000, height=700, x=-8, y=20, maximized=True)
+    window_state.save_state(tmp_path, saved)
+    assert window_state.load_state(tmp_path, SCREENS) == saved
+
+
+@pytest.mark.parametrize(
+    "x, y", [(4000, 100), (-3000, 100), (100, 2000), (-32000, -32000)], ids=str
+)
+def test_state_off_every_screen_is_centred(tmp_path: Path, x: int, y: int) -> None:
+    write_state(tmp_path, width=1000, height=700, x=x, y=y, maximized=True)
+    state = window_state.load_state(tmp_path, SCREENS)
+    assert state == WindowState(width=1000, height=700, x=None, y=None, maximized=True)
+
+
+def test_state_on_a_second_screen_stays(tmp_path: Path) -> None:
+    write_state(tmp_path, width=1000, height=700, x=2000, y=100)
+    screens = [*SCREENS, types.SimpleNamespace(x=1920, y=0, width=1920, height=1080)]
+    assert window_state.load_state(tmp_path, screens).x == 2000
+    assert window_state.load_state(tmp_path, SCREENS).x is None
+    assert window_state.load_state(tmp_path, []).x is None
+
+
+def test_state_half_a_position_is_centred(tmp_path: Path) -> None:
+    write_state(tmp_path, x=100)
+    state = window_state.load_state(tmp_path, SCREENS)
+    assert state.x is None and state.y is None
+
+
+def test_state_save_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    window_state.save_state(tmp_path, WindowState(width=1000))
+
+    def refuse(self: Path, target: Path) -> None:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", refuse)
+        with pytest.raises(OSError, match="disk full"):
+            window_state.save_state(tmp_path, WindowState(width=2000))
+    assert window_state.load_state(tmp_path, SCREENS).width == 1000
+    assert [p.name for p in tmp_path.iterdir()] == [window_state.FILE_NAME]
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def tracker(saved: WindowState | None = None) -> tuple[WindowTracker, Clock]:
+    clock = Clock()
+    return WindowTracker(saved or WindowState(width=1000, height=700, x=50, y=60), clock), clock
+
+
+def test_tracker_follows_a_normal_window() -> None:
+    track, clock = tracker()
+    track.on_moved(10, 20)
+    track.on_resized(900.0, 650.0)  # Cocoa reports floats
+    clock.now += 5
+    track.on_moved(30, 40)
+    assert track.snapshot() == WindowState(width=900, height=650, x=30, y=40, maximized=False)
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("moved", "maximized", "resized"),
+        ("resized", "moved", "maximized"),
+        ("maximized", "resized", "moved"),
+    ],
+    ids="-".join,
+)
+def test_tracker_maximize_keeps_the_normal_geometry_in_any_order(order: tuple) -> None:
+    # Each event has its own thread, so the WinForms order Move, maximized, Resize can arrive mixed.
+    track, _clock = tracker()
+    events = {
+        "moved": lambda: track.on_moved(-8, -8),
+        "maximized": track.on_maximized,
+        "resized": lambda: track.on_resized(1936, 1048),
+    }
+    for name in order:
+        events[name]()
+    assert track.snapshot() == WindowState(width=1000, height=700, x=50, y=60, maximized=True)
+
+
+def test_tracker_minimize_keeps_the_normal_geometry() -> None:
+    track, _clock = tracker()
+    track.on_moved(-32000, -32000)
+    track.on_minimized()
+    track.on_resized(160, 28)
+    assert track.minimized
+    assert track.snapshot() == WindowState(width=1000, height=700, x=50, y=60, maximized=False)
+
+
+def test_tracker_keeps_geometry_older_than_the_maximize() -> None:
+    track, clock = tracker()
+    track.on_moved(300, 200)
+    clock.now += window_state.SETTLE + 0.1
+    track.on_maximized()
+    assert track.snapshot().x == 300
+
+
+def test_tracker_restore_from_maximized_goes_back_to_following() -> None:
+    track, clock = tracker(WindowState(width=1000, height=700, x=50, y=60, maximized=True))
+    track.on_resized(1936, 1048)  # the first show of a window saved as maximized
+    assert track.snapshot() == WindowState(width=1000, height=700, x=50, y=60, maximized=True)
+    track.on_restored()
+    track.on_resized(1000, 700)
+    clock.now += 5
+    track.on_moved(70, 80)
+    assert track.snapshot() == WindowState(width=1000, height=700, x=70, y=80, maximized=False)
+
+
+def test_tracker_minimized_to_maximized_without_restored() -> None:
+    # WinForms: un-minimizing a maximized window raises `maximized`, never `restored`.
+    track, _clock = tracker()
+    track.on_maximized()
+    track.on_minimized()
+    assert track.minimized and track.maximized
+    assert track.snapshot().maximized is True  # closed while minimized: comes back maximized
+    track.on_maximized()
+    assert not track.minimized and track.maximized
+
+
+def test_tracker_restored_from_minimized_keeps_maximized() -> None:
+    # GTK: un-minimizing a maximized window raises `restored`.
+    track, _clock = tracker()
+    track.on_maximized()
+    track.on_minimized()
+    track.on_restored()
+    assert not track.minimized and track.maximized
+
+
+def test_tracker_minimized_then_restored_is_normal_again() -> None:
+    track, clock = tracker()
+    track.on_minimized()
+    track.on_restored()
+    assert not track.minimized and not track.maximized
+    clock.now += 5
+    track.on_moved(1, 2)
+    assert track.snapshot().x == 1
+
+
+class FakeEvent(list):
+    def __iadd__(self, handler):
+        self.append(handler)
+        return self
+
+
+class FakeWindow:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        names = ("closing", "minimized", "maximized", "restored", "moved", "resized")
+        self.events = types.SimpleNamespace(**{name: FakeEvent() for name in names})
+
+    def show(self) -> None:
+        self.calls.append("show")
+
+    def hide(self) -> None:
+        self.calls.append("hide")
+
+    def restore(self) -> None:
+        self.calls.append("restore")
+
+    def maximize(self) -> None:
+        self.calls.append("maximize")
+
+
+@pytest.mark.parametrize(
+    "events, calls",
+    [
+        ([], ["show"]),
+        (["on_maximized"], ["show"]),
+        (["on_minimized"], ["show", "restore"]),
+        (["on_maximized", "on_minimized"], ["show", "maximize"]),
+    ],
+    ids=["normal", "maximized", "minimized", "maximized then minimized"],
+)
+def test_show_keeps_the_state(
+    events: list[str], calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(window, "RESTORE_UNMAXIMIZES", True)
+    track, _clock = tracker()
+    for event in events:
+        getattr(track, event)()
+    fake = FakeWindow()
+    window.show(fake, track)
+    assert fake.calls == calls
+
+
+@pytest.mark.parametrize("events", [[], ["on_maximized"], ["on_minimized"]], ids=str)
+def test_show_raises_through_restore_outside_windows(
+    events: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(window, "RESTORE_UNMAXIMIZES", False)
+    track, _clock = tracker()
+    for event in events:
+        getattr(track, event)()
+    fake = FakeWindow()
+    window.show(fake, track)
+    assert fake.calls == ["show", "restore"]
+
+
+@pytest.fixture
+def fake_webview(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
+    fake = types.SimpleNamespace(screens=SCREENS, created=[], windows=[])
+
+    def create_window(title: str, **kwargs) -> FakeWindow:
+        created = FakeWindow()
+        fake.created.append(kwargs)
+        return created
+
+    fake.create_window = create_window
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(window, "app_theme", lambda: "dark")
+    return fake
+
+
+def test_create_window_uses_the_saved_state(fake_webview: types.SimpleNamespace) -> None:
+    saved = WindowState(width=1000, height=700, x=50, y=60, maximized=True)
+    window.create_window("<p>", True, lambda: True, WindowTracker(saved), lambda: None)
+    args = fake_webview.created[0]
+    assert (args["width"], args["height"], args["x"], args["y"]) == (1000, 700, 50, 60)
+    assert args["maximized"] is True and args["hidden"] is True
+    assert args["min_size"] == window_state.MIN_SIZE
+    assert args["background_color"] == window.DARK_BACKGROUND
+
+
+class BrokenScreens:
+    def __iter__(self):
+        raise RuntimeError("no display")
+
+
+def test_saved_state_survives_a_screens_failure(
+    tmp_path: Path, fake_webview: types.SimpleNamespace, caplog: pytest.LogCaptureFixture
+) -> None:
+    write_state(tmp_path, width=1000, height=700, x=50, y=60, maximized=True)
+    fake_webview.screens = BrokenScreens()
+    with caplog.at_level(logging.WARNING, logger="relaybay.desktop"):
+        assert window.saved_state(tmp_path) == WindowState()
+    assert "no display" in caplog.text
+
+
+def test_saved_state_survives_a_deeply_nested_file(
+    tmp_path: Path, fake_webview: types.SimpleNamespace
+) -> None:
+    (tmp_path / window_state.FILE_NAME).write_text("[" * 200_000, encoding="utf-8")
+    assert window.saved_state(tmp_path) == WindowState()
+
+
+@pytest.mark.parametrize(
+    "keeps_maximized, keeps_position, expected",
+    [
+        (True, True, WindowState(width=1000, height=700, x=50, y=60, maximized=True)),
+        (False, True, WindowState(width=1000, height=700, x=50, y=60, maximized=False)),
+        (True, False, WindowState(width=1000, height=700, x=None, y=None, maximized=True)),
+    ],
+    ids=["windows", "macos", "linux"],
+)
+def test_saved_state_per_system(
+    tmp_path: Path,
+    fake_webview: types.SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    keeps_maximized: bool,
+    keeps_position: bool,
+    expected: WindowState,
+) -> None:
+    monkeypatch.setattr(window, "KEEPS_MAXIMIZED", keeps_maximized)
+    monkeypatch.setattr(window, "KEEPS_POSITION", keeps_position)
+    write_state(tmp_path, width=1000, height=700, x=50, y=60, maximized=True)
+    assert window.saved_state(tmp_path) == expected
+
+
+def test_quit_saves_the_window_state_before_destroying(
+    tmp_path: Path, fake_webview: types.SimpleNamespace
+) -> None:
+    seen: list[bool] = []
+
+    class Destroyed:
+        def destroy(self) -> None:
+            seen.append((tmp_path / window_state.FILE_NAME).exists())
+
+    fake_webview.windows = [Destroyed()]
+    ctl = DesktopController(tmp_path)
+    ctl.has_window = True
+    ctl.window = object()
+    ctl.quit()
+    assert seen == [True]
+
+
+def test_saved_state_reads_this_machines_screens(
+    tmp_path: Path, fake_webview: types.SimpleNamespace
+) -> None:
+    write_state(tmp_path, width=1000, height=700, x=4000, y=100)
+    state = window.saved_state(tmp_path)
+    assert state.width == 1000 and state.x is None
+
+
+def test_closing_saves_then_hides_or_lets_through(fake_webview: types.SimpleNamespace) -> None:
+    saves: list[int] = []
+    staying = [True]
+    created = window.create_window(
+        "<p>", False, lambda: staying[0], WindowTracker(WindowState()), lambda: saves.append(1)
+    )
+    closing = created.events.closing[0]
+    assert closing() is False and created.calls == ["hide"] and len(saves) == 1
+    staying[0] = False
+    assert closing() is True and created.calls == ["hide"] and len(saves) == 2
+
+
+def test_window_events_reach_the_tracker(fake_webview: types.SimpleNamespace) -> None:
+    track, _clock = tracker()
+    created = window.create_window("<p>", False, lambda: True, track, lambda: None)
+    created.events.maximized[0]()
+    assert track.maximized
+    created.events.restored[0]()
+    created.events.moved[0](7, 8)
+    created.events.resized[0](900, 650)
+    assert track.snapshot() == WindowState(width=900, height=650, x=7, y=8, maximized=False)
+    created.events.minimized[0]()
+    assert track.minimized
+
+
+def test_controller_saves_the_window_state(tmp_path: Path) -> None:
+    ctl = DesktopController(tmp_path)
+    ctl.save_window_state()  # no window yet: a saved file must not be overwritten by defaults
+    assert not (tmp_path / window_state.FILE_NAME).exists()
+    ctl.window = object()
+    ctl.window_tracker = WindowTracker(WindowState(width=1000, height=700, x=5, y=6))
+    ctl.save_window_state()
+    saved = json.loads((tmp_path / window_state.FILE_NAME).read_text(encoding="utf-8"))
+    assert saved == {"x": 5, "y": 6, "width": 1000, "height": 700, "maximized": False}
+
+
+def test_a_failed_save_does_not_stop_the_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ctl = DesktopController(tmp_path)
+    ctl.window = object()
+
+    def refuse(folder: Path, state: WindowState) -> None:
+        raise OSError("read-only")
+
+    monkeypatch.setattr("relaybay.desktop.app.save_state", refuse)
+    with caplog.at_level(logging.WARNING, logger="relaybay.desktop"):
+        ctl.save_window_state()
+    assert "the window state was not saved: read-only" in caplog.text
 
 
 # --- icons ------------------------------------------------------------------

@@ -440,7 +440,9 @@ def test_tray_icon_dot() -> None:
     from relaybay.desktop.tray import icon_image
 
     plain, marked = icon_image(), icon_image(update=True)
-    corner = (marked.width - marked.width // 8, marked.height - marked.height // 8)
+    # The middle of the dot: its outline covers other pixels at the 16 px icon's scale.
+    dot = max(min(marked.size) * 3 // 8, 6)
+    corner = (marked.width - 1 - dot // 2, marked.height - 1 - dot // 2)
     assert marked.convert("RGB").getpixel(corner) == (0xC7, 0x77, 0x00)
     assert plain.convert("RGBA").getpixel(corner) != marked.getpixel(corner)
 

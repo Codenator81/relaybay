@@ -2118,6 +2118,31 @@ another program). One program per user: a second start shows the first one's win
 writes the Windows Run key, a macOS LaunchAgent or an XDG autostart file, rewritten with the current
 executable on each start.
 
+<a id="spec-desktop-window"></a>
+
+**Theme.** The program's own pages (starting, problem, Settings) and the window background before a
+page paints follow the machine's theme (Windows `AppsUseLightTheme`, macOS `AppleInterfaceStyle`;
+elsewhere the background is light and the pages follow the web view's `prefers-color-scheme`). On
+Windows from build 18362 the tray menu follows the system setting through the undocumented
+`uxtheme.dll` exports 135 (`SetPreferredAppMode`, force dark) and 136 (`FlushMenuThemes`), set once
+before the tray icon is created when the machine is in the dark theme, so a change of theme shows
+after a restart; on an older build or any failure the menu stays light. macOS and
+Linux draw their menus by the desktop's theme.
+
+**Window state.** Show from the tray keeps the window's state: a maximized window stays maximized, a
+minimized one returns to what it was. The board window (not Settings) keeps its maximized flag and
+normal (not maximized) `x`, `y`, `width` and `height` across restarts in `window-state.json` beside
+`desktop.toml`, written atomically when the window closes or hides and on Quit, not while it is
+resized. A missing or corrupt file means the defaults (1280 x 860, centred); a size below the minimum
+(640 x 480) is raised to it and a size above the largest screen is lowered to it; a position with the
+middle of the title bar off every current screen is dropped, so the window is centred; no failure
+reading the file or the screens stops the program. The geometry of a maximized or minimized window never overwrites
+the normal one, and a move or resize within 1 s before a maximize or minimize does not count. A
+window closed while minimized comes back un-minimized. `--background` still starts hidden, and the
+first show of a window saved as maximized is maximized. On macOS the flag is not restored: pywebview
+calls only full screen maximized there. On Linux the position is not restored: pywebview reports and
+takes it in different coordinates, so only the size and the flag are kept.
+
 <a id="spec-desktop-install"></a>
 
 **Installers.** A release attaches `relaybay-<v>-windows-x64-setup.exe`,

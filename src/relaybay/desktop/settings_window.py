@@ -20,6 +20,7 @@ from relaybay.desktop.settings import (
     settings_path,
     write_external_token,
 )
+from relaybay.desktop.window import background_color
 from relaybay.machine_setup import SetupError, format_plan
 from relaybay.web.routes import STATIC_DIR
 
@@ -144,7 +145,12 @@ def open_settings(controller: "DesktopController", existing: Any) -> Any:
         return existing
     api = SettingsApi(controller)
     window = webview.create_window(
-        "relaybay settings", html=page_html(), js_api=api, width=640, height=600
+        "relaybay settings",
+        html=page_html(),
+        js_api=api,
+        width=640,
+        height=600,
+        background_color=background_color(),
     )
     api._window = window
     return window
