@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-05
+
+Insight: screenshots can be annotated and sent to the agent as a picture; a map of sessions,
+tasks and environments; token usage from local transcripts; versioned rules with proposals and
+roll back, MCP prompts; Ctrl+K and saved filters; documents edited on the board and linked from
+tasks, repository-owned documents linked rather than imported.
+
 ### Added
 
 - Project documents in the database (design 0011, migration `0020_document_source`, additive): the
@@ -476,7 +483,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.1.0

@@ -51,7 +51,7 @@ Ships when a coordinator runs its daily work from relaybay.
 | Markdown import and export of the memory layout, dry-run diff (11.6c) | done | [0008](design/0008-memory-and-context.md) |
 | Task plan and checkpoints: ordered steps with status and checkpoint, draft / accepted plan, the agent's todo list shown under the current step, "work by plan" rule (M/L need an accepted plan before dev, S may go with the agent's todo), the current step reminded through hooks (11.7) | done | [0014](design/0014-task-plan.md) |
 
-## 0.4.0 — insight
+## 0.4.0 — insight (released 2026-11-05)
 
 | Item | Status | Design |
 |---|---|---|
