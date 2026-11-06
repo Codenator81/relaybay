@@ -1,10 +1,12 @@
 """`POST /hooks/claude-code`: Claude Code hook events (Bearer token, checked by the middleware)."""
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.background import BackgroundTask
 
 from relaybay.domain.hooks import (
     ATTENDED_FIELD,
@@ -21,6 +23,7 @@ from relaybay.service import Service
 # Hook input can carry a tool's whole input (a file being written); relaybay needs a few fields.
 MAX_BODY = 256 * 1024
 _INVALID = object()
+logger = logging.getLogger("relaybay")
 
 
 async def _body(request: Request) -> bytes | None:
@@ -53,6 +56,12 @@ def build_hooks_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    async def record_after_stop(payload: Any) -> None:
+        try:
+            await service.record_hook(payload)
+        except Exception:
+            logger.exception("Recording a hook event after a brake stop failed")
+
     @router.post(HOOK_PATH)
     async def claude_code_hook(request: Request) -> Response:
         payload = await _payload(request)
@@ -66,6 +75,11 @@ def build_hooks_router(
             # http hooks: the desktop session id comes as a header (command hooks: in the body).
             payload.setdefault(HOST_SESSION_FIELD, host)
             payload.setdefault(ATTENDED_FIELD, request.headers.get(ATTENDED_HEADER, ""))
+        if not (isinstance(payload, dict) and SPOOLED_FIELD in payload):
+            stopped = await service.brake_stop(payload)
+            if stopped is not None:
+                # The stop goes out first: a slow or failing write of the event must not lose it.
+                return JSONResponse(stopped, background=BackgroundTask(record_after_stop, payload))
         await service.record_hook(payload)
         if isinstance(payload, dict) and SPOOLED_FIELD in payload:
             # A replay from the forwarder's spool: nobody reads its answer, so owner comments

@@ -49,6 +49,7 @@ def create_app(settings: Settings) -> FastAPI:
         session_context_project_chars=settings.session_context_project_chars,
         usage_enabled=settings.usage_enabled,
         coordinators=settings.coordinators,
+        max_concurrent_sessions=settings.max_concurrent_sessions,
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 
@@ -60,9 +61,7 @@ def create_app(settings: Settings) -> FastAPI:
         backup_before_upgrade(settings)
         await service.start()
         record_version(settings.home)
-        loops = []
-        if settings.usage_enabled:
-            loops.append(asyncio.create_task(service.usage_loop(settings.usage_interval_seconds)))
+        loops = [asyncio.create_task(service.usage_loop(settings.usage_interval_seconds))]
         if settings.update_check:
             loops.append(asyncio.create_task(service.update_loop(settings.update_check_hours)))
         try:

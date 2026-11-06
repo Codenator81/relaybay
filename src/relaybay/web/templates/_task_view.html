@@ -28,6 +28,7 @@
         <button type="submit" class="action">Clear</button>
       </form></dd>{% endif %}
     {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
+    {% if detail.budget %}{% set b = detail.budget %}<dt>Budget</dt><dd>{{ "{:,}".format(b.used) }} of {{ "{:,}".format(b.budget.max_tokens) }} tokens {{ "this UTC day" if b.budget.period == "day" else "in total" }} ({{ b.percent }}%) <span class="muted">· {{ "stops agents" if b.budget.action == "stop" else "warns" }}</span> <a href="/usage#budgets">Budgets</a></dd>{% endif %}
     <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
   </dl>
 

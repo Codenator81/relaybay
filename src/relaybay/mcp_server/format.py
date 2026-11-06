@@ -16,6 +16,7 @@ from relaybay.domain.environments import (
 from relaybay.domain.intake import IntakeMessage, IntakeSource, one_line
 from relaybay.domain.intake import PostResult as IntakePost
 from relaybay.domain.intake import quoted as intake_quoted
+from relaybay.domain.limits import Brake, BudgetState, period_text
 from relaybay.domain.memory import (
     STRONG_MATCH,
     Document,
@@ -1009,6 +1010,16 @@ def event_detail(e: Event) -> str:
         return str(p.get("scope", ""))
     if e.kind.startswith("policy.propos"):
         return f"#{p.get('proposal_id')} {p.get('scope')}: {p.get('change') or ''}".rstrip()
+    if e.kind == "brake.set":
+        return f"{p.get('target')}: {p.get('reason')}"
+    if e.kind == "brake.released":
+        return str(p.get("target", ""))
+    if e.kind in ("budget.warned", "budget.exceeded"):
+        return f"{p.get('target')}: {p.get('used')} of {p.get('max_tokens')} tokens"
+    if e.kind in ("budget.set", "budget.removed"):
+        return str(p.get("target", ""))
+    if e.kind == "concurrency.over":
+        return f"{p.get('running')} sessions running, cap {p.get('max_sessions')}"
     if e.kind == "rules.notice_read":
         return f"{p.get('scope')} v{p.get('version')}"
     if e.kind == "rules.updated":
@@ -1062,6 +1073,44 @@ def usage_summary(report: UsageReport, enabled: bool) -> str:
         if len(items) > USAGE_LINES_MAX:
             lines.append(f"... {len(items) - USAGE_LINES_MAX} more")
     return "\n".join(lines)
+
+
+def budgets(states: list[BudgetState], enabled: bool) -> str:
+    lines = []
+    if not enabled:
+        lines.append("Reading is off (usage_enabled = false): budgets count nothing new.")
+    if not states:
+        lines.append("No token budgets.")
+    for state in states:
+        budget = state.budget
+        mark = f" [{state.level}]" if state.level else ""
+        lines.append(
+            f"- {budget.target}: {state.used:,} of {budget.max_tokens:,} tokens"
+            f" {period_text(budget.period)} ({state.percent}%), action {budget.action}{mark}"
+        )
+    return "\n".join(lines)
+
+
+def _brake_line(brake: Brake) -> str:
+    return (
+        f"- #{brake.id} {brake.target}: {brake.reason} (set by {brake.created_by},"
+        f" {brake.created_at[:19]}Z)"
+    )
+
+
+def brakes(items: list[Brake]) -> str:
+    if not items:
+        return "No brake is on."
+    return "\n".join(
+        ["Brake on; only the owner releases it on the board:"] + [_brake_line(b) for b in items]
+    )
+
+
+def brake_saved(brake: Brake) -> str:
+    return (
+        f"Brake #{brake.id} on for {brake.target}: agents stop at their next tool call. A running"
+        " command or a background process goes on. Only the owner releases it, on the board."
+    )
 
 
 def events(items: list[Event], since_id: int) -> str:

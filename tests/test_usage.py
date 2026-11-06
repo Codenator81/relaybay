@@ -739,7 +739,9 @@ def test_usage_page(board: TestClient, tmp_path: Path) -> None:
     assert "not understood" in page.text
     # Tokens only.
     lowered = page.text.lower()
-    assert "$" not in page.text and "%" not in page.text.split("</head>")[1]
+    # The Budgets block has percentages of the owner's own limit; the numbers have none.
+    numbers = page.text.split("</head>")[1].split('aria-labelledby="budgets-title"')
+    assert "$" not in page.text and "%" not in numbers[0] + numbers[1].split("</section>")[1]
     assert "cost" not in lowered
 
     filtered = board.get(f"/usage?session={session.id}&model=demo-model&days=7&group=week")

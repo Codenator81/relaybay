@@ -27,7 +27,9 @@
     "intake.received", "intake.tied", "intake.answer_received", "intake.answer_cleared",
     "intake.wake", "intake.forwarded", "intake.proposed", "intake.dismissed",
     "intake.source_trusted", "intake.source_untrusted",
-    "backlog.added", "backlog.updated", "backlog.planned"
+    "backlog.added", "backlog.updated", "backlog.planned",
+    "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
+    "budget.exceeded", "concurrency.over"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -42,7 +44,9 @@
     "review.step_rejected",
     "intake.received", "intake.tied", "intake.answer_received", "intake.answer_cleared",
     "intake.proposed", "intake.dismissed", "intake.source_trusted", "intake.source_untrusted",
-    "backlog.added", "backlog.updated", "backlog.planned"
+    "backlog.added", "backlog.updated", "backlog.planned",
+    "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
+    "budget.exceeded", "concurrency.over"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -180,6 +184,10 @@
     if (INBOX_KINDS.indexOf(data.kind) !== -1) {
       queueThrottled(document.getElementById("inbox-badge"));
       queueThrottled(document.getElementById("inbox"));
+    }
+    if (data.kind.indexOf("brake.") === 0) queue(document.getElementById("brake-banner"));
+    if (data.kind.indexOf("budget.") === 0 || data.kind.indexOf("brake.") === 0) {
+      queue(document.getElementById("budgets"));
     }
     if (data.kind === "task.stage_changed") notifyAcceptance(data);
     if (data.kind === "intake.answer_received") notifyAnswer(data);

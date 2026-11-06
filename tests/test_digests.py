@@ -660,7 +660,8 @@ def test_instructions_start_with_the_digest_once() -> None:
 
     text = instructions(Rules(DEFAULT_RULES))
     assert text.count("Start with the digest for your level") == 1
-    assert "1. Start with the digest for your level" in text and "14." not in text
+    assert "1. Start with the digest for your level" in text and "15." not in text
+    assert "14. A tool call refused with 'relaybay brake on'" in text
     assert "13. A finding outside your task" in text and "12. A message framed as external" in text
     assert "project_snapshot" in text and "project_pulse_set" in text
     assert "rules line" in text and "relaybay://rules/<project>" in text

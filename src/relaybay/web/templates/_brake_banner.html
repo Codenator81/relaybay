@@ -1,0 +1,15 @@
+{#- Open brakes, on every page. Expects: brakes, back (the path to come back to). Refetched on brake events. -#}
+<div id="brake-banner" class="brake-banner" role="status" hx-get="/fragments/brake-banner?next={{ back|urlencode }}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {%- for b in brakes %}
+  <div class="brake-line" id="brake-{{ b.id }}">
+    <strong>Brake on: {{ b.target }}.</strong>
+    <span>{{ b.reason }}</span>
+    <span class="muted">set by {{ b.created_by }}, <time datetime="{{ b.created_at }}" data-age>{{ b.created_at|age }}</time>. A running command or a background process goes on.</span>
+    <form class="inline-form" method="post" action="/brake/{{ b.id }}/release">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <input type="hidden" name="next" value="{{ back }}">
+      <button type="submit" class="btn">Release</button>
+    </form>
+  </div>
+  {%- endfor -%}
+</div>

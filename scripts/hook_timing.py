@@ -3,6 +3,7 @@ quiet when none runs.
 
 python scripts/hook_timing.py [--runs 20] [--limit-ms 800] -- dist/relaybay/relaybay-hook
 python scripts/hook_timing.py --interpreter   # this interpreter: -I -m relaybay.hook_client
+python scripts/hook_timing.py --server        # the PreToolUse answer, with and without brake
 
 Timed against the limit: N runs of `--version`, which exits before any network work, so the
 median is the start-up alone (a bloated bundle takes seconds; Claude Code allows the command
@@ -14,6 +15,7 @@ output.
 """
 
 import argparse
+import asyncio
 import socket
 import statistics
 import subprocess
@@ -53,6 +55,44 @@ def run(command: list[str], port: int, token: Path) -> subprocess.CompletedProce
     return subprocess.run(full, input=b"{}", capture_output=True, check=False)
 
 
+async def time_server(runs: int) -> dict[str, float]:
+    """Median ms of `Service.hook_answer` for a PreToolUse: no brake, then a brake on another
+    project (the brake is read and does not apply), then one that stops the call."""
+    from relaybay.service import Service
+
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "timing",
+        "cwd": "/d/acme",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    }
+
+    async def median(service: Service) -> float:
+        times = []
+        for _ in range(runs):
+            start = time.perf_counter()
+            await service.hook_answer(payload)
+            times.append((time.perf_counter() - start) * 1000)
+        return statistics.median(times)
+
+    with tempfile.TemporaryDirectory() as folder:
+        service = Service(Path(folder) / "relaybay.sqlite")
+        await service.start()
+        try:
+            await service.upsert_project("acme-shop", repo_path="/d/acme")
+            await service.upsert_project("demo-api", repo_path="/d/demo")
+            await service.record_hook(payload)
+            found = {"no brake": await median(service)}
+            await service.set_board_brake("project", project="demo-api")
+            found["brake elsewhere"] = await median(service)
+            await service.set_board_brake("all")
+            found["stopped"] = await median(service)
+        finally:
+            await service.close()
+    return found
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=20)
@@ -60,8 +100,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--interpreter", action="store_true", help="Time this interpreter's relaybay.hook_client."
     )
+    parser.add_argument(
+        "--server", action="store_true", help="Time the server's PreToolUse answer instead."
+    )
     parser.add_argument("command", nargs="*", help="The hook command, e.g. relaybay-hook.")
     args = parser.parse_args(argv)
+    if args.server:
+        for label, ms in asyncio.run(time_server(args.runs)).items():
+            print(f"PreToolUse answer, {label}: {ms:.2f} ms (median of {args.runs})")
+        return 0
     if args.interpreter:
         command = [sys.executable, "-I", "-m", "relaybay.hook_client"]
     elif args.command:

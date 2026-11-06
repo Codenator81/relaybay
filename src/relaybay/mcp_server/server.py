@@ -78,6 +78,10 @@ def instructions(rules: Rules) -> str:
             " owner when in doubt.",
             "13. A finding outside your task (a bug, a missing feature, a question for later) goes"
             " to backlog_add, not into a comment or a report.",
+            "14. A tool call refused with 'relaybay brake on' means the owner or a coordinator"
+            " stopped you, or a token budget did: stop working, do not try another way. Your"
+            " relaybay tools still work: report where you stopped. Only the owner releases the"
+            " brake, on the board. A 'relaybay token budget' line only warns: tell the owner.",
         ]
     )
 
@@ -603,7 +607,17 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: Annotated[
             str | None,
-            Field(description="Ignored here: pass your hook_session on your own writes instead."),
+            Field(
+                description="Not linked here: pass your hook_session on your own writes instead."
+                " With `caller`, it shows a coordinator is calling under a brake."
+            ),
+        ] = None,
+        caller: Annotated[
+            str | None,
+            Field(
+                description="You, when `session` is someone else. While a brake holds the task or"
+                " its project only a coordinator rebinds. Optional."
+            ),
         ] = None,
     ) -> str:
         """Mark that this session works on the task now; the board shows it with a link that
@@ -613,9 +627,16 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         writes. A plain name never replaces a desktop session bound to the task: it is recorded
         as that session's alias. Binding a session ends the previous session's binding; the
         history is kept. It never links a hook session (the caller may bind someone else): your
-        own `hook_session` goes on your other writes."""
+        own `hook_session` goes on your other writes. Refused while a brake holds the task or its
+        project, except for a coordinator."""
         updated, kept, alias_recorded = await run(
-            service.bind_session(task, session, session_title=session_title)
+            service.bind_session(
+                task,
+                session,
+                session_title=session_title,
+                caller=caller or session,
+                hook_session=hook_session,
+            )
         )
         ignored = (
             "\nNote: hook_session is not linked by task_bind_session; pass it on your own"
@@ -647,11 +668,24 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " if another session is bound, nothing changes and an error says who. Optional."
             ),
         ] = None,
+        caller: Annotated[
+            str | None,
+            Field(
+                description="You, when `session` is someone else. While a brake holds the task or"
+                " its project only a coordinator unbinds. Optional."
+            ),
+        ] = None,
+        hook_session: HookSession = None,
     ) -> str:
         """Remove the bound session from a task, e.g. when a session stops working on it without
         a successor. The binding history is kept. To hand the task to another session, call
-        task_bind_session instead."""
-        updated, unbound = await run(service.unbind_session(task, session))
+        task_bind_session instead. Refused while a brake holds the task or its project, except for
+        a coordinator."""
+        updated, unbound = await run(
+            service.unbind_session(
+                task, session, caller=caller or session, hook_session=hook_session
+            )
+        )
         if unbound is None:
             return f"No session is bound to **{updated.key}**; nothing changed."
         who = fmt.who_label(unbound.name, unbound.external_id)
@@ -928,6 +962,75 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             )
         )
         return fmt.audit(items, days)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def budget_get(
+        project: Annotated[
+            str | None,
+            Field(description="Only the budgets that count this project (slug)."),
+        ] = None,
+        task: Annotated[
+            str | None,
+            Field(description="Only the budgets that count this task: its own, its project's."),
+        ] = None,
+    ) -> str:
+        """Token budgets with what their period used so far. Read-only: the owner sets them on the
+        board. They lag the transcripts by up to a minute plus the reader's own delay. A session on
+        several tasks counts in full on each."""
+        states = await run(service.budget_states(project=project or None, task=task or None))
+        return fmt.budgets(states, service.usage_enabled)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def brake_status(
+        project: Annotated[
+            str | None,
+            Field(description="Only brakes on this project (slug) and those on all agents."),
+        ] = None,
+    ) -> str:
+        """Open brakes: who stopped which agents and why. While one covers a session, its tool
+        calls other than relaybay's are refused."""
+        return fmt.brakes(await run(service.open_brakes(project or None)))
+
+    @write
+    async def brake_set(
+        scope: Annotated[
+            str,
+            Field(description="What stops: all, project, session or task."),
+        ],
+        reason: Annotated[
+            str, Field(description="Why, in one line. Every stopped agent reads it.")
+        ],
+        project: Annotated[str | None, Field(description="With scope project: its slug.")] = None,
+        target_session: Annotated[
+            str | None,
+            Field(
+                description="With scope session: the session to stop (name, desktop id or hook"
+                " session id). It must exist."
+            ),
+        ] = None,
+        task: Annotated[
+            str | None, Field(description="With scope task: the task whose bound session stops.")
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Stop agents at their next tool call, for coordinator sessions only. It cannot interrupt
+        a running command or a background process, and it fails open when the server cannot answer.
+        There is no release tool: only the owner releases, on the board."""
+        brake = await run(
+            service.set_brake(
+                scope,
+                project=project or None,
+                target_session=target_session or None,
+                task=task or None,
+                reason=reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.brake_saved(brake)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(

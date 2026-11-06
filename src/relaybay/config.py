@@ -316,6 +316,16 @@ class Settings:
             env="RELAYBAY_USAGE_INTERVAL_SECONDS",
         ),
     )
+    max_concurrent_sessions: int = field(
+        default=0,
+        metadata=_doc(
+            "Warn when more sessions than this run at once (`working`, with activity in the last"
+            " 10 minutes): one `concurrency.over` event per 10 minutes and an Inbox line. It stops"
+            " nothing. 0 is off.",
+            key="max_concurrent_sessions",
+            env="RELAYBAY_MAX_CONCURRENT_SESSIONS",
+        ),
+    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
@@ -494,6 +504,7 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         ("usage_interval_seconds", MIN_INTERVAL_SECONDS, None),
         ("update_check_hours", 1, HOURS_MAX),
         ("backup_keep", 0, None),
+        ("max_concurrent_sessions", 0, None),
     ):
         if key in data:
             value = data[key]

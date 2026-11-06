@@ -98,7 +98,9 @@ class DesktopSettings:
             "What to notify about, any of: `waiting` (a task now waits on you), `review` (a task"
             " moved to review or test), `reply` (an agent's comment), `answer` (an external"
             " message for a task that waits on someone), `permission` (a session waiting for"
-            " you, off by default), `server` (an external server stopped answering).",
+            " you, off by default), `brake` (an agent or a rule pulled the brake), `budget` (a"
+            " token budget nearly or fully spent), `server` (an external server stopped"
+            " answering).",
             default="all but `permission`",
         ),
     )

@@ -33,6 +33,7 @@ from relaybay.domain import comments as comment_text
 from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
+from relaybay.domain import limits as agent_limits
 from relaybay.domain import map_graph as graphs
 from relaybay.domain import memory as mem
 from relaybay.domain import usage as usage_data
@@ -225,6 +226,7 @@ AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
 # Left free in the SessionStart answer next to the lines it holds anyway.
 SESSION_CONTEXT_RESERVE = 500
+LIMIT_LINE_EVENTS = ("UserPromptSubmit", "PostToolUse")
 
 
 # Lines a write wants its caller to see without failing (e.g. a hook_session that was not
@@ -321,6 +323,7 @@ class TaskDetail:
     intake: list[IntakeMessage] = field(default_factory=list)  # messages tied to the task
     from_backlog: BacklogItem | None = None  # the item "To plan" created this task from
     findings: list[BacklogItem] = field(default_factory=list)  # items this task is the origin of
+    budget: agent_limits.BudgetState | None = None  # the task's own token budget
 
 
 @dataclass(slots=True)
@@ -356,6 +359,10 @@ class Inbox:
     tie_choices: list[Task] = field(default_factory=list)  # "Tie to a task": waiting ones first
     # A newer relaybay release: one line on the Inbox page, not counted (badge, digests).
     update: updates.UpdateNotice | None = None
+    brakes: list[agent_limits.Brake] = field(default_factory=list)  # open: only the owner releases
+    budgets: list[agent_limits.BudgetState] = field(default_factory=list)  # past a threshold now
+    running_over: int | None = None  # sessions running while above the concurrency cap
+    running_cap: int = 0
 
     @property
     def count(self) -> int:
@@ -373,6 +380,9 @@ class Inbox:
             + len(self.rule_proposals)
             + len(self.rule_notices)
             + len(self.review)
+            + len(self.brakes)
+            + len(self.budgets)
+            + (1 if self.running_over is not None else 0)
         )
 
 
@@ -847,6 +857,7 @@ class Service:
         session_context_project_chars: int = limits.DEFAULT_SESSION_PROJECT_CHARS,
         usage_enabled: bool = True,
         coordinators: list[str] | None = None,
+        max_concurrent_sessions: int = 0,
         rules_table: dict[str, Any] | None = None,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
@@ -919,6 +930,10 @@ class Service:
         self.session_context = session_context
         self.session_context_project_chars = session_context_project_chars
         self.usage_enabled = usage_enabled
+        self.max_concurrent_sessions = max_concurrent_sessions
+        # Budgets each session has heard about in this context: (budget, period key, level).
+        self._budget_told: dict[int, set[tuple[int, str, str]]] = {}
+        self._limits_wake = asyncio.Event()  # a new budget does not wait out the reader's sleep
         # When a message event was last written, per sender and recipient; what a hook's
         # transcript path was found to be, so the file system is asked once per path; subagent
         # files over the limit, per transcript file.
@@ -1184,6 +1199,18 @@ class Service:
                 " and its hook link stays as it is."
             )
             return session
+        # The same for a session brake, on a guessed row too: the row keeps its hooks.
+        if (
+            held
+            and not from_window
+            and session.cc_session_id not in (None, cc_id)
+            and await repo.session_brake_open(tx.conn, session.id)
+        ):
+            _note(
+                f"Warning: hook_session {cc_id} not linked: this session is braked and its hook"
+                " link stays as it is."
+            )
+            return session
         if (
             other is not None
             and other.id != session.id
@@ -1200,6 +1227,7 @@ class Service:
         if other is not None and other.id != session.id:
             await repo.move_session_todo(tx.conn, other.id, session.id, cc_id)
             await repo.move_usage(tx.conn, other.id, session.id)
+            await repo.move_session_brakes(tx.conn, other.id, session.id)
             changes.update(
                 status=other.status,
                 activity=other.activity,
@@ -1211,6 +1239,7 @@ class Service:
             if other.kind == "hook" and not await repo.has_bindings(tx.conn, other.id):
                 await repo.delete_session(tx.conn, other.id)
             else:
+                await repo.move_open_bindings(tx.conn, other.id, session.id)
                 await repo.touch_session(
                     tx.conn,
                     other.id,
@@ -1246,8 +1275,17 @@ class Service:
     ) -> tuple[Project | None, str | None]:
         """The project whose repo_path is `cwd` or its closest parent; a tie is ambiguous and
         returns the reason instead."""
+        best = self._projects_at_cwd(projects, cwd)
+        if len(best) > 1:
+            names = ", ".join(sorted(p.slug for p in best))
+            return None, f"the folder belongs to several projects ({names})"
+        return (best[0] if best else None), None
+
+    @staticmethod
+    def _projects_at_cwd(projects: list[Project], cwd: str | None) -> list[Project]:
+        """Every project whose repo_path is `cwd` or its closest parent."""
         if not cwd:
-            return None, None
+            return []
         target = os.path.normcase(os.path.normpath(cwd))
         best: list[Project] = []
         best_len = -1
@@ -1259,10 +1297,7 @@ class Service:
                 best, best_len = [project], len(root)
             elif len(root) == best_len:
                 best.append(project)
-        if len(best) > 1:
-            names = ", ".join(sorted(p.slug for p in best))
-            return None, f"the folder belongs to several projects ({names})"
-        return (best[0] if best else None), None
+        return best
 
     async def _new_hook_session(
         self, tx: _Tx, hook: HookEvent, project_id: int | None, reason: str | None
@@ -1627,6 +1662,7 @@ class Service:
                 # A new context: the agent has seen nothing yet.
                 self._tool_events[session.id] = 0
                 self._reminded.pop(session.id, None)
+                self._budget_told.pop(session.id, None)
             # Always computed: it is marked as sent, and the fallback when no context is added.
             reminder = await self._plan_reminder(session) if session is not None else None
             room = CONTEXT_MAX - len(context) - len(reminder or "") - SESSION_CONTEXT_RESERVE
@@ -1638,8 +1674,9 @@ class Service:
             return _context("SessionStart", context)
         if hook.event == "PreToolUse":
             return await self._pre_tool_answer(payload, hook, session)
+        lines = await self._limit_lines(hook) if hook.event in LIMIT_LINE_EVENTS else []
         if session is None:
-            return None
+            return _context(hook.event, "\n".join(lines)) if lines else None
         if hook.event == "UserPromptSubmit":
             self._stop_blocks.pop(session.id, None)  # a new turn
         if hook.event in DELIVERY_EVENTS:
@@ -1648,12 +1685,18 @@ class Service:
             if due is not None:
                 reminder = await self._plan_reminder(session, repeat=due == "periodic")
             budget = CONTEXT_MAX - (len(reminder) + 1 if reminder else 0)
+            budget -= sum(len(line) + 1 for line in lines)
             shown, total = await self._take_undelivered(session, budget)
             parts = [comment_text.delivery_text(shown, total)] if shown else []
             if reminder:
                 parts.append(reminder)
+            parts += lines
             return _context(hook.event, "\n".join(parts)) if parts else None
         if hook.event == "Stop":
+            if await self._braked(session, hook.cwd):
+                # The owner stopped it: no comment keeps the turn going.
+                self._stop_blocks.pop(session.id, None)
+                return None
             return await self._stop_answer(session, hook.stop_hook_active)
         return None
 
@@ -1662,6 +1705,9 @@ class Service:
     ) -> dict[str, Any] | None:
         """PreToolUse: the guard's decision plus owner comments for an exactly linked session.
         The guard never stands in the way through a failure of its own: it then says nothing."""
+        stopped = await self._brake_answer(payload, hook)
+        if stopped is not None:
+            return stopped
         try:
             touch, warnings = await self._guard(payload, hook)
         except Exception:
@@ -1819,6 +1865,8 @@ class Service:
                 current = await self._exact_session(cc_id.strip()[:CC_ID_MAX])
                 if current is None or current.id != session.id:
                     return None
+                if await self._braked(current, current.cwd):
+                    return None
                 # Not while a turn goes on: a Stop block of this turn means it continues.
                 if current.status != "idle" or session.id in self._stop_blocks:
                     continue
@@ -1877,6 +1925,14 @@ class Service:
             sum((await repo.backlog_new_counts(self._r)).values()),
             _tie_choices(tasks),
             self.update_notice(),
+            await repo.open_brakes(self._r),
+            await self._marked_budgets(
+                self._r,
+                now.date().isoformat(),
+                await repo.budget_marks(self._r, now.date().isoformat(), agent_limits.TOTAL_KEY),
+            ),
+            await self._concurrency_over(now),
+            self.max_concurrent_sessions,
         )
 
     def update_notice(self) -> updates.UpdateNotice | None:
@@ -2157,14 +2213,29 @@ class Service:
                 await self._usage_file_failed(file, exc, file.error)
 
     async def usage_loop(self, interval: float) -> None:
-        """The background reader: never on the hook path, sooner again while a file is behind."""
+        """The background reader and the budget check: never on the hook path, sooner again while
+        a file is behind. With `usage_enabled` false nothing is read; the check still runs for the
+        new day's release and the concurrency cap."""
         while True:
             behind = False
+            wait = interval
             try:
-                _, behind = await self.usage_pass()
+                if self.usage_enabled:
+                    _, behind = await self.usage_pass()
             except Exception:
                 logger.exception("Reading transcripts failed; the next pass tries again")
-            await asyncio.sleep(usage_data.CATCH_UP_SECONDS if behind else interval)
+            try:
+                await self.limits_pass()
+                if await self._limits_active():
+                    wait = min(interval, agent_limits.CHECK_SECONDS)
+            except Exception:
+                logger.exception("Checking budgets failed; the next pass tries again")
+            await self._limits_sleep(usage_data.CATCH_UP_SECONDS if behind else wait)
+
+    async def _limits_sleep(self, seconds: float) -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._limits_wake.wait(), seconds)
+        self._limits_wake.clear()
 
     async def usage_session_ids(self, ref: str) -> list[int]:
         """Sessions a name, external id, alias or Claude Code id names."""
@@ -2214,6 +2285,586 @@ class Service:
     async def unlinked_hook_sessions(self, limit: int = 50) -> list[Session]:
         """Hook sessions that could not be linked to one relaybay session (Settings page)."""
         return await repo.list_unlinked_hook_sessions(self._r, limit)
+
+    # --- brake and token budgets ---------------------------------------------
+
+    async def _brake_for(
+        self, session: Session | None, cwd: str | None
+    ) -> agent_limits.Brake | None:
+        """The open brake that covers a session: every kind of link counts, a guessed one too.
+        A read on every tool call; without an open brake nothing else is asked."""
+        brakes = await repo.open_brakes(self._r)
+        if not brakes:
+            return None
+        # All of them, not the guard's "the folder only without links": a brake on a project
+        # also holds a session that works in its folder for a task elsewhere.
+        project_ids = set(await self._guard_projects(session, cwd))
+        # Two projects on one folder: a brake on either holds it, the guard's tie does not apply.
+        projects = await repo.projects_with_repo_path(self._r)
+        project_ids.update(p.id for p in self._projects_at_cwd(projects, cwd))
+        task_ids = (
+            {t.id for t in await repo.open_tasks_of_session(self._r, session.id)}
+            if session is not None
+            else set()
+        )
+        for brake in brakes:
+            if (
+                brake.scope == "all"
+                or (brake.scope == "project" and brake.project_id in project_ids)
+                or (brake.scope == "task" and brake.task_id in task_ids)
+                or (
+                    brake.scope == "session"
+                    and session is not None
+                    and brake.session_id == session.id
+                )
+            ):
+                return brake
+        return None
+
+    async def _braked(self, session: Session, cwd: str | None) -> bool:
+        """Fails open, like the guard: a brake that cannot be read blocks nothing."""
+        try:
+            return await self._brake_for(session, cwd) is not None
+        except Exception:
+            logger.exception("Reading the brake failed; the session goes on")
+            return False
+
+    async def _brake_answer(self, payload: Any, hook: HookEvent) -> dict[str, Any] | None:
+        """PreToolUse under the brake: `continue: false` ends the turn, `deny` covers a client
+        that reads only the decision. relaybay's own tools pass: the agent may still report."""
+        tool = payload.get("tool_name") if isinstance(payload, dict) else None
+        if isinstance(tool, str) and (
+            tool.startswith(guard.OWN_TOOL_PREFIX) or tool in agent_limits.FREE_TOOLS
+        ):
+            return None
+        try:
+            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            brake = await self._brake_for(session, hook.cwd)
+        except Exception:
+            logger.exception("Reading the brake failed; the tool call goes on")
+            return None
+        if brake is None:
+            return None
+        reason = agent_limits.deny_reason(brake)
+        return {
+            "continue": False,
+            "stopReason": reason,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            },
+        }
+
+    async def brake_stop(self, payload: Any) -> dict[str, Any] | None:
+        """The stop of a `PreToolUse` under the brake, or None. Reads only: the receiver asks it
+        before it writes the event, so a slow or failing write cannot lose the stop."""
+        hook = parse_hook(payload)
+        if hook is None or hook.event != "PreToolUse":
+            return None
+        return await self._brake_answer(payload, hook)
+
+    async def _limit_lines(self, hook: HookEvent) -> list[str]:
+        """Context lines of the brake (on the owner's prompt, which is never blocked) and of a
+        budget past a threshold (once per session). Any link counts: no comment text is in them."""
+        try:
+            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            lines = []
+            if hook.event == "UserPromptSubmit":
+                brake = await self._brake_for(session, hook.cwd)
+                if brake is not None:
+                    lines.append(agent_limits.prompt_line(brake))
+            if session is not None:
+                lines += await self._budget_lines(session, hook.cwd)
+            return lines
+        except Exception:
+            logger.exception("Reading the limits failed; the session goes on")
+            return []
+
+    async def _budget_lines(self, session: Session, cwd: str | None) -> list[str]:
+        today = datetime.now(UTC).date().isoformat()
+        rows = await repo.budget_mark_rows(self._r, today, agent_limits.TOTAL_KEY)
+        told = self._budget_told.setdefault(session.id, set())
+        if not set(rows) - told:
+            return []
+        marks: dict[int, set[str]] = {}
+        for budget_id, _, level in rows:
+            marks.setdefault(budget_id, set()).add(level)
+        project_ids = await self._guard_projects(session, cwd)
+        task_ids = {t.id for t in await repo.open_tasks_of_session(self._r, session.id)}
+        lines = []
+        for state in await self._marked_budgets(self._r, today, marks):
+            budget = state.budget
+            covers = (
+                budget.scope == "all"
+                or (budget.scope == "project" and budget.project_id in project_ids)
+                or (budget.scope == "task" and budget.task_id in task_ids)
+            )
+            own = {row for row in rows if row[0] == budget.id}
+            if covers and own - told:
+                lines.append(agent_limits.budget_line(state))
+                told.update(own)
+        return lines
+
+    def _forget_told(self, budget_id: int) -> None:
+        for told in self._budget_told.values():
+            told -= {entry for entry in told if entry[0] == budget_id}
+
+    async def _budget_used(
+        self, conn: aiosqlite.Connection, budget: agent_limits.TokenBudget, today: str
+    ) -> int:
+        day = today if budget.period == "day" else None
+        if budget.scope == "task":
+            assert budget.task_id is not None
+            return await repo.task_tokens(conn, budget.task_id, day)
+        project_id = budget.project_id if budget.scope == "project" else None
+        return await repo.usage_tokens(conn, project_id=project_id, day=day)
+
+    async def _marked_budgets(
+        self, conn: aiosqlite.Connection, today: str, marks: dict[int, set[str]]
+    ) -> list[agent_limits.BudgetState]:
+        """The budgets past a threshold in their current period, the highest one of each."""
+        found = []
+        for budget in await repo.list_budgets(conn):
+            levels = marks.get(budget.id)
+            if levels:
+                level = (
+                    agent_limits.EXCEEDED
+                    if agent_limits.EXCEEDED in levels
+                    else agent_limits.WARNED
+                )
+                used = await self._budget_used(conn, budget, today)
+                found.append(agent_limits.BudgetState(budget, used, level))
+        return found
+
+    async def _insert_brake(
+        self,
+        tx: _Tx,
+        *,
+        scope: str,
+        project: Project | None = None,
+        session: Session | None = None,
+        task: Task | None = None,
+        reason: str,
+        source: str,
+        actor: str,
+        budget_id: int | None = None,
+        caller_id: int | None = None,
+    ) -> agent_limits.Brake:
+        """A brake already open on the same target is answered with that one, not a second row;
+        a budget's own brake is apart, so releasing one never lifts the other."""
+        project_id = project.id if project else (task.project_id if task else None)
+        if session is not None and project_id is None:
+            project_id = session.project_id
+        session_id = session.id if session else None
+        task_id = task.id if task else None
+        for open_brake in await repo.open_brakes(tx.conn):
+            if (
+                (open_brake.scope, open_brake.session_id, open_brake.task_id)
+                == (scope, session_id, task_id)
+                and (scope != "project" or open_brake.project_id == project_id)
+                and open_brake.budget_id == budget_id
+            ):
+                return open_brake
+        brake_id = await repo.insert_brake(
+            tx.conn,
+            scope=scope,
+            project_id=project_id,
+            session_id=session_id,
+            task_id=task_id,
+            reason=reason,
+            source=source,
+            budget_id=budget_id,
+            now=tx.now,
+            actor=actor,
+        )
+        brake = await repo.get_brake(tx.conn, brake_id)
+        assert brake is not None
+        await tx.event(
+            "brake.set",
+            actor,
+            project_id=project_id,
+            task_id=task_id,
+            session_id=caller_id,
+            brake_id=brake_id,
+            scope=scope,
+            target=brake.target,
+            reason=reason,
+            source=source,
+            **({"project": brake.project_slug} if brake.project_slug else {}),
+            **({"key": task.key, "stage": task.stage.value} if task else {}),
+        )
+        return brake
+
+    @staticmethod
+    def _clean_brake_reason(value: Any, default: str | None = None) -> str:
+        text = _clean_text(value, "reason", agent_limits.REASON_MAX) or default
+        if not text:
+            raise ValidationError("reason must say why the agents stop.")
+        envs.check_secret("reason", text)
+        return text
+
+    async def set_board_brake(
+        self, scope: str, *, project: str | None = None, reason: str | None = None
+    ) -> agent_limits.Brake:
+        """The owner's "Stop all agents": everything, or one project. Board only."""
+        if scope not in ("all", "project"):
+            raise ValidationError("The board stops all agents or the agents of one project.")
+        text = self._clean_brake_reason(reason, agent_limits.DEFAULT_BOARD_REASON)
+        async with self._tx() as tx:
+            target = await self.get_project(project or "", tx.conn) if scope == "project" else None
+            return await self._insert_brake(
+                tx,
+                scope=scope,
+                project=target,
+                reason=text,
+                source=agent_limits.SOURCE_OWNER,
+                actor="owner",
+            )
+
+    async def set_brake(
+        self,
+        scope: str,
+        *,
+        project: str | None = None,
+        target_session: str | None = None,
+        task: str | None = None,
+        reason: str,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> agent_limits.Brake:
+        """Stop agents, for a coordinator session. Only the owner releases, on the board."""
+        if scope not in agent_limits.BRAKE_SCOPES:
+            raise ValidationError(f"scope must be one of: {', '.join(agent_limits.BRAKE_SCOPES)}.")
+        text = self._clean_brake_reason(reason)
+        async with self._tx() as tx:
+            if not await self._is_coordinator(tx.conn, session, hook_session):
+                raise ValidationError(
+                    "brake_set is only for the coordinator sessions named in the server's config;"
+                    " a desktop id also needs that session's own hook_session. Nothing changed."
+                    " Ask the owner: the board has Stop all agents."
+                )
+            caller = await self._session(tx, session, session_title, hook_session)
+            assert caller is not None
+            needed = {"project": project, "session": target_session, "task": task}.get(scope)
+            if scope != "all" and not (needed or "").strip():
+                raise ValidationError(f"scope {scope} needs its {scope} named.")
+            target = (
+                await self._named_session(tx.conn, target_session or "")
+                if scope == "session"
+                else None
+            )
+            if target is not None and target.cc_session_id is None:
+                _note(
+                    f"Warning: {target.name} is not linked to hooks yet: this brake reaches it only"
+                    " once it is linked."
+                )
+            braked_task = await self.get_task(task or "", tx.conn) if scope == "task" else None
+            if braked_task is not None:
+                await self._note_task_brake_reach(tx.conn, braked_task)
+            return await self._insert_brake(
+                tx,
+                scope=scope,
+                project=await self.get_project(project or "", tx.conn)
+                if scope == "project"
+                else None,
+                session=target,
+                task=braked_task,
+                reason=text,
+                source=agent_limits.SOURCE_COORDINATOR,
+                actor=caller.name,
+                caller_id=caller.id,
+            )
+
+    @staticmethod
+    async def _note_task_brake_reach(conn: aiosqlite.Connection, task: Task) -> None:
+        """A task brake holds the session bound to the task, seen by its hooks: say when none is."""
+        bound = await repo.open_binding(conn, task.id)
+        session = await repo.get_session_by_id(conn, bound) if bound is not None else None
+        if session is None:
+            _note(
+                f"Warning: no session is bound to {task.key}: this brake reaches nobody until one"
+                " is."
+            )
+        elif session.cc_session_id is None:
+            _note(
+                f"Warning: {session.name}, bound to {task.key}, is not linked to hooks yet: this"
+                " brake reaches it only once it is linked."
+            )
+
+    @staticmethod
+    async def _named_session(conn: aiosqlite.Connection, ref: str) -> Session:
+        """The one session a name, external id, alias or Claude Code id names. Never upserts: a
+        misspelt name must not brake a new, empty session."""
+        text = ref.strip()
+        found = await repo.find_sessions(conn, text)
+        if not found:
+            by_cc = await repo.get_session_by_cc(conn, text)
+            found = [by_cc] if by_cc else []
+        if not found:
+            raise NotFoundError(f"Session {ref!r} not found.")
+        if len(found) > 1:
+            ids = ", ".join(s.external_id or s.name for s in found)
+            raise ValidationError(f"{ref!r} names several sessions: {ids}. Pass the desktop id.")
+        return found[0]
+
+    async def release_brake(self, brake_id: int, *, actor: str = "owner") -> agent_limits.Brake:
+        """Board only. Releasing a released brake changes nothing."""
+        async with self._tx() as tx:
+            brake = await repo.get_brake(tx.conn, brake_id)
+            if brake is None:
+                raise NotFoundError(f"Brake #{brake_id} not found.")
+            if brake.released_at is None:
+                await self._release(tx, brake, actor)
+            return brake
+
+    async def _release(self, tx: _Tx, brake: agent_limits.Brake, actor: str) -> None:
+        await repo.release_brake(tx.conn, brake.id, tx.now, actor)
+        await tx.event(
+            "brake.released",
+            actor,
+            project_id=brake.project_id,
+            task_id=brake.task_id,
+            brake_id=brake.id,
+            scope=brake.scope,
+            target=brake.target,
+            **({"project": brake.project_slug} if brake.project_slug else {}),
+            **({"key": brake.task_key} if brake.task_key else {}),
+        )
+
+    async def open_brakes(self, project: str | None = None) -> list[agent_limits.Brake]:
+        """Open brakes; with `project`, those that reach it by name or by every agent."""
+        brakes = await repo.open_brakes(self._r)
+        if project is None:
+            return brakes
+        project_id = (await self.get_project(project)).id
+        return [b for b in brakes if b.scope == "all" or b.project_id == project_id]
+
+    async def set_budget(
+        self,
+        scope: str,
+        *,
+        project: str | None = None,
+        task: str | None = None,
+        period: str = "day",
+        max_tokens: Any = None,
+        action: str = "warn",
+        actor: str = "owner",
+    ) -> agent_limits.TokenBudget:
+        """Set the one budget of a target. Board only. A change forgets the thresholds marked so
+        far: the next check counts them again against the new numbers. An open brake stays."""
+        if scope not in agent_limits.BUDGET_SCOPES:
+            raise ValidationError(f"scope must be one of: {', '.join(agent_limits.BUDGET_SCOPES)}.")
+        if period not in agent_limits.BUDGET_PERIODS:
+            raise ValidationError(
+                f"period must be one of: {', '.join(agent_limits.BUDGET_PERIODS)}."
+            )
+        if action not in agent_limits.BUDGET_ACTIONS:
+            raise ValidationError(
+                f"action must be one of: {', '.join(agent_limits.BUDGET_ACTIONS)}."
+            )
+        try:
+            tokens = int(str(max_tokens).replace(",", "").replace(" ", ""))
+        except ValueError:
+            raise ValidationError("The limit must be a whole number of tokens.") from None
+        if not 1 <= tokens <= usage_data.NUMBER_MAX:
+            raise ValidationError(f"The limit must be from 1 to {usage_data.NUMBER_MAX} tokens.")
+        if scope == "project" and not (project or "").strip():
+            raise ValidationError("A project budget needs its project.")
+        if scope == "task" and not (task or "").strip():
+            raise ValidationError("A task budget needs its task.")
+        async with self._tx() as tx:
+            target = await self.get_project(project or "", tx.conn) if scope == "project" else None
+            bound = await self.get_task(task or "", tx.conn) if scope == "task" else None
+            project_id = target.id if target else None
+            task_id = bound.id if bound else None
+            old = await repo.find_budget(tx.conn, scope, project_id, task_id)
+            if old is not None and (old.period, old.max_tokens, old.action) == (
+                period,
+                tokens,
+                action,
+            ):
+                return old  # the same numbers again: the marks stay, nothing is announced twice
+            budget_id = await repo.save_budget(
+                tx.conn,
+                old.id if old else None,
+                scope=scope,
+                project_id=project_id,
+                task_id=task_id,
+                period=period,
+                max_tokens=tokens,
+                action=action,
+                now=tx.now,
+                actor=actor,
+            )
+            await repo.clear_budget_marks(tx.conn, budget_id)
+            self._forget_told(budget_id)
+            budget = await repo.get_budget(tx.conn, budget_id)
+            assert budget is not None
+            await tx.event(
+                "budget.set",
+                actor,
+                project_id=project_id or (bound.project_id if bound else None),
+                task_id=task_id,
+                budget_id=budget_id,
+                target=budget.target,
+                period=period,
+                max_tokens=tokens,
+                action=action,
+                **({"project": budget.project_slug} if budget.project_slug else {}),
+                **({"key": bound.key, "stage": bound.stage.value} if bound else {}),
+            )
+        # After the commit: woken earlier, the loop would read no budget and sleep again.
+        self._limits_wake.set()
+        return budget
+
+    async def remove_budget(self, budget_id: int, *, actor: str = "owner") -> None:
+        """Board only. A brake the budget set stays until the owner releases it."""
+        async with self._tx() as tx:
+            budget = await repo.get_budget(tx.conn, budget_id)
+            if budget is None:
+                raise NotFoundError(f"Budget #{budget_id} not found.")
+            await repo.delete_budget(tx.conn, budget_id)
+            self._forget_told(budget_id)
+            await tx.event(
+                "budget.removed",
+                actor,
+                project_id=budget.project_id,
+                task_id=budget.task_id,
+                budget_id=budget_id,
+                target=budget.target,
+                **({"project": budget.project_slug} if budget.project_slug else {}),
+                **({"key": budget.task_key} if budget.task_key else {}),
+            )
+
+    async def budget_states(
+        self, *, project: str | None = None, task: str | None = None
+    ) -> list[agent_limits.BudgetState]:
+        """Every budget with its current numbers; with `project` or `task`, those that count it:
+        its own, its project's and the one over all projects."""
+        today = datetime.now(UTC).date().isoformat()
+        marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
+        budgets = await repo.list_budgets(self._r)
+        if task:
+            found = await self.get_task(task)
+            budgets = [
+                b
+                for b in budgets
+                if b.scope == "all"
+                or b.task_id == found.id
+                or (b.scope == "project" and b.project_id == found.project_id)
+            ]
+        elif project:
+            project_id = (await self.get_project(project)).id
+            budgets = [
+                b
+                for b in budgets
+                if b.scope == "all" or (b.scope == "project" and b.project_id == project_id)
+            ]
+        states = []
+        for budget in budgets:
+            levels = marks.get(budget.id, set())
+            level = (
+                agent_limits.EXCEEDED
+                if agent_limits.EXCEEDED in levels
+                else next(iter(levels), None)
+            )
+            used = await self._budget_used(self._r, budget, today)
+            states.append(agent_limits.BudgetState(budget, used, level))
+        return states
+
+    async def limits_pass(self) -> None:
+        """After each usage pass, never on the hook path. A threshold counts once per period; its
+        mark, its event and a `stop` budget's brake are written together."""
+        now = datetime.now(UTC)
+        today = now.date().isoformat()
+        for brake in await repo.daily_brakes_before(self._r, today):
+            async with self._tx() as tx:
+                if (await repo.get_brake(tx.conn, brake.id) or brake).released_at is None:
+                    await self._release(tx, brake, agent_limits.NEW_DAY)
+        marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
+        for budget in await repo.list_budgets(self._r):
+            used = await self._budget_used(self._r, budget, today)
+            level = agent_limits.level_for(used, budget.max_tokens)
+            if level is not None and level not in marks.get(budget.id, set()):
+                await self._cross_threshold(budget.id, today)
+        await self._check_concurrency(now)
+
+    async def _cross_threshold(self, budget_id: int, today: str) -> None:
+        """Numbers and marks are read again inside the transaction: the owner may have changed
+        the budget since the pass looked at it."""
+        async with self._tx() as tx:
+            budget = await repo.get_budget(tx.conn, budget_id)
+            if budget is None:
+                return
+            used = await self._budget_used(tx.conn, budget, today)
+            level = agent_limits.level_for(used, budget.max_tokens)
+            marks = await repo.budget_marks(tx.conn, today, agent_limits.TOTAL_KEY)
+            if level is None or level in marks.get(budget_id, set()):
+                return
+            key = agent_limits.period_key(budget.period, today)
+            # A jump past both thresholds is one event, not a warning followed by the real one.
+            for mark in {level, agent_limits.WARNED}:
+                await repo.add_budget_mark(tx.conn, budget_id, key, mark, tx.now)
+            state = agent_limits.BudgetState(budget, used, level)
+            task = await repo.get_task_by_id(tx.conn, budget.task_id) if budget.task_id else None
+            await tx.event(
+                f"budget.{level}",
+                "relaybay",
+                project_id=budget.project_id or (task.project_id if task else None),
+                task_id=budget.task_id,
+                budget_id=budget_id,
+                target=budget.target,
+                used=used,
+                max_tokens=budget.max_tokens,
+                period=budget.period,
+                period_key=key,
+                action=budget.action,
+                **({"project": budget.project_slug} if budget.project_slug else {}),
+                **({"key": task.key, "stage": task.stage.value} if task else {}),
+            )
+            if level == agent_limits.EXCEEDED and budget.action == "stop":
+                project = None
+                if budget.scope == "project":
+                    project = await repo.get_project_by_id(tx.conn, budget.project_id or 0)
+                await self._insert_brake(
+                    tx,
+                    scope=budget.scope,
+                    project=project,
+                    task=task,
+                    reason=agent_limits.budget_reason(state),
+                    source=agent_limits.SOURCE_BUDGET,
+                    actor="budget",
+                    budget_id=budget_id,
+                )
+
+    async def _concurrency_over(self, now: datetime) -> int | None:
+        """How many sessions run when that is above the cap, else None. The cap only warns."""
+        if not self.max_concurrent_sessions:
+            return None
+        since = now - timedelta(minutes=agent_limits.CONCURRENCY_MINUTES)
+        running = await repo.running_sessions(self._r, since.isoformat(timespec="milliseconds"))
+        return running if running > self.max_concurrent_sessions else None
+
+    async def _check_concurrency(self, now: datetime) -> None:
+        running = await self._concurrency_over(now)
+        if running is None:
+            return
+        last = await repo.last_event_of_kind(self._r, "concurrency.over")
+        window = now - timedelta(minutes=agent_limits.CONCURRENCY_MINUTES)
+        if last is not None and last > window.isoformat(timespec="milliseconds"):
+            return
+        async with self._tx() as tx:
+            await tx.event(
+                "concurrency.over",
+                "relaybay",
+                running=running,
+                max_sessions=self.max_concurrent_sessions,
+            )
+
+    async def _limits_active(self) -> bool:
+        return bool(self.max_concurrent_sessions) or await repo.has_budgets(self._r)
 
     # --- reads -------------------------------------------------------------
 
@@ -2294,6 +2945,10 @@ class Service:
             intake=await repo.list_messages(self._r, task_id=task.id, limit=50),
             from_backlog=next(iter(await repo.list_backlog(self._r, task_id=task.id)), None),
             findings=await repo.list_backlog(self._r, origin_task_id=task.id, limit=50),
+            budget=next(
+                (s for s in await self.budget_states(task=task.key) if s.budget.task_id == task.id),
+                None,
+            ),
         )
 
     async def _bind_choices(self, task: Task, limit: int = 40) -> list[Session]:
@@ -2725,6 +3380,8 @@ class Service:
         session: str,
         *,
         session_title: str | None = None,
+        caller: str | None = None,
+        hook_session: str | None = None,
     ) -> BindResult:
         """Bind a session to the task. A plain name never replaces a desktop session bound to
         the task (and its "Open in desktop" link): the binding is kept and the name becomes that
@@ -2737,6 +3394,7 @@ class Service:
             raise ValidationError("session must not be empty.")
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
+            await self._refuse_under_brake(tx.conn, task, caller, hook_session)
             if parse_session_id(name) is None:
                 current_id = await repo.open_binding(tx.conn, task.id)
                 current = await repo.get_session_by_id(tx.conn, current_id) if current_id else None
@@ -2786,8 +3444,31 @@ class Service:
             previous=previous.name if previous is not None else None,
         )
 
+    async def _refuse_under_brake(
+        self, conn: aiosqlite.Connection, task: Task, caller: str | None, hook_session: str | None
+    ) -> None:
+        """Over MCP a binding does not change while a brake holds the task or its project: moving
+        the session off the task would lift the brake. Scope `all` is left out, a binding cannot
+        lift it. The board and coordinators may."""
+        for brake in await repo.open_brakes(conn):
+            if (brake.scope == "task" and brake.task_id == task.id) or (
+                brake.scope == "project" and brake.project_id == task.project_id
+            ):
+                if await self._is_coordinator(conn, caller, hook_session):
+                    return
+                raise ValidationError(
+                    f"{task.key} is under the brake ({brake.target}): its binding stays until the"
+                    " owner releases the brake on the board. Nothing changed."
+                )
+
     async def unbind_session(
-        self, ref: str | int, session: str | None = None, *, actor: str = "mcp"
+        self,
+        ref: str | int,
+        session: str | None = None,
+        *,
+        actor: str = "mcp",
+        caller: str | None = None,
+        hook_session: str | None = None,
     ) -> tuple[Task, Session | None]:
         """Close the task's current binding (history is kept) and clear its session.
 
@@ -2799,6 +3480,8 @@ class Service:
         needle = (parse_session_id(expected) or expected) if expected else None
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
+            if actor != "board":
+                await self._refuse_under_brake(tx.conn, task, caller, hook_session)
             current_id = await repo.open_binding(tx.conn, task.id) or task.session_id
             if current_id is None:
                 if needle is not None:

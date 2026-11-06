@@ -12,6 +12,9 @@ from mcp.client.streamable_http import streamable_http_client
 from tests.conftest import LiveServer
 
 EXPECTED_TOOLS = {
+    "brake_set",
+    "brake_status",
+    "budget_get",
     "project_list",
     "project_upsert",
     "project_snapshot",

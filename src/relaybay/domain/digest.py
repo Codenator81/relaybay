@@ -369,6 +369,13 @@ def inbox_lines(inbox: "Inbox") -> list[str]:
     lines += [f"- rule warning: {_task_ref(t)}: {_clip(w[0], 120)}" for t, w in inbox.rule_warnings]
     lines += [f"- work log not entered: {_task_ref(t)}" for t in inbox.not_logged]
     lines += [f"- unlinked hook session: {_clip(s.name, 60)}" for s in inbox.unlinked]
+    lines += [f"- brake on: {b.target}: {_clip(b.reason, 120)}" for b in inbox.brakes]
+    lines += [
+        f"- token budget of {s.budget.target}: {s.used:,} of {s.budget.max_tokens:,}"
+        for s in inbox.budgets
+    ]
+    if inbox.running_over is not None:
+        lines.append(f"- {inbox.running_over} sessions running, cap {inbox.running_cap}")
     return lines
 
 

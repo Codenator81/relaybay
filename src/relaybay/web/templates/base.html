@@ -40,6 +40,7 @@
       </span>
       {% endblock %}
     </header>
+    {% if nav %}{% with brakes = nav.brakes, back = nav.path %}{% include "_brake_banner.html" %}{% endwith %}{% endif %}
     {% block content %}{% endblock %}
   </div>
   {% if nav %}
