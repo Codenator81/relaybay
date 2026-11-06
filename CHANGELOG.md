@@ -7,6 +7,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Living plan: `plan_step_add(task, title, reason, details?)` appends a pending step without losing
+  the plan's acceptance; the step is marked "added after acceptance" (who, when, why) in the Plan
+  tab and in the history diff, with a `plan.step_added` event. Migration `0022_plan_step_added`
+  (additive).
+- Setting `plan_draft_hint_hours` (default 1, 0 off): a task in `dev` whose plan has been a draft
+  that long gets a hint line in the coordinator's `portfolio_digest`, `project_digest` and
+  `task_context`, and its card shows `draft · N h`.
+
+### Changed
+
+- The stage follows the plan: `plan_step_add`, or reopening a done step, on a task in `review` or
+  `test` moves it back to `dev` with the stage note `rework: …`; marking the last step done in
+  `dev` with a review checklist set adds a hint to move the task to review.
+- Work reported after the plan closed (once a report came after the closing write: a `changed`
+  report in any open stage, a `verified` one in `dev` or a new `progress` in `dev`) adds `Warning (rules): the plan
+  is closed (N/N done) while work goes on …` (never a refusal); in `dev` the plan reminder says
+  the same instead of "all N steps done".
+- Server instruction 11 says how to change the plan after a report.
+
 ## [0.6.2] - 2026-11-06
 
 ### Added

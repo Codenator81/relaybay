@@ -86,6 +86,8 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.plan import (
+    CLOSED_PLAN,
+    DEFAULT_DRAFT_HINT_HOURS,
     DEFAULT_REMINDER_EVERY,
     NO_PLAN_HINT,
     PLAN_STEPS_MAX,
@@ -219,6 +221,15 @@ def _note(text: str) -> None:
     notes = _NOTES.get()
     if notes is not None and text not in notes:
         notes.append(text)
+
+
+def _plan_closed(task: Task) -> bool:
+    return bool(task.plan_total) and task.plan_done == task.plan_total
+
+
+def _note_closed_plan(task: Task) -> None:
+    """Always a warning, never a refusal, in strict mode too."""
+    _note(CLOSED_PLAN_WARNING.format(done=task.plan_done, total=task.plan_total))
 
 
 def now_iso() -> str:
@@ -566,6 +577,16 @@ def _patch_summary(patch: dict[str, Any], prefix: str = "") -> list[str]:
 
 REVIEW_DECISIONS = ("accept", "reject", "reopen", "comment")
 NO_PLAN_STAGE_HINT = "Hint: {key} has no plan and no todo yet: " + NO_PLAN_HINT + "."
+CLOSED_PLAN_WARNING = "Warning (rules): " + CLOSED_PLAN + "."
+REWORK_NOTE = "{key} moved from {stage} back to dev ({note})."
+ALL_DONE_REVIEW_HINT = (
+    "Hint: all steps done and the review checklist is set: move the task to review"
+    " (task_set_stage)."
+)
+DRAFT_HINTS_MAX = 5
+DRAFT_HINT = (
+    "Hint: {key}'s plan is a draft for {hours} h: accept it (plan_accept) or ask for changes."
+)
 PLAN_LINK_RE = re.compile(r"(?:report\s*[:#]?\s*|#)?(\d+)", re.IGNORECASE)
 EMPTY_CHECKLIST_HINT = (
     "Hint: the review checklist of {key} is empty. Write what the owner should check by eye"
@@ -790,6 +811,7 @@ class Service:
         attachment_max_bytes: int = DEFAULT_FILE_MAX_MB * MB,
         attachment_task_max_bytes: int = DEFAULT_TASK_MAX_MB * MB,
         plan_reminder_every: int = DEFAULT_REMINDER_EVERY,
+        plan_draft_hint_hours: int = DEFAULT_DRAFT_HINT_HOURS,
         owner_names: list[str] | None = None,
         require_tracker_log: bool = False,
         done_window_days: int = DEFAULT_DONE_WINDOW_DAYS,
@@ -857,6 +879,7 @@ class Service:
         self.search_fts = False
         # Plan reminders per session: tool events since the session started, the last text sent.
         self.plan_reminder_every = plan_reminder_every
+        self.plan_draft_hint_hours = plan_draft_hint_hours
         self._tool_events: dict[int, int] = {}
         self._reminded: dict[int, str] = {}
         if session_context not in limits.SESSION_CONTEXT_MODES:
@@ -2396,6 +2419,9 @@ class Service:
             if not diff:
                 return Saved(task, [])
             warnings = await self._stage_warnings(tx, task, diff)
+            progress_in_dev = "progress" in diff and task.stage == Stage.DEV
+            if progress_in_dev and await self._reported_after_plan_closed(tx, task):
+                _note_closed_plan(task)
             if diff.get("stage") in ACCEPTANCE_STAGES and not task.review_total:
                 _note(EMPTY_CHECKLIST_HINT.format(key=task.key))
             no_plan = diff.get("stage") == Stage.DEV and not task.plan_total
@@ -2654,6 +2680,8 @@ class Service:
                 raise ValidationError(f"Rules: {problem} Nothing changed.")
             if problem:
                 _note(f"Warning (rules): {problem}")
+            if await self._work_after_closed_plan(tx, task, state):
+                _note_closed_plan(task)
             if size and not task.size:
                 clean["size"] = size  # the first report's size sizes a task that has none
             sess = await self._session(tx, session, session_title, hook_session)
@@ -2705,6 +2733,25 @@ class Service:
             report = (await repo.list_reports(tx.conn, task.id, 1))[0]
             task = await self.get_task(task.id, tx.conn)
         return task, report
+
+    async def _reported_after_plan_closed(self, tx: _Tx, task: Task) -> bool:
+        """Every plan step is done and a report came after the plan closed, so the work that
+        follows is not the closing itself. The plan closes with its last done step or with the
+        plan write that dropped the last open one, whichever is newer."""
+        if not _plan_closed(task):
+            return False
+        steps = await repo.list_plan_steps(tx.conn, task.id)
+        moments = [s.done_at for s in steps if s.done_at] + [task.plan_revised_at]
+        closed_at = max((m for m in moments if m), default=None)
+        return closed_at is not None and await repo.has_report_after(tx.conn, task.id, closed_at)
+
+    async def _work_after_closed_plan(self, tx: _Tx, task: Task, state: str | None) -> bool:
+        """A report says work goes on although every plan step is done: code changed in any open
+        stage, or verified in dev; never the report that closes the plan."""
+        changed = state == "changed" and task.stage in OPEN_STAGES
+        if not (changed or (state == "verified" and task.stage == Stage.DEV)):
+            return False
+        return await self._reported_after_plan_closed(tx, task)
 
     async def add_decision(
         self,
@@ -3806,6 +3853,42 @@ class Service:
         policies = await self._policies(self._r, environments)
         return [(e, policies[e.id].level_for(e)) for e in environments]
 
+    def plan_draft_hours(self, task: Task, now: datetime | None = None) -> int | None:
+        """Whole hours since the plan of a task in dev was last written while it is still a
+        draft, once that reaches `plan_draft_hint_hours` (0: off); else None."""
+        limit = self.plan_draft_hint_hours
+        if limit <= 0 or task.stage != Stage.DEV or task.plan_status != "draft":
+            return None
+        if not task.plan_total or not task.plan_revised_at:
+            return None
+        age = (now or datetime.now(UTC)) - datetime.fromisoformat(task.plan_revised_at)
+        hours = int(age.total_seconds() // 3600)
+        return hours if hours >= limit else None
+
+    async def plan_draft_hints(
+        self, project: str | None = None, *, task: Task | None = None
+    ) -> list[str]:
+        """'Hint: <key>'s plan is a draft for N h …' for the coordinator: of one task, one
+        project's tasks in dev, or every project's."""
+        if self.plan_draft_hint_hours <= 0:
+            return []
+        now = datetime.now(UTC)
+        if task is not None:
+            hours = self.plan_draft_hours(task, now)
+            return [] if hours is None else [DRAFT_HINT.format(key=task.key, hours=hours)]
+        project_id = (await self.get_project(project)).id if project else None
+        before = now - timedelta(hours=self.plan_draft_hint_hours)
+        found, total = await repo.stale_draft_plans(
+            self._r, before.isoformat(timespec="milliseconds"), project_id, DRAFT_HINTS_MAX
+        )
+        lines = []
+        for key, revised in found:
+            hours = int((now - datetime.fromisoformat(revised)).total_seconds() // 3600)
+            lines.append(DRAFT_HINT.format(key=key, hours=hours))
+        if total > len(found):
+            lines.append(f"…and {total - len(found)} more drafts.")
+        return lines
+
     async def portfolio_digest(
         self,
         *,
@@ -3817,6 +3900,8 @@ class Service:
     ) -> str:
         """All projects: stage counts and pulse, what waits for the owner, the week's decisions,
         tasks without progress, global blocks, changes since the reader's last read."""
+        # Asked before the reader links its hook session, or the call would prove itself.
+        coordinator = await self._is_coordinator(self._r, session, hook_session)
         reader = await self._digest_reader(session, session_title, hook_session)
         changes, moves = await self._changes("portfolio", 0, reader, since_event)
         now = datetime.now(UTC)
@@ -3844,7 +3929,8 @@ class Service:
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.portfolio_text(data, footer, self._budget(budget))
         await self._move_cursor("portfolio", 0, reader, changes.reached, moves, rendered)
-        return rendered.text
+        hints = await self.plan_draft_hints() if coordinator else []
+        return "\n".join([rendered.text, *hints])
 
     async def _project_digest(
         self,
@@ -3901,8 +3987,11 @@ class Service:
         """One project: pulse, tasks by stage, open questions, decisions, environments, blocks,
         notes with their flags, changes since the reader's last read."""
         found = await self.get_project(project)
+        coordinator = await self._is_coordinator(self._r, session, hook_session)
         reader = await self._digest_reader(session, session_title, hook_session)
-        return await self._project_digest(found, reader, since_event, self._budget(budget))
+        text = await self._project_digest(found, reader, since_event, self._budget(budget))
+        hints = await self.plan_draft_hints(found.slug) if coordinator else []
+        return "\n".join([text, *hints])
 
     async def _doc_lines(self, links: list[digests.DocLink]) -> list[str]:
         lines = []
@@ -3983,9 +4072,12 @@ class Service:
         map, rules, unread owner comments, relevant notes, changes since the reader's last read.
         Reading it delivers no comment."""
         task = await self.get_task(ref)
+        # Asked before the reader links its hook session, or the call would prove itself.
+        coordinator = await self._is_coordinator(self._r, session, hook_session)
         reader = await self._digest_reader(session, session_title, hook_session)
         text, _ = await self._task_context(task, reader, since_event, self._budget(budget))
-        return text
+        hints = await self.plan_draft_hints(task=task) if coordinator else []
+        return "\n".join([text, *hints])
 
     async def _session_context(
         self, hook: HookEvent, exact: Session | None, room: int
@@ -5202,7 +5294,7 @@ class Service:
         out = []
         for i, rev in enumerate(revisions):
             before = revisions[i + 1].titles if i + 1 < len(revisions) else []
-            out.append((rev, title_diff(before, rev.titles)))
+            out.append((rev, title_diff(before, rev.titles, rev.added)))
         return out
 
     async def plan(self, ref: str | int) -> tuple[Task, Plan, list[TodoItem]]:
@@ -5287,6 +5379,8 @@ class Service:
                 elif old.title != title:
                     restart = {"status": "pending", "done_at": None, "link": None}
                     restart |= {"outcome": None, "conformance": None}
+                    restart |= {"added_after_acceptance_at": None, "added_by": None}
+                    restart |= {"added_reason": None}
                     changes = {"title": title, "details_md": details} | restart
                     await repo.update_plan_step(tx.conn, old.id, changes, tx.now)
                 elif old.details_md != details:
@@ -5414,9 +5508,107 @@ class Service:
                 conformance=verdict,
                 outcome=changes.get("outcome", current.outcome),
             )
+            if current.status == "done" and status == "in_progress":
+                await self._rework(tx, task, f"rework: {current.title}", actor, sess)
             steps = await repo.list_plan_steps(tx.conn, task.id)
+            closes = status == "done" and current.status != "done"
+            ready = task.stage == Stage.DEV and task.review_total > 0
+            if closes and ready and all(s.status == "done" for s in steps):
+                _note(ALL_DONE_REVIEW_HINT)
             updated = next(s for s in steps if s.id == current.id)
             return await self.get_task(task.id, tx.conn), updated
+
+    async def _rework(
+        self, tx: _Tx, task: Task, note: str, actor: str, sess: Session | None
+    ) -> bool:
+        """The stage follows the plan: new or reopened work on a task in review or test moves it
+        back to dev in the caller's transaction. No rule check: the plan's own write decides."""
+        if task.stage not in ACCEPTANCE_STAGES:
+            return False
+        note = _clean_text(note, "stage_note") or "rework"
+        await repo.update_task(tx.conn, task.id, {"stage": Stage.DEV, "stage_note": note}, tx.now)
+        await tx.event(
+            "task.stage_changed",
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=sess.id if sess else None,
+            project=task.project_slug,
+            key=task.key,
+            stage=Stage.DEV.value,
+            title=task.title,
+            **{"from": task.stage.value, "to": Stage.DEV.value},
+            note=note,
+        )
+        _note(REWORK_NOTE.format(key=task.key, stage=task.stage.value, note=note))
+        return True
+
+    async def add_plan_step(
+        self,
+        ref: str | int,
+        title: Any,
+        *,
+        details: str | None = None,
+        reason: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Task, PlanStep]:
+        """Append a pending step. Unlike `set_plan`, an accepted plan stays accepted: the step is
+        marked as added after acceptance, by whom and why (`reason` is required). On a task in
+        review or test the stage goes back to dev with the note 'rework: <reason>'."""
+        clean_title = clean_plan_title(title)
+        clean_details = clean_markdown(details, "details", PLAN_DETAILS_MAX)
+        why = _clean_text(reason, "reason", REASON_MAX)
+        if not why:
+            raise ValidationError(
+                "plan_step_add needs a reason: one line on why the step is added (e.g. the"
+                " owner's decision after review)."
+            )
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            if task.stage == Stage.DONE:
+                raise ValidationError(
+                    f"{task.key}: the task is done: reopen it (task_set_stage) before adding steps."
+                )
+            current = await repo.list_plan_steps(tx.conn, task.id)
+            if len(current) >= PLAN_STEPS_MAX:
+                raise ValidationError(f"A plan has at most {PLAN_STEPS_MAX} steps.")
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else "agent"
+            accepted = bool(current) and task.plan_status == "accepted"
+            position = len(current) + 1
+            await repo.insert_plan_step(
+                tx.conn,
+                task.id,
+                position,
+                clean_title,
+                clean_details,
+                actor,
+                tx.now,
+                added_reason=why if accepted else None,
+            )
+            if not current:
+                await repo.set_plan_status(tx.conn, task.id, "draft", None, None)
+            label = f"step {position} added" + (" after acceptance" if accepted else "")
+            await self._plan_revision(tx, task, actor, f"{label}: {why}")
+            moved = await self._rework(tx, task, f"rework: {why}", actor, sess)
+            if task.stage == Stage.LIVE:
+                _note(f"{task.key} is in live: the step does not move it.")
+            await self._plan_event(
+                tx,
+                "plan.step_added",
+                await self.get_task(task.id, tx.conn),
+                actor,
+                sess.id if sess else None,
+                position=position,
+                title=clean_title,
+                reason=why,
+                after_acceptance=accepted,
+                moved_to_dev=moved,
+            )
+            steps = await repo.list_plan_steps(tx.conn, task.id)
+            return await self.get_task(task.id, tx.conn), steps[-1]
 
     async def accept_plan(
         self,

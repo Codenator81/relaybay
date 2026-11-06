@@ -26,9 +26,11 @@
   {% if plan.steps %}
   <div class="plan-head">
     <span class="plan-state state-{{ plan.status }}">{{ "Accepted" if accepted else "Draft" }}</span>
-    <span class="muted">{{ plan.done }} of {{ plan.steps|length }} done
-      {%- if plan.deviations %} · <span class="deviation-count">{{ plan.deviations }} deviation{{ "s" if plan.deviations > 1 else "" }}</span>{% endif %}
-      {%- if accepted and plan.accepted_by %} · accepted by {{ plan.accepted_by }}{% if plan.accepted_at %} <time datetime="{{ plan.accepted_at }}" data-age>{{ plan.accepted_at|age }}</time>{% endif %}{% endif %}</span>
+    {#- Each segment carries its own separator, so no text node is a bare " · " between two
+        elements (an accessibility tree reads those as an empty segment). #}
+    <span class="muted plan-summary"><span>{{ plan.done }} of {{ plan.steps|length }} done</span>
+      {%- if plan.deviations %}<span class="deviation-count"> · {{ plan.deviations }} deviation{{ "s" if plan.deviations > 1 else "" }}</span>{% endif %}
+      {%- if accepted and plan.accepted_by %}<span> · accepted by {{ plan.accepted_by }}{% if plan.accepted_at %} <time datetime="{{ plan.accepted_at }}" data-age>{{ plan.accepted_at|age }}</time>{% endif %}</span>{% endif %}</span>
     {% if not accepted %}
     <form class="plan-accept" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/plan/accept"
           hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/plan/accept" hx-target="closest .plan" hx-swap="outerHTML">
@@ -45,6 +47,7 @@
         <span class="plan-title"><span class="muted">{{ s.position }}.</span> {{ s.title }}</span>
         <span class="plan-step-status status-{{ s.status }}">{{ s.status|replace("_", " ") }}</span>
       </div>
+      {% if s.added_after_acceptance_at %}<p class="plan-added muted">Added after acceptance by {{ s.added_by }} <time datetime="{{ s.added_after_acceptance_at }}" data-age>{{ s.added_after_acceptance_at|age }}</time>: {{ s.added_reason }}</p>{% endif %}
       {% if s.details_md %}<div class="markdown plan-why">{{ s.details_md|markdown }}</div>{% endif %}
       {% if s.status == "done" %}
       <p class="plan-checkpoint">

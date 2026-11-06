@@ -86,6 +86,7 @@ class Task:
     plan_deviations: int = 0
     plan_now: str | None = None  # title of the step in progress
     plan_now_position: int | None = None
+    plan_revised_at: str | None = None  # when the newest plan revision was written
     autonomy: str = "project"  # project (follows the project's switch), on, off
     project_autonomy: bool = False
     answer_received_at: str | None = None  # an external message answered `waiting_on`

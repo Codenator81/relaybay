@@ -583,7 +583,7 @@ async def test_upgrade_from_0020_with_data(tmp_path: Path) -> None:
         await service.close()
     conn = await connect(db)
     try:
-        assert await migrate(conn) == 21
+        assert await migrate(conn) == 22
     finally:
         await conn.close()
 

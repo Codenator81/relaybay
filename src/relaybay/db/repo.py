@@ -67,7 +67,9 @@ SELECT t.*, p.slug AS project_slug, p.autonomy AS project_autonomy,
        (SELECT ps.title FROM plan_step ps WHERE ps.task_id = t.id AND ps.status = 'in_progress'
            ORDER BY ps.position LIMIT 1) AS plan_now,
        (SELECT ps.position FROM plan_step ps WHERE ps.task_id = t.id
-           AND ps.status = 'in_progress' ORDER BY ps.position LIMIT 1) AS plan_now_position
+           AND ps.status = 'in_progress' ORDER BY ps.position LIMIT 1) AS plan_now_position,
+       (SELECT MAX(pr.created_at) FROM plan_revision pr WHERE pr.task_id = t.id)
+           AS plan_revised_at
 FROM task t
 JOIN project p ON p.id = t.project_id
 LEFT JOIN session s ON s.id = t.session_id
@@ -136,6 +138,7 @@ def _task(row: aiosqlite.Row) -> Task:
         plan_deviations=row["plan_deviations"],
         plan_now=row["plan_now"],
         plan_now_position=row["plan_now_position"],
+        plan_revised_at=row["plan_revised_at"],
         autonomy=row["autonomy"],
         project_autonomy=bool(row["project_autonomy"]),
         answer_received_at=row["answer_received_at"],
@@ -680,6 +683,39 @@ async def has_report_since(conn: aiosqlite.Connection, task_id: int, since: str 
     return row is not None
 
 
+async def has_report_after(conn: aiosqlite.Connection, task_id: int, moment: str) -> bool:
+    """Any report of the task created strictly after `moment`."""
+    row = await _one(
+        conn, "SELECT 1 FROM report WHERE task_id = ? AND created_at > ? LIMIT 1", (task_id, moment)
+    )
+    return row is not None
+
+
+async def stale_draft_plans(
+    conn: aiosqlite.Connection, before: str, project_id: int | None, limit: int
+) -> tuple[list[tuple[str, str]], int]:
+    """(key, newest plan revision time) of tasks in dev whose plan is a draft not written since
+    `before`, oldest first and at most `limit`; and how many there are in all."""
+    revised = "(SELECT MAX(pr.created_at) FROM plan_revision pr WHERE pr.task_id = t.id)"
+    where = (
+        "t.stage = 'dev' AND t.plan_status = 'draft'"
+        " AND EXISTS (SELECT 1 FROM plan_step ps WHERE ps.task_id = t.id)"
+        f" AND {revised} <= ?"
+    )
+    params: list[Any] = [before]
+    if project_id is not None:
+        where += " AND t.project_id = ?"
+        params.append(project_id)
+    rows = await _all(
+        conn,
+        f"SELECT t.key, {revised} AS revised FROM task t WHERE {where}"
+        " ORDER BY revised, t.id LIMIT ?",
+        (*params, limit),
+    )
+    total = await _one(conn, f"SELECT COUNT(*) FROM task t WHERE {where}", tuple(params))
+    return [(r["key"], r["revised"]) for r in rows], int(total[0]) if total else 0
+
+
 async def last_reports(conn: aiosqlite.Connection, task_ids: list[int]) -> dict[int, Report]:
     if not task_ids:
         return {}
@@ -1051,6 +1087,9 @@ def _plan_step(row: aiosqlite.Row) -> PlanStep:
         created_by=row["created_by"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        added_after_acceptance_at=row["added_after_acceptance_at"],
+        added_by=row["added_by"],
+        added_reason=row["added_reason"],
     )
 
 
@@ -1069,11 +1108,27 @@ async def insert_plan_step(
     details_md: str | None,
     created_by: str,
     now: str,
+    added_reason: str | None = None,
 ) -> None:
+    """With `added_reason`, the step is marked as added after the plan's acceptance."""
+    added_at = now if added_reason is not None else None
+    added_by = created_by if added_reason is not None else None
     await conn.execute(
         "INSERT INTO plan_step (task_id, position, title, details_md, created_by, created_at,"
-        " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (task_id, position, title, details_md, created_by, now, now),
+        " updated_at, added_after_acceptance_at, added_by, added_reason)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            task_id,
+            position,
+            title,
+            details_md,
+            created_by,
+            now,
+            now,
+            added_at,
+            added_by,
+            added_reason,
+        ),
     )
 
 
@@ -3081,7 +3136,8 @@ async def map_recent_events(conn: aiosqlite.Connection, since: str, limit: int) 
         conn,
         "SELECT * FROM event WHERE session_id IS NOT NULL AND ts >= ?"
         " AND kind IN ('task.created', 'task.updated', 'task.stage_changed', 'report.added',"
-        " 'task.session_bound', 'plan.set', 'plan.step_updated', 'live.action')"
+        " 'task.session_bound', 'plan.set', 'plan.step_added', 'plan.step_updated',"
+        " 'live.action')"
         " ORDER BY id DESC LIMIT ?",
         (since, limit),
     )
