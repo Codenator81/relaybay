@@ -25,13 +25,22 @@
         <button type="button" class="viewer-tool viewer-send" data-action="send">Send to agent</button>
       </span>
     </div>
+    <div class="viewer-zoom-bar" role="group" aria-label="Zoom">
+      <button type="button" class="viewer-tool" data-zoom="out" aria-label="Zoom out (-)">-</button>
+      <span class="viewer-zoom-level"></span>
+      <button type="button" class="viewer-tool" data-zoom="in" aria-label="Zoom in (+)">+</button>
+      <button type="button" class="viewer-tool" data-zoom="fit" aria-label="Fit to the screen (0)">Fit</button>
+      <button type="button" class="viewer-tool" data-zoom="actual" aria-label="Actual size (1)">1:1</button>
+    </div>
     <button type="button" class="viewer-close" aria-label="Close (Esc)">Close</button>
   </div>
   <button type="button" class="viewer-nav viewer-prev" aria-label="Previous screenshot (←)">‹</button>
   <figure class="viewer-figure">
-    <div class="viewer-stage">
-      <img class="viewer-img" alt="">
-      <svg class="viewer-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" aria-label="Markup"></svg>
+    <div class="viewer-stage" tabindex="-1">
+      <div class="viewer-zoom">
+        <img class="viewer-img" alt="" draggable="false">
+        <svg class="viewer-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" aria-label="Markup"></svg>
+      </div>
       <aside class="viewer-thread" aria-label="Pin" hidden>
         <div class="viewer-thread-head">
           <strong class="viewer-thread-title"></strong>

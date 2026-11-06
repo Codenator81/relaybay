@@ -180,6 +180,8 @@ Built in PR2b; the behaviour is in [SPEC §13](../SPEC.md#spec-updates).
   `setup.exe /SILENT /CURRENTUSER` and leaves the quitting to setup (its `PrepareToInstall` sends
   `desktop --quit` and starts the new program afterwards only when it found one running, so the
   program must not quit first); macOS opens the `.dmg`, Linux the `.deb`, and the program quits.
+  A quit after the installer started, with the window on screen, leaves the one-shot marker
+  `reopen-window`, so the next start (`--background` from setup on Windows) shows the window.
   Outside the installed program the Update item shows the upgrade command.
 - **Backup.** `relaybay/backup.py`, called in the app's lifespan before `Service.start()` (which
   migrates), and in `import --apply`'s `open_board`, so `serve`, the program, Docker and an

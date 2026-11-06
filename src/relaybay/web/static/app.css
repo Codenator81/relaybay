@@ -1157,7 +1157,7 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .review-step.status-rejected { border-left-color: var(--bad); }
 .review-accept { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .review-check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; min-width: 0; }
-.review-check input { margin-top: 4px; width: 16px; height: 16px; flex: none; }
+.review-check input { margin-top: 4px; width: 16px; height: 16px; flex: none; cursor: pointer; }
 .review-title { font-weight: 600; overflow-wrap: anywhere; }
 .review-status { flex: none; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .review-status.status-accepted { color: var(--ok); }
@@ -1274,6 +1274,8 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .viewer-swatch { display: inline-flex; padding: 3px; background: none; border: 1px solid transparent; border-radius: 999px; cursor: pointer; }
 .viewer-swatch[aria-pressed="true"] { border-color: #fff; }
 .viewer-count { font-size: 14px; }
+.viewer-zoom-bar { display: inline-flex; gap: 4px; align-items: center; }
+.viewer-zoom-level { min-width: 4.5em; text-align: center; font-size: 13px; font-variant-numeric: tabular-nums; }
 .viewer-close, .viewer-nav {
   font: inherit;
   color: inherit;
@@ -1286,12 +1288,17 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .viewer-nav { align-self: center; justify-self: center; width: 40px; height: 40px; font-size: 24px; line-height: 1; }
 .viewer-nav[hidden] { display: block; visibility: hidden; }
 .viewer-figure { grid-column: 2; grid-row: 2; margin: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; gap: 8px; padding-bottom: 12px; }
-.viewer-stage { position: relative; min-height: 0; }
+.viewer-stage { position: relative; min-height: 0; overflow: hidden; }
+.viewer-stage:focus { outline: none; } /* focused by script so the keys stay in the viewer */
+/* Zoom and pan are one transform on this box (annotate.js); the pin's thread stays outside it. */
+.viewer-zoom { position: absolute; inset: 0; transform-origin: 0 0; touch-action: none; user-select: none; }
+.viewer-stage.is-zoomed .viewer-zoom, .viewer-stage.is-space .viewer-zoom, .viewer-stage.is-space .viewer-svg { cursor: grab; }
+.viewer-stage.is-panning .viewer-zoom, .viewer-stage.is-panning .viewer-svg { cursor: grabbing; }
 /* The image and the layer share one box: object-fit contain and "xMidYMid meet" fit alike. */
 .viewer-img, .viewer-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .viewer-img { object-fit: contain; }
 .viewer-svg[hidden] { display: none; }
-.viewer-svg.is-drawing { touch-action: none; cursor: crosshair; }
+.viewer-svg.is-drawing { cursor: crosshair; }
 .viewer-svg [data-annotation] { cursor: pointer; }
 .viewer-svg .is-selected { filter: drop-shadow(0 0 3px #fff); }
 .viewer-thread {

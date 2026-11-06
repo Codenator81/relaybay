@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +38,13 @@ from relaybay.desktop.settings import (
 )
 from relaybay.desktop.start_journal import StartJournal
 from relaybay.desktop.window import DARK_BACKGROUND, DARK_TEXT, LIGHT_BACKGROUND, LIGHT_TEXT
-from relaybay.desktop.window_state import WindowState, WindowTracker, save_state
+from relaybay.desktop.window_state import (
+    WindowState,
+    WindowTracker,
+    mark_reopen,
+    save_state,
+    take_reopen,
+)
 from relaybay.install import DESKTOP_KINDS, hook_executable, install_kind
 from relaybay.logs import desktop_log_config
 from relaybay.security import load_or_create_token
@@ -90,6 +97,9 @@ def _page(title: str, body: str) -> str:
 
 
 QUIT_WAIT = 60.0  # seconds Quit waits for a restart in progress
+# Seconds after Update starts the installer during which a quit is the one it asked for: the
+# silent Windows setup sends its --quit within seconds; a setup that never does was cancelled.
+INSTALLER_QUIT_WAIT = 60.0
 
 STARTING_PAGE = _page("relaybay", "<p>Starting the board...</p>")
 
@@ -116,6 +126,9 @@ class DesktopController:
         self.update = updates.UpdateStatus()  # the program's own version against the release
         self._stopped = threading.Event()  # set by Quit: ends the update loop's wait
         self._updating = threading.Lock()  # held while Update downloads or runs an installer
+        self.clock = time.monotonic
+        self.wall_clock = time.time  # the reopen marker outlives the process
+        self.installer_started_at: float | None = None  # see quitting_for_update
 
     # --- state -------------------------------------------------------------
 
@@ -252,6 +265,22 @@ class DesktopController:
         except OSError as exc:
             log.warning("the window state was not saved: %s", exc)
 
+    def mark_reopen(self) -> None:
+        """Quitting for an update with the window open: the program the installer starts again
+        (with `--background` on Windows) shows it. A failure costs only that."""
+        try:
+            mark_reopen(self.config_dir, self.wall_clock())
+        except OSError as exc:
+            log.warning("the window will not reopen after the update: %s", exc)
+
+    def take_reopen(self) -> bool:
+        try:
+            return take_reopen(self.config_dir, self.wall_clock())
+        except OSError as exc:
+            # Left in place it would show the window at every later logon: stay hidden instead.
+            log.warning("the reopen marker could not be removed, staying hidden: %s", exc)
+            return False
+
     def open_in_browser(self) -> None:
         webbrowser.open(self.browser_url())
 
@@ -382,7 +411,13 @@ class DesktopController:
             self.show_problem(f"relaybay {latest.version} was not installed: {exc}")
             return False
         log.info("starting the installer %s", path)
-        updates.launch_installer(path, kind)
+        # Before the start: the silent Windows setup sends its `desktop --quit` within seconds.
+        self.installer_started_at = self.clock()
+        try:
+            updates.launch_installer(path, kind)
+        except BaseException:
+            self.installer_started_at = None
+            raise
         if kind != "desktop-windows":
             self.quit()
         # Windows: setup itself asks this program to quit (desktop --quit) and starts the new
@@ -400,6 +435,11 @@ class DesktopController:
                 self.show_problem(f"{action} failed: {exc}")
 
         threading.Thread(target=run, name=f"relaybay-{action}", daemon=True).start()
+
+    def quitting_for_update(self) -> bool:
+        """Whether a quit now is the one the started installer asks for."""
+        started = self.installer_started_at
+        return started is not None and self.clock() - started < INSTALLER_QUIT_WAIT
 
     def quit(self) -> None:
         if self.quitting:
@@ -421,6 +461,8 @@ class DesktopController:
 
             # Not left to the closing event: Cocoa and GTK do not raise it for destroy().
             self.save_window_state()
+            if self.quitting_for_update() and self.window_tracker.visible:
+                self.mark_reopen()
             for window in list(webview.windows):
                 window.destroy()
 
@@ -502,6 +544,10 @@ class DesktopController:
         self.load()
         self.configure_logging()
         log.info("relaybay %s desktop, config %s", __version__, self.config_dir)
+        # Taken before the rest of the start, so a later logon start stays hidden whatever follows.
+        if self.take_reopen() and self.background:
+            log.info("the window was open before the update: showing it")
+            self.background = False
         if self.journal is not None:
             self.journal.write(f"started, log {self.log_path}")
             if self.journal.error:

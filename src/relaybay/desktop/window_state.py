@@ -19,6 +19,10 @@ from relaybay.security import _write_private
 log = logging.getLogger("relaybay.desktop")
 
 FILE_NAME = "window-state.json"
+REOPEN_FILE = "reopen-window"  # one-shot: the window was open when the program quit for an update
+# A marker older than this is from a quit no start followed at once (macOS, Linux, a cancelled
+# setup): the next logon start must not show the window for it.
+REOPEN_MAX_AGE = 600.0  # seconds
 DEFAULT_SIZE = (1280, 860)
 MIN_SIZE = (640, 480)
 VALUE_LIMIT = 100_000  # beyond it the file is corrupt: the GUI toolkit would refuse the number
@@ -95,6 +99,27 @@ def save_state(folder: Path, state: WindowState) -> None:
     _write_private(folder / FILE_NAME, json.dumps(fields))
 
 
+def mark_reopen(folder: Path, now: float) -> None:
+    """Ask the next start to show the window, even a `--background` one; `now` is wall time."""
+    _write_private(folder / REOPEN_FILE, repr(now))
+
+
+def take_reopen(folder: Path, now: float) -> bool:
+    """Whether the last quit left a marker at most `REOPEN_MAX_AGE` old at `now`. Any marker is
+    removed, so only one start sees it; an unreadable one counts as old."""
+    path = folder / REOPEN_FILE
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    path.unlink()
+    try:
+        written = float(text.strip())
+    except ValueError:
+        return False
+    return abs(now - written) <= REOPEN_MAX_AGE
+
+
 class WindowTracker:
     """Follows the window's events and keeps its normal (not maximized, not minimized) geometry.
 
@@ -112,6 +137,7 @@ class WindowTracker:
         self._recent: list[tuple[float, dict[str, int]]] = []
         self.maximized = saved.maximized  # also while minimized: what un-minimizing returns to
         self.minimized = False
+        self.visible = False  # shown and not hidden to the tray; minimized still counts
 
     def _commit(self, before: float) -> None:
         keep = []

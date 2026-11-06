@@ -630,6 +630,12 @@ def test_the_viewer_has_the_tools_and_no_inline_script(board: TestClient) -> Non
         assert f'data-colour="{colour}"' in text
     for action in ("undo", "delete", "hide", "send"):
         assert f'data-action="{action}"' in text
+    for zoom in ("out", "in", "fit", "actual"):
+        assert f'data-zoom="{zoom}"' in text
+    assert 'class="viewer-zoom-level"' in text
+    # One transform on this box zooms the image and the markup together; the thread is outside it.
+    stage = text.split('<div class="viewer-zoom">', 1)[1]
+    assert stage.index('class="viewer-svg"') < stage.index("</div>") < stage.index("viewer-thread")
     assert 'data-attachment="1"' in text
     assert "annotate.js" in text
     assert "<script>" not in text.replace('<script src="', "")
