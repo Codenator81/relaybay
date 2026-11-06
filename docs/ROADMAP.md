@@ -97,6 +97,12 @@ Ships when a coordinator runs its daily work from relaybay.
 | Hook delivery with retry and spool, a server watchdog in the program, backlog done | done | [0017](design/0017-readiness-for-agents-inside.md) |
 | Review: screenshot zoom, the step checkbox cursor; the window back after an in-app update | done | [0017](design/0017-readiness-for-agents-inside.md) |
 
+## 0.7.1 — a calmer board (released 2026-11-06)
+
+| Item | Status | Design |
+|---|---|---|
+| Collapsible blocks in the task view, older reports in an accordion, Compact cards, `waiting_on` means who | done | — |
+
 ## 0.8 — before the runner
 
 | Item | Status | Design |
