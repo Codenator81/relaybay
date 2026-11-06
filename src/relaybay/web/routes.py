@@ -55,6 +55,7 @@ from relaybay.security import (
     CSRF_FIELD,
     csrf_token,
     login_url,
+    port_cookie,
     safe_next,
     same_origin,
     same_secret,
@@ -99,6 +100,12 @@ SAVE_CONFLICT = (
     " again to overwrite their change, or reload to discard your edits."
 )
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+
+def cookie_name(request: Request, name: str) -> str:
+    return port_cookie(name, request.headers.get("host"))
+
+
 ACTIVITY_PAGE = 50
 EVENT_KINDS = (
     "project.created",
@@ -305,7 +312,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if data:
             value = base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
             response.set_cookie(
-                FLASH_COOKIE,
+                cookie_name(request, FLASH_COOKIE),
                 value,
                 max_age=60,
                 httponly=True,
@@ -315,7 +322,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return response
 
     def take_flash(request: Request) -> dict[str, Any]:
-        raw = request.cookies.get(FLASH_COOKIE)
+        raw = request.cookies.get(cookie_name(request, FLASH_COOKIE))
         if not raw:
             return {}
         try:
@@ -325,8 +332,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return data if isinstance(data, dict) else {}
 
     def shown_once(request: Request, response: Response) -> Response:
-        if FLASH_COOKIE in request.cookies:
-            response.delete_cookie(FLASH_COOKIE)
+        name = cookie_name(request, FLASH_COOKIE)
+        if name in request.cookies:
+            response.delete_cookie(name)
         return response
 
     async def inbox() -> Inbox:
@@ -455,14 +463,14 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     def signed_in(request: Request, next_path: str) -> Response:
         response = RedirectResponse(safe_next(next_path), status_code=303)
         response.set_cookie(
-            COOKIE_NAME,
+            cookie_name(request, COOKIE_NAME),
             session_cookie_value(token),
             max_age=COOKIE_MAX_AGE,
             httponly=True,
             samesite="strict",
             secure=request.url.scheme == "https",
         )
-        response.delete_cookie(LOGIN_CSRF_COOKIE)
+        response.delete_cookie(cookie_name(request, LOGIN_CSRF_COOKIE))
         return response
 
     def login_form(request: Request, next_path: str, error: str = "", status: int = 200):
@@ -478,7 +486,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             docs_url=DOCS_URL,
         )
         response.set_cookie(
-            LOGIN_CSRF_COOKIE,
+            cookie_name(request, LOGIN_CSRF_COOKIE),
             nonce,
             httponly=True,
             samesite="strict",
@@ -498,12 +506,17 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             # Never leave a token in the address bar or history: redirect and flash the error.
             response = RedirectResponse(login_url(next_path), status_code=303)
             response.set_cookie(
-                LOGIN_ERROR_COOKIE, "invalid", max_age=60, httponly=True, samesite="strict"
+                cookie_name(request, LOGIN_ERROR_COOKIE),
+                "invalid",
+                max_age=60,
+                httponly=True,
+                samesite="strict",
             )
             return response
-        if request.cookies.get(LOGIN_ERROR_COOKIE):
+        error_cookie = cookie_name(request, LOGIN_ERROR_COOKIE)
+        if request.cookies.get(error_cookie):
             response = login_form(request, next_path, INVALID_TOKEN, status=401)
-            response.delete_cookie(LOGIN_ERROR_COOKIE)
+            response.delete_cookie(error_cookie)
             return response
         return login_form(request, next_path)
 
@@ -514,7 +527,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         next_path: Annotated[str, Form(alias="next")] = "/",
         nonce: Annotated[str, Form(alias="login_csrf")] = "",
     ):
-        cookie = request.cookies.get(LOGIN_CSRF_COOKIE)
+        cookie = request.cookies.get(cookie_name(request, LOGIN_CSRF_COOKIE))
         if not same_origin(request.headers) or not nonce or not same_secret(cookie, nonce):
             return login_form(request, next_path, "The form expired. Please try again.", 403)
         if not same_secret(token_field.strip(), token):
@@ -1304,7 +1317,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         """Environment writes come from a signed-in browser (cookie + CSRF), not from a
         client that sends the token as a Bearer header."""
         check_csrf(csrf)
-        cookie = request.cookies.get(COOKIE_NAME)
+        cookie = request.cookies.get(cookie_name(request, COOKIE_NAME))
         if "authorization" in request.headers or not same_secret(
             cookie, session_cookie_value(token)
         ):

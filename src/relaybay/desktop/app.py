@@ -476,7 +476,8 @@ class DesktopController:
         try:
             started = self._install_update()
         finally:
-            # A started installer keeps the flag: the program is about to be replaced.
+            # A started installer keeps the flag: the program is about to be replaced
+            # (_after_installer gives it back when that did not happen).
             if not started:
                 self._updating.release()
 
@@ -502,15 +503,29 @@ class DesktopController:
         # Before the start: the silent Windows setup sends its `desktop --quit` within seconds.
         self.installer_started_at = self.clock()
         try:
-            updates.launch_installer(path, kind)
+            process = updates.launch_installer(path, kind)
         except BaseException:
             self.installer_started_at = None
             raise
         if kind != "desktop-windows":
             self.quit()
+            return True
         # Windows: setup itself asks this program to quit (desktop --quit) and starts the new
         # one afterwards, which it does only when it found one running.
+        threading.Thread(
+            target=self._after_installer, args=(process,), name="relaybay-installer", daemon=True
+        ).start()
         return True
+
+    def _after_installer(self, process: subprocess.Popen[bytes]) -> None:
+        """Setup asks for the quit before it installs, so its exit without one means it was
+        cancelled or failed: Update works again without a restart."""
+        code = process.wait()
+        if self.quitting:
+            return
+        log.info("the installer exited with %s without a quit", code)
+        self.installer_started_at = None
+        self._updating.release()
 
     def dispatch(self, action: str) -> None:
         """Run a menu action off the tray thread, so a restart never freezes the menu."""

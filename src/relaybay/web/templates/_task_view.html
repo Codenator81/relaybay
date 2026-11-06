@@ -172,7 +172,7 @@
   <section class="panel">
     <h2>Last report</h2>
     {% for r in detail.reports %}
-    {% if loop.index == 2 %}<h3>Earlier reports</h3>{% endif %}
+    {% if loop.first %}
     <article class="report">
       <header class="report-head">
         {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
@@ -180,6 +180,18 @@
       </header>
       <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
     </article>
+    {% else %}
+    {% if loop.index == 2 %}<h3>Earlier reports</h3>{% endif %}
+    {#- app.js reopens these by report id after a live refresh of this fragment. #}
+    <details class="report report-older" data-report="{{ r.id }}">
+      <summary class="report-head">
+        {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
+        <span class="report-gist">{{ r.summary }}</span>
+        <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
+      </summary>
+      <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
+    </details>
+    {% endif %}
     {% else %}
     <p class="muted">No reports yet.</p>
     {% endfor %}

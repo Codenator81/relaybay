@@ -273,7 +273,10 @@ as badges. Any other first line is checked against the rules ([§6](#spec-rules-
 
 **Progress, next step, waiting on.** `description` says what to do and why; `progress` is the running
 summary of everything done so far (rewritten, not appended). `next_step` is what happens next,
-`waiting_on` who acts next. `task_set_stage` and `report_add` take `next_step` and `waiting_on`
+`waiting_on` who acts next and nothing else: a name or role, with what happens in `next_step`
+(data is never rewritten: a write whose `waiting_on` has more than 4 words gets the answer line
+`Hint: waiting_on is who acts next; put what happens into next_step.`, never a refusal or a
+`Warning (rules)`). `task_set_stage` and `report_add` take `next_step` and `waiting_on`
 (and `report_add` takes `progress`) and save them in the same transaction. A next step written
 before the task's last stage change is **stale**: shown muted with a "stale" marker on cards and in
 the task dialog, `(stale)` in MCP output. Writing it again, even with the same text, confirms it
@@ -432,7 +435,8 @@ column. Below 760 px there is no pager: the stage tab bar has six tabs.
 
 **Cards** show only the essentials: key, tracker badge (`<tracker_name> <tracker_ref>`, a link when
 a URL is set, ✓ when logged, "not logged" with `require_tracker_log`) and an icon-only "open in
-desktop" link with the session's hook status dot in the top row; then title, waiting on, branch and
+desktop" link with the session's hook status dot in the top row; then title, waiting on (cut at the
+first colon, the full text in the chip's title; the task dialog shows it in full), branch and
 the next step (two lines, muted with "stale" when stale). Done cards hide waiting on and the next
 step. A task with a checklist shows **Review 2/5** (accepted / all; green when all are accepted,
 red-tinted while one is rejected), which opens the dialog on its Review tab. A task with a plan
@@ -440,11 +444,25 @@ shows **Plan 2/5** (done / all) with `· draft` while it is not accepted, the nu
 highlighted and `· now: <step in progress>` (one line, cut with an ellipsis), which opens the
 dialog on its Plan tab.
 
+<a id="spec-board-compact"></a>
+
+**Compact** (a toggle in the board's tools row, on phones too) leaves key, tracker badge, title and
+the waiting-on chip on every task card, plus the "answer received" mark when a fresh answer is
+there; the "open in desktop" icon, the Review and Plan badges, the branch and the next step are
+hidden. A chevron button on a card
+(`aria-expanded`, shown only in this mode) expands just that card; a click on the card still opens
+the dialog. Both choices are kept per browser in `localStorage` (the expanded cards by task key, the
+last 200), survive live refreshes of a card or a column, and live nowhere on the server. Without
+storage they last until the page is left; in the desktop program's window (private mode) they last
+until the program quits.
+
 <a id="spec-board-dialog"></a>
 
 **Task dialog / page** shows every field (stage with note, waiting on, next step, branch, tracker,
 document path, updated time and version), description and progress in full, the latest reports
-with state and size badges (document links in the texts point at their sections,
+with state and size badges: the newest in full, older ones as an accordion whose summary is the
+report's first line with its badges, author and time, expanding to the full text (a live refresh
+or a reload of the task page keeps the opened ones, by report id, for this browser tab) (document links in the texts point at their sections,
 [§8](#spec-documents-links)), the linked document's panel, decisions, the bound session with its hook status and last activity,
 "Open in desktop" and "Copy link", the session binding history, the tracker history, an
 **Unbind session** button (with confirmation), a session picker (**Bind a session** menu, one click binds; title first, kind, id and status small: the project's sessions
@@ -712,8 +730,8 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 `project_snapshot` (its first line names the rules, like `task_context`'s rules line), and keep the
 project pulse current with `project_pulse_set`; pick or create a task and pass `session`
 (desktop id with `session_title`, else a name; `hook_session` if the session start gave one; don't
-rebind without your `local_` id); update `next_step`, `waiting_on` and `progress` on every stage
-change and report; report at the end of every stage with the configured first line, states and
+rebind without your `local_` id); update `next_step`, `waiting_on` (only who acts next: a name or role, no text
+after it; what happens goes to `next_step`) and `progress` on every stage change and report; report at the end of every stage with the configured first line, states and
 sizes (taken from the effective global rules); set `waiting_on` to who decides when a decision is
 needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (rules)` line names,
 read the rules again on a `rules updated to vN` line and change them through `rules_propose`
@@ -1917,7 +1935,10 @@ Nothing of this leaves the machine.
    server started with, not the current version, [§6](#spec-rules-hash)).
 5. **Browser session.** `/login?token=…` (or the sign-in form) sets an `HttpOnly`, `SameSite=Strict`
    cookie (`Secure` over https, one year) derived from the token and redirects, so the token leaves
-   the address bar; the access log redacts the `/login` query. Unauthenticated page visits redirect
+   the address bar. Browsers share cookies between the ports of one host, so every cookie name of the
+   board carries the port of the request's `Host` (`relaybay_session_8765`,
+   `relaybay_login_csrf_8765`, `relaybay_login_error_8765`, `relaybay_flash_8765`; no port there, the
+   plain name) and a server beside another one does not sign you out of it; the access log redacts the `/login` query. Unauthenticated page visits redirect
    to `/login?next=…` (only local paths are accepted as `next`). A Bearer header also works for the
    board's URLs, except the environment writes ([§7](#spec-environments-page)).
 6. **CSRF.** Cookie-authenticated non-GET requests must be same-origin (`Origin`, or
@@ -1952,7 +1973,7 @@ Nothing of this leaves the machine.
 **Full-page forms** (Stands & access, Settings → Policy, Settings → Integrations without htmx)
 answer a successful write with `303` to their page (POST → redirect → GET), so a refresh does not
 send the form again; the outcome ("Environment saved.", "Saved the acme-shop policy.", the check
-results) rides in a short-lived `HttpOnly`, `SameSite=Strict` cookie (`relaybay_flash`, 60 s) that
+results) rides in a short-lived `HttpOnly`, `SameSite=Strict` cookie (`relaybay_flash_<port>`, 60 s) that
 the page shows once and deletes. A refused write still renders the page with the reason, and the
 "confirm raising live" step is a rendered page whose confirmed save redirects.
 

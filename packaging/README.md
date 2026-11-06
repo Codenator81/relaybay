@@ -81,7 +81,7 @@ browser; the board window (WebKitGTK through PyGObject) is not bundled yet.
 
 `.github/workflows/desktop.yml` runs all of the above on `windows-latest`, `macos-latest` (arm64) and
 `ubuntu-22.04` for every pull request and release, then checks the frozen program (version, server
-with `/healthz` and an MCP `initialize`, the hook start-up time, `relaybay desktop --exit-after 10`)
+with `/healthz` and an MCP `initialize`, the hook start-up time, `relaybay desktop` with `/healthz` up and `--quit`)
 and the installed one (silent setup, an upgrade over the running program, an uninstall while it
 runs, the mounted disk image, `dpkg -i`). The hook is timed against a live local server (median of
 20 runs, at most 300 ms on every OS); against a dead port it must only exit 0 without output. A

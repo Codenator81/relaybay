@@ -460,6 +460,13 @@ def with_warnings(text: str, warnings: list[str]) -> str:
     return "\n".join([text, *warnings])
 
 
+def waiting_on_hint(value: object) -> list[str]:
+    """A soft note for a `waiting_on` that reads like a sentence; never a rule warning."""
+    if isinstance(value, str) and len(value.split()) > 4:
+        return ["Hint: waiting_on is who acts next; put what happens into next_step."]
+    return []
+
+
 def snapshot(snap: Snapshot, require_log: bool = False) -> str:
     p = snap.project
     lines = [rules_line(snap.rules), f"# {p.slug} — {p.name}"]

@@ -9,6 +9,8 @@
     <a class="open-desktop icon" href="{{ t.session_link }}" title="Open in desktop: {{ t.session_name }}{{ status_text }}"
        aria-label="Open {{ t.session_name }} in the Claude desktop app{{ status_text }}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"/></svg>{% if t.session_status %}<span class="status-dot dot-{{ t.session_status }}"></span>{% endif %}</a>
     {% endif %}
+    {#- Shown only in compact mode; app.js keeps its state per browser, the server never knows. #}
+    <button type="button" class="card-expand" aria-expanded="false" aria-label="Expand {{ t.key }}" title="Expand {{ t.key }}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
   </div>
   <h3 class="card-title">
     <a class="card-open" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}">{{ t.title }}</a>
@@ -37,7 +39,8 @@
   {% endif %}
   {% if (t.waiting_on and is_open) or t.branch %}
   <div class="card-meta">
-    {% if t.waiting_on and is_open %}<span class="chip waiting" title="Waiting on {{ t.waiting_on }}">waiting on {{ t.waiting_on }}</span>{% endif %}
+    {#- Who, not what: agents often append the step after a colon; the title keeps the full text. #}
+    {% if t.waiting_on and is_open %}<span class="chip waiting" title="Waiting on {{ t.waiting_on }}">waiting on {{ t.waiting_on.split(":", 1)[0].strip() or t.waiting_on }}</span>{% endif %}
     {% if t.branch %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
   </div>
   {% endif %}

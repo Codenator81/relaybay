@@ -464,3 +464,41 @@ async def test_hook_session_links_the_live_status(live_server: Callable[[], Live
         assert response.status_code == 204
     async with connect(live) as client:
         assert "waiting" in await call(client, "task_get", task="acme-shop-1")
+
+
+async def test_a_long_waiting_on_gets_a_hint_and_is_saved_as_it_is(
+    live_server: Callable[[], LiveServer],
+) -> None:
+    hint = "Hint: waiting_on is who acts next; put what happens into next_step."
+    long = "owner: accept the pull request"
+    live = live_server()
+    async with connect(live) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        for name in ("task_create", "task_update", "task_set_stage", "report_add"):
+            help_text = tools[name].input_schema["properties"]["waiting_on"]
+            assert "no text after it" in str(help_text)
+
+        await call(client, "project_upsert", slug="demo-api")
+        args = {"project": "demo-api", "title": "Rate limits"}
+        created = await call(client, "task_create", **args, waiting_on=long)
+        assert hint in created and "Warning (rules)" not in created
+        task = "demo-api-1"
+        writes = [
+            ("task_update", {"waiting_on": long}),
+            ("task_patch", {"fields": {"waiting_on": long}}),
+            ("task_set_stage", {"stage": "plan", "waiting_on": long}),
+            ("report_add", {"body": "changed · S · done", "waiting_on": long}),
+        ]
+        for tool, extra in writes:
+            assert hint in await call(client, tool, task=task, **extra), tool
+        assert f"- waiting on: {long}" in await call(client, "task_get", task=task)
+
+        # Four words, a clear, or a write without the field: no hint.
+        quiet = [
+            ("task_update", {"waiting_on": "the release team lead"}),
+            ("task_update", {"waiting_on": "-"}),
+            ("task_update", {"next_step": "one two three four five six"}),
+            ("report_add", {"body": "changed · S · again", "waiting_on": "owner"}),
+        ]
+        for tool, extra in quiet:
+            assert hint not in await call(client, tool, task=task, **extra), tool

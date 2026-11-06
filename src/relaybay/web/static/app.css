@@ -457,6 +457,33 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
   background: var(--badge-bg);
 }
 .card .open-desktop.icon:hover { border-color: var(--accent); }
+/* Compact mode (the board's toggle, on the root element of every page): task cards only, the
+   backlog's cards are `.card` too. One chevron per card brings back all. */
+.card-expand { display: none; }
+:root[data-compact] .card[data-key] .card-expand {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+:root[data-compact] .card[data-key] .card-expand:hover { border-color: var(--accent); color: var(--accent); }
+.card-expand:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.card-expand svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.card-expand[aria-expanded="true"] svg { transform: rotate(180deg); }
+:root[data-compact] .card[data-key].is-expanded .open-desktop.icon + .card-expand { margin-left: 0; }
+:root[data-compact] .card[data-key]:not(.is-expanded) :is(.open-desktop.icon, .review-chip, .plan-chip, .branch, .card-next),
+:root[data-compact] .card[data-key]:not(.is-expanded) .card-meta:not(:has(.chip.waiting)) { display: none; }
+.board-compact[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 /* Live session status from the hooks: a dot in the icon's corner. */
 .status-dot {
   position: absolute;
@@ -788,6 +815,13 @@ a.card-key:hover { color: var(--accent); }
 .history-name { font-weight: 600; }
 .report + .report { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .report-head { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.report-older + .report-older { margin-top: 6px; padding-top: 6px; }
+.report-older > summary { flex-wrap: wrap; cursor: pointer; list-style: none; }
+.report-older > summary::-webkit-details-marker { display: none; }
+.report-older > summary::before { content: "\25B8"; color: var(--muted); }
+.report-older[open] > summary::before { content: "\25BE"; }
+.report-older[open] > .markdown { margin-top: 8px; }
+.report-gist { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
 
 .unbind-form { margin: 10px 0 0; }
 .bind-picker { position: relative; display: inline-block; margin: 10px 0 0 6px; max-width: 100%; }

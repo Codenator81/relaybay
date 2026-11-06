@@ -113,14 +113,17 @@ jobs:
         run: |
           wrap=()
           if [ "$RUNNER_OS" = "Linux" ]; then wrap=(xvfb-run -a); fi
-          "${wrap[@]}" "$BIN/relaybay$EXE" desktop --exit-after 10 &
+          # --exit-after is only the backstop: a healthy run quits as soon as healthz answers.
+          "${wrap[@]}" "$BIN/relaybay$EXE" desktop --exit-after 60 &
           program=$!
           trap 'kill "$program" 2>/dev/null || true' EXIT
           up=""
-          for _ in $(seq 1 20); do
-            if curl -sf "http://127.0.0.1:$DESKTOP_PORT/healthz"; then up=yes; break; fi
+          SECONDS=0
+          while [ "$SECONDS" -lt 45 ]; do
+            if curl -sf -m 2 "http://127.0.0.1:$DESKTOP_PORT/healthz"; then up=yes; break; fi
             sleep 0.5
           done
+          if [ "$up" = yes ]; then "${wrap[@]}" "$BIN/relaybay$EXE" desktop --quit; fi
           status=0
           wait "$program" || status=$?
           trap - EXIT

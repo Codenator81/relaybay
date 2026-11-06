@@ -521,8 +521,89 @@
     }
   }
 
+  // --- what the fragments do not hold: a refresh renders every card collapsed and every older
+  // report closed, so their state lives here and is put back after each swap. Storage can be
+  // unavailable: the choice then lasts until the page is left.
+
+  var COMPACT_KEY = "relaybay.compact";  // read by nav.js before the first paint
+  var EXPANDED_KEY = "relaybay.compact.expanded";
+  var EXPANDED_MAX = 200;
+  var OPEN_REPORTS_KEY = "relaybay.reports.open";
+
+  function storedSet(area, key) {
+    try {
+      return new Set(JSON.parse(window[area].getItem(key) || "[]"));
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function storeValue(area, key, value) {
+    try { window[area].setItem(key, value); } catch (e) { /* see above */ }
+  }
+  var expandedCards = storedSet("localStorage", EXPANDED_KEY);
+  // sessionStorage: the task page reloads itself on most live events.
+  var openReports = storedSet("sessionStorage", OPEN_REPORTS_KEY);
+
+  function showCardExpanded(button, on) {
+    var card = button.closest(".card");
+    var text = (on ? "Collapse " : "Expand ") + card.dataset.key;
+    card.classList.toggle("is-expanded", on);
+    button.setAttribute("aria-expanded", on ? "true" : "false");
+    button.setAttribute("aria-label", text);
+    button.title = text;
+  }
+  function restoreKept(root) {
+    root.querySelectorAll(".card-expand").forEach(function (button) {
+      showCardExpanded(button, expandedCards.has(button.closest(".card").dataset.key));
+    });
+    root.querySelectorAll("details[data-report]").forEach(function (details) {
+      if (openReports.has(details.dataset.report)) details.open = true;
+    });
+  }
+  function toggleCard(button) {
+    var key = button.closest(".card").dataset.key;
+    var on = !expandedCards.has(key);
+    if (on) expandedCards.add(key); else expandedCards.delete(key);
+    showCardExpanded(button, on);
+    var kept = Array.from(expandedCards).slice(-EXPANDED_MAX);
+    expandedCards = new Set(kept);
+    storeValue("localStorage", EXPANDED_KEY, JSON.stringify(kept));
+  }
+  function showCompactButton() {
+    var button = document.querySelector(".board-compact");
+    if (!button) return;
+    button.setAttribute("aria-pressed", document.documentElement.dataset.compact ? "true" : "false");
+  }
+  function toggleCompact() {
+    var root = document.documentElement;
+    if (root.dataset.compact) delete root.dataset.compact; else root.dataset.compact = "1";
+    storeValue("localStorage", COMPACT_KEY, root.dataset.compact ? "1" : "0");
+    showCompactButton();
+  }
+
+  document.addEventListener("htmx:load", function (event) {
+    if (event.detail.elt.querySelectorAll) restoreKept(event.detail.elt);
+  });
+  // "toggle" does not bubble, hence the capture.
+  document.addEventListener("toggle", function (event) {
+    var details = event.target;
+    if (!details.matches || !details.matches("details[data-report]")) return;
+    if (details.open) openReports.add(details.dataset.report);
+    else openReports.delete(details.dataset.report);
+    storeValue("sessionStorage", OPEN_REPORTS_KEY, JSON.stringify(Array.from(openReports)));
+  }, true);
+
   document.addEventListener("click", function (event) {
     if (!event.target.closest) return;
+    var chevron = event.target.closest(".card-expand");
+    if (chevron) {
+      toggleCard(chevron);
+      return;
+    }
+    if (event.target.closest(".board-compact")) {
+      toggleCompact();
+      return;
+    }
     var button = event.target.closest(".copy-link");
     if (button) {
       event.preventDefault();
@@ -862,6 +943,8 @@
   setupDialog();
   setupViewer();
   showNotifyState();
+  showCompactButton();
+  restoreKept(document);
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") reconnect();
   });
