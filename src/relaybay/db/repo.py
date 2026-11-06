@@ -9,7 +9,7 @@ from typing import Any
 import aiosqlite
 
 from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
-from relaybay.domain.backlog import BacklogItem
+from relaybay.domain.backlog import UNASSIGNED, BacklogItem
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -3588,6 +3588,8 @@ def _backlog(row: aiosqlite.Row) -> BacklogItem:
         decided_by=row["decided_by"],
         created_at=row["created_at"],
         created_by=row["created_by"],
+        priority=row["priority"],
+        assignee=row["assignee"],
     )
 
 
@@ -3619,11 +3621,13 @@ async def list_backlog(
     project_id: int | None = None,
     status: str | None = None,
     area: str | None = None,
+    assignee: str | None = None,
     origin_task_id: int | None = None,
     task_id: int | None = None,
     limit: int = 200,
 ) -> list[BacklogItem]:
-    """`new` first, then later, planned and done, declined; newest first within a status."""
+    """`new` first, then later, planned and done, declined; within a status the highest priority
+    first, then the newest. `assignee` "-" means items that are for nobody."""
     where, params = [], []
     for column, value in (
         ("b.project_id", project_id),
@@ -3637,10 +3641,15 @@ async def list_backlog(
     if area is not None:
         where.append("b.area = ? COLLATE NOCASE")
         params.append(area)
+    if assignee == UNASSIGNED:
+        where.append("b.assignee IS NULL")
+    elif assignee is not None:
+        where.append("b.assignee = ? COLLATE NOCASE")
+        params.append(assignee)
     sql = _BACKLOG_SELECT + (" WHERE " + " AND ".join(where) if where else "")
     order = (
         " ORDER BY CASE b.status WHEN 'new' THEN 0 WHEN 'later' THEN 1 WHEN 'planned' THEN 2"
-        " WHEN 'done' THEN 2 ELSE 3 END, b.id DESC LIMIT ?"
+        " WHEN 'done' THEN 2 ELSE 3 END, b.priority DESC, b.id DESC LIMIT ?"
     )
     return [_backlog(r) for r in await _all(conn, sql + order, (*params, limit))]
 
@@ -3660,6 +3669,18 @@ async def backlog_areas(conn: aiosqlite.Connection, project_id: int | None) -> l
     rows = await _all(
         conn,
         f"SELECT DISTINCT area FROM backlog_item WHERE area IS NOT NULL{where} ORDER BY area",
+        params,
+    )
+    return [r[0] for r in rows]
+
+
+async def backlog_assignees(conn: aiosqlite.Connection, project_id: int | None) -> list[str]:
+    where = " AND project_id = ?" if project_id is not None else ""
+    params = (project_id,) if project_id is not None else ()
+    rows = await _all(
+        conn,
+        f"SELECT assignee FROM backlog_item WHERE assignee IS NOT NULL{where}"
+        " GROUP BY assignee COLLATE NOCASE ORDER BY assignee COLLATE NOCASE",
         params,
     )
     return [r[0] for r in rows]

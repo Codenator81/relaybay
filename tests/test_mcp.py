@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "decision_add",
     "events_since",
     "rules_get",
+    "backlog_patch",
 }
 
 

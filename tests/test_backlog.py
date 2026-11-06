@@ -13,9 +13,15 @@ from starlette.testclient import TestClient
 from relaybay.db.connection import connect
 from relaybay.domain.backlog import parse_decision, title_slug
 from relaybay.domain.errors import ValidationError
-from relaybay.domain.markdown_layout import BACKLOG, Aliases, backlog_meaning, parse_backlog
+from relaybay.domain.markdown_layout import (
+    BACKLOG,
+    Aliases,
+    backlog_meaning,
+    parse_backlog,
+    text_hash,
+)
 from relaybay.markdown_export import gather
-from relaybay.markdown_import import apply_plan, make_plan
+from relaybay.markdown_import import _decision_detail, apply_plan, backlog_hash, make_plan
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, LiveServer, run_in_app
@@ -526,3 +532,294 @@ async def test_an_import_update_of_a_done_row_keeps_its_note(svc: Service, tmp_p
         PR,
         "fixed with the cart work",
     )
+
+
+# --- priority and assignee -----------------------------------------------------------------
+
+
+async def test_priority_orders_within_a_status_and_assignee_filters(svc: Service) -> None:
+    low = await svc.add_backlog_item("acme-shop", "Low", session="dev")
+    high = await svc.add_backlog_item(
+        "acme-shop", "High", session="dev", priority=5, assignee="Reviewer"
+    )
+    newest = await svc.add_backlog_item("acme-shop", "Newest", session="dev")
+    later = await svc.add_backlog_item("acme-shop", "Later", session="dev", priority=9)
+    await svc.update_backlog_item(later.id, status="later", session="lead")
+    assert [b.id for b in await svc.list_backlog(project="acme-shop")] == [
+        high.id,
+        newest.id,
+        low.id,
+        later.id,
+    ]
+    assert (high.priority, high.assignee, low.priority, low.assignee) == (5, "Reviewer", 0, None)
+    assert [b.id for b in await svc.list_backlog(assignee="reviewer")] == [high.id]
+    assert high.id not in [b.id for b in await svc.list_backlog(assignee="-")]
+    assert low.id in [b.id for b in await svc.list_backlog(assignee="-")]
+    assert await svc.backlog_assignees("acme-shop") == ["Reviewer"]
+
+
+@pytest.mark.parametrize("bad", [10, -10, "high", 1.5, True, "12345"])
+async def test_priority_is_a_small_whole_number(svc: Service, bad: object) -> None:
+    with pytest.raises(ValidationError, match="priority must be"):
+        await svc.add_backlog_item("acme-shop", "Badge", priority=bad)
+    item = await svc.add_backlog_item("acme-shop", "Badge", session="dev")
+    with pytest.raises(ValidationError, match="priority must be"):
+        await svc.update_backlog_item(item.id, priority=bad, session="dev")
+
+
+async def test_assignee_is_limited_and_scanned(svc: Service) -> None:
+    with pytest.raises(ValidationError, match="longer than 100"):
+        await svc.add_backlog_item("acme-shop", "Badge", assignee="x" * 101)
+    with pytest.raises(ValidationError, match="secret"):
+        await svc.add_backlog_item("acme-shop", "Badge", assignee="ghp_" + "Ab12" * 8)
+
+
+async def test_only_the_adder_changes_the_queue_fields_of_a_new_item(svc: Service) -> None:
+    item = await svc.add_backlog_item("acme-shop", "Badge", session="dev")
+    saved = await svc.update_backlog_item(item.id, priority=3, assignee="qa", session="dev")
+    assert (saved.priority, saved.assignee) == (3, "qa")
+    cleared = await svc.update_backlog_item(item.id, priority=0, assignee="", session="dev")
+    assert (cleared.priority, cleared.assignee) == (0, None)
+    for fields in ({"priority": 1}, {"assignee": "me"}):
+        with pytest.raises(ValidationError, match="Only the session that added"):
+            await svc.update_backlog_item(item.id, session="someone-else", **fields)
+    await svc.update_backlog_item(item.id, status="later", session="lead")
+    with pytest.raises(ValidationError, match="while it is new"):
+        await svc.update_backlog_item(item.id, priority=1, session="dev")
+    # A coordinator orders any item, whoever added it.
+    ordered = await svc.update_backlog_item(item.id, priority=4, assignee="qa", session="lead")
+    assert (ordered.priority, ordered.assignee, ordered.status) == (4, "qa", "later")
+
+
+async def test_to_plan_takes_the_priority_and_the_assignee(svc: Service) -> None:
+    item = await svc.add_backlog_item(
+        "acme-shop", "Badge", priority=4, assignee="qa", by_owner=True
+    )
+    plain = await svc.add_backlog_item("acme-shop", "Plain", by_owner=True)
+    task = await svc.get_task((await svc.decide_backlog(item.id, "plan")).task_key)
+    assert (task.priority, task.waiting_on) == (4, "qa")
+    other = await svc.get_task((await svc.decide_backlog(plain.id, "plan")).task_key)
+    assert (other.priority, other.waiting_on) == (0, None)
+
+
+async def test_board_queue_write_records_only_a_change(svc: Service) -> None:
+    item = await svc.add_backlog_item("acme-shop", "Badge", by_owner=True)
+    before = await svc.last_event_id()
+    await svc.set_backlog_queue(item.id, "0", "")
+    assert await svc.last_event_id() == before
+    saved = await svc.set_backlog_queue(item.id, "2", "qa")
+    assert (saved.priority, saved.assignee) == (2, "qa")
+    assert await svc.last_event_id() == before + 1
+    with pytest.raises(ValidationError, match="secret"):
+        await svc.set_backlog_queue(item.id, "2", "ghp_" + "Ab12" * 8)
+    await svc.decide_backlog(item.id, "plan")
+    with pytest.raises(ValidationError, match="planned as"):
+        await svc.set_backlog_queue(item.id, "3", "qa")
+
+
+async def test_mcp_backlog_queue_and_patch(live_server: Callable[[], LiveServer]) -> None:
+    live = live_server()
+    async with mcp_connect(live) as client:
+        await call(client, "project_upsert", slug="acme-shop")
+        added = await call(
+            client,
+            "backlog_add",
+            project="acme-shop",
+            title="Badge",
+            priority=2,
+            assignee="qa",
+            session="dev",
+        )
+        assert "Added backlog item #1 in acme-shop: Badge (new, priority 2, for qa)" in added
+        await call(client, "backlog_add", project="acme-shop", title="Other", session="dev")
+        listed = await call(client, "backlog_list", project="acme-shop", assignee="qa")
+        assert "#1 acme-shop Badge · priority 2 · for qa · session by dev · new" in listed
+        assert "Other" not in listed
+        nobody = await call(client, "backlog_list", project="acme-shop", assignee="-")
+        assert "Other" in nobody and "Badge" not in nobody
+        too_big = await client.call_tool(
+            "backlog_update", {"item": 1, "priority": 10, "session": "dev"}
+        )
+        assert too_big.is_error
+        updated = await call(client, "backlog_update", item=1, assignee="-", session="dev")
+        assert "(new, priority 2)" in updated
+
+        patched = await call(
+            client,
+            "backlog_patch",
+            item=1,
+            fields={"priority": 3, "assignee": "qa", "area": "cart"},
+            session="dev",
+        )
+        assert "(new, priority 3, for qa)" in patched
+        reset = await call(
+            client,
+            "backlog_patch",
+            item=1,
+            fields={"priority": None, "assignee": "-"},
+            session="dev",
+        )
+        assert "Badge (new)" in reset
+        for fields, message in (
+            ({}, "Nothing to update"),
+            ({"owner": "x"}, "Unknown backlog fields: owner"),
+            ({"title": 7}, "title must be text"),
+            ({"priority": "high"}, "priority must be"),
+            ({"status": "later"}, "coordinator"),
+        ):
+            refused = await client.call_tool(
+                "backlog_patch", {"item": 1, "fields": fields, "session": "dev"}
+            )
+            assert refused.is_error and message in refused.content[0].text, fields
+        other = await client.call_tool(
+            "backlog_patch", {"item": 1, "fields": {"priority": 1}, "session": "someone-else"}
+        )
+        assert other.is_error and "Only the session that added" in other.content[0].text
+
+
+def test_board_sets_priority_and_assignee_and_filters(board: TestClient, token: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop")
+    item = run_in_app(board, service.add_backlog_item, "acme-shop", "Badge", by_owner=True)
+    other = run_in_app(board, service.add_backlog_item, "acme-shop", "Other", by_owner=True)
+    url = f"/backlog/{item.id}/queue"
+    csrf = {"csrf_token": csrf_token(token)}
+    assert board.post(url, data={"priority": "3"}, headers=FORM).status_code == 403
+    bearer = {**FORM, "Authorization": f"Bearer {token}"}
+    assert board.post(url, data={**csrf, "priority": "3"}, headers=bearer).status_code == 403
+    hostile = "<img src=x onerror=alert(1)>"
+    saved = board.post(
+        url,
+        data={**csrf, "priority": "3", "assignee": hostile, "back": "/p/acme-shop/backlog"},
+        headers=FORM,
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303 and saved.headers["location"].startswith("/p/acme-shop/backlog")
+    page = board.get("/p/acme-shop/backlog").text
+    assert hostile not in page and "for &lt;img" in page and "priority 3" in page
+    assert page.index(f'id="backlog-{item.id}"') < page.index(f'id="backlog-{other.id}"')
+    assert f'action="/backlog/{item.id}/queue"' in page and 'name="assignee"' in page
+
+    board.post(url, data={**csrf, "priority": "3", "assignee": "qa"}, headers=FORM)
+    for query, shown, hidden in (("qa", item, other), ("-", other, item)):
+        listed = board.get("/p/acme-shop/backlog", params={"assignee": query}).text
+        assert f'id="backlog-{shown.id}"' in listed and f'id="backlog-{hidden.id}"' not in listed
+    fragment = board.get("/fragments/backlog", params={"project": "acme-shop", "assignee": "qa"})
+    assert f'id="backlog-{other.id}"' not in fragment.text and "assignee=qa" in fragment.text
+
+    bad = board.post(url, data={**csrf, "priority": "12"}, headers=FORM, follow_redirects=False)
+    assert bad.status_code == 303
+    assert "priority must be" in board.get("/backlog").text
+    assert run_in_app(board, service.backlog_item, item.id).priority == 3
+    # `queue` is not a decision: the other routes still answer as before.
+    assert board.post(f"/backlog/{item.id}/nope", data=csrf, headers=FORM).status_code == 404
+
+
+def _queue_table(*rows: str) -> str:
+    return (
+        "| date | project | area | what | origin | decision | priority | for |\n"
+        "|---|---|---|---|---|---|---|---|\n" + "".join(rows)
+    )
+
+
+async def test_backlog_md_carries_priority_and_assignee(svc: Service, tmp_path: Path) -> None:
+    root = tmp_path / "setup"
+    root.mkdir()
+    (root / BACKLOG).write_text(
+        _queue_table(
+            "| 2026-10-11 | acme-shop | cart | Badge | session | | 3 | qa |\n",
+            "| 2026-10-12 | acme-shop | cart | Plain | session | | | |\n",
+            "| 2026-10-13 | acme-shop | cart | Too big | session | | 12 | |\n",
+            "| 2026-10-14 | acme-shop | cart | Wordy | session | | high | |\n",
+            "| 2026-10-15 | acme-shop | cart | Key | session | | | ghp_" + "Ab12" * 8 + " |\n",
+        ),
+        encoding="utf-8",
+    )
+    plan = await make_plan(svc, root)
+    actions = {i.item.rsplit("/", 1)[1]: i.action for i in plan.items if i.kind == "backlog"}
+    assert actions == {
+        "badge": "add",
+        "plain": "add",
+        "too-big": "error",
+        "wordy": "error",
+        "key": "refused",
+    }
+    await apply_plan(svc, plan)
+    by_title = {b.title: b for b in await svc.list_backlog()}
+    assert (by_title["Badge"].priority, by_title["Badge"].assignee) == (3, "qa")
+    assert (by_title["Plain"].priority, by_title["Plain"].assignee) == (0, None)
+
+    exported = (await gather(svc))[0][BACKLOG].text
+    assert "| what | origin | decision | priority | assignee |" in exported
+    assert "| 3 | qa |" in exported
+    (root / BACKLOG).write_text(exported, encoding="utf-8")
+    again = await make_plan(svc, root)
+    assert {i.action for i in again.items if i.kind == "backlog"} == {"unchanged"}
+    await apply_plan(svc, again)
+    assert (await svc.backlog_item(by_title["Badge"].id)).priority == 3
+
+    # A changed cell updates; an empty one resets.
+    (root / BACKLOG).write_text(exported.replace("| 3 | qa |", "| | |"), encoding="utf-8")
+    changed = await make_plan(svc, root)
+    assert [i.action for i in changed.items if i.kind == "backlog" and "badge" in i.item] == [
+        "update"
+    ]
+    await apply_plan(svc, changed)
+    saved = await svc.backlog_item(by_title["Badge"].id)
+    assert (saved.priority, saved.assignee) == (0, None)
+
+
+async def test_a_file_without_the_new_columns_keeps_stored_values(
+    svc: Service, tmp_path: Path
+) -> None:
+    root = tmp_path / "setup"
+    root.mkdir()
+    header = "| date | project | area | what | origin | decision |\n|---|---|---|---|---|---|\n"
+    row = "| 2026-10-11 | acme-shop | {area} | Badge | session | |\n"
+    (root / BACKLOG).write_text(header + row.format(area="cart"), encoding="utf-8")
+    await apply_plan(svc, await make_plan(svc, root))
+    [item] = await svc.list_backlog()
+    await svc.set_backlog_queue(item.id, 4, "qa")
+    plan = await make_plan(svc, root)
+    assert [i.action for i in plan.items if i.kind == "backlog"] == ["unchanged"]
+    await apply_plan(svc, plan)
+    # With that recorded, a real change in the old file updates the row and keeps both values.
+    (root / BACKLOG).write_text(header + row.format(area="checkout"), encoding="utf-8")
+    plan = await make_plan(svc, root)
+    assert [i.action for i in plan.items if i.kind == "backlog"] == ["update"]
+    await apply_plan(svc, plan)
+    saved = await svc.backlog_item(item.id)
+    assert (saved.area, saved.priority, saved.assignee) == ("checkout", 4, "qa")
+
+
+async def test_items_tracked_before_the_new_columns_are_not_conflicts(
+    svc: Service, tmp_path: Path
+) -> None:
+    root = tmp_path / "setup"
+    root.mkdir()
+    (root / BACKLOG).write_text(SETUP_BACKLOG.read_text(encoding="utf-8"), encoding="utf-8")
+    await apply_plan(svc, await make_plan(svc, root))
+    # An item at its defaults keeps the fingerprint an older release stored for it...
+    for item in await svc.list_backlog():
+        detail = _decision_detail(item.status, item.decline_reason, item.link)
+        assert backlog_hash(item) == text_hash(
+            item.title, item.area, item.origin, item.status, detail
+        )
+    # ...and an old file means the same as the new export.
+    wanted = (await gather(svc))[0][BACKLOG].text
+    old = (root / BACKLOG).read_text(encoding="utf-8")
+    assert backlog_meaning(old, Aliases()) == backlog_meaning(wanted, Aliases())
+
+
+def test_older_backlog_files_still_parse_through_aliases() -> None:
+    text = (
+        "| Created | Project | Title | Source | Status | Prio | Assigned |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| 2026-10-02 | acme-shop | Slot | session | later | 2 | qa |\n"
+    )
+    [row], warnings = parse_backlog(text, Aliases())
+    assert not warnings
+    assert (row.title, row.decision, row.priority, row.assignee) == ("Slot", "later", "2", "qa")
+    plain = "| date | project | what |\n|---|---|---|\n| 2026-10-02 | acme-shop | Slot |\n"
+    [old], _ = parse_backlog(plain, Aliases())
+    assert (old.priority, old.assignee) == (None, None)

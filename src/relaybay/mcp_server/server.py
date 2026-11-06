@@ -15,6 +15,7 @@ from pydantic import Field
 from starlette.routing import BaseRoute
 
 from relaybay import __version__
+from relaybay.domain import backlog
 from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
 from relaybay.mcp_server import format as fmt
@@ -158,6 +159,20 @@ PROGRESS_HELP = (
     "Markdown summary of everything done so far on the task (not just the last step). Rewrite"
     " it as the work goes on and keep it current with every report."
 )
+
+
+BacklogPriority = Annotated[
+    int | None,
+    Field(
+        ge=backlog.PRIORITY_MIN,
+        le=backlog.PRIORITY_MAX,
+        description="-9 to 9, higher first; 0 is the default and resets it.",
+    ),
+]
+BacklogAssignee = Annotated[
+    str | None,
+    Field(description="Who it is for, a name or a role: To plan makes it waiting_on." + CLEARS),
+]
 
 
 def cleared(value: str | None) -> str | None:
@@ -1280,6 +1295,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         task: Annotated[
             str | None, Field(description="The task you found it in. Optional.")
         ] = None,
+        priority: BacklogPriority = None,
+        assignee: BacklogAssignee = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -1294,6 +1311,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 body=cleared(body),
                 area=cleared(area),
                 task=task or None,
+                priority=priority,
+                assignee=cleared(assignee),
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
@@ -1309,11 +1328,17 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             Field(description="new, later, planned, done or declined. Optional."),
         ] = None,
         area: Annotated[str | None, Field(description="Area. Optional.")] = None,
+        assignee: Annotated[
+            str | None,
+            Field(description="Who it is for; '-' lists the items for nobody. Optional."),
+        ] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="At most this many.")] = 50,
     ) -> str:
-        """Backlog items, new first."""
+        """Backlog items: new first, the highest priority first within a status, then newest."""
         items = await run(
-            service.list_backlog(project=project, status=status, area=area, limit=limit)
+            service.list_backlog(
+                project=project, status=status, area=area, assignee=assignee, limit=limit
+            )
         )
         return fmt.backlog_items(items)
 
@@ -1338,13 +1363,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         title: Annotated[str | None, Field(description="New title.")] = None,
         body: Annotated[str | None, Field(description="New body, markdown." + CLEARS)] = None,
         area: Annotated[str | None, Field(description="New area." + CLEARS)] = None,
+        priority: BacklogPriority = None,
+        assignee: BacklogAssignee = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Change a backlog item. Its title, body and area: the session that added it, while it
-        is new. Its status: coordinator sessions named in the server's config only; everyone
-        else leaves that to the owner on the board."""
+        """Change a backlog item. Its title, body, area, priority and assignee: the session that
+        added it, while it is new. Its status: coordinator sessions named in the server's config
+        only; everyone else leaves that to the owner on the board."""
         saved = await run(
             service.update_backlog_item(
                 item,
@@ -1354,6 +1381,54 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 title=title,
                 body=cleared(body),
                 area=cleared(area),
+                priority=priority,
+                assignee=cleared(assignee),
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.backlog_saved(saved, "Updated")
+
+    @write
+    async def backlog_patch(
+        item: Annotated[int, Field(description="The item's number, e.g. 7.")],
+        fields: Annotated[
+            dict[str, Any],
+            Field(
+                description='Item fields to change as one JSON object, e.g. {"priority": 2}.'
+                f" Allowed: {', '.join(backlog.PATCH_FIELDS)}. '-', '' or null clears body, area"
+                " and assignee, and resets priority to 0."
+            ),
+        ],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Change any backlog item fields given as one JSON object, with the same rules as
+        backlog_update. Use it for a field your client's backlog_update does not offer yet: its
+        parameter list may be older than the server."""
+        if not fields:
+            raise ToolError("Nothing to update: pass at least one field in `fields`.")
+        unknown = sorted(set(fields) - set(backlog.PATCH_FIELDS))
+        if unknown:
+            raise ToolError(
+                f"Unknown backlog fields: {', '.join(unknown)}."
+                f" Allowed: {', '.join(backlog.PATCH_FIELDS)}."
+            )
+        changes: dict[str, Any] = {}
+        for name, value in fields.items():
+            if not isinstance(value, str | None) and name != "priority":
+                raise ToolError(f"{name} must be text.")
+            changes[name] = (
+                "" if value is None else cleared(value) if isinstance(value, str) else value
+            )
+        if "link" in changes:
+            changes["link"] = changes["link"] or None
+        saved = await run(
+            service.update_backlog_item(
+                item,
+                **changes,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,

@@ -4,6 +4,7 @@ backlog item is not a task and not a stage; "To plan" on the board turns it into
 import hashlib
 import re
 from dataclasses import dataclass
+from typing import Any
 
 STATUSES = ("new", "later", "planned", "done", "declined")
 OPEN_STATUSES = ("new", "later")
@@ -17,6 +18,12 @@ REASON_MAX = 500
 LINK_MAX = 500
 LINK_RE = re.compile(r"https?://[^\s<>\"'|]+", re.IGNORECASE)  # use fullmatch
 LIST_MAX = 500
+ASSIGNEE_MAX = 100
+PRIORITY_MIN = -9
+PRIORITY_MAX = 9
+UNASSIGNED = "-"  # the assignee filter's value for items that are for nobody yet
+# What backlog_patch takes: the parameters of backlog_update.
+PATCH_FIELDS = ("status", "reason", "link", "title", "body", "area", "priority", "assignee")
 FROM_BACKLOG = "From backlog #{id}"
 
 
@@ -44,6 +51,8 @@ class BacklogItem:
     decided_by: str | None
     created_at: str
     created_by: str
+    priority: int = 0  # higher first within a status
+    assignee: str | None = None  # who it is for; "To plan" makes it the task's waiting_on
 
     @property
     def decision(self) -> str:
@@ -79,6 +88,20 @@ def parse_decision(text: str) -> tuple[str, str | None]:
         f"unknown decision {value!r}: use planned, later, done, 'done: <link>',"
         " 'declined: <reason>' or empty"
     )
+
+
+def parse_priority(value: Any) -> int:
+    """A priority from a form, a JSON value or a backlog.md cell; empty means 0. ValueError names
+    what is wrong."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return 0
+    if isinstance(value, bool) or not re.fullmatch(r"[+-]?\d{1,4}", text):
+        raise ValueError(f"priority must be a whole number, got {value!r}")
+    number = int(text)
+    if not PRIORITY_MIN <= number <= PRIORITY_MAX:
+        raise ValueError(f"priority must be from {PRIORITY_MIN} to {PRIORITY_MAX}, got {number}")
+    return number
 
 
 def title_slug(title: str) -> str:

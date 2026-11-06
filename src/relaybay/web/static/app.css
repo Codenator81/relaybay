@@ -1602,7 +1602,7 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .backlog-list { display: grid; gap: 10px; margin: 0 0 16px; }
 .backlog-card {
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "head actions" "meta actions" "body actions";
+  grid-template-areas: "head actions" "meta actions" "queue actions" "body actions";
   column-gap: 16px;
 }
 .backlog-card:hover { border-color: var(--border); }
@@ -1626,6 +1626,10 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .backlog-status.status-new { color: var(--accent); border-color: var(--accent); }
 .backlog-status.status-planned, .backlog-status.status-done { color: var(--ok); border-color: var(--ok); }
 .backlog-status.status-declined { color: var(--bad); border-color: var(--bad); }
+.backlog-queue { grid-area: queue; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; font-size: 13px; color: var(--muted); }
+.backlog-queue label { display: inline-flex; align-items: center; gap: 6px; }
+.backlog-queue input { width: 150px; max-width: 100%; }
+.backlog-queue .btn { padding: 3px 10px; font-size: 13px; }
 .backlog-body { grid-area: body; font-size: 13px; }
 .backlog-body > summary { cursor: pointer; }
 /* The actions as one pill group: the primary filled, the rest quiet until hovered. */
@@ -1665,7 +1669,7 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .backlog-history .backlog-list { margin: 10px 0 0; }
 .intake-row .form-actions { flex-wrap: wrap; }
 @media (max-width: 760px) {
-  .backlog-card { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "meta" "body" "actions"; }
+  .backlog-card { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "meta" "queue" "body" "actions"; }
   .backlog-actions { justify-self: start; flex-wrap: wrap; }
   .backlog-actions .bind-menu { left: 0; right: auto; }
 }

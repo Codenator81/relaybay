@@ -13,6 +13,8 @@
     <time class="muted" datetime="{{ b.created_at }}">{{ b.created_at[:10] }}</time>
     {% if not backlog_project %}<a class="backlog-project" href="/p/{{ b.project_slug }}/backlog">{{ b.project_slug }}</a>{% endif %}
     {% if b.area %}<span class="chip backlog-area">{{ b.area }}</span>{% endif %}
+    {% if b.priority %}<span class="backlog-status backlog-priority">priority {{ b.priority }}</span>{% endif %}
+    {% if b.assignee %}<span class="backlog-status backlog-for">for {{ b.assignee }}</span>{% endif %}
     <span class="backlog-origin muted">{{ b.origin }}
       {%- if b.origin_task_key %} · <a href="/p/{{ b.project_slug }}?task={{ b.origin_task_key }}">{{ b.origin_task_key }}</a>{% if b.origin_task_stage %} <span class="stage-pill stage-{{ b.origin_task_stage }}">{{ label(b.origin_task_stage) }}</span>{% endif %}{% endif %}
       {%- if b.origin_session_name %} · <a href="/sessions">{{ b.origin_session_name }}</a>{% endif %}
@@ -26,6 +28,14 @@
   {#- An intake item's body is external text: plain text, never markdown. #}
   {% if b.body_md %}<details class="backlog-body"><summary class="muted">what</summary>{% if b.origin == "intake" %}<p class="intake-text">{{ b.body_md }}</p>{% else %}<div class="markdown">{{ b.body_md|markdown }}</div>{% endif %}</details>{% endif %}
   {% if actions %}
+  <form class="backlog-queue" method="post" action="/backlog/{{ b.id }}/queue">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}"><input type="hidden" name="back" value="{{ back }}">
+    <label>Priority
+      <select name="priority">{% for p in range(9, -10, -1) %}<option value="{{ p }}"{% if p == b.priority %} selected{% endif %}>{{ p }}</option>{% endfor %}</select>
+    </label>
+    <label>For <input name="assignee" value="{{ b.assignee or '' }}" maxlength="100" list="backlog-assignees" placeholder="nobody yet"></label>
+    <button type="submit" class="btn">Save</button>
+  </form>
   <div class="backlog-actions">
     <form method="post" action="/backlog/{{ b.id }}/plan" data-confirm="Create a task in {{ label('plan') }} from #{{ b.id }} {{ b.title }}?">
       <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}"><input type="hidden" name="back" value="{{ back }}">

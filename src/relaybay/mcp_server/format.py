@@ -1132,6 +1132,11 @@ def intake_sources(items: list[IntakeSource]) -> str:
     return "\n".join(lines)
 
 
+def _backlog_queue(b: BacklogItem) -> list[str]:
+    parts = [f"priority {b.priority}"] if b.priority else []
+    return parts + ([f"for {b.assignee}"] if b.assignee else [])
+
+
 def backlog_line(b: BacklogItem) -> str:
     area = f" [{b.area}]" if b.area else ""
     origin = b.origin
@@ -1146,14 +1151,21 @@ def backlog_line(b: BacklogItem) -> str:
         status += f" ({b.link})"
     if b.task_key:
         status += f" as {b.task_key}"
-    return f"#{b.id} {b.project_slug}{area} {b.title} · {origin} · {status} · {b.created_at[:10]}"
+    queue = "".join(f"{part} · " for part in _backlog_queue(b))
+    return (
+        f"#{b.id} {b.project_slug}{area} {b.title} · {queue}{origin} · {status}"
+        f" · {b.created_at[:10]}"
+    )
 
 
 def backlog_items(items: list[BacklogItem]) -> str:
     if not items:
         return "No backlog items."
-    return "\n".join(["# Backlog (new first)", *(f"- {backlog_line(b)}" for b in items)])
+    return "\n".join(
+        ["# Backlog (new first, then by priority)", *(f"- {backlog_line(b)}" for b in items)]
+    )
 
 
 def backlog_saved(item: BacklogItem, verb: str) -> str:
-    return f"{verb} backlog item #{item.id} in {item.project_slug}: {item.title} ({item.status})."
+    state = ", ".join([item.status, *_backlog_queue(item)])
+    return f"{verb} backlog item #{item.id} in {item.project_slug}: {item.title} ({state})."

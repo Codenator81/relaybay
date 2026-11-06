@@ -50,6 +50,7 @@ descriptions clients receive. How to use them together: [MCP tools](../mcp-tools
 | [`backlog_add`](#backlog_add) | write |
 | [`backlog_list`](#backlog_list) | read |
 | [`backlog_update`](#backlog_update) | write |
+| [`backlog_patch`](#backlog_patch) | write |
 | [`rules_get`](#rules_get) | read |
 | [`rules_update`](#rules_update) | write |
 | [`rules_propose`](#rules_propose) | write |
@@ -559,24 +560,27 @@ Put a finding outside your task (a bug, a missing feature, a question for later)
 | `body` | string or null | no | What and why, markdown. |
 | `area` | string or null | no | Free area, e.g. 'checkout' or 'board'. |
 | `task` | string or null | no | The task you found it in. Optional. |
+| `priority` | integer or null | no | -9 to 9, higher first; 0 is the default and resets it. |
+| `assignee` | string or null | no | Who it is for, a name or a role: To plan makes it waiting_on. '-' or '' clears it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `backlog_list`
 
-Backlog items, new first.
+Backlog items: new first, the highest priority first within a status, then newest.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | string or null | no | Project slug. Optional. |
 | `status` | string or null | no | new, later, planned, done or declined. Optional. |
 | `area` | string or null | no | Area. Optional. |
+| `assignee` | string or null | no | Who it is for; '-' lists the items for nobody. Optional. |
 | `limit` | integer | no | At most this many. Default: `50`. |
 
 ### `backlog_update`
 
-Change a backlog item. Its title, body and area: the session that added it, while it is new. Its status: coordinator sessions named in the server's config only; everyone else leaves that to the owner on the board.
+Change a backlog item. Its title, body, area, priority and assignee: the session that added it, while it is new. Its status: coordinator sessions named in the server's config only; everyone else leaves that to the owner on the board.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -587,6 +591,20 @@ Change a backlog item. Its title, body and area: the session that added it, whil
 | `title` | string or null | no | New title. |
 | `body` | string or null | no | New body, markdown. '-' or '' clears it. |
 | `area` | string or null | no | New area. '-' or '' clears it. |
+| `priority` | integer or null | no | -9 to 9, higher first; 0 is the default and resets it. |
+| `assignee` | string or null | no | Who it is for, a name or a role: To plan makes it waiting_on. '-' or '' clears it. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `backlog_patch`
+
+Change any backlog item fields given as one JSON object, with the same rules as backlog_update. Use it for a field your client's backlog_update does not offer yet: its parameter list may be older than the server.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `item` | integer | yes | The item's number, e.g. 7. |
+| `fields` | object | yes | Item fields to change as one JSON object, e.g. {"priority": 2}. Allowed: status, reason, link, title, body, area, priority, assignee. '-', '' or null clears body, area and assignee, and resets priority to 0. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

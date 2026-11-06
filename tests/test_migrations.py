@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 23
+LATEST = 24
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -244,6 +244,54 @@ async def test_upgrade_from_0007_adds_comments(tmp_path: Path) -> None:
 
     conn = await connect(db)
     try:
+        assert await migrate(conn) == LATEST
+    finally:
+        await conn.close()
+
+
+async def test_upgrade_from_0023_adds_backlog_priority_and_assignee(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    folder = resources.files("relaybay.db").joinpath("migrations")
+    names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0024")
+    sql = "\n".join(folder.joinpath(n).read_text(encoding="utf-8") for n in names)
+    conn = await connect(db)
+    try:
+        await conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = 23;\nCOMMIT;")
+        await conn.execute(
+            "INSERT INTO project (slug, name, task_seq, created_at, updated_at)"
+            " VALUES ('acme-shop', 'Acme Shop', 0, ?, ?)",
+            (NOW, NOW),
+        )
+        await conn.execute(
+            "INSERT INTO backlog_item (project_id, title, area, origin, status, link, created_at,"
+            " created_by) VALUES (1, 'Badge', 'cart', 'owner', 'done', 'https://x.test/1', ?,"
+            " 'owner')",
+            (NOW,),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        [kept] = await svc.list_backlog()
+        assert (kept.title, kept.area, kept.status, kept.link) == (
+            "Badge",
+            "cart",
+            "done",
+            "https://x.test/1",
+        )
+        assert (kept.priority, kept.assignee) == (0, None)
+        saved = await svc.set_backlog_queue(kept.id, 2, "qa")
+        assert (saved.priority, saved.assignee) == (2, "qa")
+    finally:
+        await svc.close()
+
+    conn = await connect(db)
+    try:
+        async with conn.execute("PRAGMA index_list(backlog_item)") as cur:
+            assert "backlog_item_queue" in {row[1] for row in await cur.fetchall()}
         assert await migrate(conn) == LATEST
     finally:
         await conn.close()

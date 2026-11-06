@@ -23,6 +23,7 @@ from tests.test_comments import context_of, fire, linked_task
 from tests.test_hooks import CC_A, CWD, DESKTOP_A
 from tests.test_mcp import call
 from tests.test_mcp import connect as mcp_connect
+from tests.test_migrations import LATEST
 
 FORM = {"Origin": BASE}
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "intake"
@@ -583,7 +584,7 @@ async def test_upgrade_from_0020_with_data(tmp_path: Path) -> None:
         await service.close()
     conn = await connect(db)
     try:
-        assert await migrate(conn) == 23
+        assert await migrate(conn) == LATEST
     finally:
         await conn.close()
 

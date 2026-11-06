@@ -16,6 +16,13 @@
     </select>
     <input class="board-filter" type="search" name="area" value="{{ area_filter }}" maxlength="60" placeholder="Area" aria-label="Area" list="backlog-areas">
     <datalist id="backlog-areas">{% for a in areas %}<option value="{{ a }}"></option>{% endfor %}</datalist>
+    <select class="board-filter" name="assignee" aria-label="For">
+      <option value="">For anyone</option>
+      <option value="-"{% if assignee_filter == "-" %} selected{% endif %}>For nobody yet</option>
+      {% for a in assignees %}<option value="{{ a }}"{% if a|lower == assignee_filter|lower %} selected{% endif %}>For {{ a }}</option>{% endfor %}
+      {% if assignee_filter and assignee_filter != "-" and assignee_filter|lower not in assignees|map("lower")|list %}<option value="{{ assignee_filter }}" selected>For {{ assignee_filter }}</option>{% endif %}
+    </select>
+    <datalist id="backlog-assignees">{% for a in assignees %}<option value="{{ a }}"></option>{% endfor %}</datalist>
     <button type="submit" class="btn">Filter</button>
     {% if filter_qs %}<a class="action" href="{{ base }}">Clear</a>{% endif %}
   </form>

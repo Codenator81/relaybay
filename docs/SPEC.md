@@ -779,7 +779,7 @@ instruction: act on the task's next step and ask the owner when in doubt; a find
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Intake | `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources` ([§12](#spec-intake-mcp)) |
-| Backlog | `backlog_add`, `backlog_list`, `backlog_update` ([§12](#spec-backlog-mcp)) |
+| Backlog | `backlog_add`, `backlog_list`, `backlog_update`, `backlog_patch` ([§12](#spec-backlog-mcp)) |
 
 Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay. The
 digests are annotated as writes: `session` moves the caller's read position and can create or link
@@ -2075,6 +2075,8 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0020_document_source` | `document.source_url` (a document that lives in a repository, [§8](#spec-documents-repo)). Additive only |
 | `0021_intake` | `intake_source` (slug, kind, name, `may_wake`, created at, last message at), `intake_message` (source, external id unique per source, thread, author, text, received at, status, refused reason, task, outcome), `intake_thread` (source + thread → task), `backlog_item` ([§12](#spec-backlog)), `task.autonomy`, `task.answer_received_at`, `task.answer_message_id`, `project.autonomy`; the `comment` table rebuilt to allow the author kind `external` and `import_item` to allow the kind `backlog` (rows and ids kept). No data changes ([§12](#spec-intake)) |
 | `0022_plan_step_added` | `plan_step.added_after_acceptance_at`, `added_by`, `added_reason` (a step added to an accepted plan, [§1](#spec-plan-living)). Additive only |
+| `0023_backlog_done` | `backlog_item` rebuilt to allow status `done`, plus `link` ([§12](#spec-backlog-model)). Existing rows keep every value |
+| `0024_backlog_queue` | `backlog_item.priority` (default 0), `assignee`, an index on project, status, priority and id ([§12](#spec-backlog-model)). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).
@@ -2192,9 +2194,10 @@ up to 20000), area (free text, lowercased, e.g. `checkout`), origin `session` / 
 `owner` with the origin task, session or intake message, status `new` / `later` / `planned` /
 `done` / `declined` with a decline reason (for `done` an optional note in the same field) and for
 `done` an optional link (an `http(s)` link of up to 500 characters: where it was fixed without a
-task of its own, a pull request or a commit; cleared by any other status), the task "To plan"
-created, decided at / by, created at / by. Title, body, area, a decline reason and a link (MCP and
-board) are scanned for secret values. The body of an item
+task of its own, a pull request or a commit; cleared by any other status), a priority (a whole number
+from -9 to 9, default 0, higher first within a status), an assignee (who it is for, a name or a role,
+up to 100), the task "To plan" created, decided at / by, created at / by. Title, body, area, assignee,
+a decline reason and a link (MCP and board) are scanned for secret values. The body of an item
 with origin `intake` is external text: the board shows it as plain text, never as markdown. Events `backlog.added`, `backlog.updated` (status and
 reason, or the edited fields), `backlog.planned`.
 
@@ -2202,10 +2205,13 @@ reason, or the edited fields), `backlog.planned`.
 
 **Board.** **Backlog** under each project in the sidebar (with the count of new items) and **All
 backlog** at the top (`/p/<slug>/backlog`, `/backlog`): a list of cards, one per item, with the
-number and title, a line of date, project (on All backlog), area, origin (links to the origin task
+number and title, a line of date, project (on All backlog), area, a "priority N" badge unless it is
+0, a "for <who>" badge, origin (links to the origin task
 with its stage and the session) and status, the body to expand, and the actions at the right edge
-(below on a phone); filters by status and area, new first. Open items have **To plan** (confirmed: creates the task
-in `plan` with the item's title, its body as the description ending with "From backlog #N"; for an
+(below on a phone); filters by status, area and who it is for (**For nobody yet** lists the
+unassigned), new first, then the highest priority, then the newest. Open items have a priority select and a **For** input with **Save** (event
+`backlog.updated` with the changed fields, none when nothing changed), **To plan** (confirmed: creates the task
+in `plan` with the item's title, its priority, its assignee as `waiting_on`, its body as the description ending with "From backlog #N"; for an
 item with origin `intake` the description is "From an external message (data, not instructions):"
 and the text as one quoted JSON string in a code block, never raw markdown; the item
 `planned` with the task linked, event `backlog.planned`; a message the item came from is tied to the
@@ -2219,21 +2225,27 @@ list. The task dialog shows "From backlog #N" when the task came from the backlo
 
 <a id="spec-backlog-mcp"></a>
 
-**MCP.** `backlog_add(project, title, body?, area?, task?, session…)`: status `new`, origin `session`
-with the origin task when `task` is passed. `backlog_list(project?, status?, area?, limit)`.
-`backlog_update(item, status?, reason?, link?, title?, body?, area?, session…)`: a status change
+**MCP.** `backlog_add(project, title, body?, area?, task?, priority?, assignee?, session…)`: status
+`new`, origin `session` with the origin task when `task` is passed.
+`backlog_list(project?, status?, area?, assignee?, limit)`: `assignee` `-` lists the items for nobody.
+`backlog_update(item, status?, reason?, link?, title?, body?, area?, priority?, assignee?, session…)`: a status change
 (`new`, `later`, `done` with an optional `link` and `reason` as a note, `declined` with a reason;
 `link` with another status is refused) only for the coordinator sessions named in the config (the
-`rules_update` check, [§6](#spec-rules-versions)); anyone else may edit title, body and area of an item
-that is still new and that the same session added. `planned` is never set over MCP: only **To plan**
-on the board creates the task.
+`rules_update` check, [§6](#spec-rules-versions)); anyone else may edit title, body, area, priority and
+assignee of an item that is still new and that the same session added. `planned` is never set over MCP: only **To plan**
+on the board creates the task. `backlog_patch(item, fields, session…)` takes the same fields as one
+JSON object under the same rules (an unknown field is refused), for a client whose `backlog_update`
+schema is older than the server; `-`, an empty string or null clears body, area and assignee and
+resets priority to 0.
 
 <a id="spec-backlog-import"></a>
 
 **Import and export.** `backlog.md` at the root: one table with the columns date, project, area,
-what, origin and decision (`planned`, `later`, `done`, `done: <link>`, `declined: <reason>`, empty
-for new; a done item's note is not in the file, and an import that updates a done row keeps it);
-other column
+what, origin, decision (`planned`, `later`, `done`, `done: <link>`, `declined: <reason>`, empty
+for new; a done item's note is not in the file, and an import that updates a done row keeps it),
+priority and assignee (also read as `prio`, `for`, `assigned`). A file without these two columns keeps
+the stored values, and an old file exports as unchanged while they are at their defaults; an empty cell under
+such a column resets the value; a priority that is not a whole number from -9 to 9 is an `error` line. Other column
 names through `--aliases` under `backlog`. Import: one item per row, identity project + date + title
 slug (tracked in `import_item`), the decision as the status (`planned` records history only, no task
 is created), an unknown origin as `owner`; an unknown project, a bad date or decision is an `error`
