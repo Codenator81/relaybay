@@ -178,8 +178,8 @@ intake_message id, source_id, external_id (UNIQUE per source), thread, author, t
 intake_thread source_id, thread, task_id, updated_at   -- PRIMARY KEY (source_id, thread)
 backlog_item  id, project_id, title, body_md, area, origin (session|review|intake|owner),
               origin_task_id, origin_session_id, intake_message_id, status
-              (new|later|planned|declined), decline_reason, task_id, decided_at, decided_by,
-              created_at, created_by
+              (new|later|planned|done|declined), decline_reason, link, priority, assignee,
+              task_id, decided_at, decided_by, created_at, created_by
 reader_cursor reader, level (portfolio|project|task), ref_id (0 = portfolio), last_event_id,
               read_at   -- PRIMARY KEY (reader, level, ref_id)
 ```

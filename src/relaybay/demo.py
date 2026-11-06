@@ -611,6 +611,8 @@ async def seed_intake_and_backlog(service: Service) -> None:
         body="Found while working on the checkout: the header badge keeps the old count.",
         area="cart",
         task=checkout.key,
+        priority=2,
+        assignee="reviewer",
         session=DEMO_DESKTOP_SESSION,
         hook_session=DEMO_HOOK_SESSION,
     )

@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Backlog as a queue: an item has a priority (-9 to 9, higher first within a status) and an assignee
+  (who it is for). The board's cards have a priority select, a **For** input and a "for <who>" badge,
+  and the list a filter by who it is for. **To plan** gives the task the item's priority and makes
+  the assignee its `waiting_on`. Sessions change both only on their own new item, like title and
+  body; coordinators on any. Migration `0024_backlog_queue` (additive).
+- MCP: `backlog_add` and `backlog_update` take `priority` and `assignee`, `backlog_list` takes
+  `assignee` (`-` lists the items for nobody), and the new `backlog_patch(item, fields, ...)` changes
+  any item field as one JSON object, for clients whose `backlog_update` schema is older.
+- `backlog.md` has the columns `priority` and `assignee`. A file without them keeps the stored values.
+
 ## [0.7.1] - 2026-11-06
 
 ### Added

@@ -79,7 +79,7 @@ STAGE_ALIASES = {
     "archived": "done",
 }
 BACKLOG = "backlog.md"
-BACKLOG_COLUMNS = ("date", "project", "area", "what", "origin", "decision")
+BACKLOG_COLUMNS = ("date", "project", "area", "what", "origin", "decision", "priority", "assignee")
 BACKLOG_ALIASES = {
     **{c: c for c in BACKLOG_COLUMNS},
     "created": "date",
@@ -91,6 +91,9 @@ BACKLOG_ALIASES = {
     "source": "origin",
     "from": "origin",
     "status": "decision",
+    "prio": "priority",
+    "for": "assignee",
+    "assigned": "assignee",
 }
 HEADING_NAMES = ("decisions", "task")
 _STAGE_WORDS_MAX = 3
@@ -424,6 +427,9 @@ class BacklogRow:
     title: str
     origin: str | None
     decision: str
+    # None: the file has no such column, so the stored value stays. An empty cell resets it.
+    priority: str | None = None
+    assignee: str | None = None
 
 
 def parse_backlog(text: str, aliases: Aliases) -> tuple[list[BacklogRow], list[str]]:
@@ -466,6 +472,8 @@ def parse_backlog(text: str, aliases: Aliases) -> tuple[list[BacklogRow], list[s
                     title=values["what"].strip(),
                     origin=values.get("origin", "").strip().lower() or None,
                     decision=values.get("decision", "").strip(),
+                    priority=values["priority"].strip() if "priority" in values else None,
+                    assignee=values["assignee"].strip() if "assignee" in values else None,
                 )
             )
     return rows, warnings
@@ -476,18 +484,39 @@ def render_backlog(items: list[Any]) -> str:
     lines = [
         "# Backlog",
         "",
-        "| date | project | area | what | origin | decision |",
-        "|---|---|---|---|---|---|",
+        "| date | project | area | what | origin | decision | priority | assignee |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for b in sorted(items, key=lambda b: (b.created_at, b.id)):
-        cells = (b.created_at[:10], b.project_slug, b.area, b.title, b.origin, b.decision)
+        cells = (
+            b.created_at[:10],
+            b.project_slug,
+            b.area,
+            b.title,
+            b.origin,
+            b.decision,
+            str(b.priority),
+            b.assignee,
+        )
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
     return "\n".join(lines) + "\n"
 
 
 def backlog_meaning(text: str, aliases: Aliases) -> set[tuple[Any, ...]]:
     rows, _ = parse_backlog(text, aliases)
-    return {(r.date, r.project, r.area, r.title, r.origin, r.decision) for r in rows}
+    return {
+        (
+            r.date,
+            r.project,
+            r.area,
+            r.title,
+            r.origin,
+            r.decision,
+            r.priority or "0",
+            r.assignee or None,
+        )
+        for r in rows
+    }
 
 
 def registry_meaning(

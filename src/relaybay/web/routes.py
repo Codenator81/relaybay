@@ -31,6 +31,7 @@ from relaybay.domain import environments as env_domain
 from relaybay.domain import memory as mem
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
+from relaybay.domain.backlog import ASSIGNEE_MAX
 from relaybay.domain.comments import COMMENT_MAX
 from relaybay.domain.errors import (
     ConfirmationNeeded,
@@ -2425,16 +2426,21 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     # --- Backlog -------------------------------------------------------------------------
 
     async def backlog_context(
-        project: str | None, status: str, area: str, show_history: bool
+        project: str | None, status: str, area: str, assignee: str, show_history: bool
     ) -> dict[str, Any]:
         status = status if status in BACKLOG_STATUSES else ""
         area = area.strip()[:SEARCH_MAX]
+        assignee = assignee.strip()[:ASSIGNEE_MAX]
         items = await service.list_backlog(
-            project=project, status=status or None, area=area or None, limit=BACKLOG_ROWS
+            project=project,
+            status=status or None,
+            area=area or None,
+            assignee=assignee or None,
+            limit=BACKLOG_ROWS,
         )
         open_items = [b for b in items if b.status in ("new", "later")]
         history = [b for b in items if b.status in ("planned", "done", "declined")]
-        query = {"status": status, "area": area}
+        query = {"status": status, "area": area, "assignee": assignee}
         live_query = {**query, "project": project or "", "history": "1" if show_history else ""}
         return {
             "fragment_qs": urlencode({k: v for k, v in live_query.items() if v}),
@@ -2444,17 +2450,19 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "show_history": show_history or status in ("planned", "done", "declined"),
             "status_filter": status,
             "area_filter": area,
+            "assignee_filter": assignee,
             "areas": await service.backlog_areas(project),
+            "assignees": await service.backlog_assignees(project),
             "statuses": BACKLOG_STATUSES,
             "filter_qs": urlencode({k: v for k, v in query.items() if v}),
         }
 
     async def backlog_page(
-        request: Request, project: str | None, status: str, area: str, history: bool
+        request: Request, project: str | None, status: str, area: str, assignee: str, history: bool
     ) -> Response:
         last_event_id = await service.last_event_id()  # before the data, see projects_page
         flash = take_flash(request)
-        context = await backlog_context(project, status, area, history)
+        context = await backlog_context(project, status, area, assignee, history)
         response = await page(
             request,
             "backlog.html",
@@ -2470,22 +2478,36 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/backlog", response_class=HTMLResponse)
     async def all_backlog(
-        request: Request, status: str = "", area: str = "", history: bool = False
+        request: Request,
+        status: str = "",
+        area: str = "",
+        assignee: str = "",
+        history: bool = False,
     ):
-        return await backlog_page(request, None, status, area, history)
+        return await backlog_page(request, None, status, area, assignee, history)
 
     @router.get("/p/{slug}/backlog", response_class=HTMLResponse)
     async def project_backlog(
-        request: Request, slug: str, status: str = "", area: str = "", history: bool = False
+        request: Request,
+        slug: str,
+        status: str = "",
+        area: str = "",
+        assignee: str = "",
+        history: bool = False,
     ):
         project = await service.get_project(slug)
-        return await backlog_page(request, project.slug, status, area, history)
+        return await backlog_page(request, project.slug, status, area, assignee, history)
 
     @router.get("/fragments/backlog", response_class=HTMLResponse)
     async def backlog_fragment(
-        request: Request, project: str = "", status: str = "", area: str = "", history: bool = False
+        request: Request,
+        project: str = "",
+        status: str = "",
+        area: str = "",
+        assignee: str = "",
+        history: bool = False,
     ):
-        context = await backlog_context(project or None, status, area, history)
+        context = await backlog_context(project or None, status, area, assignee, history)
         return render(request, "_backlog.html", **context)
 
     def backlog_url(project: str, back: str) -> str:
@@ -2509,6 +2531,22 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return f"Backlog item #{item.id} added."
 
         return await intake_write(request, csrf, write, backlog_url(project, back))
+
+    # Before the decision route, which would take `queue` as a decision.
+    @router.post("/backlog/{item_id}/queue")
+    async def backlog_queue(
+        request: Request,
+        item_id: int,
+        priority: Annotated[str, Form()] = "",
+        assignee: Annotated[str, Form()] = "",
+        back: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        async def write() -> str:
+            item = await service.set_backlog_queue(item_id, priority, assignee, actor="owner")
+            return f"Backlog item #{item.id} saved."
+
+        return await intake_write(request, csrf, write, back_to(back, "/backlog"))
 
     @router.post("/backlog/{item_id}/{decision}")
     async def backlog_decide(

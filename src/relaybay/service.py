@@ -4718,14 +4718,17 @@ class Service:
         origin_task_id: int | None = None,
         origin_session_id: int | None = None,
         intake_message_id: int | None = None,
+        priority: Any = 0,
+        assignee: Any = None,
     ) -> BacklogItem:
         clean_title = _clean_text(title, "title", backlog.TITLE_MAX)
         if not clean_title:
             raise ValidationError("title must not be empty.")
         clean_body = _clean_text(body, "body", backlog.BODY_MAX)
         clean_area = _clean_text(area, "area", backlog.AREA_MAX)
+        clean_assignee = _clean_text(assignee, "assignee", backlog.ASSIGNEE_MAX)
         rules = await self._secret_rules(tx.conn, project)
-        _scan(rules, title=clean_title, body=clean_body, area=clean_area)
+        _scan(rules, title=clean_title, body=clean_body, area=clean_area, assignee=clean_assignee)
         item_id = await repo.insert_backlog_item(
             tx.conn,
             {
@@ -4733,6 +4736,8 @@ class Service:
                 "title": clean_title,
                 "body_md": clean_body,
                 "area": clean_area.lower() if clean_area else None,
+                "priority": self._backlog_priority(priority),
+                "assignee": clean_assignee,
                 "origin": origin,
                 "origin_task_id": origin_task_id,
                 "origin_session_id": origin_session_id,
@@ -4768,6 +4773,8 @@ class Service:
         session_title: str | None = None,
         hook_session: str | None = None,
         by_owner: bool = False,
+        priority: Any = 0,
+        assignee: str | None = None,
     ) -> BacklogItem:
         """A finding for later: from a session (origin `session`, with the task it came from
         when `task` is passed) or written by the owner on the board (origin `owner`)."""
@@ -4788,6 +4795,8 @@ class Service:
                 created_by=created_by,
                 origin_task_id=origin_task.id if origin_task else None,
                 origin_session_id=sess.id if sess else None,
+                priority=priority,
+                assignee=assignee,
             )
 
     async def backlog_item(self, ref: Any) -> BacklogItem:
@@ -4806,8 +4815,10 @@ class Service:
         project: str | None = None,
         status: str | None = None,
         area: str | None = None,
+        assignee: str | None = None,
         limit: int = 200,
     ) -> list[BacklogItem]:
+        """`assignee` "-" means items that are for nobody."""
         project_id = (await self.get_project(project)).id if project else None
         if status and status not in backlog.STATUSES:
             raise ValidationError(f"status must be one of {', '.join(backlog.STATUSES)}.")
@@ -4816,6 +4827,7 @@ class Service:
             project_id=project_id,
             status=status or None,
             area=_clean_text(area, "area", backlog.AREA_MAX),
+            assignee=_clean_text(assignee, "assignee", backlog.ASSIGNEE_MAX),
             limit=max(1, min(int(limit), backlog.LIST_MAX)),
         )
 
@@ -4826,6 +4838,10 @@ class Service:
     async def backlog_areas(self, project: str | None = None) -> list[str]:
         project_id = (await self.get_project(project)).id if project else None
         return await repo.backlog_areas(self._r, project_id)
+
+    async def backlog_assignees(self, project: str | None = None) -> list[str]:
+        project_id = (await self.get_project(project)).id if project else None
+        return await repo.backlog_assignees(self._r, project_id)
 
     async def backlog_counts(self) -> dict[str, int]:
         """New backlog items per project slug (the sidebar)."""
@@ -4874,6 +4890,13 @@ class Service:
             )
         return link
 
+    @staticmethod
+    def _backlog_priority(value: Any) -> int:
+        try:
+            return backlog.parse_priority(value)
+        except ValueError as exc:
+            raise ValidationError(f"{exc}.") from exc
+
     async def update_backlog_item(
         self,
         ref: Any,
@@ -4884,20 +4907,28 @@ class Service:
         title: str | None = None,
         body: str | None = None,
         area: str | None = None,
+        priority: Any = None,
+        assignee: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
     ) -> BacklogItem:
         """MCP: a status change (new, later, done with an optional link, declined with a reason)
         only for a configured coordinator; `planned` never (only "To plan" on the board creates
-        the task). Anyone else may edit title, body and area of an item that is still new and
-        that the same session added."""
+        the task). Anyone else may edit title, body, area, priority and assignee of an item that
+        is still new and that the same session added."""
         async with self._tx() as tx:
             item = await self._backlog(tx.conn, ref)
             coordinator = await self._is_coordinator(tx.conn, session, hook_session)
             sess = await self._session(tx, session, session_title, hook_session)
             actor = sess.name if sess else "mcp"
-            edits = {"title": title, "body": body, "area": area}
+            edits = {
+                "title": title,
+                "body": body,
+                "area": area,
+                "priority": priority,
+                "assignee": assignee,
+            }
             edits = {k: v for k, v in edits.items() if v is not None}
             if status is not None:
                 wanted = status.strip().lower()
@@ -4927,7 +4958,7 @@ class Service:
                         " new. Nothing changed."
                     )
             if not edits and status is None:
-                raise ValidationError("Pass status, title, body or area.")
+                raise ValidationError("Pass status, title, body, area, priority or assignee.")
             if edits:
                 changes: dict[str, Any] = {}
                 if "title" in edits:
@@ -4940,12 +4971,19 @@ class Service:
                 if "area" in edits:
                     clean_area = _clean_text(edits["area"], "area", backlog.AREA_MAX)
                     changes["area"] = clean_area.lower() if clean_area else None
+                if "priority" in edits:
+                    changes["priority"] = self._backlog_priority(edits["priority"])
+                if "assignee" in edits:
+                    changes["assignee"] = _clean_text(
+                        edits["assignee"], "assignee", backlog.ASSIGNEE_MAX
+                    )
                 project = await self.get_project(item.project_slug, tx.conn)
                 _scan(
                     await self._secret_rules(tx.conn, project),
                     title=changes.get("title"),
                     body=changes.get("body_md"),
                     area=changes.get("area"),
+                    assignee=changes.get("assignee"),
                 )
                 await repo.update_backlog_item(tx.conn, item.id, changes)
                 await tx.event(
@@ -4970,6 +5008,34 @@ class Service:
                 await self._set_backlog_status(tx, item, wanted, why, actor, where)
             return await self._backlog(tx.conn, item.id)
 
+    async def set_backlog_queue(
+        self, ref: Any, priority: Any, assignee: Any, *, actor: str = "owner"
+    ) -> BacklogItem:
+        """Board: an open item's priority and who it is for."""
+        async with self._tx() as tx:
+            item = await self._backlog(tx.conn, ref)
+            if item.status == "planned":
+                raise ValidationError(f"Backlog item #{item.id} is planned as {item.task_key}.")
+            wanted = {
+                "priority": self._backlog_priority(priority),
+                "assignee": _clean_text(assignee, "assignee", backlog.ASSIGNEE_MAX),
+            }
+            changes = {k: v for k, v in wanted.items() if v != getattr(item, k)}
+            if changes:
+                project = await self.get_project(item.project_slug, tx.conn)
+                _scan(await self._secret_rules(tx.conn, project), assignee=changes.get("assignee"))
+                await repo.update_backlog_item(tx.conn, item.id, changes)
+                await tx.event(
+                    "backlog.updated",
+                    actor,
+                    project_id=item.project_id,
+                    project=item.project_slug,
+                    backlog_id=item.id,
+                    title=item.title,
+                    changes=sorted(changes),
+                )
+            return await self._backlog(tx.conn, item.id)
+
     async def import_backlog_item(
         self, project: str, values: dict[str, Any], day: str, *, actor: str = "import"
     ) -> BacklogItem:
@@ -4985,6 +5051,8 @@ class Service:
                 values.get("area"),
                 origin=values["origin"],
                 created_by=actor,
+                priority=values["priority"],
+                assignee=values["assignee"],
             )
             changes: dict[str, Any] = {"created_at": f"{day}T00:00:00.000+00:00"}
             if values["status"] != "new":
@@ -5004,7 +5072,11 @@ class Service:
         async with self._tx() as tx:
             item = await self._backlog(tx.conn, item_id)
             project = await self.get_project(item.project_slug, tx.conn)
-            _scan(await self._secret_rules(tx.conn, project), title=values["title"])
+            _scan(
+                await self._secret_rules(tx.conn, project),
+                title=values["title"],
+                assignee=values["assignee"],
+            )
             changes = {
                 "title": values["title"],
                 "area": values.get("area"),
@@ -5012,6 +5084,8 @@ class Service:
                 "status": values["status"],
                 "decline_reason": values.get("reason"),
                 "link": values.get("link"),
+                "priority": values["priority"],
+                "assignee": values["assignee"],
             }
             if values["status"] == "done" == item.status:
                 changes["decline_reason"] = item.decline_reason  # the note is not in backlog.md
@@ -5036,9 +5110,9 @@ class Service:
         link: str | None = None,
         actor: str = "owner",
     ) -> BacklogItem:
-        """Board: "To plan" (creates the task in plan, with the item's title and body and the
-        line "From backlog #N"), "Later", "Done" (fixed without a task, with an optional link),
-        "Not doing" (needs a reason) or back to new."""
+        """Board: "To plan" (creates the task in plan, with the item's title, body and priority,
+        the line "From backlog #N" and its assignee as waiting_on), "Later", "Done" (fixed without
+        a task, with an optional link), "Not doing" (needs a reason) or back to new."""
         choice = str(decision or "").strip().lower()
         if choice not in ("plan", "later", "done", "decline", "new"):
             raise ValidationError("decision must be plan, later, done, decline or new.")
@@ -5076,7 +5150,13 @@ class Service:
         if len(description) > MARKDOWN_MAX:
             description = description[: MARKDOWN_MAX - len(line) - 3] + "…\n\n" + line
         key = f"{project.slug}-{await repo.next_task_number(tx.conn, project.id)}"
-        fields = {"title": item.title, "stage": Stage.PLAN.value, "description": description}
+        fields = {
+            "title": item.title,
+            "stage": Stage.PLAN.value,
+            "description": description,
+            "priority": item.priority,
+            "waiting_on": item.assignee,
+        }
         task_id = await repo.insert_task(tx.conn, project.id, key, fields, None, tx.now)
         await tx.event(
             "task.created",

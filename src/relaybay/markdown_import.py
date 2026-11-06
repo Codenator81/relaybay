@@ -962,7 +962,7 @@ class _Planner:
                 self.add("backlog", name, source, "skipped", "the same row again")
                 continue
             seen.add(name)
-            text = " ".join(filter(None, (row.title, row.area, row.decision)))
+            text = " ".join(filter(None, (row.title, row.area, row.decision, row.assignee)))
             secret = await self._secret(text, row.project)
             if secret:
                 self.add("backlog", name, source, "refused", secret)
@@ -978,12 +978,22 @@ class _Planner:
             if tracked is None:
                 target = untracked.get(name)
             target_hash = backlog_hash(target) if target else ""
-            content = text_hash(
+            if row.priority is not None:
+                values["priority"] = backlog.parse_priority(row.priority)
+            else:
+                values["priority"] = target.priority if target else 0
+            if row.assignee is not None:
+                values["assignee"] = row.assignee or None
+            else:
+                values["assignee"] = target.assignee if target else None
+            content = _backlog_hash(
                 values["title"],
                 values["area"],
                 origin,
                 status,
                 _decision_detail(status, values["reason"], values["link"]),
+                values["priority"],
+                values["assignee"],
             )
             if target is not None and target.task_id is not None and status != "planned":
                 detail = f"planned on the board as {target.task_key}; an import never moves it back"
@@ -1053,9 +1063,26 @@ def _decision_detail(status: str, reason: str | None, link: str | None) -> str |
     return link if status == "done" else reason
 
 
+def _backlog_hash(
+    title: str,
+    area: str | None,
+    origin: str,
+    status: str,
+    detail: str | None,
+    priority: int,
+    assignee: str | None,
+) -> str:
+    # Default values hash as they did before these fields, or every item an older import tracked
+    # would turn into a conflict.
+    queue = (priority, assignee) if priority or assignee else ()
+    return text_hash(title, area, origin, status, detail, *queue)
+
+
 def backlog_hash(item: BacklogItem) -> str:
     detail = _decision_detail(item.status, item.decline_reason, item.link)
-    return text_hash(item.title, item.area, item.origin, item.status, detail)
+    return _backlog_hash(
+        item.title, item.area, item.origin, item.status, detail, item.priority, item.assignee
+    )
 
 
 def _backlog_problem(row: BacklogRow) -> str | None:
@@ -1065,6 +1092,12 @@ def _backlog_problem(row: BacklogRow) -> str | None:
         return f"what is longer than {backlog.TITLE_MAX} characters"
     if row.area and len(row.area) > backlog.AREA_MAX:
         return f"area is longer than {backlog.AREA_MAX} characters"
+    if row.assignee and len(row.assignee) > backlog.ASSIGNEE_MAX:
+        return f"assignee is longer than {backlog.ASSIGNEE_MAX} characters"
+    try:
+        backlog.parse_priority(row.priority)
+    except ValueError as exc:
+        return str(exc)
     try:
         date.fromisoformat(row.date)
     except ValueError:

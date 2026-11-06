@@ -80,7 +80,8 @@ Its own instructions no longer describe files. What is left is roughly:
   descriptions and reports as `relaybay://doc/<project>/<doc>#<anchor>`: the board turns them into links.
 - Keep findings for later on the backlog, not in your own files: sessions and reviewers call
   `backlog_add`; review the queue with `backlog_list`, sort it with `backlog_update(status="later")` or
-  `status="declined"` with a reason (configured coordinators only). The owner turns an item into a
+  `status="declined"` with a reason, order it with `priority` and name who it is for with `assignee`
+  (configured coordinators only); `backlog_list(assignee="-")` shows what nobody has yet. The owner turns an item into a
   task with **To plan** on the board; `planned` is never set over MCP. A `backlog.md` in your notes
   imports and exports like the task registry.
 
