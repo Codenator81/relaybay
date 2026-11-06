@@ -90,7 +90,8 @@ program as its client:
   look at screenshots full screen, draw on them and drop numbered pins for the agent, paste your
   own with Ctrl+V, and each decision reaches the
   agent as a comment. Tasks waiting for acceptance are in the Inbox's Review queue; an optional
-  browser notification (Settings → Notifications) says when one arrives. How agents make
+  browser notification (Settings → Notifications) says when one arrives, and the desktop program's
+  tray says it with no tab open. How agents make
   screenshot files: [Screenshots for review](https://codenator81.github.io/relaybay/how-to/screenshots-for-review/).
 - **Next step that keeps up** — sessions pass the next step and who acts next together with a
   stage change or a report; a next step left over from before the last stage change shows muted

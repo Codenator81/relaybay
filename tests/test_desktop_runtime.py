@@ -373,7 +373,9 @@ def test_menu_from_state() -> None:
     assert texts == [
         "Open board",
         "Open in browser",
+        "Open Inbox",
         SEPARATOR,
+        "Quiet notifications",
         "Restart server",
         "Logs",
         "Settings",

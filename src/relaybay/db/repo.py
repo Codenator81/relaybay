@@ -1620,6 +1620,24 @@ async def events_after(
     return [_event(r) for r in rows]
 
 
+async def events_of_kinds_after(
+    conn: aiosqlite.Connection, after_id: int, kinds: tuple[str, ...], limit: int
+) -> list[Event]:
+    marks = ", ".join("?" for _ in kinds)
+    rows = await _all(
+        conn,
+        f"SELECT * FROM event WHERE id > ? AND kind IN ({marks}) ORDER BY id LIMIT ?",
+        (after_id, *kinds, limit),
+    )
+    return [_event(r) for r in rows]
+
+
+async def task_titles(conn: aiosqlite.Connection, task_ids: set[int]) -> dict[int, str]:
+    marks = ", ".join("?" for _ in task_ids)
+    rows = await _all(conn, f"SELECT id, title FROM task WHERE id IN ({marks})", tuple(task_ids))
+    return {r["id"]: r["title"] for r in rows}
+
+
 async def events_page(
     conn: aiosqlite.Connection,
     *,

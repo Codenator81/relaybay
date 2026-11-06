@@ -198,6 +198,7 @@ def desktop_section() -> list[str]:
         "`external-token` (0600, the external server's token), `window-state.json` (the board",
         "window's size, position and maximized flag, written by the program), `reopen-window` (a",
         "one-shot marker left when the program quits for an update with its window open),",
+        "`notify_state.json` (where tray notifications have read up to, written by the program),",
         "`desktop-start.log` (the program's start journal, read by `relaybay doctor`) and the",
         "program's `desktop.lock` and `desktop.ipc`.",
         "",

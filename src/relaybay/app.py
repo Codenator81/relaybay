@@ -17,6 +17,7 @@ from relaybay.domain.review import MB
 from relaybay.mcp_server.server import build_mcp, mcp_routes
 from relaybay.security import SecurityMiddleware, load_or_create_token
 from relaybay.service import Service
+from relaybay.web.api import build_api_router
 from relaybay.web.hooks import build_hooks_router
 from relaybay.web.routes import STATIC_DIR, build_router
 
@@ -93,6 +94,7 @@ def create_app(settings: Settings) -> FastAPI:
             service, wake_hold=settings.wake_hold_seconds, wake_poll=settings.wake_poll_seconds
         )
     )
+    app.include_router(build_api_router(service))
     app.include_router(build_router(service, settings, token))
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.add_middleware(SecurityMiddleware, token=token, allowed_hosts=allowed)

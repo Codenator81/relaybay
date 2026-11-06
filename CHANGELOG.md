@@ -37,6 +37,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - MCP: `audit_list(project?, environment?, session?, decision?, days=7, limit=50)`, read-only. There
   is no write tool: the switch is the owner's.
 - Migration `0025_session_no_live`: `session.no_live_at`, `session.no_live_by`. Additive only.
+- Desktop program: tray notifications, also with the window hidden and no board tab open: a task now
+  waiting on you, a task moved to review or test, an agent's reply, an answer from a chat or a
+  mailbox, an external server that stopped answering. At most one per 20 seconds: one item with its
+  text, several as `3 need you: 2 reviews, 1 reply`, one summary after a downtime. The tray gets
+  **Quiet notifications** (no toast, a dot on the icon, one summary on leaving it) and **Open Inbox**.
+  `desktop.toml`: `notify`, `notify_quiet`, `notify_kinds`; the kind `permission` (a session waiting
+  for you) is available and off by default.
+- `GET /api/notifications?after=<id>&limit=100` (Bearer token): the first route under `/api`.
 
 ## [0.7.1] - 2026-11-06
 

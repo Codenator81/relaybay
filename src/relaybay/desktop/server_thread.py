@@ -13,7 +13,7 @@ import time
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import urlsplit
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import OpenerDirector, ProxyHandler, build_opener
 
 from relaybay.config import Settings
 from relaybay.desktop.settings import LOOPBACK
@@ -39,13 +39,16 @@ class PortTaken(Exception):
         )
 
 
+def server_opener(base_url: str) -> OpenerDirector:
+    """Loopback never goes through a system proxy; a remote server may need one."""
+    host = urlsplit(base_url).hostname or ""
+    return build_opener(ProxyHandler({})) if host in LOOPBACK else build_opener()
+
+
 def healthz(base_url: str, timeout: float = 1.0) -> dict[str, Any] | None:
     """The /healthz answer of a relaybay at `base_url`, or None when nothing answers like one."""
-    host = urlsplit(base_url).hostname or ""
-    # Loopback never goes through a system proxy; a remote server may need one.
-    opener = build_opener(ProxyHandler({})) if host in LOOPBACK else build_opener()
     try:
-        with opener.open(f"{base_url}/healthz", timeout=timeout) as response:
+        with server_opener(base_url).open(f"{base_url}/healthz", timeout=timeout) as response:
             data = json.load(response)
     except (URLError, OSError, ValueError):
         return None

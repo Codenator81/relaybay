@@ -67,7 +67,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
 | `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
-| `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `markdown.py`, templates, vendored static assets |
+| `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `api.py` (`GET /api/notifications` for the tray), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
 | `doctor.py` | `relaybay doctor`: read-only diagnosis built from the setup checks plus versions, data folder, token and rules hash |
 | `demo.py` | `relaybay demo`: seeds the demo workspace through the service layer |
@@ -78,7 +78,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `install.py` | How this copy was installed (`install_kind()`), its executable and whether its location is stable; used by upgrade hints, the updater, `doctor` and the hook command |
 | `updates.py` | The update check of the latest GitHub release and the installer download, checked against `SHA256SUMS.txt` |
 | `backup.py` | `last_version` and the backup of the database and settings files before a new version migrates, with rotation (`backup_keep`) |
-| `desktop/` | The desktop program: GUI loop and window (pywebview), tray (pystray), embedded server thread, `desktop.toml` settings and Settings window, start at login, single instance, window state |
+| `desktop/` | The desktop program: GUI loop and window (pywebview), tray (pystray), embedded server thread, `desktop.toml` settings and Settings window, start at login, single instance, window state, tray notifications |
 
 <a id="data-model"></a>
 

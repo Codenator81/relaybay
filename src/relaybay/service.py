@@ -85,6 +85,9 @@ from relaybay.domain.models import (
     Task,
     TrackerEntry,
 )
+from relaybay.domain.notifications import EVENT_KINDS as NOTICE_EVENT_KINDS
+from relaybay.domain.notifications import Notice
+from relaybay.domain.notifications import classify as classify_notice
 from relaybay.domain.plan import (
     CLOSED_PLAN,
     DEFAULT_DRAFT_HINT_HOURS,
@@ -2360,6 +2363,27 @@ class Service:
 
     async def last_event_id(self) -> int:
         return await repo.last_event_id(self._r)
+
+    async def notifications(
+        self, after: int | None, limit: int = 100
+    ) -> tuple[int, list[tuple[int, Notice]]]:
+        """Up to `limit` events after `after` read for the tray: the id to go on from and the
+        notices among them. No `after`, or one past the newest event (another database behind
+        the same address): nothing to tell, go on from the newest."""
+        last = await repo.last_event_id(self._r)
+        if after is None or after >= last:
+            return last, []
+        limit = max(1, min(limit, 500))
+        events = await repo.events_of_kinds_after(self._r, after, NOTICE_EVENT_KINDS, limit)
+        if len(events) == limit:
+            last = events[-1].id  # more to read: go on from here, not from the newest
+        elif events:
+            last = max(last, events[-1].id)
+        ids = {e.task_id for e in events if e.task_id}
+        titles = await repo.task_titles(self._r, ids) if ids else {}
+        owners = {name.strip().casefold() for name in self.owner_names}
+        notices = ((e.id, classify_notice(e, owners, titles)) for e in events)
+        return last, [(event_id, notice) for event_id, notice in notices if notice]
 
     async def replay(self, after_id: int, project_id: int | None, limit: int) -> list[Event]:
         return await repo.events_after(self._r, after_id, project_id, limit)

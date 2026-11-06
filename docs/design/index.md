@@ -23,6 +23,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0015 | [Intake from chats and e-mail, autonomy, backlog](0015-intake-and-autonomy.md) | Accepted | 0.5.0 |
 | 0016 | [Desktop program: tray, window, autostart, installers](0016-desktop-program.md) | Implemented (unreleased) | 0.6.0 |
 | 0017 | [Readiness for agents inside](0017-readiness-for-agents-inside.md) | Accepted (direction) | 0.7.x, 0.8 |
+| 0020 | [Tray notifications](0020-tray-notifications.md) | Implemented (unreleased) | 0.8.0 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md),
 [ADR-0002 Desktop shell](../adr/0002-desktop-shell.md).

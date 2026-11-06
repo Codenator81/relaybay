@@ -51,6 +51,9 @@ def apply_form(folder: Path, data: dict[str, Any]) -> tuple[DesktopSettings, Des
         server_url=check_url(url) if url else "",
         update_check=bool(data.get("update_check", before.update_check)),
         update_check_hours=before.update_check_hours,
+        notify=before.notify,
+        notify_quiet=before.notify_quiet,
+        notify_kinds=before.notify_kinds,
     )
     if mode == "external":
         if not after.server_url:
