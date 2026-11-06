@@ -1,0 +1,11 @@
+{#- The Messages list. Expects: messages, more_qs, filters_qs, live_rows. Live rows come from the
+    server as this whole fragment, autoescaped; no text of a message is ever put in by script. A later
+    page ("Load more", a plain link) stays as it is. -#}
+<div id="messages"{% if live_rows %} data-live="1" hx-get="/fragments/messages{% if filters_qs %}?{{ filters_qs }}{% endif %}" hx-trigger="rb:refresh" hx-swap="outerHTML"{% endif %}>
+  {% if messages %}
+  {% include "_message_table.html" %}
+  {% else %}
+  <div class="empty activity-empty"><p>No session messages here yet.</p></div>
+  {% endif %}
+  {% if more_qs %}<p><a class="action" href="/messages?{{ more_qs }}">Load more</a></p>{% endif %}
+</div>

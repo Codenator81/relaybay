@@ -246,6 +246,18 @@ class Stand:
 
         return asyncio.run(go())
 
+    def mcp_error(self, tool: str, **arguments: Any) -> str:
+        """The error text of a tool call that has to fail."""
+
+        async def go() -> str:
+            live = LiveServer(url=self.url, token=self.token, settings=self.settings)
+            async with mcp_connect(live) as client:
+                result = await client.call_tool(tool, arguments)
+                assert result.is_error, result.content
+                return result.content[0].text
+
+        return asyncio.run(go())
+
     @contextmanager
     def board(self) -> Iterator[httpx.Client]:
         """A browser: signed in with the cookie, posting forms with the CSRF field."""

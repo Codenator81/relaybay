@@ -127,6 +127,9 @@ budget_mark   budget_id, period_key (UTC day or total), level (warned|exceeded),
 brake         id, scope (all|project|session|task), project_id, session_id, task_id, reason,
               source (owner|coordinator|budget), budget_id, created_at, created_by, released_at,
               released_by   -- a released row stays as history
+session_message id, sender_session_id, sender_name, sender_verified, recipient_session_id,
+              recipient_name, task_id, body_md, in_reply_to, depth, created_at, delivered_at,
+              read_at, stop_blocks, loop_stopped_at, loop_seen_at
 comment       id, task_id, author_kind (owner|agent|external), author, session_id, body_md, in_reply_to,
               created_at, delivered_at, delivered_to_session_id, read_at, step_id, attachment_id
 review_step   id, task_id, position (UNIQUE per task), title, details_md,

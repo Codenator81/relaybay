@@ -39,6 +39,9 @@ EXPECTED_TOOLS = {
     "audit_list",
     "rules_get",
     "backlog_patch",
+    "message_send",
+    "messages_list",
+    "message_ack",
 }
 
 

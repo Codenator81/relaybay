@@ -170,6 +170,26 @@
   </section>
   {% endif %}
 
+  {% if inbox.message_loops %}
+  <section class="panel inbox-group" id="inbox-message-loops">
+    <h2>Message loops stopped <span class="col-count">{{ inbox.message_loops|length }}</span></h2>
+    <p class="muted inbox-hint">Two sessions kept answering each other past the reply depth limit and the next reply was refused. Read the thread on the <a href="/messages">Messages</a> page and tell them what you want.</p>
+    <ul class="inbox-list">
+      {% for m in inbox.message_loops %}
+      <li class="inbox-row" id="message-loop-{{ m.id }}">
+        <span class="inbox-title"><span class="card-key">#{{ m.id }}</span> {{ m.sender_name }} → {{ m.recipient_name }}</span>
+        <p class="inbox-note clamp clamp-2 intake-text">{{ m.body_md }}</p>
+        <span class="inbox-meta muted">{% if m.task_key %}{{ m.task_key }} · {% endif %}<time datetime="{{ m.loop_stopped_at }}" data-age>{{ m.loop_stopped_at|age }}</time></span>
+        <form method="post" action="/messages/{{ m.id }}/loop-seen">
+          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+          <button type="submit" class="btn">Mark seen</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   {% if inbox.proposals %}
   <section class="panel inbox-group" id="inbox-proposals">
     <h2>Proposed by agents <span class="col-count">{{ inbox.proposals|length }}</span></h2>

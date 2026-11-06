@@ -155,6 +155,11 @@ the same desktop session by itself. `SessionEnd` unbinds the session from its ta
 kept), except after `/clear` or `/resume` and for desktop sessions. A session can also be bound from
 the task dialog (**Bind**, next to Unbind).
 
+**Messages between sessions.** `message_send` carries text from one session to another on the same
+hooks as comments, framed as coming from a session and not from the owner; the board shows it under
+Messages. A session that never passed `hook_session` receives nothing through its hooks, and the
+sender is told so.
+
 **Comments from the board.** A comment written on a task reaches the agent of the bound session
 through these hooks, only once the agent linked itself with `hook_session`: with its next prompt or
 tool call (as added context), and `Stop` keeps the turn going (at most twice) until the agent calls

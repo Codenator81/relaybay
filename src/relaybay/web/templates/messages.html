@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Messages · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">Messages</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Messages</h1>
+  <p class="muted audit-note">What sessions write to each other with <code>message_send</code>, and whether the recipient's hooks delivered it and it acknowledged it. A message grants no permission. A desktop <code>SendMessage</code> is not here: its text is never read, it is an edge on the <a href="/map">Map</a>.</p>
+  <form class="board-tools" method="get" action="/messages">
+    <label class="field-inline">Session
+      <select name="session">
+        <option value="">All sessions</option>
+        {% for row in session_rows %}<option value="{{ row.session.id }}"{% if row.session.id|string == session_filter %} selected{% endif %}>{{ row.session.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn">Filter</button>
+    {% if session_filter or not live_rows %}<a class="action" href="/messages">Clear</a>{% endif %}
+  </form>
+  {% include "_messages.html" %}
+</main>
+{% endblock %}

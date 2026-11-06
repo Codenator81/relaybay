@@ -10,6 +10,8 @@
     "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
     "session.no_live_on", "session.no_live_off",
     "comment.added", "comment.delivered", "comment.read",
+    "message.sent", "message.delivered", "message.read", "message.loop_stopped",
+    "message.loop_dismissed",
     "environment.created", "environment.updated", "environment.deleted",
     "environment.access_added", "environment.access_updated", "environment.access_removed",
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
@@ -35,6 +37,7 @@
   var INBOX_KINDS = [
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
     "session.seen", "session.status_changed", "comment.added", "comment.read",
+    "message.loop_stopped", "message.loop_dismissed",
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
     "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
     "policy.proposal_reopened",
@@ -51,6 +54,7 @@
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
     "session.no_live_on", "session.no_live_off",
+    "message.sent", "message.read",
     "task.session_bound", "task.session_unbound"
   ];
   var DOCS_KINDS = [
@@ -150,6 +154,7 @@
 
   function column(stage) { return stage ? document.getElementById("col-" + stage) : null; }
   function thread(key) { return key ? document.getElementById("comments-" + key) : null; }
+  function isMessage(kind) { return kind.indexOf("message.") === 0; }
   function isComment(kind) { return kind.indexOf("comment.") === 0; }
   function isReview(kind) {
     return kind.indexOf("review.") === 0 || kind.indexOf("attachment.") === 0;
@@ -215,6 +220,8 @@
       if (data.key !== live.dataset.task || data.kind === "session.status_changed") return;
       if (isComment(data.kind)) {
         queue(thread(data.key));
+      } else if (isMessage(data.kind)) {
+        queue(document.querySelector(".task-view"));
       } else if (isReview(data.kind)) {
         queueReview(data.key);
       } else if (isPlan(data.kind)) {
@@ -265,6 +272,12 @@
           (!data.project || data.project === live.dataset.project)) {
         queue(docsLive);
       }
+      return;
+    }
+    // Messages: the list is refetched from the server, marks change on rows already shown.
+    var messages = document.getElementById("messages");
+    if (messages) {
+      if (messages.dataset.live && isMessage(data.kind)) queueThrottled(messages);
       return;
     }
     var audit = document.getElementById("audit");

@@ -100,6 +100,7 @@ nav:
           - Desktop program: design/0016-desktop-program.md
           - Readiness for agents inside: design/0017-readiness-for-agents-inside.md
           - Brake and token budgets: design/0018-brake-and-budgets.md
+          - Messages between sessions: design/0019-session-messages.md
           - Tray notifications: design/0020-tray-notifications.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md

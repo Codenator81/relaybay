@@ -18,6 +18,7 @@
         {% if s.status %}<span class="session-status status-{{ s.status }}">{{ s.status }}</span>{% else %}<span class="muted session-status">no hook status</span>{% endif %}
         {% if s.no_live_at and s.cc_session_id %}<span class="decision decision-deny" title="Switched off by {{ s.no_live_by }} at {{ s.no_live_at[:19] }}Z. Any touch of a live stand is denied, reads included.">live off</span>
         {%- elif s.no_live_at %}<span class="decision decision-warn" title="Switched off by {{ s.no_live_by }} at {{ s.no_live_at[:19] }}Z. Nothing is denied until a hook session is linked to this row.">live off: not linked to hooks yet, applies once it is linked</span>{% endif %}
+        {% if row.unread_messages %}<a class="col-count" href="/messages?session={{ s.id }}" title="{{ row.unread_messages }} session message(s) to it not acknowledged yet">{{ row.unread_messages }}</a>{% endif %}
         <a class="action" href="/usage?session={{ s.id }}">Usage</a>
         <form class="inline-form" method="post" action="/sessions/{{ s.id }}/no-live">
           <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">

@@ -9,6 +9,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Messages between sessions: `message_send(body, to?, task?, in_reply_to?, ...)`,
+  `messages_list(session, box?, unread_only?, task?, limit?)` and `message_ack(message_id?, ...)`. The
+  recipient's hooks deliver a message like an owner comment, only on an exact link, comments first,
+  framed as coming from another session and not from the owner: it grants no permission. The sender
+  is required: a name a live linked session goes by needs its own hook id, another live session's id is refused,
+  and a name no hook proved shows as "name not verified" (all clients share one token: this is not
+  access control). An unknown or ambiguous recipient is an error; one no hook can reach is said to be
+  so. At most 10 sends per sender per minute; a reply deeper than 8 is refused and shown in the Inbox;
+  a Stop block once per message. Server instructions, new point 15. Migration `0027_session_messages`
+  (additive). The text of a desktop `SendMessage` is still never read.
+- Board: a **Messages** page in the sidebar with sent, delivered and read marks and why a message is
+  not delivered yet, a Messages block in the task view, an unread count on Sessions rows, and
+  **Message loops stopped** in the Inbox.
 - Backlog as a queue: an item has a priority (-9 to 9, higher first within a status) and an assignee
   (who it is for). The board's cards have a priority select, a **For** input and a "for <who>" badge,
   and the list a filter by who it is for. **To plan** gives the task the item's priority and makes

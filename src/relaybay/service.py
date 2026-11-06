@@ -36,6 +36,7 @@ from relaybay.domain import environments as envs
 from relaybay.domain import limits as agent_limits
 from relaybay.domain import map_graph as graphs
 from relaybay.domain import memory as mem
+from relaybay.domain import messages as message_text
 from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.backlog import BacklogItem
@@ -73,6 +74,7 @@ from relaybay.domain.hooks import (
     session_start_context,
 )
 from relaybay.domain.intake import IntakeMessage
+from relaybay.domain.messages import SessionMessage
 from relaybay.domain.models import (
     Binding,
     Comment,
@@ -324,6 +326,7 @@ class TaskDetail:
     from_backlog: BacklogItem | None = None  # the item "To plan" created this task from
     findings: list[BacklogItem] = field(default_factory=list)  # items this task is the origin of
     budget: agent_limits.BudgetState | None = None  # the task's own token budget
+    messages: list[SessionMessage] = field(default_factory=list)  # newest first
 
 
 @dataclass(slots=True)
@@ -363,6 +366,7 @@ class Inbox:
     budgets: list[agent_limits.BudgetState] = field(default_factory=list)  # past a threshold now
     running_over: int | None = None  # sessions running while above the concurrency cap
     running_cap: int = 0
+    message_loops: list[SessionMessage] = field(default_factory=list)  # replies refused
 
     @property
     def count(self) -> int:
@@ -383,6 +387,7 @@ class Inbox:
             + len(self.brakes)
             + len(self.budgets)
             + (1 if self.running_over is not None else 0)
+            + len(self.message_loops)
         )
 
 
@@ -390,6 +395,7 @@ class Inbox:
 class SessionRow:
     session: Session
     tasks: list[Task]  # bound to the session now
+    unread_messages: int = 0  # session messages to it not acknowledged yet
 
 
 FILTER_NAME_MAX = 60
@@ -536,6 +542,45 @@ def _project_override(slug: str, body: str) -> dict[str, Any]:
 
 def _context(event: str, text: str) -> dict[str, Any]:
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+
+
+def _clean_message(body: Any) -> str:
+    # Control characters and line separators would grow several times as a quoted literal.
+    kept = []
+    for char in str(body or ""):
+        kind = unicodedata.category(char)
+        if kind in ("Zl", "Zp"):
+            kept.append("\n")
+        elif char in "\n\r\t" or kind not in ("Cc", "Cf", "Cs"):
+            kept.append(char)
+    text = _clean_text("".join(kept), "Message", message_text.MESSAGE_MAX)
+    if not text:
+        raise ValidationError("Message must not be empty.")
+    if message_text.too_long_quoted(text):
+        raise ValidationError(
+            "Message is too long for one hook answer once quoted: line breaks, quotes and"
+            " backslashes count double. Shorten it."
+        )
+    return text
+
+
+def _hook_proven(session: Session) -> bool:
+    """Exactly linked and its hooks report: an id only written on a row proves nothing."""
+    return session.cc_exact and session.status not in (None, "ended")
+
+
+def _message_arrival(recipient: Session) -> str:
+    """When a new message can reach `recipient`, said as it is."""
+    name = intake.one_line(recipient.name)
+    reason = message_text.no_delivery_reason(recipient.cc_exact, recipient.status)
+    if reason is not None:
+        return (
+            f"Not delivered: {reason}. It stays unread until then; {name} can also read it"
+            " with messages_list."
+        )
+    if recipient.status == "idle":
+        return f"Not delivered yet: {name} is idle. It sees this at its next prompt or wake-up."
+    return f"Not delivered yet: it reaches {name} at its next tool call or prompt."
 
 
 def _clean_comment(body: Any) -> str:
@@ -1237,6 +1282,9 @@ class Service:
             if other.transcript_path:
                 changes["transcript_path"] = other.transcript_path
             if other.kind == "hook" and not await repo.has_bindings(tx.conn, other.id):
+                # Only a guess is merged: naming the id of an ended session takes no mail.
+                if not other.cc_exact:
+                    await repo.move_session_messages(tx.conn, other.id, session.id)
                 await repo.delete_session(tx.conn, other.id)
             else:
                 await repo.move_open_bindings(tx.conn, other.id, session.id)
@@ -1644,6 +1692,10 @@ class Service:
                 await self._deliver(tx, session, shown)
         return shown, len(waiting)
 
+    async def _unread_messages_line(self, session: Session) -> str:
+        count = len(await repo.unread_session_messages(self._r, session.id))
+        return " " + message_text.unread_line(count) if count else ""
+
     async def hook_answer(self, payload: Any) -> dict[str, Any] | None:
         """The JSON a hook event is answered with, or None for an empty answer. Comment text goes
         only to the hook session its agent linked itself and only for the tasks bound to it."""
@@ -1659,6 +1711,7 @@ class Service:
             if unread:
                 context += " " + comment_text.unread_line(unread)
             if session is not None:
+                context += await self._unread_messages_line(session)
                 # A new context: the agent has seen nothing yet.
                 self._tool_events[session.id] = 0
                 self._reminded.pop(session.id, None)
@@ -1691,6 +1744,7 @@ class Service:
             if reminder:
                 parts.append(reminder)
             parts += lines
+            parts += await self._message_parts(session, *parts)
             return _context(hook.event, "\n".join(parts)) if parts else None
         if hook.event == "Stop":
             if await self._braked(session, hook.cwd):
@@ -1718,6 +1772,7 @@ class Service:
             shown, total = await self._take_undelivered(exact)
             if shown:
                 contexts.append(comment_text.delivery_text(shown, total))
+            contexts += await self._message_parts(exact, *contexts)
         out: dict[str, Any] = {"hookEventName": "PreToolUse"}
         if touch is not None:
             # Never "allow": that would skip Claude Code's own permission prompt.
@@ -1818,7 +1873,10 @@ class Service:
         turn). After that the SessionStart line and comments_list remind of them."""
         blocks = self._stop_blocks.get(session.id, 0)
         allowed = blocks < STOP_BLOCK_CAP and (blocks > 0 or not stop_hook_active)
-        if not allowed or not (await self._stop_candidates(self._r, session))[0]:
+        due = (await self._stop_candidates(self._r, session))[0] or (
+            await self._stop_message_due(self._r, session)
+        )
+        if not allowed or not due:
             self._stop_blocks.pop(session.id, None)  # the turn ends
             return None
         async with self._tx() as tx:
@@ -1829,11 +1887,14 @@ class Service:
                 await self._deliver(tx, session, fresh)
             if shown:
                 await repo.count_stop_blocks(tx.conn, [c.id for c in shown])
-        if not shown:
+            reason = comment_text.stop_reason(shown, total) if shown else None
+            messages = await self._stop_message_text(tx, session, reason)
+        if not shown and not messages:
             self._stop_blocks.pop(session.id, None)
             return None
         self._stop_blocks[session.id] = blocks + 1
-        return {"decision": "block", "reason": comment_text.stop_reason(shown, total)}
+        text = "\n".join(part for part in (reason, messages) if part)
+        return {"decision": "block", "reason": text}
 
     async def wait_for_comments(
         self,
@@ -1843,7 +1904,8 @@ class Service:
         poll: float = 1.0,
         gone: Callable[[], Awaitable[bool]] | None = None,
     ) -> str | None:
-        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment arrives
+        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment or a
+        session message arrives
         for the idle, exactly linked session of `payload`, mark it delivered and return the
         text for the agent. None when the time is up, the session is not idle (its own hooks
         deliver then), a newer wait for the same session started, or `gone()` says the hook
@@ -1871,8 +1933,10 @@ class Service:
                 if current.status != "idle" or session.id in self._stop_blocks:
                     continue
                 shown, total = await self._take_undelivered(current)
-                if shown:
-                    return comment_text.delivery_text(shown, total)
+                parts = [comment_text.delivery_text(shown, total)] if shown else []
+                parts += await self._message_parts(current, *parts)
+                if parts:
+                    return "\n".join(parts)
             return None
         finally:
             if self._waiters.get(session.id) == me:
@@ -1933,6 +1997,7 @@ class Service:
             ),
             await self._concurrency_over(now),
             self.max_concurrent_sessions,
+            await repo.open_message_loops(self._r),
         )
 
     def update_notice(self) -> updates.UpdateNotice | None:
@@ -1969,7 +2034,8 @@ class Service:
         for task in await repo.list_tasks(self._r, session_ids=list(bound)):
             if task.session_id is not None:
                 bound[task.session_id].append(task)
-        return [SessionRow(s, bound[s.id]) for s in sessions]
+        unread = await repo.unread_session_message_counts(self._r, list(bound))
+        return [SessionRow(s, bound[s.id], unread.get(s.id, 0)) for s in sessions]
 
     async def activity(
         self,
@@ -2551,7 +2617,7 @@ class Service:
             if scope != "all" and not (needed or "").strip():
                 raise ValidationError(f"scope {scope} needs its {scope} named.")
             target = (
-                await self._named_session(tx.conn, target_session or "")
+                await self._brake_target(tx.conn, target_session or "")
                 if scope == "session"
                 else None
             )
@@ -2594,7 +2660,7 @@ class Service:
             )
 
     @staticmethod
-    async def _named_session(conn: aiosqlite.Connection, ref: str) -> Session:
+    async def _brake_target(conn: aiosqlite.Connection, ref: str) -> Session:
         """The one session a name, external id, alias or Claude Code id names. Never upserts: a
         misspelt name must not brake a new, empty session."""
         text = ref.strip()
@@ -2949,6 +3015,7 @@ class Service:
                 (s for s in await self.budget_states(task=task.key) if s.budget.task_id == task.id),
                 None,
             ),
+            messages=await repo.list_session_messages(self._r, task_id=task.id, limit=50),
         )
 
     async def _bind_choices(self, task: Task, limit: int = 40) -> list[Session]:
@@ -5153,6 +5220,365 @@ class Service:
     ) -> tuple[Task, list[Comment]]:
         task = await self.get_task(ref)
         return task, await repo.list_comments(self._r, task.id, unread_only=unread_only)
+
+    # --- session messages --------------------------------------------------
+
+    async def _message_caller(
+        self,
+        tx: _Tx,
+        session: str | None,
+        title: str | None,
+        hook_session: str | None,
+        *,
+        create: bool = True,
+    ) -> tuple[Session, bool]:
+        """Who writes, and whether its hook link proves it. Every session the name may mean counts,
+        desktop titles too: a live, exactly linked one is only itself with that link's id, and an
+        id a live session linked belongs to that session. All clients share one token, so this
+        stops mistakes and casual impersonation, it is not access control; a message never grants
+        anything, and a name no hook proved is framed as not verified. `create`: a new name may
+        become a row (a send), or it is an error (an ack)."""
+        cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
+        value = intake.one_line(_clean_text(session, "session", NAME_MAX)) or None
+        if value is None and cc_id is None:
+            raise ValidationError(
+                "Say who is calling: pass session, and hook_session if the session start gave you"
+                " one."
+            )
+        holder = await repo.get_session_by_cc(tx.conn, cc_id) if cc_id else None
+        if value is None and holder is None:
+            raise ValidationError(f"Hook session {cc_id} is not known yet: pass session too.")
+        if value is None:
+            matches = [holder]
+        else:
+            matches = await repo.find_sessions(tx.conn, parse_session_id(value) or value)
+        proven = [s for s in matches if _hook_proven(s)]
+        own = next((s for s in proven if s.cc_session_id == cc_id), None)
+        if proven and own is None:
+            raise ValidationError(
+                f"{proven[0].name} is a live session with its own hook link: pass its hook_session."
+                " A session message cannot be written in another session's name. If that is you"
+                " after a restart with no session end, any other write with session and your new"
+                " hook_session (report_add, task_update) moves the link."
+            )
+        if holder is not None and _hook_proven(holder) and own is None:
+            raise ValidationError(
+                f"That hook_session belongs to another session ({holder.name}). Pass your own."
+            )
+        row = own or await self._message_row(tx.conn, value, matches)
+        if row is None:
+            if not create:
+                raise NotFoundError(f"No session called {value!r}. Nothing was acknowledged.")
+            caller = await self._session(tx, value, title, cc_id)
+        elif value is None:
+            assert cc_id is not None
+            caller = await self._link_hook_session(tx, row, cc_id)
+        else:
+            caller = await self._session(tx, row.external_id or value, title, cc_id)
+        assert caller is not None
+        return caller, _hook_proven(caller) and caller.cc_session_id == cc_id
+
+    async def _message_row(
+        self, conn: aiosqlite.Connection, value: str | None, matches: list[Session]
+    ) -> Session | None:
+        """The one row a caller's name means, none of them live. Its plain name or alias goes
+        first, as on every other write; desktop titles may repeat, and then only the id says."""
+        known = await self._known_session(value, conn) if value else None
+        if known is not None or len(matches) < 2:
+            return known or (matches[0] if matches else None)
+        ids = ", ".join(s.external_id or s.name for s in matches)
+        raise ValidationError(f"{len(matches)} sessions are called {value!r}: {ids}.")
+
+    async def _named_session(self, conn: aiosqlite.Connection, ref: str, field: str) -> Session:
+        """The one session a name, desktop id, alias or hook session id names, without creating
+        or touching a row. None or several: an error that says so."""
+        text = _clean_text(ref, field, CC_ID_MAX)
+        if text is None:
+            raise ValidationError(f"{field} must not be empty.")
+        external_id = parse_session_id(text)
+        found = await repo.find_sessions(conn, external_id or text)
+        if not found:
+            by_cc = await repo.get_session_by_cc(conn, text)
+            found = [by_cc] if by_cc else []
+        if not found:
+            raise NotFoundError(f"No session called {text!r}. Nothing was sent or listed.")
+        if len(found) > 1:
+            names = ", ".join(
+                f"{s.external_id or 'a plain session, reach it through its task'}"
+                f" ({s.status or 'no hook status'})"
+                for s in found
+            )
+            raise ValidationError(f"{len(found)} sessions are called {text!r}: {names}.")
+        return found[0]
+
+    async def _message_recipient(
+        self,
+        tx: _Tx,
+        to: str | None,
+        task: Task | None,
+        parent: SessionMessage | None,
+        sender: Session,
+    ) -> Session:
+        """`to`; a reply goes to the other side of the message it answers; else the session
+        bound to `task`."""
+        if to:
+            return await self._named_session(tx.conn, to, "to")
+        other_id = None
+        if parent is not None:
+            mine = parent.recipient_session_id == sender.id
+            other_id = parent.sender_session_id if mine else parent.recipient_session_id
+        elif task is not None:
+            other_id = await repo.open_binding(tx.conn, task.id)
+            if other_id is None:
+                raise ValidationError(f"No session is bound to {task.key}: name one with to.")
+        else:
+            raise ValidationError("Say who it is for: pass to, or task for its bound session.")
+        found = await repo.get_session_by_id(tx.conn, other_id) if other_id else None
+        if found is None:
+            raise ValidationError("That session's row is gone: name the recipient with to.")
+        return found
+
+    async def _message_event(
+        self, tx: _Tx, kind: str, actor: str, message: SessionMessage, session: Session
+    ) -> None:
+        """Marks and names only: the text is in the message row, not in the event feed."""
+        about: dict[str, Any] = {"project_id": session.project_id}
+        if message.task_id is not None:
+            about = {
+                "project_id": message.task_project_id,
+                "task_id": message.task_id,
+                "project": message.project_slug,
+                "key": message.task_key,
+                "stage": message.task_stage,
+            }
+        await tx.event(
+            kind,
+            actor,
+            session_id=session.id,
+            message_id=message.id,
+            sender=message.sender_name,
+            recipient=message.recipient_name,
+            **about,
+        )
+
+    async def _read_session_messages(
+        self, tx: _Tx, messages: list[SessionMessage], reader: Session, verified: bool
+    ) -> list[int]:
+        unread = [m for m in messages if m.read_at is None]
+        if not unread:
+            return []
+        await repo.mark_session_messages_read(
+            tx.conn, [m.id for m in unread], tx.now, verified=verified
+        )
+        for message in unread:
+            await self._message_event(tx, "message.read", reader.name, message, reader)
+        return [m.id for m in unread]
+
+    async def send_session_message(
+        self,
+        body: Any,
+        *,
+        to: str | None = None,
+        task: str | int | None = None,
+        in_reply_to: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[SessionMessage, str]:
+        """A message to another session; returns it and an honest line on when it can arrive.
+        A reply over the depth limit is refused and shown in the Inbox, so that mark commits
+        and the error follows it."""
+        text = _clean_message(body)
+        refused = None
+        async with self._tx() as tx:
+            sender, verified = await self._message_caller(tx, session, session_title, hook_session)
+            parent = None
+            if in_reply_to is not None:
+                parent = await repo.get_session_message(tx.conn, in_reply_to)
+                if parent is None:
+                    raise NotFoundError(f"Session message #{in_reply_to} not found.")
+                if sender.id not in (parent.sender_session_id, parent.recipient_session_id):
+                    raise ValidationError(
+                        f"Session message #{in_reply_to} is between {parent.sender_name} and"
+                        f" {parent.recipient_name}: {sender.name} cannot answer it."
+                    )
+            row = await self.get_task(task, tx.conn) if task else None
+            recipient = await self._message_recipient(tx, to, row, parent, sender)
+            if recipient.id == sender.id:
+                raise ValidationError("A session cannot send a message to itself.")
+            if row is None and parent is not None and parent.task_id is not None:
+                row = await self.get_task(parent.task_id, tx.conn)
+            project = await self.get_project(row.project_slug, tx.conn) if row else None
+            _scan(await self._secret_rules(tx.conn, project), body=text)
+            start = datetime.now(UTC) - timedelta(seconds=message_text.RATE_SECONDS)
+            sent = await repo.session_messages_sent_since(
+                tx.conn, sender.id, start.isoformat(timespec="milliseconds")
+            )
+            if sent >= message_text.RATE_MAX:
+                raise ValidationError(
+                    f"Too many session messages: at most {message_text.RATE_MAX} per sender per"
+                    " minute. Is this a loop? Wait, or ask the owner."
+                )
+            if parent is not None and parent.depth >= message_text.DEPTH_MAX:
+                refused = (
+                    f"Reply refused: the thread of #{parent.id} is {parent.depth} replies deep,"
+                    f" the limit is {message_text.DEPTH_MAX}. This looks like a loop; the owner"
+                    " sees it in the Inbox. Stop answering, or start over with the owner's word."
+                )
+                if await repo.stop_message_loop(tx.conn, parent.id, tx.now):
+                    await self._message_event(
+                        tx, "message.loop_stopped", sender.name, parent, sender
+                    )
+            else:
+                message_id = await repo.insert_session_message(
+                    tx.conn,
+                    sender=sender,
+                    verified=verified,
+                    recipient=recipient,
+                    task_id=row.id if row else None,
+                    body_md=text,
+                    in_reply_to=parent.id if parent else None,
+                    depth=parent.depth + 1 if parent else 0,
+                    now=tx.now,
+                )
+                saved = await repo.get_session_message(tx.conn, message_id)
+                assert saved is not None
+                await self._message_event(tx, "message.sent", sender.name, saved, sender)
+                # The Map draws an edge from this event, as for a desktop SendMessage.
+                await tx.event(
+                    "session.message",
+                    sender.name,
+                    project_id=row.project_id if row else sender.project_id,
+                    session_id=sender.id,
+                    session=sender.name,
+                    to=recipient.name,
+                )
+                # The same rule as message_ack: an exact link has to be proven.
+                mine = parent is not None and parent.recipient_session_id == sender.id
+                if mine and (verified or not sender.cc_exact):
+                    await self._read_session_messages(tx, [parent], sender, verified)
+        if refused is not None:
+            raise ValidationError(refused)
+        if not verified:
+            _note(
+                "Warning: your name is not verified, the recipient is told so: pass your own"
+                " hook_session from the session start."
+            )
+        return saved, _message_arrival(recipient)
+
+    async def ack_session_messages(
+        self,
+        *,
+        message_id: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> list[int]:
+        """Mark messages to the caller read: one by id, or all unread ones. Returns those that
+        were unread. It creates no row. A session with an exact link has to prove it, or a
+        message acknowledged in its name would never be handed over when it comes back; a
+        row that never linked can only be believed, and the mark says so."""
+        async with self._tx() as tx:
+            caller, verified = await self._message_caller(
+                tx, session, session_title, hook_session, create=False
+            )
+            if not verified and caller.cc_exact:
+                raise ValidationError(
+                    f"{caller.name} has an exact hook link that this call does not prove: pass"
+                    " its live hook_session. A message cannot be acknowledged in another"
+                    " session's name."
+                )
+            if message_id is None:
+                targets = await repo.unread_session_messages(tx.conn, caller.id)
+            else:
+                message = await repo.get_session_message(tx.conn, message_id)
+                if message is None:
+                    raise NotFoundError(f"Session message #{message_id} not found.")
+                if message.recipient_session_id != caller.id:
+                    raise ValidationError(
+                        f"Session message #{message_id} is for {message.recipient_name}, not for"
+                        f" {caller.name}."
+                    )
+                targets = [message]
+            return await self._read_session_messages(tx, targets, caller, verified)
+
+    async def list_session_messages(
+        self,
+        session: str,
+        *,
+        box: str = "inbox",
+        unread_only: bool = False,
+        task: str | int | None = None,
+        limit: int = 50,
+    ) -> tuple[Session, list[SessionMessage]]:
+        """A session's messages, newest first. Reading delivers and acknowledges nothing."""
+        if box not in message_text.BOXES:
+            raise ValidationError(f"box must be one of: {', '.join(message_text.BOXES)}.")
+        found = await self._named_session(self._r, session, "session")
+        row = await self.get_task(task) if task else None
+        items = await repo.list_session_messages(
+            self._r,
+            recipient_id=found.id if box == "inbox" else None,
+            sender_id=found.id if box == "sent" else None,
+            task_id=row.id if row else None,
+            unread_only=unread_only,
+            limit=max(1, min(limit, message_text.LIST_MAX)),
+        )
+        return found, items
+
+    async def session_messages_page(
+        self, *, session_id: int | None = None, before_id: int | None = None, limit: int = 50
+    ) -> list[SessionMessage]:
+        """The board's list, newest first."""
+        return await repo.list_session_messages(
+            self._r, either_id=session_id, before_id=before_id, limit=limit
+        )
+
+    async def dismiss_message_loop(self, message_id: int, *, actor: str) -> None:
+        """The owner has seen a stopped loop: its Inbox line goes."""
+        async with self._tx() as tx:
+            message = await repo.get_session_message(tx.conn, message_id)
+            if message is None:
+                raise NotFoundError(f"Session message #{message_id} not found.")
+            await repo.dismiss_message_loop(tx.conn, message_id, tx.now)
+            await tx.event("message.loop_dismissed", actor, message_id=message_id)
+
+    async def _message_parts(self, session: Session, *taken: str) -> list[str]:
+        """What is waiting for an exactly linked session, as parts of a hook answer: messages share
+        what `taken` (comments, warnings, a reminder) left of the answer."""
+        if not await repo.undelivered_session_messages(self._r, session.id):
+            return []  # the common case: no write transaction per tool call
+        budget = CONTEXT_MAX - sum(len(t) + 1 for t in taken)
+        async with self._tx() as tx:
+            waiting = await repo.undelivered_session_messages(tx.conn, session.id)
+            shown = message_text.fit(waiting, budget, alone=not taken)
+            await self._deliver_session_messages(tx, session, shown)
+        return [message_text.delivery_text(shown, len(waiting))] if shown else []
+
+    async def _deliver_session_messages(
+        self, tx: _Tx, session: Session, messages: list[SessionMessage]
+    ) -> None:
+        if not messages:
+            return
+        await repo.mark_session_messages_delivered(tx.conn, [m.id for m in messages], tx.now)
+        for message in messages:
+            await self._message_event(tx, "message.delivered", session.name, message, session)
+
+    async def _stop_message_text(self, tx: _Tx, session: Session, taken: str | None) -> str | None:
+        """The messages a Stop block shows, each at most STOP_MESSAGE_CAP times in all."""
+        unread = await repo.unread_session_messages(tx.conn, session.id)
+        due = [m for m in unread if m.stop_blocks < message_text.STOP_MESSAGE_CAP]
+        budget = CONTEXT_MAX - (len(taken) + 1 if taken else 0)
+        shown = message_text.fit(due, budget, alone=not taken)
+        if not shown:
+            return None
+        await self._deliver_session_messages(tx, session, [m for m in shown if not m.delivered_at])
+        await repo.count_session_message_stop_blocks(tx.conn, [m.id for m in shown])
+        return message_text.stop_reason(shown, len(unread))
+
+    async def _stop_message_due(self, conn: aiosqlite.Connection, session: Session) -> bool:
+        unread = await repo.unread_session_messages(conn, session.id)
+        return any(m.stop_blocks < message_text.STOP_MESSAGE_CAP for m in unread)
 
     # --- intake: messages from chats and mailboxes -----------------------------------------
 
