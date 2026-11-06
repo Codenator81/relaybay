@@ -967,16 +967,24 @@ class _Planner:
             if secret:
                 self.add("backlog", name, source, "refused", secret)
                 continue
-            status, reason = backlog.parse_decision(row.decision)
+            status, detail = backlog.parse_decision(row.decision)
             origin = row.origin if row.origin in backlog.ORIGINS else "owner"
             values = {"title": row.title, "area": (row.area or "").lower() or None}
-            values |= {"origin": origin, "status": status, "reason": reason}
+            values |= {"origin": origin, "status": status}
+            done = status == "done"
+            values |= {"reason": None if done else detail, "link": detail if done else None}
             tracked = self.tracked.get(("backlog", name)) or renamed.get(name)
             target = current.get(tracked.target_id) if tracked else None
             if tracked is None:
                 target = untracked.get(name)
             target_hash = backlog_hash(target) if target else ""
-            content = text_hash(*(values[k] for k in BACKLOG_FIELDS))
+            content = text_hash(
+                values["title"],
+                values["area"],
+                origin,
+                status,
+                _decision_detail(status, values["reason"], values["link"]),
+            )
             if target is not None and target.task_id is not None and status != "planned":
                 detail = f"planned on the board as {target.task_key}; an import never moves it back"
                 self.add("backlog", name, source, "skipped", detail)
@@ -1039,11 +1047,15 @@ class _Planner:
             await self._document(slug, "retro", file, "retro")
 
 
-BACKLOG_FIELDS = ("title", "area", "origin", "status", "reason")
+def _decision_detail(status: str, reason: str | None, link: str | None) -> str | None:
+    """What the decision cell says besides the status: a done item's link, else the reason.
+    Hashes of the other statuses stay as older imports recorded them."""
+    return link if status == "done" else reason
 
 
 def backlog_hash(item: BacklogItem) -> str:
-    return text_hash(item.title, item.area, item.origin, item.status, item.decline_reason)
+    detail = _decision_detail(item.status, item.decline_reason, item.link)
+    return text_hash(item.title, item.area, item.origin, item.status, detail)
 
 
 def _backlog_problem(row: BacklogRow) -> str | None:

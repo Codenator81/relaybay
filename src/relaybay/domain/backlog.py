@@ -5,14 +5,17 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-STATUSES = ("new", "later", "planned", "declined")
+STATUSES = ("new", "later", "planned", "done", "declined")
+OPEN_STATUSES = ("new", "later")
 ORIGINS = ("session", "review", "intake", "owner")
 # Statuses a coordinator may set over MCP: `planned` only comes from "To plan" on the board.
-MCP_STATUSES = ("new", "later", "declined")
+MCP_STATUSES = ("new", "later", "done", "declined")
 TITLE_MAX = 200
 BODY_MAX = 20000
 AREA_MAX = 60
 REASON_MAX = 500
+LINK_MAX = 500
+LINK_RE = re.compile(r"https?://[^\s<>\"'|]+", re.IGNORECASE)  # use fullmatch
 LIST_MAX = 500
 FROM_BACKLOG = "From backlog #{id}"
 
@@ -33,7 +36,8 @@ class BacklogItem:
     origin_session_name: str | None
     intake_message_id: int | None
     status: str
-    decline_reason: str | None
+    decline_reason: str | None  # why declined; for done, an optional note
+    link: str | None  # done: where it was fixed (a pull request, a commit)
     task_id: int | None
     task_key: str | None
     decided_at: str | None
@@ -46,11 +50,14 @@ class BacklogItem:
         """The `decision` column of backlog.md: empty for new."""
         if self.status == "declined":
             return f"declined: {self.decline_reason or ''}".rstrip()
+        if self.status == "done":
+            return f"done: {self.link}" if self.link else "done"
         return "" if self.status == "new" else self.status
 
 
 def parse_decision(text: str) -> tuple[str, str | None]:
-    """(status, decline reason) from a backlog.md decision cell; ValueError names what is wrong."""
+    """(status, detail) from a backlog.md decision cell: the detail is the reason of a declined
+    row and the link of a done one. ValueError names what is wrong."""
     value = text.strip()
     if not value or value.lower() == "new":
         return "new", None
@@ -61,10 +68,16 @@ def parse_decision(text: str) -> tuple[str, str | None]:
         if not reason:
             raise ValueError("a declined row needs a reason: 'declined: <reason>'")
         return "declined", reason
+    if head == "done":
+        link = rest.strip() or None
+        if link is not None and (len(link) > LINK_MAX or not LINK_RE.fullmatch(link)):
+            raise ValueError(f"a done row's link must be an http(s) link, got {link!r}")
+        return "done", link
     if head in ("later", "planned") and not rest.strip():
         return head, None
     raise ValueError(
-        f"unknown decision {value!r}: use planned, later, 'declined: <reason>' or empty"
+        f"unknown decision {value!r}: use planned, later, done, 'done: <link>',"
+        " 'declined: <reason>' or empty"
     )
 
 

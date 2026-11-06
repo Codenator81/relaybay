@@ -607,7 +607,7 @@ async def test_upgrade_from_0019_keeps_documents(tmp_path: Path) -> None:
         await service.close()
     conn = await connect(db)
     try:
-        assert await migrate(conn) == LATEST == 22
+        assert await migrate(conn) == LATEST == 23
     finally:
         await conn.close()
     with sqlite3.connect(db) as raw:

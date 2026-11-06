@@ -1291,7 +1291,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     async def backlog_list(
         project: Annotated[str | None, Field(description="Project slug. Optional.")] = None,
         status: Annotated[
-            str | None, Field(description="new, later, planned or declined. Optional.")
+            str | None,
+            Field(description="new, later, planned, done or declined. Optional."),
         ] = None,
         area: Annotated[str | None, Field(description="Area. Optional.")] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="At most this many.")] = 50,
@@ -1308,11 +1309,18 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         status: Annotated[
             str | None,
             Field(
-                description="new, later or declined (with reason); coordinator sessions only."
-                " planned is never set here: the owner's 'To plan' creates the task."
+                description="new, later, done (fixed without a task of its own, with an"
+                " optional link) or declined (with reason); coordinator sessions only. planned"
+                " is never set here: the owner's 'To plan' creates the task."
             ),
         ] = None,
-        reason: Annotated[str | None, Field(description="Why, required to decline.")] = None,
+        reason: Annotated[
+            str | None, Field(description="Why, required to decline; a note for done.")
+        ] = None,
+        link: Annotated[
+            str | None,
+            Field(description="With status done: where it was fixed, an http(s) link (a PR)."),
+        ] = None,
         title: Annotated[str | None, Field(description="New title.")] = None,
         body: Annotated[str | None, Field(description="New body, markdown." + CLEARS)] = None,
         area: Annotated[str | None, Field(description="New area." + CLEARS)] = None,
@@ -1328,6 +1336,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 item,
                 status=status,
                 reason=reason,
+                link=link or None,
                 title=title,
                 body=cleared(body),
                 area=cleared(area),

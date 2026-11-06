@@ -51,12 +51,19 @@ own integration on the machine: safely, only on an explicit command or button.
 - **SessionEnd** unbinds every session kind, for every end reason.
 - The minimum Claude Code version for http hooks is not stated in the hooks reference; 2.1.63 is
   used (unverified).
+- **Retry and spool for state-bearing events.** A todo change was lost on a slow moment, so
+  the forwarder now tells the guard and activity pings (one 0.3 s try, as before) from events that
+  carry state (start and end, prompt, notification, Stop, a todo tool's change): those get one
+  retry within 2 s and, without an answer, go to a bounded `hook-spool.jsonl` in the config
+  folder that the next run sends first. The server takes a replay at its own time and skips one
+  older than the session's last change, so an old `SessionEnd` never ends a new start; a replay
+  gets no answer and takes no comments. http hooks are not retried or spooled.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| Hooks slow down or break sessions when relaybay is down | 0.3 s per network step, silent failure, exit 0; test against a stopped server |
+| Hooks slow down or break sessions when relaybay is down | 0.3 s for the guard and tool calls, at most 2 s for a state-bearing event (only the first while the server is down), silent failure, exit 0; test against a stopped and a hung server |
 | Setup damages the user's settings | Backup first, marked merge, refuses invalid JSON, plan hash, idempotent; tests only on temporary homes |
 | Wrong card shows a session's status | Exact `hook_session` linking; no guess when ambiguous |
 | Token leaks into settings files | Command hook reads the token file; http hooks reference an environment variable |

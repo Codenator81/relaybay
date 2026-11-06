@@ -305,8 +305,10 @@ link guessed from the folder, an unlinked or ended session never gets comment te
   `events_since` and can forward it; with the opt-in wake-up hook (`relaybay setup --wake`, below) the
   comment wakes the idle session itself.
 
-The command hook prints the server's answer only when it is a `200` with a JSON object, and still
-exits 0 within 0.3 s per network step; http hooks get the same JSON body.
+The command hook prints the server's answer only when it is a `200` with a JSON object and always
+exits 0; http hooks get the same JSON body. State-bearing events the server did not take wait in a
+spool and are sent first by a later run ([SPEC §4](SPEC.md#spec-hooks-spool)); a replayed event
+gets no comments.
 
 **Wake-up hook (opt-in).** `relaybay setup --apply --wake` adds a separate command hook
 to `Stop` with `"asyncRewake": true` and a 1800 s `timeout`:
@@ -440,8 +442,8 @@ e-mail](how-to/intake.md)); findings for later go on the backlog. Behaviour:
 | `intake_propose` | `message`, `project`, `title`, `description?` | Adds a backlog item with origin `intake` (the message text as body by default). Only the owner's **To plan** creates the task. |
 | `intake_sources` | — | The sources with their trust and message counts. |
 | `backlog_add` | `project`, `title`, `body?`, `area?`, `task?`, `session?`, `session_title?`, `hook_session?` | A finding outside your task (a bug, a missing feature, a question for later): status `new`, origin `session`, the origin task when `task` is passed. Secret values are refused. |
-| `backlog_list` | `project?`, `status?` (`new`, `later`, `planned`, `declined`), `area?`, `limit?` (default 50) | Items, new first: `#7 acme-shop [cart] Title · session from acme-shop-3 by dev · new · 2026-11-05`. |
-| `backlog_update` | `item`, `status?`, `reason?`, `title?`, `body?`, `area?`, `session?`, `session_title?`, `hook_session?` | Title, body and area: the session that added the item, while it is new. Status (`new`, `later`, `declined` with a reason): coordinator sessions named in the config only. `planned` is never set here: the owner's **To plan** creates the task. |
+| `backlog_list` | `project?`, `status?` (`new`, `later`, `planned`, `done`, `declined`), `area?`, `limit?` (default 50) | Items, new first: `#7 acme-shop [cart] Title · session from acme-shop-3 by dev · new · 2026-11-05`; a done item `… · done: <note> (<link>) · …`. |
+| `backlog_update` | `item`, `status?`, `reason?`, `link?`, `title?`, `body?`, `area?`, `session?`, `session_title?`, `hook_session?` | Title, body and area: the session that added the item, while it is new. Status (`new`, `later`, `done` for a finding fixed without a task of its own, with an optional `link` such as the pull request and `reason` as a note, `declined` with a reason): coordinator sessions named in the config only. `planned` is never set here: the owner's **To plan** creates the task. |
 
 Whether a source may wake agents and the autonomy switches of projects and tasks change **only on
 the board** (cookie and CSRF): no MCP client can trust a source or turn autonomy on. When the owner

@@ -570,7 +570,7 @@ Backlog items, new first.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | string or null | no | Project slug. Optional. |
-| `status` | string or null | no | new, later, planned or declined. Optional. |
+| `status` | string or null | no | new, later, planned, done or declined. Optional. |
 | `area` | string or null | no | Area. Optional. |
 | `limit` | integer | no | At most this many. Default: `50`. |
 
@@ -581,8 +581,9 @@ Change a backlog item. Its title, body and area: the session that added it, whil
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `item` | integer | yes | The item's number, e.g. 7. |
-| `status` | string or null | no | new, later or declined (with reason); coordinator sessions only. planned is never set here: the owner's 'To plan' creates the task. |
-| `reason` | string or null | no | Why, required to decline. |
+| `status` | string or null | no | new, later, done (fixed without a task of its own, with an optional link) or declined (with reason); coordinator sessions only. planned is never set here: the owner's 'To plan' creates the task. |
+| `reason` | string or null | no | Why, required to decline; a note for done. |
+| `link` | string or null | no | With status done: where it was fixed, an http(s) link (a PR). |
 | `title` | string or null | no | New title. |
 | `body` | string or null | no | New body, markdown. '-' or '' clears it. |
 | `area` | string or null | no | New area. '-' or '' clears it. |

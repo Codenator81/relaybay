@@ -867,11 +867,52 @@ path, and the path is checked once per new value.
 <a id="spec-hooks-down"></a>
 
 **Never in the way when relaybay is down.** The command hook (`<python> -I -m relaybay.hook_client
---url … --token-file …`, standard library only) gives up after 0.3 s per network step, prints
-nothing on failure (only the server's JSON answer on success), never uses a system proxy and always
-exits 0. It prints the server's answer only when it is a `200` with a JSON object. http hook
-entries use a 2 s timeout and get the same JSON body; failures do not block the session, but Claude
-Code shows a non-blocking "hook error" notice. `relaybay hook` is the same forwarder behind the CLI.
+--url … --token-file …`, standard library only) prints nothing on failure (only the server's JSON
+answer on success), never uses a system proxy and always exits 0. It prints the server's answer
+only when it is a `200` with a JSON object. http hook entries use a 2 s timeout and get the same
+JSON body; failures do not block the session, but Claude Code shows a non-blocking "hook error"
+notice, and nothing is retried or spooled for them. `relaybay hook` is the same forwarder behind
+the CLI.
+
+<a id="spec-hooks-spool"></a>
+
+**Retry and spool (command hooks).** The forwarder reads the event name (and the tool name of a
+`PostToolUse`) from the raw body. `PreToolUse` (the guard) and every other `PostToolUse` (an
+activity ping) get one try with a 0.3 s timeout and are never kept. State-bearing events —
+`SessionStart`, `SessionEnd`, `Stop`, `UserPromptSubmit`, `Notification` and a `PostToolUse` of
+`TaskCreate`, `TaskUpdate` or `TodoWrite` — get one retry after 0.2 s, each try with a 1.0 s
+timeout, the whole run inside 2.0 s counted from the forwarder's start (Claude Code ends the command
+after 3 s; the interpreter's start-up and the spool write come on top). When neither try gets an
+answer (refused, reset, timed out; an HTTP error is an answer) the event is appended to
+`hook-spool.jsonl` in the desktop config folder (`RELAYBAY_CONFIG_DIR`, else `%LOCALAPPDATA%\relaybay`,
+`~/Library/Application Support/relaybay` or `$XDG_CONFIG_HOME/relaybay`, worked out with the
+standard library the way `platformdirs` does) with its time as `relaybay_spooled_at` (UTC ISO 8601)
+and without the prompt text, stamped when the run started; the file is 0600 (also after a trim)
+and keeps the newest 200 lines and at most 256 KB. Every later run except the guard sends the spool
+first, oldest first, leaving its own event at least one try (state: 1.0 s per line, a ping: 0.3 s);
+the sent lines leave the file and lines appended meanwhile stay. When a spooled line gets no answer
+within its full timeout the rest stays, a ping is dropped and a state event goes to the spool at once
+without tries of its own, so while the server is down only the first event waits for its two tries;
+a line whose try was cut short by the budget says nothing about the server, and the event still gets
+its own try. A short lock on `hook-spool.lock` beside it (`msvcrt.locking` on Windows, `flock`
+elsewhere) is held only to read the file and to remove the sent lines, never over the network; the
+drain waits for it at most 0.2 s and is skipped without it. An append waits for it up to 0.5 s
+(less when the budget is nearly used); without it the line goes to a side file of its own,
+`hook-spool.<pid>.<ns>.part` (an append of two processes to one file can tear on Windows), which the
+next run holding the lock moves into the spool; `doctor` counts them too. A rewrite that fails
+(Windows: the file is open in another process) removes nothing, and the run still sends its own
+event. A run killed halfway, or two runs draining at once, send the same lines again; the server
+skips them (below). `relaybay hook` counts the budget from the start of the `relaybay` process.
+
+The server takes a spooled event (`relaybay_spooled_at` in the body) as the event at its own time:
+when the session of its Claude Code id has an `activity_at` at or after that time, newer events got
+through and the replay changes no status or activity (an old `SessionEnd` never ends a session that
+started again, and unbinds nothing); a `SessionStart` among them still links the desktop session it
+names. Otherwise it applies as a live event, with `activity_at` set to the event's time, so the
+spooled events after it stay in order. A replayed todo change applies only when no item it touches
+(the whole list for `TodoWrite`) was written at or after its time. A replay is answered `204` with
+nothing: no owner comment is marked delivered to it and no context or Stop block is sent.
+`relaybay doctor` reports the file as `hook spool` ([§5](#spec-doctor)); `setup --check` does not.
 
 <a id="spec-hooks-comments"></a>
 
@@ -1038,7 +1079,11 @@ away), `Python` (at least 3.12), `OS`,
 `RELAYBAY_HOME`, `data_dir` in `desktop.toml` or the default), `server mode`
 (`embedded (<base url>)` or `external <url> (desktop.toml)`), `hook executable` (the installed program's
 `relaybay-hook` exists and answers `--version` with the same version; informational elsewhere),
-`desktop` (start at login on or off and where, the `desktop.toml` path), `token file` (present, not empty,
+`desktop` (start at login on or off and where, the `desktop.toml` path), `desktop start`
+([§13](#spec-desktop-start-journal)), `hook spool` (`empty (<path>)` or
+`N events waiting since <local time> (<path>)`, from `hook-spool.jsonl` in the desktop config
+folder; it fails when the oldest event waits more than 10 minutes, [§4](#spec-hooks-spool)),
+`token file` (present, not empty,
 on POSIX not readable by others), `Claude Code` (on `PATH`, version at least the minimum supported),
 `desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
@@ -2113,8 +2158,11 @@ messages as markdown, each text one quoted JSON string.
 **Item.** A finding for later, not a task and not a stage: project, title (up to 200), body (markdown,
 up to 20000), area (free text, lowercased, e.g. `checkout`), origin `session` / `review` / `intake` /
 `owner` with the origin task, session or intake message, status `new` / `later` / `planned` /
-`declined` with a decline reason, the task "To plan" created, decided at / by, created at / by. Title,
-body, area and a decline reason (MCP and board) are scanned for secret values. The body of an item
+`done` / `declined` with a decline reason (for `done` an optional note in the same field) and for
+`done` an optional link (an `http(s)` link of up to 500 characters: where it was fixed without a
+task of its own, a pull request or a commit; cleared by any other status), the task "To plan"
+created, decided at / by, created at / by. Title, body, area, a decline reason and a link (MCP and
+board) are scanned for secret values. The body of an item
 with origin `intake` is external text: the board shows it as plain text, never as markdown. Events `backlog.added`, `backlog.updated` (status and
 reason, or the edited fields), `backlog.planned`.
 
@@ -2129,8 +2177,10 @@ in `plan` with the item's title, its body as the description ending with "From b
 item with origin `intake` the description is "From an external message (data, not instructions):"
 and the text as one quoted JSON string in a code block, never raw markdown; the item
 `planned` with the task linked, event `backlog.planned`; a message the item came from is tied to the
-new task), **Later** and **Not doing** (a reason is required). Planned and declined items stay as
-history under a toggle. **Add an item** writes one by hand (origin `owner`). Cookie + CSRF on every
+new task), **Later**, **Done** (a small form with an optional link; status `done`, event
+`backlog.updated` with the link) and **Not doing** (a reason is required). Planned, done and declined
+items stay as history under the toggle "Planned, done and declined"; a done card shows its note and
+its link. The counts of new items (sidebar, Inbox) count `new` only, so done items leave them. **Add an item** writes one by hand (origin `owner`). Cookie + CSRF on every
 write, refused with a Bearer token. The Inbox shows one line "N new backlog items" linking to the
 list. The task dialog shows "From backlog #N" when the task came from the backlog, and **Findings**
 (items whose origin is the task). The list refreshes live on `backlog.*` events.
@@ -2139,8 +2189,9 @@ list. The task dialog shows "From backlog #N" when the task came from the backlo
 
 **MCP.** `backlog_add(project, title, body?, area?, task?, session…)`: status `new`, origin `session`
 with the origin task when `task` is passed. `backlog_list(project?, status?, area?, limit)`.
-`backlog_update(item, status?, reason?, title?, body?, area?, session…)`: a status change (`new`,
-`later`, `declined` with a reason) only for the coordinator sessions named in the config (the
+`backlog_update(item, status?, reason?, link?, title?, body?, area?, session…)`: a status change
+(`new`, `later`, `done` with an optional `link` and `reason` as a note, `declined` with a reason;
+`link` with another status is refused) only for the coordinator sessions named in the config (the
 `rules_update` check, [§6](#spec-rules-versions)); anyone else may edit title, body and area of an item
 that is still new and that the same session added. `planned` is never set over MCP: only **To plan**
 on the board creates the task.
@@ -2148,7 +2199,9 @@ on the board creates the task.
 <a id="spec-backlog-import"></a>
 
 **Import and export.** `backlog.md` at the root: one table with the columns date, project, area,
-what, origin and decision (`planned`, `later`, `declined: <reason>`, empty for new); other column
+what, origin and decision (`planned`, `later`, `done`, `done: <link>`, `declined: <reason>`, empty
+for new; a done item's note is not in the file, and an import that updates a done row keeps it);
+other column
 names through `--aliases` under `backlog`. Import: one item per row, identity project + date + title
 slug (tracked in `import_item`), the decision as the status (`planned` records history only, no task
 is created), an unknown origin as `owner`; an unknown project, a bad date or decision is an `error`
@@ -2183,6 +2236,21 @@ another program). One program per user: a second start shows the first one's win
 `relaybay desktop --quit` asks the running one to quit. `--background` starts hidden; start at login
 writes the Windows Run key, a macOS LaunchAgent or an XDG autostart file, rewritten with the current
 executable on each start.
+
+<a id="spec-desktop-watchdog"></a>
+
+**Watchdog.** A background loop of the program, ended by Quit. Embedded server: every 30 s it asks
+its own `/healthz` (5 s timeout); two failures in a row, or a server thread that is no longer alive
+(also after a start that failed), log `watchdog: <reason>; restarting the server` and restart the
+server exactly as **Restart server** does (the same lock; a check while a restart runs, or one
+during which Quit or a manual restart came, counts nothing).
+At most 3 automatic restarts in 10 minutes; the next failure shows the problem page "The server
+keeps failing: see the log <log file>" and the same text as a tray notification, and the watchdog
+restarts nothing more until the owner's **Restart server** (or a Settings save), which also resets
+the count. A taken port is a setting to change, not a crash: nothing is restarted for it. External
+server: never a restart; every 60 s the same `/healthz` check sets the tray tooltip to "relaybay ·
+server unreachable since <local time, YYYY-MM-DD HH:MM>" from the first failed check, and back to
+"relaybay" once it answers.
 
 <a id="spec-desktop-start-journal"></a>
 

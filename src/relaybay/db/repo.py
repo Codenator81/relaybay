@@ -3581,6 +3581,7 @@ def _backlog(row: aiosqlite.Row) -> BacklogItem:
         intake_message_id=row["intake_message_id"],
         status=row["status"],
         decline_reason=row["decline_reason"],
+        link=row["link"],
         task_id=row["task_id"],
         task_key=row["task_key"],
         decided_at=row["decided_at"],
@@ -3622,7 +3623,7 @@ async def list_backlog(
     task_id: int | None = None,
     limit: int = 200,
 ) -> list[BacklogItem]:
-    """`new` first, then later, planned and declined; newest first within a status."""
+    """`new` first, then later, planned and done, declined; newest first within a status."""
     where, params = [], []
     for column, value in (
         ("b.project_id", project_id),
@@ -3639,7 +3640,7 @@ async def list_backlog(
     sql = _BACKLOG_SELECT + (" WHERE " + " AND ".join(where) if where else "")
     order = (
         " ORDER BY CASE b.status WHEN 'new' THEN 0 WHEN 'later' THEN 1 WHEN 'planned' THEN 2"
-        " ELSE 3 END, b.id DESC LIMIT ?"
+        " WHEN 'done' THEN 2 ELSE 3 END, b.id DESC LIMIT ?"
     )
     return [_backlog(r) for r in await _all(conn, sql + order, (*params, limit))]
 

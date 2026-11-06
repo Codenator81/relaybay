@@ -21,6 +21,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `-` / percentage / `+` / Fit / 1:1 controls in the bar; drag to pan (the Select tool or one finger;
   the space bar or the middle button under a drawing tool). Markup stays on its spot at every scale,
   pins keep their size on screen.
+- Backlog: status `done` for a finding fixed without a task of its own, with an optional link (the
+  pull request) and note: **Done** on the board's cards, `backlog_update(status="done", link?)` for
+  coordinator sessions, `backlog_list(status="done")`. Done items go to the history ("Planned, done
+  and declined") and leave the new counts; `backlog.md` writes `done` or `done: <link>`. Migration
+  `0023` rebuilds `backlog_item` (rows kept).
+- Desktop program: a watchdog. The embedded server's `/healthz` is checked every 30 s; a dead server
+  thread or two failed checks in a row restart it like Restart server, at most 3 times in 10
+  minutes, then the problem page and a tray notification say "The server keeps failing: see the
+  log". With an external server nothing restarts; the tray tooltip says since when it is
+  unreachable.
+- `relaybay doctor`: a `hook spool` item, the hook events still waiting for the server.
 
 ### Changed
 
@@ -38,6 +49,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Review tab: the step's checkbox shows the hand cursor like its label.
 - Desktop program: after an update the board window that was open comes back; the Windows installer
   restarts the program with `--background`, which used to leave it in the tray.
+
+- Hook events that carry state (session start and end, a prompt, a notification, the end of a turn,
+  a todo change) are no longer lost when the server is slow or down for a moment: the command hook
+  retries them once within 2 s and otherwise keeps them in `hook-spool.jsonl` in the config folder
+  (200 lines or 256 KB, without the prompt text), which the next run sends first. A replayed event
+  older than what the session already has changes nothing, so a late `SessionEnd` never ends a
+  session that started again. Tool calls and the guard keep their single 0.3 s try. With an
+  external server, update the server together with the program: an older server takes a replayed
+  event as a live one.
+
 
 ## [0.6.2] - 2026-11-06
 

@@ -964,7 +964,8 @@ def event_detail(e: Event) -> str:
     if e.kind.startswith("backlog."):
         status = f" → {p['status']}" if p.get("status") else ""
         reason = f": {p['reason']}" if p.get("reason") else ""
-        return f"#{p.get('backlog_id')} {p.get('title') or ''}{status}{reason}"
+        link = f" ({p['link']})" if p.get("link") else ""
+        return f"#{p.get('backlog_id')} {p.get('title') or ''}{status}{reason}{link}"
     if e.kind == "comment.added":
         return f"#{p.get('comment_id')} {p.get('excerpt') or ''}".rstrip()
     if e.kind == "comment.delivered":
@@ -1132,8 +1133,10 @@ def backlog_line(b: BacklogItem) -> str:
     if b.origin_session_name:
         origin += f" by {b.origin_session_name}"
     status = b.status
-    if b.status == "declined" and b.decline_reason:
+    if b.status in ("declined", "done") and b.decline_reason:
         status += f": {b.decline_reason}"
+    if b.link:
+        status += f" ({b.link})"
     if b.task_key:
         status += f" as {b.task_key}"
     return f"#{b.id} {b.project_slug}{area} {b.title} · {origin} · {status} · {b.created_at[:10]}"

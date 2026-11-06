@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 from urllib.error import URLError
@@ -30,6 +31,9 @@ from relaybay.machine_setup import (
     write_change,
 )
 from relaybay.security import load_or_create_token, rotate_token, token_id
+
+# `relaybay hook` imports the forwarder late: its 2 s budget counts from here instead.
+STARTED = time.monotonic()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -432,7 +436,8 @@ def cmd_hook(settings: Settings) -> int:
     from relaybay import hook_client
 
     url = settings.base_url + HOOK_PATH
-    return hook_client.main(["--url", url, "--token-file", str(settings.token_path)])
+    args = ["--url", url, "--token-file", str(settings.token_path)]
+    return hook_client.main(args, STARTED)
 
 
 def cmd_desktop_config(args: argparse.Namespace) -> int:

@@ -192,7 +192,7 @@ QUIET_KINDS = ("session.status_changed",)
 
 
 BACKLOG_ROWS = 500
-BACKLOG_STATUSES = ("new", "later", "planned", "declined")
+BACKLOG_STATUSES = ("new", "later", "planned", "done", "declined")
 USAGE_ROWS = 500
 USAGE_DAYS = (7, 30, 90, 365, 0)
 CHART_WIDTH = 720
@@ -2420,7 +2420,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             project=project, status=status or None, area=area or None, limit=BACKLOG_ROWS
         )
         open_items = [b for b in items if b.status in ("new", "later")]
-        history = [b for b in items if b.status in ("planned", "declined")]
+        history = [b for b in items if b.status in ("planned", "done", "declined")]
         query = {"status": status, "area": area}
         live_query = {**query, "project": project or "", "history": "1" if show_history else ""}
         return {
@@ -2428,7 +2428,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "backlog_project": await service.get_project(project) if project else None,
             "open_items": open_items,
             "history": history,
-            "show_history": show_history or status in ("planned", "declined"),
+            "show_history": show_history or status in ("planned", "done", "declined"),
             "status_filter": status,
             "area_filter": area,
             "areas": await service.backlog_areas(project),
@@ -2503,14 +2503,17 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         item_id: int,
         decision: str,
         reason: Annotated[str, Form()] = "",
+        link: Annotated[str, Form()] = "",
         back: Annotated[str, Form()] = "",
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ) -> Response:
-        if decision not in ("plan", "later", "decline", "new"):
+        if decision not in ("plan", "later", "done", "decline", "new"):
             raise HTTPException(status_code=404)
 
         async def write() -> str:
-            item = await service.decide_backlog(item_id, decision, reason, actor="owner")
+            item = await service.decide_backlog(
+                item_id, decision, reason, link=link or None, actor="owner"
+            )
             if item.task_key:
                 return f"Backlog item #{item.id} planned as {item.task_key}."
             return f"Backlog item #{item.id}: {item.status}."
