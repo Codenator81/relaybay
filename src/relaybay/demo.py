@@ -666,6 +666,22 @@ async def seed_intake_and_backlog(service: Service) -> None:
     await service.decide_backlog(planned.id, "plan", actor="owner")
 
 
+async def seed_messages(service: Service) -> None:
+    """Two sessions talking: a question answered (and so read), the answer not delivered yet."""
+    question, _ = await service.send_session_message(
+        "Does the wishlist still call the old errors endpoint? I am about to remove it.",
+        to="wishlist-agent",
+        session="errors-agent",
+        hook_session=DEMO_TODO_HOOK,
+    )
+    await service.send_session_message(
+        "Yes, in one place. Give me an hour, I move it to /v2/errors first.",
+        in_reply_to=question.id,
+        session="wishlist-agent",
+        hook_session=DEMO_REVIEW_HOOK,
+    )
+
+
 async def _seed_new(db_path: Path) -> tuple[int, int]:
     service = Service(db_path)
     await service.start()
@@ -673,6 +689,7 @@ async def _seed_new(db_path: Path) -> tuple[int, int]:
         await seed(service)
         await seed_rules_and_filters(service)
         await seed_intake_and_backlog(service)
+        await seed_messages(service)
         # "To plan" in the backlog creates a task too: count what the board holds.
         tasks = len(await service.list_tasks(include_done=True))
         projects = len(await service.list_projects())

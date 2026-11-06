@@ -17,7 +17,7 @@ from relaybay.domain.environments import (
     Proposal,
     split_test_secrets,
 )
-from relaybay.domain.intake import IntakeMessage, IntakeSource
+from relaybay.domain.intake import IntakeMessage, IntakeSource, one_line
 from relaybay.domain.limits import Brake, TokenBudget
 from relaybay.domain.map_graph import CommentRow, MessageRow
 from relaybay.domain.memory import (
@@ -29,6 +29,7 @@ from relaybay.domain.memory import (
     stem,
     stem_text,
 )
+from relaybay.domain.messages import SessionMessage
 from relaybay.domain.models import (
     Binding,
     Comment,
@@ -1017,6 +1018,240 @@ async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> 
         (limit,),
     )
     return [_comment(r) for r in rows]
+
+
+# --- session message -------------------------------------------------------
+
+_SESSION_MESSAGE_SELECT = """
+SELECT m.*, t.key AS task_key, t.stage AS task_stage, t.project_id AS task_project_id,
+       p.slug AS project_slug, r.cc_exact AS recipient_exact, r.status AS recipient_status
+FROM session_message m
+LEFT JOIN task t ON t.id = m.task_id
+LEFT JOIN project p ON p.id = t.project_id
+LEFT JOIN session r ON r.id = m.recipient_session_id
+"""
+
+
+def _session_message(row: aiosqlite.Row) -> SessionMessage:
+    return SessionMessage(
+        id=row["id"],
+        sender_session_id=row["sender_session_id"],
+        sender_name=row["sender_name"],
+        sender_verified=bool(row["sender_verified"]),
+        recipient_session_id=row["recipient_session_id"],
+        recipient_name=row["recipient_name"],
+        task_id=row["task_id"],
+        body_md=row["body_md"],
+        in_reply_to=row["in_reply_to"],
+        depth=row["depth"],
+        created_at=row["created_at"],
+        delivered_at=row["delivered_at"],
+        read_at=row["read_at"],
+        read_verified=bool(row["read_verified"]),
+        stop_blocks=row["stop_blocks"],
+        loop_stopped_at=row["loop_stopped_at"],
+        task_key=row["task_key"],
+        task_stage=row["task_stage"],
+        task_project_id=row["task_project_id"],
+        project_slug=row["project_slug"],
+        recipient_exact=bool(row["recipient_exact"]),
+        recipient_status=row["recipient_status"],
+    )
+
+
+async def insert_session_message(
+    conn: aiosqlite.Connection,
+    *,
+    sender: Session,
+    verified: bool,
+    recipient: Session,
+    task_id: int | None,
+    body_md: str,
+    in_reply_to: int | None,
+    depth: int,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO session_message (sender_session_id, sender_name, sender_verified,"
+        " recipient_session_id, recipient_name, task_id, body_md, in_reply_to, depth, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            sender.id,
+            one_line(sender.name),
+            int(verified),
+            recipient.id,
+            one_line(recipient.name),
+            task_id,
+            body_md,
+            in_reply_to,
+            depth,
+            now,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_session_message(conn: aiosqlite.Connection, message_id: int) -> SessionMessage | None:
+    row = await _one(conn, _SESSION_MESSAGE_SELECT + " WHERE m.id = ?", (message_id,))
+    return _session_message(row) if row else None
+
+
+async def list_session_messages(
+    conn: aiosqlite.Connection,
+    *,
+    recipient_id: int | None = None,
+    sender_id: int | None = None,
+    either_id: int | None = None,
+    task_id: int | None = None,
+    unread_only: bool = False,
+    before_id: int | None = None,
+    limit: int = 50,
+) -> list[SessionMessage]:
+    """Messages, newest first."""
+    where: list[str] = []
+    values: list[int] = []
+    for clause, value in (
+        ("m.recipient_session_id = ?", recipient_id),
+        ("m.sender_session_id = ?", sender_id),
+        ("m.task_id = ?", task_id),
+        ("m.id < ?", before_id),
+    ):
+        if value is not None:
+            where.append(clause)
+            values.append(value)
+    if either_id is not None:
+        where.append("(m.recipient_session_id = ? OR m.sender_session_id = ?)")
+        values += [either_id, either_id]
+    if unread_only:
+        where.append("m.read_at IS NULL")
+    condition = f" WHERE {' AND '.join(where)}" if where else ""
+    rows = await _all(
+        conn,
+        _SESSION_MESSAGE_SELECT + condition + " ORDER BY m.id DESC LIMIT ?",
+        (*values, limit),
+    )
+    return [_session_message(r) for r in rows]
+
+
+async def undelivered_session_messages(
+    conn: aiosqlite.Connection, session_id: int
+) -> list[SessionMessage]:
+    """Unread messages to this session that no hook handed over yet, oldest first."""
+    rows = await _all(
+        conn,
+        _SESSION_MESSAGE_SELECT + " WHERE m.recipient_session_id = ? AND m.read_at IS NULL"
+        " AND m.delivered_at IS NULL ORDER BY m.id",
+        (session_id,),
+    )
+    return [_session_message(r) for r in rows]
+
+
+async def unread_session_messages(
+    conn: aiosqlite.Connection, session_id: int
+) -> list[SessionMessage]:
+    """Unread messages to this session, delivered or not, oldest first."""
+    rows = await _all(
+        conn,
+        _SESSION_MESSAGE_SELECT + " WHERE m.recipient_session_id = ? AND m.read_at IS NULL"
+        " ORDER BY m.id",
+        (session_id,),
+    )
+    return [_session_message(r) for r in rows]
+
+
+async def session_messages_sent_since(
+    conn: aiosqlite.Connection, session_id: int, since: str
+) -> int:
+    row = await _one(
+        conn,
+        "SELECT COUNT(*) FROM session_message WHERE sender_session_id = ? AND created_at >= ?",
+        (session_id, since),
+    )
+    return int(row[0])
+
+
+async def unread_session_message_counts(
+    conn: aiosqlite.Connection, session_ids: list[int]
+) -> dict[int, int]:
+    if not session_ids:
+        return {}
+    marks = ", ".join("?" for _ in session_ids)
+    rows = await _all(
+        conn,
+        "SELECT recipient_session_id AS id, COUNT(*) AS n FROM session_message"
+        f" WHERE read_at IS NULL AND recipient_session_id IN ({marks})"
+        " GROUP BY recipient_session_id",
+        tuple(session_ids),
+    )
+    return {r["id"]: r["n"] for r in rows}
+
+
+async def mark_session_messages_delivered(
+    conn: aiosqlite.Connection, message_ids: list[int], now: str
+) -> None:
+    marks = ", ".join("?" for _ in message_ids)
+    await conn.execute(
+        f"UPDATE session_message SET delivered_at = ? WHERE id IN ({marks})", (now, *message_ids)
+    )
+
+
+async def mark_session_messages_read(
+    conn: aiosqlite.Connection, message_ids: list[int], now: str, *, verified: bool
+) -> None:
+    marks = ", ".join("?" for _ in message_ids)
+    await conn.execute(
+        f"UPDATE session_message SET read_at = ?, read_verified = ? WHERE id IN ({marks})",
+        (now, int(verified), *message_ids),
+    )
+
+
+async def count_session_message_stop_blocks(
+    conn: aiosqlite.Connection, message_ids: list[int]
+) -> None:
+    marks = ", ".join("?" for _ in message_ids)
+    await conn.execute(
+        f"UPDATE session_message SET stop_blocks = stop_blocks + 1 WHERE id IN ({marks})",
+        tuple(message_ids),
+    )
+
+
+async def move_session_messages(conn: aiosqlite.Connection, old_id: int, new_id: int) -> None:
+    """A row merged into another: its messages go along, or the recipient would never see them."""
+    await conn.execute(
+        "UPDATE session_message SET recipient_session_id = ? WHERE recipient_session_id = ?",
+        (new_id, old_id),
+    )
+    await conn.execute(
+        "UPDATE session_message SET sender_session_id = ? WHERE sender_session_id = ?",
+        (new_id, old_id),
+    )
+
+
+async def stop_message_loop(conn: aiosqlite.Connection, message_id: int, now: str) -> bool:
+    """Mark the message whose reply was refused; False when the Inbox already shows it."""
+    cur = await conn.execute(
+        "UPDATE session_message SET loop_stopped_at = ?, loop_seen_at = NULL WHERE id = ?"
+        " AND (loop_stopped_at IS NULL OR loop_seen_at IS NOT NULL)",
+        (now, message_id),
+    )
+    return cur.rowcount > 0
+
+
+async def dismiss_message_loop(conn: aiosqlite.Connection, message_id: int, now: str) -> None:
+    await conn.execute(
+        "UPDATE session_message SET loop_seen_at = ? WHERE id = ? AND loop_seen_at IS NULL",
+        (now, message_id),
+    )
+
+
+async def open_message_loops(conn: aiosqlite.Connection, limit: int = 50) -> list[SessionMessage]:
+    rows = await _all(
+        conn,
+        _SESSION_MESSAGE_SELECT + " WHERE m.loop_stopped_at IS NOT NULL AND m.loop_seen_at IS NULL"
+        " ORDER BY m.id DESC LIMIT ?",
+        (limit,),
+    )
+    return [_session_message(r) for r in rows]
 
 
 # --- review ----------------------------------------------------------------

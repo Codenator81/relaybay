@@ -198,6 +198,13 @@
     {% endfor %}
   </details>
 
+  {% if detail.messages %}
+  <details class="panel fold" data-fold="messages" open>
+    <summary><h2>Messages <span class="col-count">{{ detail.messages|length }}</span></h2></summary>
+    {% with messages = detail.messages %}{% include "_message_table.html" %}{% endwith %}
+  </details>
+  {% endif %}
+
   {% if detail.live_actions %}
   <details class="panel fold" data-fold="live-actions" open>
     <summary><h2>Actions on live</h2></summary>

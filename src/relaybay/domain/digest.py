@@ -50,6 +50,11 @@ NOISE_KINDS = (
     "session.message",
     "comment.delivered",
     "comment.read",
+    "message.sent",
+    "message.delivered",
+    "message.read",
+    "message.loop_stopped",
+    "message.loop_dismissed",
 )
 # What a session's own hooks write besides the noise; a task digest leaves it out for that session.
 OWN_HOOK_KINDS = ("live.action",)

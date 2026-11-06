@@ -1,0 +1,25 @@
+{#- Session messages as a table, newest first. Expects: messages. Names and text are agent-supplied:
+    plain, autoescaped text, never rendered as markdown. -#}
+{%- macro stamp(ts) -%}<time datetime="{{ ts }}" title="{{ ts[:19]|replace('T', ' ') }} UTC" data-age>{{ ts|age }}</time>{%- endmacro -%}
+<div class="usage-table-wrap">
+  <table class="usage-table message-table">
+    <thead><tr><th>#</th><th>From</th><th>To</th><th>Task</th><th>Text</th><th>Marks</th></tr></thead>
+    <tbody>
+      {% for m in messages %}
+      <tr id="message-{{ m.id }}" data-id="{{ m.id }}">
+        <td class="muted">#{{ m.id }}{% if m.in_reply_to %}<br>re #{{ m.in_reply_to }}{% endif %}</td>
+        <td>{{ m.sender_name }}{% if not m.sender_verified %} <span class="muted" title="No live hook link proved this name when it wrote. All clients share one token.">name not verified</span>{% endif %}</td>
+        <td>{{ m.recipient_name }}</td>
+        <td>{% if m.task_key %}<a class="card-key" href="/p/{{ m.project_slug }}?task={{ m.task_key }}">{{ m.task_key }}</a>{% endif %}</td>
+        <td><p class="message-body">{{ m.body_md }}</p></td>
+        <td class="comment-marks muted">
+          <span class="mark mark-sent">sent {{ stamp(m.created_at) }}</span>
+          {%- if m.delivered_at %} · <span class="mark mark-delivered">delivered {{ stamp(m.delivered_at) }}</span>
+          {%- elif not m.read_at %} · <span class="mark mark-pending"{% if m.not_deliverable %} title="{{ m.not_deliverable }}"{% endif %}>not delivered yet{% if m.not_deliverable %}: {{ m.not_deliverable }}{% endif %}</span>{% endif %}
+          {%- if m.read_at %} · <span class="mark mark-read">read {{ stamp(m.read_at) }}{% if not m.read_verified %} (name not verified){% endif %}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

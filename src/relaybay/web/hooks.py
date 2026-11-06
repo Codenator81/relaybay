@@ -86,14 +86,14 @@ def build_hooks_router(
             # are not marked delivered to it.
             return Response(status_code=204)
         # SessionStart: the agent's exact id to pass as `hook_session` on writes. Prompt, tool
-        # and Stop events: owner comments for the exactly linked session, if there are any.
+        # and Stop events: owner comments and session messages for the exactly linked session.
         answer = await service.hook_answer(payload)
         return JSONResponse(answer) if answer else Response(status_code=204)
 
     @router.post(WAKE_PATH)
     async def claude_code_wait(request: Request) -> Response:
-        """Long poll of the opt-in wake-up hook: `{"wake": text}` when an owner comment arrived
-        for the idle session, 204 when there is nothing to wake it for."""
+        """Long poll of the opt-in wake-up hook: `{"wake": text}` when an owner comment or a
+        session message arrived for the idle session, 204 when there is nothing to wake it for."""
         payload = await _payload(request)
         if payload is None or payload is _INVALID:
             return Response(status_code=204)

@@ -405,7 +405,8 @@ def test_demo_has_messages_and_usage(tmp_path: Path) -> None:
             await service.close()
 
     graph, report = asyncio.run(read())
-    assert len(edges_of(graph, "message")) == 3
+    # Three desktop edges, one more from the demo's answered session message.
+    assert len(edges_of(graph, "message")) == 4
     assert any(e["recent"] for e in edges_of(graph, "message"))
     assert report.total.messages > 20
     assert len(report.periods) == 14

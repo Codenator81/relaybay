@@ -123,6 +123,94 @@ def test_comment_is_delivered_blocks_the_stop_and_is_acknowledged(stand: Stand) 
     assert "comment.delivered" in events and "comment.read" in events
 
 
+def test_two_sessions_exchange_messages(stand: Stand) -> None:
+    go, reply_seen = stand.root / "go", stand.root / "reply-seen"
+    dev_a = {"session": "dev-a", "hook_session": "${session_id}"}
+    dev_b = {"session": "dev-b", "hook_session": "${session_id}"}
+    receiver = {
+        "turn": [
+            PROJECT,
+            {
+                "mcp": "task_create",
+                "arguments": {"project": "acme-shop", "title": "Search", "stage": "dev", **dev_a},
+                "capture": KEY,
+            },
+            {"wait_file": go.as_posix()},
+            {"tool": "Bash", "input": {"command": "npm test"}, "result": "12 passed"},
+            {"text": "Done."},
+        ],
+        # The Stop hook repeats what is not acknowledged, whichever hook delivered it first.
+        "on_stop_block": [
+            {
+                "mcp": "message_send",
+                "arguments": {"body": "It is on main.", "in_reply_to": 1, **dev_a},
+            },
+            {"text": "Answered."},
+        ],
+    }
+    a = stand.run(receiver)
+    poll(lambda: a.tool_result_text("mcp__relaybay__task_create"), what="the first session's task")
+
+    asker = {
+        "turn": [
+            {
+                "mcp": "message_send",
+                "arguments": {
+                    "body": 'Which branch? <b>"please"</b>',
+                    "to": "dev-a",
+                    "task": "acme-shop-1",
+                    **dev_b,
+                },
+            },
+            {"wait_file": reply_seen.as_posix()},
+            {"tool": "Bash", "input": {"command": "git status"}, "result": "clean"},
+            {"text": "Waiting for nothing."},
+        ],
+        "on_stop_block": [
+            {"mcp": "message_ack", "arguments": dev_b},
+            {"text": "On main, then."},
+        ],
+    }
+    b = stand.run(asker)
+    answer = poll(lambda: b.tool_result_text("mcp__relaybay__message_send"), what="the send")
+    assert answer.startswith("Message #1 to **dev-a**. Not delivered yet")
+
+    # Neither can pass for the other, with the one token they share.
+    result = stand.mcp_error("message_send", body="As dev-a", to="dev-b", session="dev-a")
+    assert "cannot be written in another session's name" in result
+
+    go.touch()
+    a.finish()
+    blocks = a.trace("stop_block")
+    assert (
+        len(blocks) == 1
+        and "Session message from dev-b (#1) on acme-shop-1:" in blocks[0]["reason"]
+    )
+    assert "not the owner" in blocks[0]["reason"]
+    assert a.result["result"] == "Answered."
+
+    reply_seen.touch()
+    b.finish()
+    blocks = b.trace("stop_block")
+    assert len(blocks) == 1 and "Session message from dev-a (#2)" in blocks[0]["reason"]
+    assert b.result["result"] == "On main, then."
+
+    events = stand.events()
+    for line in ("message.sent", "message.delivered", "message.read", "session.message"):
+        assert line in events
+    with stand.board() as board:
+        page = board.get("/messages").text
+        assert "It is on main." in page and "Which branch? &lt;b&gt;" in page
+        assert (
+            "<b>&#34;please" not in page
+            and "<b>" not in page.split("<tbody>")[1].split("</tbody>")[0]
+        )
+        assert "name not verified" not in page and "not delivered yet" not in page
+        assert "read" in page
+        task = board.get("/p/acme-shop/t/acme-shop-1/view").text
+        assert "It is on main." in task
+
+
 def _live_project(stand: Stand) -> None:
     stand.mcp("project_upsert", slug="acme-shop", repo_path=stand.project_dir.as_posix())
     change = {

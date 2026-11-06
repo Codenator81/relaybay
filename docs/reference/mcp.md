@@ -45,6 +45,9 @@ descriptions clients receive. How to use them together: [MCP tools](../mcp-tools
 | [`comments_list`](#comments_list) | read |
 | [`comment_ack`](#comment_ack) | write |
 | [`comment_add`](#comment_add) | write |
+| [`message_send`](#message_send) | write |
+| [`messages_list`](#messages_list) | read |
+| [`message_ack`](#message_ack) | write |
 | [`intake_post`](#intake_post) | write |
 | [`intake_list`](#intake_list) | read |
 | [`intake_tie`](#intake_tie) | write |
@@ -537,6 +540,43 @@ Reply to the owner on a task's comment thread (shown on the board and in the own
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `body` | string | yes | Your reply to the owner, markdown. |
 | `in_reply_to` | integer or null | no | The owner comment you answer; it is marked read. Without it, every unread owner comment on the task is marked read. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `message_send`
+
+Send a message to another session. Its hooks hand it over at its next prompt or tool call, framed as coming from a session and not from the owner. Name yourself: `session` or `hook_session` is required, and a session with a live hook link must pass that link's id, so a message cannot go out in its name. The answer says when it can arrive; a recipient with no hook link is said to be so. At most 10 sends per minute per sender.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `body` | string | yes | The text, up to 4000 characters. |
+| `to` | string or null | no | The recipient: its name, desktop id, alias or hook session id. Without it: the other side of `in_reply_to`, or the session bound to `task`. |
+| `task` | string or null | no | Task key the message is about; shown with it. |
+| `in_reply_to` | integer or null | no | The message you answer, e.g. 7 for '#7'; it is marked read. Replies have a depth limit. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `messages_list`
+
+A session's messages, newest first, with sent / delivered / read marks. It delivers and acknowledges nothing. An unknown or ambiguous session is an error, and a session no hook can deliver to is told so.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | yes | Whose messages: its name, desktop id or hook session id. |
+| `box` | string | no | inbox (to the session) or sent (from it). Default: `inbox`. |
+| `unread_only` | boolean | no | Only messages not acknowledged yet. Default: `False`. |
+| `task` | string or null | no | Only about this task. |
+| `limit` | integer | no | Default: `50`. |
+
+### `message_ack`
+
+Acknowledge session messages addressed to you once you have looked at them: the board shows them as read and the Stop hook does not bring them up again.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `message_id` | integer or null | no | The message to mark read; without it, all unread ones. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
