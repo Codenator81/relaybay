@@ -11,12 +11,13 @@ import textwrap
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from relaybay.config import load_settings
-from relaybay.desktop import single_instance, tray, window, window_state
+from relaybay.desktop import app, single_instance, start_journal, tray, window, window_state
 from relaybay.desktop.app import STARTING_PAGE, DesktopController, _page
 from relaybay.desktop.autostart import Autostart
 from relaybay.desktop.server_thread import EmbeddedServer, PortTaken, healthz
@@ -462,6 +463,10 @@ def test_desktop_exit_after_runs_the_window(tmp_path: Path) -> None:
         process.kill()
     assert healthz(f"http://127.0.0.1:{port}") is None
     assert (tmp_path / "data" / "logs" / "relaybay.log").is_file()
+    journal = (tmp_path / "config" / start_journal.FILE_NAME).read_text(encoding="utf-8")
+    last = start_journal.last_start(journal)
+    assert last is not None and "--exit-after" in last.start
+    assert last.outcomes[0].startswith("started, log ") and last.outcomes[-1] == "exit 0"
 
 
 # --- the machine's theme ----------------------------------------------------
@@ -961,3 +966,175 @@ def test_favicon_is_the_png(client) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.content.startswith(b"\x89PNG")
+
+
+# --- start journal ------------------------------------------------------------
+
+
+def journal_lines(folder: Path) -> list[str]:
+    return (folder / start_journal.FILE_NAME).read_text(encoding="utf-8").splitlines()
+
+
+def messages(folder: Path) -> list[str]:
+    return [m.group(3) for m in map(start_journal.LINE.match, journal_lines(folder)) if m]
+
+
+def test_journal_start_line_names_the_process(desktop_config_dir: Path) -> None:
+    journal = start_journal.StartJournal(lambda: desktop_config_dir)
+    journal.start("9.9.9")
+    journal.exit(0)
+    first, last = journal_lines(desktop_config_dir)
+    match = start_journal.LINE.match(first)
+    assert match is not None and match.group(2) == str(os.getpid())
+    assert datetime.fromisoformat(match.group(1)).tzinfo is not None
+    start = match.group(3)
+    assert start.startswith("start relaybay 9.9.9 argv=[")
+    assert f"cwd={Path.cwd()}" in start and f"executable={sys.executable}" in start
+    assert "frozen=False" in start
+    assert last.endswith(f"[{os.getpid()}] exit 0")
+
+
+def test_journal_extra_missing(desktop_config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app, "extra_installed", lambda: False)
+    assert app.run() == 2
+    assert messages(desktop_config_dir)[1:] == ["extra missing", "exit 2"]
+
+
+def test_journal_lock_held_without_an_answer(
+    desktop_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app, "extra_installed", lambda: True)
+    lock = single_instance.acquire(desktop_config_dir)
+    assert lock is not None
+    try:
+        assert app.run() == 1
+    finally:
+        lock.release()
+    assert messages(desktop_config_dir)[1:] == ["lock held, no answer (no desktop.ipc)", "exit 1"]
+
+
+def test_journal_another_instance_answered(
+    desktop_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app, "extra_installed", lambda: True)
+    raised = threading.Event()
+    lock = single_instance.acquire(desktop_config_dir)
+    assert lock is not None
+    server = single_instance.serve_raise(desktop_config_dir, raised.set, lambda: None)
+    try:
+        assert app.run(background=True) == 0
+    finally:
+        server.close()
+        lock.release()
+    assert raised.wait(5)
+    assert messages(desktop_config_dir)[1:] == ["another instance answered", "exit 0"]
+
+
+def test_journal_keeps_the_exception_and_reraises(
+    desktop_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(folder: Path) -> None:
+        raise PermissionError(13, "Access is denied", str(folder))
+
+    monkeypatch.setattr(app, "extra_installed", lambda: True)
+    monkeypatch.setattr(single_instance, "acquire", refuse)
+    with pytest.raises(PermissionError):
+        app.run(background=True)
+    lines = journal_lines(desktop_config_dir)
+    assert messages(desktop_config_dir)[1].startswith("exception: PermissionError: [Errno 13]")
+    assert lines[2] == "  Traceback (most recent call last):"
+    assert all(line.startswith("  ") for line in lines[2:])
+    assert "in refuse" in "\n".join(lines)
+    last = start_journal.last_start("\n".join(lines))
+    assert last is not None and last.failed
+
+
+def test_journal_started_after_logging(
+    controller: DesktopController, desktop_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Icon:
+        def run(self, setup: object = None) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(window, "window_available", lambda: False)
+    monkeypatch.setattr(tray, "create_icon", lambda entries, dispatch: Icon())
+    controller.journal = start_journal.StartJournal(lambda: desktop_config_dir)
+    try:
+        assert controller.run() == 0
+    finally:
+        controller.quit()
+    assert messages(desktop_config_dir) == [f"started, log {controller.log_path}"]
+
+
+def test_journal_never_stops_the_start(tmp_path: Path) -> None:
+    def lookup() -> Path:
+        raise RuntimeError("no profile")
+
+    broken = start_journal.StartJournal(lookup)
+    broken.start("9.9.9")
+    broken.exit(0)
+    assert broken.error == "RuntimeError: no profile"
+    blocked = tmp_path / "file"
+    blocked.write_text("not a folder")
+    unwritable = start_journal.StartJournal(lambda: blocked)
+    unwritable.start("9.9.9")
+    assert unwritable.error is not None and str(blocked) in unwritable.error
+
+
+def test_journal_keeps_its_newest_tail(desktop_config_dir: Path) -> None:
+    path = desktop_config_dir / start_journal.FILE_NAME
+    path.write_text("".join(f"old line {n}\n" for n in range(10_000)), encoding="utf-8")
+    journal = start_journal.StartJournal(lambda: desktop_config_dir)
+    journal.exit(0)
+    data = path.read_bytes()
+    assert len(data) <= start_journal.KEEP_BYTES + 200
+    lines = data.decode().splitlines()
+    assert lines[0].startswith("old line ") and lines[-2] == "old line 9999"
+    assert lines[-1].endswith("exit 0")
+
+
+def test_last_start_takes_its_own_process_lines() -> None:
+    text = "\n".join(
+        [
+            "2026-11-05T18:00:00+02:00 [10] start relaybay 0.6.2 argv=[]",
+            "2026-11-05T18:00:01+02:00 [10] started, log x",
+            "2026-11-06T08:16:40+02:00 [20] start relaybay 0.6.2 argv=['--background']",
+            "2026-11-06T08:16:41+02:00 [10] exit 0",
+            "2026-11-06T08:16:42+02:00 [20] lock held, no answer (no desktop.ipc)",
+            "  not a journal line [20] x",
+            "2026-11-06T08:16:42+02:00 [20] exit 1",
+        ]
+    )
+    last = start_journal.last_start(text)
+    assert last is not None
+    assert last.time == "2026-11-06T08:16:40+02:00"
+    assert last.start == "relaybay 0.6.2 argv=['--background']"
+    assert last.outcomes == ("lock held, no answer (no desktop.ipc)", "exit 1")
+    assert not last.failed
+    assert start_journal.last_start("garbage\n") is None
+
+
+def test_update_folder_is_cleared_at_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, desktop_config_dir: Path
+) -> None:
+    from relaybay.desktop.app import update_folder
+
+    folder = update_folder()
+    assert folder == desktop_config_dir / "cache" / "updates"  # the fixture's RELAYBAY_CACHE_DIR
+    folder.mkdir(parents=True)
+    (folder / "relaybay-0.6.1-windows-x64-setup.exe").write_bytes(b"old")
+    monkeypatch.setenv("RELAYBAY_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("RELAYBAY_PORT", str(free_port()))
+    ctl = DesktopController(desktop_config_dir)
+    ctl.log_config = lambda: None
+    ctl.autostart = Autostart("linux", tmp_path / "home")
+    ctl.quitting = True  # run() returns right after the start-up work
+    monkeypatch.setattr("relaybay.desktop.window.window_available", lambda: False)
+    monkeypatch.setattr(
+        "relaybay.desktop.tray.create_icon", lambda entries, dispatch: types.SimpleNamespace()
+    )
+    assert ctl.run() == 0
+    assert not list(folder.iterdir())

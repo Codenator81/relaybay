@@ -2,8 +2,9 @@
 migration of a version the data folder has not run yet.
 
 `<data>/last_version` records the version that last started cleanly; it is written only after
-the migration. Backups go to `<data>/backups/<old>-to-<new>-<UTC time>/`; only folders with that
-name pattern are counted and rotated, anything else in the data folder is left alone.
+the migration. Backups go to `<data>/backups/<old>-to-<new>-<local time>/` (the same clock as the
+log next to it); only folders with that name pattern are counted and rotated, anything else in the
+data folder is left alone.
 """
 
 import logging
@@ -11,7 +12,7 @@ import re
 import shutil
 import sqlite3
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from relaybay import __version__
@@ -91,7 +92,7 @@ def backup_before_upgrade(
     if same:
         log.info("backup before %s -> %s already taken: %s", old, version, same[-1])
         return None
-    stamp = (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
     folder.mkdir(parents=True, exist_ok=True)
     target = _free(folder / f"{old}-to-{version}-{stamp}")
     target.mkdir(mode=0o700)

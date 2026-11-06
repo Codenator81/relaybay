@@ -9,10 +9,19 @@ A live board and MCP server for people who run many Claude Code sessions across 
 Sessions report their work through MCP tools; you watch **projects → tasks → stages → reports** update
 in the browser, on the desktop or on your phone.
 
-> **Status: early (0.1).** relaybay is built for my own workflow first and changes quickly. Expect
-> rough edges; issues and ideas are welcome.
+> **Status: 0.6, early.** relaybay is built for my own workflow first and changes quickly; Windows is
+> what it runs on every day, macOS and Linux are beta. Expect rough edges; issues and ideas are welcome.
 
 ![The relaybay board updating live while sessions report their work](https://raw.githubusercontent.com/Codenator81/relaybay/main/docs/assets/board.gif)
+
+## Why relaybay
+
+- **One board for every session.** Ten repositories, ten Claude Code sessions: the board shows
+  which one is working, which one waits for you and what it did, without opening each terminal.
+- **Accept the work by eye.** Agents write a checklist of what to check and attach screenshots;
+  you accept or reject step by step, and your comments reach the agent in its next turn.
+- **Local and plain.** One process, SQLite, bound to `127.0.0.1`, token-protected, no telemetry;
+  an installer for Windows, macOS and Linux, or `uvx relaybay` from the command line.
 
 ## Quick start
 
@@ -21,6 +30,9 @@ uv tool install relaybay      # or: pipx install relaybay  ·  or run it once: u
 relaybay serve                # prints the board's login link and the MCP URL
 relaybay setup                # shows how it connects Claude Code (then --apply --expect <hash>)
 ```
+
+Just looking? `relaybay demo --home ./relaybay-demo` fills a folder with two made-up projects, then
+`relaybay serve --home ./relaybay-demo --port 8766` shows them.
 
 Open the login link once; the browser keeps a cookie. `relaybay token` prints the token again with
 the `claude mcp add …` command for Claude Code. Docker, Windows/macOS/Linux details and a procedure
@@ -43,7 +55,7 @@ The installers are not signed with a certificate, so the OS warns once:
   (macOS 15 no longer offers right-click → Open), or run
   `xattr -dr com.apple.quarantine /Applications/relaybay.app`.
 - **Linux** (amd64 `.deb`, beta): `sudo apt install ./relaybay_<version>_amd64.deb`. A tray icon and
-  the board in your browser (no window yet); GNOME needs the AppIndicator extension for the tray.
+  the board in your browser (no window); GNOME needs the AppIndicator extension for the tray.
 
 Then connect Claude Code from the installed program: `relaybay setup`, then
 `relaybay setup --apply --expect <hash>` (or Settings → Reconnect Claude Code in the program).
@@ -69,6 +81,9 @@ program as its client:
   session history, "Open in desktop", unbinding the session and editing the task. Each task also has
   a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a
   dropped connection, a stage tab bar on narrow screens; ← / → switch the two board pages.
+- **Quick switcher and saved filters** — Ctrl+K (Cmd+K on macOS) finds any task, project or
+  session by a few letters; board filters by stage, waiting-on and session stay in the URL and can
+  be saved as chips on the board and items in the sidebar.
 - **Review** — agents write what you should check by eye as a checklist and attach screenshots
   (`review_steps_set`, `attach_file`); you accept or reject each step in the task's Review tab,
   look at screenshots full screen, draw on them and drop numbered pins for the agent, paste your
@@ -143,16 +158,17 @@ program as its client:
   rules version. Rules are versioned: agents change them with `rules_propose` and the owner accepts or
   rolls back in Settings → Rules. A stage move that misses a rule succeeds with a warning (or is refused with
   `rules_mode = "strict"`), in MCP responses and on the board.
+- **Desktop program** — an installer per OS puts relaybay in the tray with the board in its own
+  window (on Linux in the browser) and the server inside: start at login, Restart server and Logs
+  in the tray menu, a daily update check with **Update to X.Y.Z** that downloads and checks the
+  release's installer, a backup of the data before a new version migrates it, and an external
+  server mode that makes the program and the CLI clients of a relaybay running elsewhere (for
+  example in Docker).
 - **Local and private** — one process, SQLite, binds to `127.0.0.1`, token-protected, no telemetry,
-  no CDN. The only outbound call is a daily check of the latest GitHub release (a line in the Inbox
-  when a newer one is out); `update_check = false` in `config.toml` turns it off.
-
-## Try it with demo data
-
-```bash
-relaybay demo --home ./relaybay-demo                 # acme-shop and demo-api, tasks in every stage
-relaybay serve --home ./relaybay-demo --port 8766
-```
+  no CDN. The only outbound calls are a daily check of the latest GitHub release (a line in the
+  Inbox, or a dot on the tray icon, when a newer one is out) and, when you click Update in the
+  program, the download of that release's installer. `update_check = false` turns the check off:
+  in `config.toml` for the server, in `desktop.toml` for the program.
 
 ## Bring your markdown
 
@@ -223,9 +239,13 @@ variables, then command-line flags.
 | folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
 | extra folders `attach_file` may read screenshots from (besides the project repository and the temp folder) | none | `RELAYBAY_ATTACHMENT_ROOTS` (comma-separated) | — |
 | largest screenshot / screenshots per task, MB | `10` / `200` | `RELAYBAY_ATTACHMENTS_MAX_MB` / `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — |
+| the server's update check of the latest GitHub release (`update_check`) | `true` | `RELAYBAY_UPDATE_CHECK` | — |
+| hours between update checks (`update_check_hours`) | `24` | `RELAYBAY_UPDATE_CHECK_HOURS` | — |
+| backups kept in `backups/`, one taken when a new version starts (`backup_keep`; `0` takes none) | `5` | `RELAYBAY_BACKUP_KEEP` | — |
 
 The data directory holds `relaybay.sqlite`, the `token` file, `attachments/` (screenshots),
-`backups/` (taken when a new version starts), the optional `config.toml` and the optional
+`backups/` (taken when a new version starts), `last_version` (the version that last started it),
+`logs/` (the desktop program's log), the optional `config.toml` and the optional
 `policy.json` (what agents may do; see
 [Full access on a trusted local machine](https://codenator81.github.io/relaybay/how-to/trusted-machine/)
 for an example):
@@ -288,7 +308,12 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.4.0** — map and usage, rules versioning, screenshot annotations, documents on the board.
 - **0.5.0** — intake from chats and e-mail with an autonomy switch, the backlog.
 - **0.6.0** — the desktop program: installers, tray, window, autostart, updates.
-- **Later** — agents started from relaybay.
+- **0.6.1** — desktop fixes: the program follows the machine's theme, the window keeps its state.
+- **0.7+, agents inside** — a runner and embedded terminal with your own `claude`, role profiles,
+  coordinator and manager pages.
+- **0.7+, workers** — scheduled workers per project.
+- **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
+  operating systems.
 
 Details and status: [docs/ROADMAP.md](docs/ROADMAP.md). Designs of upcoming steps are in
 [docs/design/](docs/design/index.md), decisions in [docs/adr/](docs/adr/). relaybay sends no

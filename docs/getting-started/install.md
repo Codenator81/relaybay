@@ -41,13 +41,15 @@ if you live in one (it also brings a suitable Python).
     ```
 
     It installs into `/opt/relaybay` with `relaybay` in `/usr/bin`. You get the tray icon and the
-    board in your browser; a board window on Linux comes later. GNOME shows tray icons only with
-    the AppIndicator extension.
+    board in your browser (no window: Open board opens the browser). GNOME shows tray icons only
+    with the AppIndicator extension.
 
     The program runs the same server as `relaybay serve` on `127.0.0.1:8765`, so a `relaybay serve`
     you run yourself must be stopped first (the program says so when the port is taken). Its tray
-    menu has Open board, Restart server, Logs, Settings and Quit; closing the window keeps it
-    running in the tray. Updates: the tray offers **Update to X.Y.Z** when a release is out.
+    menu has Open board, Open in browser, Restart server (Reconnect when the program is the client
+    of an external server), Logs, a Settings submenu (Start at login, Data folder..., Server...,
+    Check for updates), **Update to X.Y.Z** when a newer release is out, and Quit relaybay;
+    closing the window keeps it running in the tray.
 
     Moving from a server you ran from a source checkout? See
     [Move to the desktop program](../how-to/desktop-from-source-server.md). A server in Docker
@@ -129,8 +131,10 @@ it there with the settings files and keeps the newest five.
 relaybay token
 ```
 
-To keep the server running, start it in the background the way your OS does it (a terminal tab, a
-login item, `systemd --user`, a scheduled task) or use the Docker image with `--restart`.
+To keep the server running, use the desktop program with **Start at login** (tray → Settings, or
+the installer's option). Without the program, start `relaybay serve` in the background the way your
+OS does it (a terminal tab, a login item, `systemd --user`, a scheduled task) or use the Docker image
+with `--restart`.
 
 ## 3. Connect Claude Code
 

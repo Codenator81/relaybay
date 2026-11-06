@@ -1,6 +1,7 @@
 """The backlog: findings of sessions and reviews, ideas from intake and the owner's notes. A
 backlog item is not a task and not a stage; "To plan" on the board turns it into a task."""
 
+import hashlib
 import re
 from dataclasses import dataclass
 
@@ -68,5 +69,11 @@ def parse_decision(text: str) -> tuple[str, str | None]:
 
 
 def title_slug(title: str) -> str:
-    """The title part of an imported row's identity: lowercase words joined by dashes."""
-    return "-".join(re.findall(r"[a-z0-9]+", title.lower()))[:80] or "item"
+    """The title part of an imported row's identity: lowercase words joined by dashes, in any
+    script. A title without a single word (punctuation, emoji) gets a short hash, so two such
+    rows on one day stay two rows."""
+    words = re.findall(r"[^\W_]+", title.lower())
+    if words:
+        return "-".join(words)[:80]
+    digest = hashlib.sha256(title.strip().encode("utf-8")).hexdigest()[:8]
+    return f"item-{digest}"

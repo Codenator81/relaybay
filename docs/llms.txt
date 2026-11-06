@@ -1,6 +1,6 @@
 # relaybay
 
-> relaybay is a local, open-source live board and MCP server for people who run many Claude Code sessions across many repositories. Sessions create and update tasks through MCP tools (Streamable HTTP at http://127.0.0.1:8765/mcp, Bearer token) and Claude Code hooks report session status; the owner watches projects, tasks, stages and reports update in the browser. Python 3.12+, FastAPI, SQLite, MIT license, no telemetry.
+> relaybay is a local, open-source live board and MCP server for people who run many Claude Code sessions across many repositories. Sessions create and update tasks through MCP tools (Streamable HTTP at http://127.0.0.1:8765/mcp, Bearer token) and Claude Code hooks report session status; the owner watches projects, tasks, stages and reports update in the desktop program's window or the browser. Installers for Windows, macOS and Linux (no Python needed), or the Python package (Python 3.12+) and a Docker image; FastAPI, SQLite, MIT license, no telemetry.
 
 Stages are plan, dev, review, test, live, done. Every session should read `project_snapshot` first, pass its session on writes, keep `next_step`, `waiting_on` and `progress` current, and end every stage with `report_add` whose first line is `state · size · gist`.
 
@@ -11,9 +11,9 @@ Stages are plan, dev, review, test, live, done. Every session should read `proje
 - [MCP tools guide](https://codenator81.github.io/relaybay/mcp-tools/): how the tools and resources work together, with results and examples
 - [MCP reference](https://codenator81.github.io/relaybay/reference/mcp/): every tool and resource with its parameters, generated from the live registry
 - [Connect Claude Code](https://codenator81.github.io/relaybay/connect-claude-code/): MCP registration, the instruction snippet for CLAUDE.md / AGENTS.md, hooks with `relaybay setup`
-- [Install and run](https://codenator81.github.io/relaybay/getting-started/install/): `uv tool install relaybay`, `uvx`, `pipx` or Docker on Windows, macOS and Linux; first run and the token
-- [CLI reference](https://codenator81.github.io/relaybay/reference/cli/): `serve`, `token`, `setup`, `doctor`, `demo`, `hook`
-- [Configuration reference](https://codenator81.github.io/relaybay/reference/configuration/): `config.toml` keys, environment variables, flags
+- [Install and run](https://codenator81.github.io/relaybay/getting-started/install/): the desktop program's installers (Windows, macOS, Linux), or `uv tool install relaybay`, `uvx`, `pipx` or Docker; first run and the token
+- [CLI reference](https://codenator81.github.io/relaybay/reference/cli/): `serve`, `token`, `setup`, `doctor`, `demo`, `import`, `export`, `desktop`, `hook`; entry points `relaybay`, `relaybay-hook` (the hook forwarder) and `relaybay-desktop` (the program)
+- [Configuration reference](https://codenator81.github.io/relaybay/reference/configuration/): `config.toml` keys, environment variables, flags; the desktop program's `desktop.toml`
 - [Policy reference](https://codenator81.github.io/relaybay/reference/policy/): the policy layers, keys, built-in guard rules and secret detectors, presets; JSON Schema
 
 ## Optional
@@ -21,9 +21,15 @@ Stages are plan, dev, review, test, live, done. Every session should read `proje
 - [Architecture](https://codenator81.github.io/relaybay/architecture/): processes, modules, data model, transports, security layers
 - [Roadmap](https://codenator81.github.io/relaybay/ROADMAP/): versions and status
 - [Design documents](https://codenator81.github.io/relaybay/design/): upcoming steps
+- [Coordinate many projects](https://codenator81.github.io/relaybay/how-to/coordinator/): one coordinator session over many projects and their sessions
 - [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/): `relaybay doctor --json` and what each failing item means
 - [Import and export markdown](https://codenator81.github.io/relaybay/how-to/markdown-import-export/): `relaybay import` and `export`, layout, dry run, conflicts
 - [Intake from chats and e-mail](https://codenator81.github.io/relaybay/how-to/intake/): watchers, matching to the waiting task, the autonomy switch, the backlog
 - [Move to the desktop program](https://codenator81.github.io/relaybay/how-to/desktop-from-source-server/): from a server run in a source checkout to the installed program, same data folder, hooks via `relaybay-hook`, roll back
 - [Docker server, desktop client](https://codenator81.github.io/relaybay/how-to/docker-server-with-desktop-client/): compose file, token from the volume, external mode, TLS or SSH tunnel, `allowed_hosts`
+- [Screenshots for review](https://codenator81.github.io/relaybay/how-to/screenshots-for-review/): how an agent makes a PNG file that `attach_file` accepts
+- [Full access on a trusted machine](https://codenator81.github.io/relaybay/how-to/trusted-machine/): the `trusted` policy preset, test passwords on local and test stands
+- [Phone and LAN access](https://codenator81.github.io/relaybay/how-to/lan-access/): a LAN address, `allowed_hosts`, the board on a phone
+- [Uninstall](https://codenator81.github.io/relaybay/how-to/uninstall/): take the hooks out of Claude Code, then remove relaybay per OS
+- [Changelog](https://codenator81.github.io/relaybay/changelog/): changes per version
 - [Source code](https://github.com/Codenator81/relaybay)

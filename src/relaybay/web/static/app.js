@@ -179,7 +179,7 @@
     }
     if (data.kind === "task.stage_changed") notifyAcceptance(data);
     if (data.kind === "intake.answer_received") notifyAnswer(data);
-    // The backlog page: only its table is live; the add form stays as the user left it.
+    // The backlog page: only its list is live; the add form stays as the user left it.
     var backlogList = document.getElementById("backlog");
     if (backlogList) {
       if (data.kind.indexOf("backlog.") === 0 &&

@@ -9,7 +9,10 @@ How relaybay is built. Behaviour is specified in [SPEC.md](SPEC.md); upcoming wo
 relaybay gives a person who runs many Claude Code sessions across many repositories one live view of
 the work: **projects → tasks → stages → reports**, and which session is doing what right now.
 
-- relaybay only listens: sessions call its MCP tools and Claude Code's hooks post events to it.
+- relaybay listens: sessions call its MCP tools and Claude Code's hooks post events to it. Its only
+  outbound calls are the update check of the latest GitHub release (the server's and the desktop
+  program's, both opt-out) and, when the user clicks Update in the program, the download of that
+  release's installer ([SPEC §13](SPEC.md#spec-updates)).
 - It contains no LLM client, no Agent SDK and handles no credentials. Agents are always the ordinary
   `claude` CLI or desktop app under the user's own login. Starting agents is a later step
   ([runner design](design/0012-runner-and-embedded-terminal.md)) and will only start that same CLI.
@@ -37,12 +40,15 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 - **One process, one writer.** MCP, hooks and the board live in one uvicorn process. Every write goes
   through `Service`, which updates state tables and appends an `event` row in the same `BEGIN
-  IMMEDIATE` transaction and publishes the event on the in-process bus after commit. No other
-  process opens the database, so there is no cross-process notification and SQLite locking stays
-  trivial.
+  IMMEDIATE` transaction and publishes the event on the in-process bus after commit. While a server
+  runs no other process writes the database, so there is no cross-process notification and SQLite
+  locking stays trivial. Outside a running server two commands open it: `relaybay import --apply`
+  migrates and writes it through the service, and a new version's first start (server or import)
+  copies it into `backups/` first (`backup.py`, SQLite's backup API).
 - **Short-lived helper processes** never touch the database: `relaybay token` and `relaybay setup
-  --check` talk to the server over HTTP; the command hook (`python -I -m relaybay.hook_client`) is a
-  standard-library forwarder started by Claude Code for each hook event.
+  --check` talk to the server over HTTP; the command hook is a standard-library forwarder started
+  by Claude Code for each hook event: `relaybay-hook` from the installed program,
+  `python -I -m relaybay.hook_client` from a source or Python install.
 - **Events are the sync protocol.** `event.id` is monotonic and is the SSE id; a reconnecting browser
   sends `Last-Event-ID` and gets the newer rows replayed. State tables are the source for reads; the
   log is for the feed, catch-up (`events_since`) and audit ("event-sourcing lite", no projections to
@@ -52,7 +58,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 | Module | Responsibility |
 |---|---|
-| `__main__.py`, `cli.py` | `relaybay [serve]`, `token`, `setup`, `doctor`, `demo`, `import`, `export`, `hook`; standard-library `argparse` |
+| `__main__.py`, `cli.py` | `relaybay [serve]`, `token`, `setup`, `doctor`, `demo`, `import`, `export`, `desktop`, `hook`; standard-library `argparse` |
 | `config.py` | `Settings`: defaults → `config.toml` → `RELAYBAY_*` → flags; data dir via `platformdirs` |
 | `app.py` | FastAPI app: lifespan (service start, MCP session manager), routers, static files, middleware; OpenAPI and docs UI disabled |
 | `security.py` | Token file, cookie and CSRF values (HMAC of the token), `token_id`, `SecurityMiddleware` (pure ASGI, so streams pass through) |
@@ -68,6 +74,11 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `markdown_import.py`, `markdown_export.py`, `domain/markdown_layout.py` | `relaybay import` and `export`: the markdown layout, a plan with a hash on a copy of the database, writes through the service, the export manifest |
 | `hook_client.py` | The command hook: stdin → POST with 0.3 s timeouts → stdout (a 200 JSON answer only), always exit 0; with `--wait` the wake-up hook (long poll, exit 2 with the comment on stderr) |
 | `logs.py` | uvicorn log config that redacts the `/login` query string |
+| `policy/` | Policy as data: layers (preset, legacy `config.toml` keys, `policy.json`, project, environment) merged into an effective policy with the source of each value; `schema.json`, `presets/*.json` |
+| `install.py` | How this copy was installed (`install_kind()`), its executable and whether its location is stable; used by upgrade hints, the updater, `doctor` and the hook command |
+| `updates.py` | The update check of the latest GitHub release and the installer download, checked against `SHA256SUMS.txt` |
+| `backup.py` | `last_version` and the backup of the database and settings files before a new version migrates, with rotation (`backup_keep`) |
+| `desktop/` | The desktop program: GUI loop and window (pywebview), tray (pystray), embedded server thread, `desktop.toml` settings and Settings window, start at login, single instance, window state |
 
 <a id="data-model"></a>
 
@@ -246,10 +257,12 @@ threat model and non-goals: [SPEC §9](SPEC.md#spec-security).
 
 ## Packaging and cross-platform
 
-- `pyproject.toml` (hatchling), console script `relaybay`, `python -m relaybay`. Runtime
-  dependencies: `aiosqlite`, `fastapi`, `jinja2`, `markdown-it-py`, `mcp>=2,<3`, `platformdirs`,
-  `python-multipart`, `uvicorn`. Development: `httpx`, `pytest`, `pytest-asyncio`, `ruff`; the docs
-  site: the optional `docs` group (`mkdocs-material`).
+- `pyproject.toml` (hatchling), console scripts `relaybay` and `relaybay-hook` (the hook
+  forwarder), the GUI script `relaybay-desktop`, and `python -m relaybay`. Runtime dependencies:
+  `aiosqlite`, `fastapi`, `jinja2`, `jsonschema`, `markdown-it-py`, `mcp>=2,<3`, `platformdirs`,
+  `python-multipart`, `regex`, `snowballstemmer`, `uvicorn`. The optional extra `desktop`
+  (`pywebview`, `pystray`, `pillow`) is for `relaybay desktop`. Development: `httpx`, `pytest`,
+  `pytest-asyncio`, `ruff`; the docs site: the optional `docs` group (`mkdocs-material`).
 - All file I/O is explicit UTF-8; `pathlib` everywhere; Windows, macOS and Linux run in CI with
   Python 3.12 and 3.13.
 - No OS service: the user starts `relaybay serve`, runs the Docker image, or starts the desktop
@@ -278,12 +291,14 @@ which runs the same plan and write as `relaybay setup`.
 ```
 README.md  CONTRIBUTING.md  AGENTS.md  CHANGELOG.md  LICENSE  mkdocs.yml  Dockerfile
 CODE_OF_CONDUCT.md  SECURITY.md  GOVERNANCE.md
-pyproject.toml  uv.lock  .github/workflows/{ci.yml, docs.yml, release.yml}  .github/ISSUE_TEMPLATE/
-scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py record_gif.md
+pyproject.toml  uv.lock  .github/workflows/{ci.yml, desktop.yml, docs.yml, release.yml}
+.github/ISSUE_TEMPLATE/
+scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py
+                hook_timing.py record_gif.md
 src/relaybay/   cli.py config.py app.py security.py service.py events.py machine_setup.py
                 doctor.py demo.py markdown_import.py markdown_export.py hook_client.py logs.py
                 install.py updates.py backup.py
-                db/  desktop/  domain/  mcp_server/  web/
+                db/  desktop/  domain/  mcp_server/  policy/  web/
 packaging/      relaybay.spec  launchers/  icons/  windows/  macos/  linux/
 examples/       intake/ (watchers)  compose.yaml (Docker server for the desktop client)
 tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/

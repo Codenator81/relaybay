@@ -9,7 +9,8 @@ relaybay doctor --json   # the same as a JSON list of {"ok", "name", "detail"}
 
 It reads, never writes: relaybay, Python and OS versions; the data folder and whether it is
 writable; the token file (present, private); Claude Code on `PATH` and whether it is at least the
-minimum supported version; the desktop app; the server on the configured port with the same token,
+minimum supported version; the desktop app; relaybay's own program (start at login, its last
+start); the server on the configured port with the same token,
 MCP `initialize` and the hook endpoint; the rules hash of your settings against the one the server
 started with; relaybay's hooks in the Claude Code user settings and the interpreter they run; the
 MCP registration. The exit code is `1` when an item fails. Pass the same `--home`, `--port` and
@@ -25,7 +26,35 @@ MCP registration. The exit code is `1` when an item fails. Pass the same `--home
 | `command hook runs` | The Python the hooks point at moved (venv deleted, upgrade), or the `relaybay-hook` they start belongs to another install or version: run `relaybay setup --apply` again with the `relaybay` you use (the desktop program: Settings → Reconnect Claude Code). |
 | `install` | The desktop program runs from a mounted disk image, macOS's translocation, the temp or the Downloads folder: install it (macOS: move relaybay.app to Applications) and start it from there. |
 | `hook executable` | The installed program's `relaybay-hook` is missing or answers another version: reinstall the program. |
+| `desktop start` | The program's last start ended with an exception, or before any outcome: see [relaybay did not start at login](#relaybay-did-not-start-at-login). |
 | `MCP registered for Claude Code` | Run the `claude mcp add …` line that `relaybay token` prints. |
+
+## relaybay did not start at login
+
+Start at login runs the program hidden (`--background`): after a start only the tray icon shows.
+If there is no icon after you sign in:
+
+1. Run `relaybay doctor` and read the `desktop start` item: the time of the program's last start,
+   its command line, and how that start ended. The same lines are in `desktop-start.log` in the
+   config folder (Windows `%LOCALAPPDATA%\relaybay`, macOS `~/Library/Application Support/relaybay`,
+   Linux `~/.config/relaybay`, or `RELAYBAY_CONFIG_DIR`).
+
+    | The last start | What it means |
+    |---|---|
+    | from before you signed in | The system did not start the program: check the login entry (below). |
+    | `started, log <file>` | The program came up; what happened next is in that log file. |
+    | `another instance answered` | A program was already running and was asked to show its window. |
+    | `lock held, no answer` | Another process holds `desktop.lock` but does not answer on `desktop.ipc`: look for a `relaybay-desktop` process in the task manager, end it and start relaybay again. |
+    | `exception: …` | The start failed; the traceback follows in the file. Report it with that traceback. |
+    | `extra missing` | Not the installed program: install `relaybay[desktop]`. |
+    | nothing after the start line | The process ended (or was ended) before any outcome. |
+
+2. Check the login entry. `relaybay desktop config` prints `Autostart: on (<where>)` or `off`;
+   Settings → Start at login turns it on. On Windows the entry is the value `relaybay` under
+   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, and Windows' own switch for it is
+   **Settings → Apps → Startup** (relaybay must be **On** there); Task Manager → Startup apps shows the
+   same. On macOS it is `~/Library/LaunchAgents/io.github.codenator81.relaybay.plist`, on Linux
+   `~/.config/autostart/relaybay.desktop`.
 
 ## "token not valid"
 

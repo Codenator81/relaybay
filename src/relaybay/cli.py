@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -514,7 +515,7 @@ def cmd_desktop_config(args: argparse.Namespace) -> int:
 def cmd_serve(settings: Settings, reload: bool) -> int:
     import uvicorn
 
-    from relaybay.app import create_app, server_options
+    from relaybay.app import create_app, make_server, server_options
     from relaybay.logs import uvicorn_log_config
 
     token = load_or_create_token(settings.token_path)
@@ -545,7 +546,12 @@ def cmd_serve(settings: Settings, reload: bool) -> int:
             **common,
         )
     else:
-        uvicorn.run(create_app(settings), **common)
+        server = make_server(create_app(settings), **common)
+        # uvicorn re-raises the signal after a clean shutdown, as uvicorn.run swallows it.
+        with contextlib.suppress(KeyboardInterrupt):
+            server.run()
+        if not server.started:
+            return 3  # as uvicorn.run: the port was taken or the start failed (logged)
     return 0
 
 

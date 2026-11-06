@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from relaybay.desktop.settings import (
     save_desktop_settings,
     settings_path,
 )
+from relaybay.desktop.start_journal import StartJournal
 from relaybay.desktop.window import DARK_BACKGROUND, DARK_TEXT, LIGHT_BACKGROUND, LIGHT_TEXT
 from relaybay.desktop.window_state import WindowState, WindowTracker, save_state
 from relaybay.install import DESKTOP_KINDS, hook_executable, install_kind
@@ -52,6 +54,18 @@ def extra_installed() -> bool:
     import importlib.util
 
     return all(importlib.util.find_spec(name) for name in ("webview", "pystray", "PIL"))
+
+
+def update_folder() -> Path:
+    """Where Update downloads the installer; cleared at the next start of the program.
+    `RELAYBAY_CACHE_DIR` moves it (tests keep off the user's cache)."""
+    base = os.environ.get("RELAYBAY_CACHE_DIR")
+    root = (
+        Path(base).expanduser()
+        if base
+        else Path(platformdirs.user_cache_dir("relaybay", appauthor=False))
+    )
+    return root / "updates"
 
 
 def open_path(path: Path) -> None:
@@ -81,9 +95,12 @@ STARTING_PAGE = _page("relaybay", "<p>Starting the board...</p>")
 
 
 class DesktopController:
-    def __init__(self, folder: Path, background: bool = False) -> None:
+    def __init__(
+        self, folder: Path, background: bool = False, journal: StartJournal | None = None
+    ) -> None:
         self.config_dir = folder
         self.background = background
+        self.journal = journal
         self.autostart = Autostart()
         self.desktop = DesktopSettings()
         self.settings: Settings | None = None
@@ -357,7 +374,7 @@ class DesktopController:
             command = updates.upgrade_hint(kind, latest.version)
             self.notify(f"relaybay {latest.version} is available; upgrade with: {command}")
             return False
-        folder = Path(platformdirs.user_cache_dir("relaybay", appauthor=False)) / "updates"
+        folder = update_folder()
         self.notify(f"Downloading relaybay {latest.version}...")
         try:
             path = updates.prepare_installer(latest, kind, updates.machine_arch(), folder)
@@ -485,6 +502,12 @@ class DesktopController:
         self.load()
         self.configure_logging()
         log.info("relaybay %s desktop, config %s", __version__, self.config_dir)
+        if self.journal is not None:
+            self.journal.write(f"started, log {self.log_path}")
+            if self.journal.error:
+                log.warning("the start journal was not written: %s", self.journal.error)
+        # The installer of the last update is of no use once the program runs again.
+        updates.clean_folder(update_folder())
         if self.desktop.autostart:
             # Heals the entry after an upgrade or a move of the executable.
             self.autostart.enable(launch_command())
@@ -533,14 +556,40 @@ def run(background: bool = False, exit_after: float | None = None, quit: bool = 
             return 0
         print("relaybay desktop: no running program answered.", file=sys.stderr)
         return 1
+    journal = StartJournal(config_dir)
+    journal.start(__version__)
+    try:
+        code = _start(background, exit_after, journal)
+    except BaseException as exc:
+        journal.exception(exc)
+        raise
+    journal.exit(code)
+    return code
+
+
+def _ipc_age(folder: Path) -> str:
+    try:
+        stamp = (folder / single_instance.IPC_FILE).stat().st_mtime
+    except FileNotFoundError:
+        return f"no {single_instance.IPC_FILE}"
+    except OSError as exc:
+        return f"{single_instance.IPC_FILE} unreadable: {exc}"
+    written = datetime.fromtimestamp(stamp).astimezone().isoformat(timespec="seconds")
+    return f"{single_instance.IPC_FILE} written {written}"
+
+
+def _start(background: bool, exit_after: float | None, journal: StartJournal) -> int:
     if not extra_installed():
+        journal.write("extra missing")
         print(MISSING_EXTRA, file=sys.stderr)
         return 2
     folder = config_dir()
     lock = single_instance.acquire(folder)
     if lock is None:
         if single_instance.notify_running(folder):
+            journal.write("another instance answered")
             return 0
+        journal.write(f"lock held, no answer ({_ipc_age(folder)})")
         print(
             f"relaybay desktop: another instance holds {folder / single_instance.LOCK_FILE}"
             " but does not answer.",
@@ -548,7 +597,7 @@ def run(background: bool = False, exit_after: float | None = None, quit: bool = 
         )
         return 1
     single_instance.hold_app_mutex()
-    controller = DesktopController(folder, background=background)
+    controller = DesktopController(folder, background=background, journal=journal)
     ipc = single_instance.serve_raise(folder, controller.show_window, controller.quit)
     try:
         return controller.run(exit_after)

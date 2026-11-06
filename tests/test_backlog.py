@@ -149,6 +149,25 @@ async def test_decline_reason_is_scanned_for_secrets(svc: Service) -> None:
     assert (await svc.backlog_item(item.id)).status == "new"
 
 
+async def test_items_tracked_under_an_older_identity_are_not_imported_again(
+    svc: Service, tmp_path: Path
+) -> None:
+    """Before 0.6.2 a title without ASCII words gave the identity '<project>/<date>/item'; an
+    import after the change must find that item by its new identity, not add it again."""
+    first = await svc.add_backlog_item("acme-shop", "Πρόβα 1", by_owner=True)
+    old_name = f"acme-shop/{first.created_at[:10]}/item"
+    await svc.record_import_item("backlog", old_name, BACKLOG, first.id, "x", "y")
+    root = tmp_path / "out"
+    root.mkdir()
+    exported = (await gather(svc))[0][BACKLOG].text
+    (root / BACKLOG).write_text(exported, encoding="utf-8")
+    plan = await make_plan(svc, root)
+    rows = [i for i in plan.items if i.kind == "backlog"]
+    assert len(rows) == 1 and rows[0].action != "add" and rows[0].item.endswith("/πρόβα-1")
+    await apply_plan(svc, plan)
+    assert len(await svc.all_backlog()) == 1
+
+
 async def test_board_items_are_not_imported_again(svc: Service, tmp_path: Path) -> None:
     await svc.add_backlog_item("acme-shop", "Board idea", by_owner=True)
     planned = await svc.add_backlog_item("acme-shop", "Planned one", by_owner=True)
@@ -263,6 +282,11 @@ def test_decision_cells() -> None:
         with pytest.raises(ValueError):
             parse_decision(bad)
     assert title_slug("Problem+json for errors!") == "problem-json-for-errors"
+    # Words in any script count; two titles without ASCII words are two identities.
+    greek, other = "Δοκιμή 1", "Δοκιμή 2"
+    assert title_slug(greek) == "δοκιμή-1"
+    assert title_slug(greek) != title_slug(other)
+    assert title_slug("!!!") != title_slug("???") and title_slug("!!!").startswith("item-")
     rows, warnings = parse_backlog(SETUP_BACKLOG.read_text(encoding="utf-8"), Aliases())
     assert len(rows) == 3 and not warnings
     assert rows[2].decision == "declined: the clients parse the current body"

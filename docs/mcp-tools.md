@@ -290,7 +290,9 @@ exits 0 within 0.3 s per network step; http hooks get the same JSON body.
 
 **Wake-up hook (opt-in).** `relaybay setup --apply --wake` adds a separate command hook
 to `Stop` with `"asyncRewake": true` and a 1800 s `timeout`:
-`<python> -I -m relaybay.hook_client --url …/hooks/claude-code/wait --token-file <path> --wait`.
+`<python> -I -m relaybay.hook_client --url …/hooks/claude-code/wait --token-file <path> --wait`,
+or `relaybay-hook --url … --token-file <path> --wait` (by its full path) from the installed
+program.
 Claude Code runs it in the background after every turn; it long-polls `POST /hooks/claude-code/wait`
 for up to 25 minutes. When an owner comment arrives for the idle, exactly linked session, the server
 marks it delivered and answers `{"wake": text}`; the hook prints the text to stderr and exits 2,

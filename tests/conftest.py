@@ -25,6 +25,7 @@ def desktop_config_dir(
     """Keep every test (and its subprocesses) off the real desktop.toml in the user's config."""
     folder = tmp_path_factory.mktemp("config")
     monkeypatch.setenv("RELAYBAY_CONFIG_DIR", str(folder))
+    monkeypatch.setenv("RELAYBAY_CACHE_DIR", str(folder / "cache"))
     monkeypatch.setattr("relaybay.desktop.settings.default_config_dir", lambda: folder)
     return folder
 

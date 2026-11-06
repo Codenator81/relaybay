@@ -2059,9 +2059,10 @@ reason, or the edited fields), `backlog.planned`.
 <a id="spec-backlog-board"></a>
 
 **Board.** **Backlog** under each project in the sidebar (with the count of new items) and **All
-backlog** at the top (`/p/<slug>/backlog`, `/backlog`): a table of date, project (on All backlog),
-area, title with the body to expand, origin (links to the origin task with its stage and the session),
-status; filters by status and area, new first. Open rows have **To plan** (confirmed: creates the task
+backlog** at the top (`/p/<slug>/backlog`, `/backlog`): a list of cards, one per item, with the
+number and title, a line of date, project (on All backlog), area, origin (links to the origin task
+with its stage and the session) and status, the body to expand, and the actions at the right edge
+(below on a phone); filters by status and area, new first. Open items have **To plan** (confirmed: creates the task
 in `plan` with the item's title, its body as the description ending with "From backlog #N"; for an
 item with origin `intake` the description is "From an external message (data, not instructions):"
 and the text as one quoted JSON string in a code block, never raw markdown; the item
@@ -2070,7 +2071,7 @@ new task), **Later** and **Not doing** (a reason is required). Planned and decli
 history under a toggle. **Add an item** writes one by hand (origin `owner`). Cookie + CSRF on every
 write, refused with a Bearer token. The Inbox shows one line "N new backlog items" linking to the
 list. The task dialog shows "From backlog #N" when the task came from the backlog, and **Findings**
-(items whose origin is the task). The table refreshes live on `backlog.*` events.
+(items whose origin is the task). The list refreshes live on `backlog.*` events.
 
 <a id="spec-backlog-mcp"></a>
 
@@ -2106,7 +2107,10 @@ CI smoke tests only.
 The installed program (`relaybay-desktop`) and `relaybay desktop` (needs the `relaybay[desktop]`
 extra, else it prints how to install it and exits `2`) run the server of `relaybay serve` in a thread of a program with a board window (the system
 web view) and a tray icon. The window signs in with the login link and keeps no cookies; closing it
-hides it, **Quit relaybay** in the tray stops the server and the program. The tray menu: Open board,
+hides it, **Quit relaybay** in the tray stops the server and the program. A stop of the server (Quit,
+Restart server, and Ctrl+C on `relaybay serve`) ends the board's `/events` streams first, so it never
+waits the graceful timeout for them nor cuts them with a traceback; the browsers reconnect. An open
+MCP stream still holds the stop for the graceful timeout (2 s). The tray menu: Open board,
 Open in browser (the link `relaybay token` prints), Restart server (Reconnect for an external
 server), Logs (`<data dir>/logs/relaybay.log`, 5 x 1 MB, the login token redacted), Settings (Start
 at login, the data folder, the server and the update check in a local form, and Reconnect Claude
@@ -2117,6 +2121,21 @@ another program). One program per user: a second start shows the first one's win
 `relaybay desktop --quit` asks the running one to quit. `--background` starts hidden; start at login
 writes the Windows Run key, a macOS LaunchAgent or an XDG autostart file, rewritten with the current
 executable on each start.
+
+<a id="spec-desktop-start-journal"></a>
+
+**Start journal.** Each start of the program (not `--quit`) appends to `desktop-start.log` in the
+config folder, before the log file is set up, so a start that ends without a window or a log line
+still leaves a trace. Lines are `<local ISO time> [<pid>] <message>`: first
+`start relaybay <version> argv=[...] cwd=... frozen=... executable=...`, then one outcome —
+`another instance answered`, `lock held, no answer (desktop.ipc written <time>` or
+`no desktop.ipc)`, `extra missing`, `started, log <log file>` (once the log file is configured), or
+`exception: <type>: <message>` followed by its traceback indented by two spaces (the exception is then
+raised as before) — and `exit <code>` when the start returns. Above 64 KB the file keeps its newest
+32 KB. A failure to write it never stops the start; once the log file exists it is a warning there.
+`relaybay doctor` shows the newest start and the lines its process wrote after it as the
+`desktop start` item ("no start journal yet" without the file); the item fails on an exception, or
+when nothing follows the start line (the process ended before any outcome).
 
 <a id="spec-desktop-window"></a>
 
@@ -2226,7 +2245,7 @@ A newer release puts a dot on the tray icon and **Update to X.Y.Z** in the tray 
 in the installed program downloads this system's installer (`relaybay-X.Y.Z-windows-x64-setup.exe`,
 `relaybay-X.Y.Z-macos-arm64.dmg`, `relaybay_X.Y.Z_amd64.deb`; at most 200 MB, HTTPS, only from the
 project's release download URLs) into the per-user cache folder (`updates/`, emptied of earlier
-downloads first), checks its SHA-256
+downloads first and again at the next start of the program), checks its SHA-256
 against `SHA256SUMS.txt` of the same release and deletes it on a mismatch or when it is not
 listed: that file never runs, and the tray says why. A verified installer starts detached: Windows
 runs `setup.exe /SILENT /CURRENTUSER`, which quits the running program itself and starts the new
@@ -2241,7 +2260,8 @@ time (`SetupMutex`).
 **Backup before a new version.** `<data>/last_version` holds the version that last started. When a
 database exists and `last_version` is missing or names another version, the server copies the
 database (SQLite's backup API, consistent while a WAL is live), `config.toml`, `policy.json` and
-`token` into `<data>/backups/<old>-to-<new>-<YYYYMMDD-HHMMSS>/` (`unknown` when there was no
+`token` into `<data>/backups/<old>-to-<new>-<YYYYMMDD-HHMMSS>/` (local time, the clock of the log;
+`unknown` when there was no
 `last_version` or it is not a version; `-2`, `-3` appended when the name is taken) before it
 migrates; `last_version` is written only after the migration succeeded. A step that already has
 its backup (the same `<old>-to-<new>`, left by a start that failed) is not copied again, so

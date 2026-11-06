@@ -111,9 +111,23 @@ def server_options(settings: Settings) -> dict[str, Any]:
         "port": settings.port,
         "proxy_headers": False,
         "server_header": False,
-        # SSE and MCP streams never finish on their own; do not wait for them on Ctrl+C.
+        # MCP streams never finish on their own; do not wait for them on Ctrl+C or Quit.
         "timeout_graceful_shutdown": 2,
     }
+
+
+def make_server(app: FastAPI, **options: Any) -> Any:
+    """A uvicorn server that ends the board's event streams before it waits for connections:
+    the browsers' /events never close by themselves, so a plain shutdown would wait the graceful
+    timeout for them and then cut them with a CancelledError traceback in the log."""
+    import uvicorn
+
+    class Server(uvicorn.Server):
+        async def shutdown(self, sockets: list[Any] | None = None) -> None:
+            app.state.service.bus.close()
+            await super().shutdown(sockets)
+
+    return Server(uvicorn.Config(app, **options))
 
 
 def create_app_from_env() -> FastAPI:
