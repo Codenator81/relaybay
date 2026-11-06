@@ -89,13 +89,13 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | Backlog page as cards, a start journal for the desktop program, clean stops, import identity, docs to date | done | [0016](design/0016-desktop-program.md) |
 
-## 0.7.x — reliability for the desktop-sessions stage
+## 0.7.0 — reliability for the desktop-sessions stage (released 2026-11-06)
 
 | Item | Status | Design |
 |---|---|---|
-| The plan as a living map: `plan_step_add`, the stage follows the plan, closed-plan warnings, draft hints | in progress | [0014](design/0014-task-plan.md) |
-| Hook delivery with retry and spool, a server watchdog in the program, backlog done | in progress | [0017](design/0017-readiness-for-agents-inside.md) |
-| Review: screenshot zoom, the step checkbox cursor; the window back after an in-app update | in progress | [0017](design/0017-readiness-for-agents-inside.md) |
+| The plan as a living map: `plan_step_add`, the stage follows the plan, closed-plan warnings, draft hints | done | [0014](design/0014-task-plan.md) |
+| Hook delivery with retry and spool, a server watchdog in the program, backlog done | done | [0017](design/0017-readiness-for-agents-inside.md) |
+| Review: screenshot zoom, the step checkbox cursor; the window back after an in-app update | done | [0017](design/0017-readiness-for-agents-inside.md) |
 
 ## 0.8 — before the runner
 
