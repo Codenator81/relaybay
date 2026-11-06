@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 import platformdirs
 
+from relaybay.domain.notifications import DEFAULT_KINDS, KINDS
 from relaybay.security import _write_private
 from relaybay.updates import HOURS_MAX
 
@@ -24,7 +25,8 @@ SERVER_MODES = ("embedded", "external")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 FILE_NAME = "desktop.toml"
 EXTERNAL_TOKEN = "external-token"
-OMIT_AT_DEFAULT = ("update_check", "update_check_hours")  # keys added after 0.5
+# Keys added after 0.5.
+OMIT_AT_DEFAULT = ("update_check", "update_check_hours", "notify", "notify_quiet", "notify_kinds")
 
 
 def _doc(meaning: str, default: str | None = None) -> dict[str, str | None]:
@@ -74,6 +76,31 @@ class DesktopSettings:
     update_check_hours: int = field(
         default=24,
         metadata=_doc("Hours between the program's update checks (whole number from 1 to 720)."),
+    )
+    notify: bool = field(
+        default=True,
+        metadata=_doc(
+            "Tray notifications: the program asks the server every 5 seconds what needs you and"
+            " shows it, at most one notification per 20 seconds. Read at the start and on"
+            " Restart server."
+        ),
+    )
+    notify_quiet: bool = field(
+        default=False,
+        metadata=_doc(
+            "Quiet mode (the tray's Quiet notifications): no notification, a dot on the tray icon,"
+            " one summary on leaving it."
+        ),
+    )
+    notify_kinds: tuple[str, ...] = field(
+        default=DEFAULT_KINDS,
+        metadata=_doc(
+            "What to notify about, any of: `waiting` (a task now waits on you), `review` (a task"
+            " moved to review or test), `reply` (an agent's comment), `answer` (an external"
+            " message for a task that waits on someone), `permission` (a session waiting for"
+            " you, off by default), `server` (an external server stopped answering).",
+            default="all but `permission`",
+        ),
     )
 
 
@@ -162,6 +189,13 @@ def load_desktop_settings(folder: Path, ignore_unknown: bool = False) -> Desktop
                 f" got {hours!r}"
             )
         settings.update_check_hours = hours
+    for key in ("notify", "notify_quiet"):
+        if key in data:
+            if not isinstance(data[key], bool):
+                raise ValueError(f"{path}: {key} must be true or false, got {data[key]!r}")
+            setattr(settings, key, data[key])
+    if "notify_kinds" in data:
+        settings.notify_kinds = _notify_kinds(path, data["notify_kinds"], ignore_unknown)
     if "server_mode" in data:
         mode = str(data["server_mode"]).strip().lower()
         if mode not in SERVER_MODES:
@@ -180,11 +214,25 @@ def load_desktop_settings(folder: Path, ignore_unknown: bool = False) -> Desktop
     return settings
 
 
+def _notify_kinds(path: Path, value: Any, ignore_unknown: bool) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(kind, str) for kind in value):
+        raise ValueError(f"{path}: notify_kinds must be a list of names, got {value!r}")
+    unknown = sorted(set(value) - set(KINDS))
+    if unknown and not ignore_unknown:
+        raise ValueError(
+            f"{path}: notify_kinds has unknown kind(s): {', '.join(unknown)};"
+            f" known: {', '.join(KINDS)}"
+        )
+    return tuple(kind for kind in value if kind in KINDS)
+
+
 def _toml_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
+    if isinstance(value, tuple):
+        return "[" + ", ".join(json.dumps(str(item)) for item in value) + "]"
     # A JSON string with ASCII escapes is a valid TOML basic string.
     return json.dumps(str(value))
 

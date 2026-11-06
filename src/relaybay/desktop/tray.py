@@ -19,6 +19,7 @@ SEPARATOR = "-"
 PERSONALIZE = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 SM_CXSMICON = 49
 UPDATE_DOT = "#c77700"  # the board's --warn (light theme)
+PENDING_DOT = "#3b5bdb"  # the board's --accent (light theme)
 DARK_MENUS_MIN_BUILD = 18362  # Windows 10 1903
 APP_MODE_FORCE_DARK = 2  # needs no per-window call, unlike 1 (allow dark)
 
@@ -29,6 +30,8 @@ class MenuState:
     autostart: bool
     has_window: bool  # False: no web view (Linux without WebKitGTK), the board opens in a browser
     update_version: str | None = None  # a newer release the program found
+    notify: bool = True  # tray notifications are on
+    quiet: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,10 +50,15 @@ def build_menu(state: MenuState) -> tuple[Entry, ...]:
         if state.update_version
         else ()
     )
+    quiet = (
+        (Entry("Quiet notifications", "toggle_quiet", checked=state.quiet),) if state.notify else ()
+    )
     return (
         Entry("Open board", "show_window", default=True),
         Entry("Open in browser", "open_in_browser"),
+        Entry("Open Inbox", "open_inbox"),
         Entry(SEPARATOR),
+        *quiet,
         Entry(restart, "restart"),
         Entry("Logs", "open_logs"),
         Entry(
@@ -141,22 +149,26 @@ def small_icons() -> bool:
     return ctypes.windll.user32.GetSystemMetrics(SM_CXSMICON) <= 16
 
 
-def icon_image(update: bool = False) -> Any:
-    """The tray icon; with `update`, a warn-coloured dot in the lower right corner."""
+def icon_image(update: bool = False, pending: bool = False) -> Any:
+    """The tray icon; with `update`, a warn-coloured dot in the lower right corner; with `pending`
+    (quiet mode holds notifications), an accent-coloured dot in the upper right one."""
     from PIL import Image, ImageDraw
 
     name = icon_file(panel_theme(), small_icons())
     with files("relaybay.desktop").joinpath("icons", name).open("rb") as fh:
         image = Image.open(fh)
         image.load()
-    if update:
+    if update or pending:
         image = image.convert("RGBA")
+        draw = ImageDraw.Draw(image)
         size = min(image.size)
         dot = max(size * 3 // 8, 6)
-        box = (image.width - dot, image.height - dot, image.width - 1, image.height - 1)
-        ImageDraw.Draw(image).ellipse(
-            box, fill=UPDATE_DOT, outline="white", width=max(size // 16, 1)
-        )
+        left, right, width = image.width - dot, image.width - 1, max(size // 16, 1)
+        if update:
+            box = (left, image.height - dot, right, image.height - 1)
+            draw.ellipse(box, fill=UPDATE_DOT, outline="white", width=width)
+        if pending:
+            draw.ellipse((left, 0, right, dot - 1), fill=PENDING_DOT, outline="white", width=width)
     return image
 
 

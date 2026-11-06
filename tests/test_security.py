@@ -25,6 +25,7 @@ def test_healthz_is_public(client: TestClient) -> None:
 def test_mcp_and_api_need_a_bearer_token(client: TestClient, token: str) -> None:
     assert client.post("/mcp", json={}).status_code == 401
     assert client.get("/api/projects").status_code == 401
+    assert client.get("/api/notifications").status_code == 401
     assert client.post("/mcp", json={}, headers={"Authorization": "Bearer nope"}).status_code == 401
     # The cookie is for the browser board, not for /mcp.
     client.get(f"/login?token={token}", follow_redirects=False)

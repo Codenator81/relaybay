@@ -524,7 +524,9 @@ a pinch, `+` / `-` / `0` / `1` or the bar ([details](#spec-annotations-viewer)).
 your acceptance: <task title>" when a `task.stage_changed` event moves a task to `review` or
 `test` (one per task: the task key is the notification tag); a click opens its Review tab. The
 permission is requested only by the **Allow notifications** button in Settings → Notifications,
-never on page load; the page shows whether this browser allows, blocks or has not decided.
+never on page load; the page shows whether this browser allows, blocks or has not decided. The
+desktop program has its own [tray notifications](#spec-desktop-notify), with no tab needed; with
+both on, a review is told twice.
 
 <a id="spec-board-comments"></a>
 
@@ -2004,8 +2006,9 @@ Nothing of this leaves the machine.
    protection with the same lists.
 4. **Token.** 32 random bytes (URL-safe), created on first run in `<data dir>/token`, written
    atomically with mode `0600` (on Windows the user profile ACL protects it; a POSIX file readable by
-   others logs a warning). Required as `Authorization: Bearer` on `/mcp`, `/hooks` and the reserved
-   `/api` prefix. `relaybay token --rotate` replaces it (restart the server).
+   others logs a warning). Required as `Authorization: Bearer` on `/mcp`, `/hooks` and `/api`
+   ([notifications](#spec-desktop-notify)); the board's cookie is not enough there.
+   `relaybay token --rotate` replaces it (restart the server).
    `/healthz` is public and returns `status`, `version`, `token_id` (a 12-hex-digit HMAC
    fingerprint that reveals nothing about the token) and `rules_hash` (the rules in the config the
    server started with, not the current version, [§6](#spec-rules-hash)).
@@ -2336,7 +2339,9 @@ hides it, **Quit relaybay** in the tray stops the server and the program. A stop
 Restart server, and Ctrl+C on `relaybay serve`) ends the board's `/events` streams first, so it never
 waits the graceful timeout for them nor cuts them with a traceback; the browsers reconnect. An open
 MCP stream still holds the stop for the graceful timeout (2 s). The tray menu: Open board,
-Open in browser (the link `relaybay token` prints), Restart server (Reconnect for an external
+Open in browser (the link `relaybay token` prints), Open Inbox (signs in and goes to `/inbox`, in the
+window or, without one, the browser), Quiet notifications (a checkbox, [below](#spec-desktop-notify),
+absent with `notify = false`), Restart server (Reconnect for an external
 server), Logs (`<data dir>/logs/relaybay.log`, 5 x 1 MB, the login token redacted), Settings (Start
 at login, the data folder, the server and the update check in a local form, and Reconnect Claude
 Code, [below](#spec-desktop-setup); Check for updates),
@@ -2360,7 +2365,58 @@ restarts nothing more until the owner's **Restart server** (or a Settings save),
 the count. A taken port is a setting to change, not a crash: nothing is restarted for it. External
 server: never a restart; every 60 s the same `/healthz` check sets the tray tooltip to "relaybay ·
 server unreachable since <local time, YYYY-MM-DD HH:MM>" from the first failed check, and back to
-"relaybay" once it answers.
+"relaybay" once it answers; the first failed check also gives one tray notification (kind `server`,
+[below](#spec-desktop-notify)).
+
+<a id="spec-desktop-notify"></a>
+
+**Tray notifications** (design [0020](design/0020-tray-notifications.md)). A background loop of the
+program, ended by Quit: every 5 s it reads `GET /api/notifications` over HTTP (loopback without a
+proxy, as `/healthz`), the same way for the embedded and an external server (an external server needs
+this version or newer). What becomes a notice:
+
+| Kind | Event | Title | Text |
+|---|---|---|---|
+| `waiting` | `task.updated` setting `waiting_on` to one of `owner_names` (matched as the Inbox does) | `Waiting on you: <key>` | the task's title |
+| `review` | `task.stage_changed` to `review` or `test` | `Waiting for your acceptance: <key>` | the task's title |
+| `reply` | `comment.added` by an agent | `Reply on <key> from <session>` | the comment's first 200 characters |
+| `answer` | `intake.answer_received` | `Answer received: <key>` | `From <source>: <task title>` |
+| `permission` | `session.status_changed` to `waiting` (the `Notification` hook, which an idle prompt raises too); off by default | `<session> is waiting` | the session's activity |
+| `server` | the program itself: an external server stops answering (at most one until it answers again) | `The relaybay server is unreachable` | `<URL> does not answer.` |
+
+A write by the owner himself is no notice (actor `board`, `owner` or one of `owner_names`).
+`notify_kinds` in `desktop.toml` chooses the kinds. `notify = false` stops the polling and the `server`
+notice and forgets the cursor, so switching it on starts from the newest event. Both are read at the
+start and on Restart server. The "keeps failing" notification of the watchdog does not depend on them.
+
+*Grouping.* At most one toast per 20 s window, the first at once. One item shows its title and text;
+several show the title `relaybay` and `3 need you: 2 reviews, 1 reply`. The same task and kind count
+once in a window, with the newest text; a `review` absorbs a `waiting` of the same task, since a move
+to review usually sets both. Everything new is read before anything is shown, so a downtime ends in one
+toast. A balloon's title stops at 63 and its text at 255 UTF-16 units, ending in `...`.
+
+*Quiet mode.* The tray's **Quiet notifications** (`notify_quiet`): no toast, an accent-coloured dot in
+the upper right corner of the icon while something is held (the update dot stays lower right), and on
+leaving it one toast at once. It survives a restart, with what it held.
+
+*The cursor.* `notify_state.json` in the config folder holds the last event id, what is waiting to be
+shown and which board that is (base URL and data folder). A first start, or another board, starts from
+the newest event and tells nothing of the past. A failed poll keeps the cursor, logs
+`tray notifications paused: <reason>` once and `tray notifications resumed` when it works again; a
+missing or unreadable file means a first start, with a warning for an unreadable one.
+
+*Limits.* A click on a balloon does nothing: pystray offers no such event on Windows, hence Open Inbox.
+pystray's X11 backend (the `.deb`) has no notifications: there a notice is only a line in the log, as it
+is on every system (`notification: <title>: <text>`). The operating system's Do not disturb may hide a
+toast. A board tab with browser notifications on tells a review as well.
+
+**`GET /api/notifications?after=<id>&limit=100`** (Bearer token, `limit` from 1 to 500):
+`{"last_id": n, "items": [{"id", "kind", "title", "text", "url", "key"}]}`, oldest first. `id` is the
+event's, `url` a path on the board, `key` the task key (for `permission`, the session's name). `limit`
+counts the events read, of which some are no notice, so `items` can be empty while `last_id` moves on;
+call again with `after=<last_id>` until it stops moving. Without `after`, no items and the newest id. An
+`after` past the newest event (another database) gives the newest id, which is lower. `server` never
+comes from here.
 
 <a id="spec-desktop-start-journal"></a>
 

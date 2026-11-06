@@ -107,7 +107,7 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| Push notifications: a task waiting on you, a review arrival, an agent's answer, a server problem, also with the board closed (tray first; channels to decide) | next | — |
+| Tray notifications: a task waiting on you, a review arrival, an agent's answer, a server problem, also with the board closed | done | [0020](design/0020-tray-notifications.md) |
 | Messages between sessions on the board; stop all and budgets; a fake `claude` and end-to-end tests; a versioned MCP contract; backlog priority and assignee; an Audit page and a per-agent live switch | next | [0017](design/0017-readiness-for-agents-inside.md) |
 
 ## 0.7+ — agents inside

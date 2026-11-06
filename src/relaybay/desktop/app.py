@@ -28,6 +28,7 @@ from relaybay import __version__, machine_setup, updates
 from relaybay.config import Settings, load_settings
 from relaybay.desktop import add_run_arguments, single_instance
 from relaybay.desktop.autostart import Autostart, launch_command
+from relaybay.desktop.notifier import Notifier, Page, fetch_page
 from relaybay.desktop.server_thread import EmbeddedServer, PortTaken, healthz
 from relaybay.desktop.settings import (
     DesktopSettings,
@@ -109,6 +110,7 @@ EXTERNAL_WATCH_SECONDS = 60.0
 WATCH_FAILURES = 2
 RESTART_CAP = 3
 RESTART_WINDOW = 600.0
+NOTIFY_SECONDS = 5.0
 KEEPS_FAILING = "The server keeps failing: see the log {log}"
 TRAY_TITLE = "relaybay"
 
@@ -145,6 +147,14 @@ class DesktopController:
         self._auto_restarts: deque[float] = deque()
         self._gave_up = False
         self.unreachable_since: str | None = None  # external mode: since when, for the tooltip
+        self.pending_dot = False  # quiet mode holds notifications
+        self.notifier = Notifier(
+            folder,
+            fetch=self._fetch_notifications,
+            toast=self._toast,
+            dot=self._set_pending_dot,
+            clock=lambda: self.clock(),
+        )
 
     # --- state -------------------------------------------------------------
 
@@ -154,6 +164,12 @@ class DesktopController:
             self.desktop = load_desktop_settings(self.config_dir)
             self.settings = load_settings(serving=self.desktop.server_mode == "embedded")
             self.problem = None
+            self.notifier.configure(
+                enabled=self.desktop.notify,
+                quiet=self.desktop.notify_quiet,
+                kinds=self.desktop.notify_kinds,
+                server=f"{self.settings.base_url} {self.settings.home}",
+            )
             warning = cleartext_warning(self.desktop)
             if warning:
                 log.warning("%s", warning)
@@ -309,6 +325,9 @@ class DesktopController:
         elif self.unreachable_since is None:
             self.unreachable_since = datetime.now().strftime("%Y-%m-%d %H:%M")
             log.warning("the server at %s does not answer", base_url)
+            self.notifier.local(
+                "server", "The relaybay server is unreachable", f"{base_url} does not answer."
+            )
         if self.icon is not None:
             self.icon.title = self.tray_title()
 
@@ -372,6 +391,14 @@ class DesktopController:
     def open_in_browser(self) -> None:
         webbrowser.open(self.browser_url())
 
+    def open_inbox(self) -> None:
+        url = self.browser_url() + "&next=/inbox"
+        if self.window is None:
+            webbrowser.open(url)
+            return
+        self.window.load_url(url)
+        self.show_window()
+
     def open_logs(self) -> None:
         path = self.log_path
         open_path(path if path.is_file() else path.parent)
@@ -402,6 +429,16 @@ class DesktopController:
     def toggle_autostart(self) -> None:
         self.set_autostart(not self.autostart.is_enabled())
 
+    def toggle_quiet(self) -> None:
+        on = not self.desktop.notify_quiet
+        current = load_desktop_settings(self.config_dir)
+        if current.notify_quiet != on:
+            current.notify_quiet = on
+            save_desktop_settings(self.config_dir, current)
+        self.desktop.notify_quiet = on
+        self.refresh_menu()
+        self.notifier.set_quiet(on)
+
     def menu_entries(self) -> Any:
         from relaybay.desktop.tray import MenuState, build_menu
 
@@ -411,6 +448,8 @@ class DesktopController:
             autostart=self.autostart.is_enabled(),
             has_window=self.has_window,
             update_version=latest.version if latest and self.update.available else None,
+            notify=self.desktop.notify,
+            quiet=self.desktop.notify_quiet,
         )
         return build_menu(state)
 
@@ -422,10 +461,42 @@ class DesktopController:
         self.icon.menu = to_pystray(self.menu_entries(), self.dispatch)
         self.icon.update_menu()
 
+    def _redraw_icon(self) -> None:
+        if self.icon is None:
+            return
+        from relaybay.desktop.tray import icon_image
+
+        self.icon.icon = icon_image(update=self.update.available, pending=self.pending_dot)
+
     def notify(self, message: str) -> None:
         log.info("%s", message)
         if self.icon is not None:
             self.icon.notify(message, "relaybay")
+
+    # --- tray notifications --------------------------------------------------
+
+    def notify_loop(self) -> None:
+        """Asks the server what needs the owner while the program runs; ends with Quit."""
+        while not self._stopped.wait(NOTIFY_SECONDS):
+            try:
+                if not self.quitting and self.settings is not None and not self.problem:
+                    self.notifier.tick()
+            except Exception:
+                log.exception("the notification check failed; the next one tries again")
+
+    def _fetch_notifications(self, after: int | None) -> Page:
+        assert self.settings is not None
+        return fetch_page(self.settings.base_url, self.token(), after)
+
+    def _toast(self, text: str, title: str) -> None:
+        log.info("notification: %s: %s", title, text)
+        # pystray's X11 backend has none, and its notify raises: the log line is all there is.
+        if self.icon is not None and getattr(self.icon, "HAS_NOTIFICATION", True):
+            self.icon.notify(text, title)
+
+    def _set_pending_dot(self, on: bool) -> None:
+        self.pending_dot = on
+        self._redraw_icon()
 
     # --- updates -------------------------------------------------------------
 
@@ -435,10 +506,7 @@ class DesktopController:
         if self.update.error:
             log.debug("update check failed: %s", self.update.error)
         if self.update.available != was:
-            from relaybay.desktop.tray import icon_image
-
-            if self.icon is not None:
-                self.icon.icon = icon_image(update=self.update.available)
+            self._redraw_icon()
             self.refresh_menu()
 
     def check_updates(self) -> None:
@@ -664,6 +732,7 @@ class DesktopController:
         self.icon = tray.create_icon(self.menu_entries(), self.dispatch)
         threading.Thread(target=self.update_loop, name="relaybay-updates", daemon=True).start()
         threading.Thread(target=self.watch_loop, name="relaybay-watchdog", daemon=True).start()
+        threading.Thread(target=self.notify_loop, name="relaybay-notify", daemon=True).start()
         if self.quitting:  # --quit or Quit arrived during start-up
             return 0
         if not self.has_window:

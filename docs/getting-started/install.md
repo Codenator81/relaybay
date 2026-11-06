@@ -46,8 +46,9 @@ if you live in one (it also brings a suitable Python).
 
     The program runs the same server as `relaybay serve` on `127.0.0.1:8765`, so a `relaybay serve`
     you run yourself must be stopped first (the program says so when the port is taken). Its tray
-    menu has Open board, Open in browser, Restart server (Reconnect when the program is the client
-    of an external server), Logs, a Settings submenu (Start at login, Data folder..., Server...,
+    menu has Open board, Open in browser, Open Inbox, Quiet notifications (the program tells you in
+    a tray notification when something needs you), Restart server (Reconnect when the program is the
+    client of an external server), Logs, a Settings submenu (Start at login, Data folder..., Server...,
     Check for updates), **Update to X.Y.Z** when a newer release is out, and Quit relaybay;
     closing the window keeps it running in the tray.
 

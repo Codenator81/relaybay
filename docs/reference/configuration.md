@@ -86,6 +86,7 @@ and the CLI both read it; `relaybay desktop config` shows and changes it. Beside
 `external-token` (0600, the external server's token), `window-state.json` (the board
 window's size, position and maximized flag, written by the program), `reopen-window` (a
 one-shot marker left when the program quits for an update with its window open),
+`notify_state.json` (where tray notifications have read up to, written by the program),
 `desktop-start.log` (the program's start journal, read by `relaybay doctor`) and the
 program's `desktop.lock` and `desktop.ipc`.
 
@@ -100,3 +101,6 @@ per-user data dir.
 | `server_url` | `''` | Base URL of the external server (`http://` or `https://`). |
 | `update_check` | `true` | The program asks GitHub for the latest release shortly after the start and every `update_check_hours`; a newer one puts a dot on the tray icon and Update to X.Y.Z in its menu. Settings → Check for updates checks now either way. The server's own check is `update_check` in `config.toml`. |
 | `update_check_hours` | `24` | Hours between the program's update checks (whole number from 1 to 720). |
+| `notify` | `true` | Tray notifications: the program asks the server every 5 seconds what needs you and shows it, at most one notification per 20 seconds. Read at the start and on Restart server. |
+| `notify_quiet` | `false` | Quiet mode (the tray's Quiet notifications): no notification, a dot on the tray icon, one summary on leaving it. |
+| `notify_kinds` | all but `permission` | What to notify about, any of: `waiting` (a task now waits on you), `review` (a task moved to review or test), `reply` (an agent's comment), `answer` (an external message for a task that waits on someone), `permission` (a session waiting for you, off by default), `server` (an external server stopped answering). |
