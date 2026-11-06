@@ -641,6 +641,44 @@ def test_doctor_survives_a_broken_launch_agent(
     assert "unknown" in doctor_items(tmp_path, claude_home)["desktop"].detail
 
 
+def test_doctor_reads_the_desktop_start_journal(
+    tmp_path: Path, claude_home: Path, desktop_config_dir: Path
+) -> None:
+    from relaybay.desktop.start_journal import FILE_NAME
+
+    path = desktop_config_dir / FILE_NAME
+    item = doctor_items(tmp_path, claude_home)["desktop start"]
+    assert item.ok and item.detail == f"no start journal yet ({path})"
+
+    path.write_text(
+        "2026-11-05T18:00:00+02:00 [10] start relaybay 0.6.2 argv=[]\n"
+        "2026-11-05T18:00:01+02:00 [10] started, log x\n"
+        "2026-11-06T08:16:40+02:00 [20] start relaybay 0.6.2 argv=['--background']\n"
+        "2026-11-06T08:16:41+02:00 [20] started, log C:/data/logs/relaybay.log\n",
+        encoding="utf-8",
+    )
+    item = doctor_items(tmp_path, claude_home)["desktop start"]
+    assert item.ok
+    assert item.detail == (
+        "2026-11-06T08:16:40+02:00 relaybay 0.6.2 argv=['--background']"
+        f" -> started, log C:/data/logs/relaybay.log ({path})"
+    )
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            "2026-11-06T09:00:00+02:00 [30] start relaybay 0.6.2 argv=[]\n"
+            "2026-11-06T09:00:00+02:00 [30] exception: OSError: boom\n"
+            "  Traceback (most recent call last):\n"
+            "  OSError: boom\n"
+        )
+    item = doctor_items(tmp_path, claude_home)["desktop start"]
+    assert not item.ok and "-> exception: OSError: boom (" in item.detail
+
+    path.write_text("2026-11-06T09:00:00+02:00 [40] start relaybay 0.6.2 argv=[]\n")
+    item = doctor_items(tmp_path, claude_home)["desktop start"]
+    assert not item.ok and "-> nothing after the start line" in item.detail
+
+
 def test_settings_apply_is_disabled_before_the_call() -> None:
     from relaybay.desktop.settings_window import page_html
 

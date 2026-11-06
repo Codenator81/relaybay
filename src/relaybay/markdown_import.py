@@ -924,16 +924,22 @@ class _Planner:
         (planned only records history: no task is created by an import)."""
         rows, warnings = parse_backlog(file.text, self.aliases)
         self.warnings.extend(f"{BACKLOG}: {w}" for w in warnings)
-        tracked_ids = {t.target_id for t in self.tracked.values() if t.kind == "backlog"}
+        by_target = {t.target_id: t for t in self.tracked.values() if t.kind == "backlog"}
         items = await self.service.all_backlog()
         current = {b.id: b for b in items}
         # Items no import wrote (made on the board, or exported from it) match by the same
-        # identity a row has, so an import of an export never adds them again.
+        # identity a row has, so an import of an export never adds them again. An item an older
+        # import tracked under another identity (the slug rule changed: titles without ASCII
+        # words were all "item") is found by its current identity, never added again.
         untracked: dict[str, BacklogItem] = {}
+        renamed: dict[str, ImportItem] = {}
         for b in sorted(items, key=lambda b: b.id):
-            if b.id not in tracked_ids:
-                key = f"{b.project_slug}/{b.created_at[:10]}/{backlog.title_slug(b.title)}"
+            key = f"{b.project_slug}/{b.created_at[:10]}/{backlog.title_slug(b.title)}"
+            tracked_before = by_target.get(b.id)
+            if tracked_before is None:
                 untracked.setdefault(key, b)
+            elif tracked_before.item != key:
+                renamed.setdefault(key, tracked_before)
         seen: set[str] = set()
         for row in rows:
             source = f"{BACKLOG}:{row.line}"
@@ -965,7 +971,7 @@ class _Planner:
             origin = row.origin if row.origin in backlog.ORIGINS else "owner"
             values = {"title": row.title, "area": (row.area or "").lower() or None}
             values |= {"origin": origin, "status": status, "reason": reason}
-            tracked = self.tracked.get(("backlog", name))
+            tracked = self.tracked.get(("backlog", name)) or renamed.get(name)
             target = current.get(tracked.target_id) if tracked else None
             if tracked is None:
                 target = untracked.get(name)

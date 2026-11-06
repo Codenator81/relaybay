@@ -1554,11 +1554,77 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .inline-form { display: inline; margin: 0; }
 .autonomy-reason { align-self: end; margin: 0 0 8px; font-size: 13px; }
 .comment.from-external { border-left: 3px solid var(--warn); }
-.backlog-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+/* A select sizes to its longest option; the 130 px basis of the text filters cut it. */
+.board-tools select.board-filter { flex: 0 0 auto; width: auto; max-width: 100%; }
+.backlog-list { display: grid; gap: 10px; margin: 0 0 16px; }
+.backlog-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "head actions" "meta actions" "body actions";
+  column-gap: 16px;
+}
+.backlog-card:hover { border-color: var(--border); }
+.backlog-card:target { outline: 2px solid var(--accent); outline-offset: 2px; }
+.backlog-head { grid-area: head; display: flex; align-items: baseline; gap: 8px; }
+.backlog-head .card-key { flex: none; }
+.backlog-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.backlog-meta { grid-area: meta; font-size: 13px; row-gap: 4px; }
+.backlog-meta > * { white-space: nowrap; }
+.backlog-meta .backlog-origin, .backlog-meta .backlog-reason { white-space: normal; }
+.backlog-area { padding: 1px 8px; border-radius: 999px; background: var(--chip-bg); color: var(--chip-text); font-size: 12px; font-weight: 600; }
+.backlog-status {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.backlog-status.status-new { color: var(--accent); border-color: var(--accent); }
+.backlog-status.status-planned { color: var(--ok); border-color: var(--ok); }
+.backlog-status.status-declined { color: var(--bad); border-color: var(--bad); }
+.backlog-body { grid-area: body; font-size: 13px; }
+.backlog-body > summary { cursor: pointer; }
+/* The actions as one pill group: the primary filled, the rest quiet until hovered. */
+.backlog-actions {
+  grid-area: actions;
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  align-self: start;
+  justify-self: end;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
 .backlog-actions form { margin: 0; }
-.backlog-row:target { outline: 2px solid var(--accent); outline-offset: 2px; }
+.backlog-actions .btn {
+  padding: 5px 12px;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+  border-radius: 999px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.backlog-actions .btn:hover { background: var(--surface); color: var(--text); }
+.backlog-actions .btn.primary { background: var(--accent); color: var(--accent-text); }
+.backlog-actions .btn.primary:hover { filter: brightness(1.08); }
+.backlog-actions .bind-picker { margin: 0; }
+.backlog-actions .bind-picker > summary::after { content: " \25BE"; color: inherit; }
+.backlog-actions .bind-picker[open] > summary { background: var(--surface); color: var(--text); }
+.backlog-actions .bind-menu { left: auto; right: 0; }
+.backlog-actions .bind-menu .btn { border-radius: 6px; }
+.backlog-actions .bind-menu .btn.danger { color: var(--bad); background: transparent; border-color: var(--bad); }
 .backlog-history summary h2, #backlog-add summary h2 { display: inline; font-size: 15px; }
+.backlog-history .backlog-list { margin: 10px 0 0; }
 .intake-row .form-actions { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .backlog-card { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "meta" "body" "actions"; }
+  .backlog-actions { justify-self: start; flex-wrap: wrap; }
+  .backlog-actions .bind-menu { left: 0; right: auto; }
+}
 @media (max-width: 760px) {
   .switcher-open kbd, .switcher-open .switcher-label { display: none; }
   .switcher-open { min-width: 36px; min-height: 32px; justify-content: center; }

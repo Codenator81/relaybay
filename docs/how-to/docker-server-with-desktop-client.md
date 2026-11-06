@@ -15,7 +15,7 @@ docker compose -f examples/compose.yaml up -d
 docker compose -f examples/compose.yaml logs relaybay      # version, data folder, login link
 ```
 
-Pin a version in `image:` (for example `ghcr.io/codenator81/relaybay:0.6.0`) so an update is your
+Pin a version in `image:` (for example `ghcr.io/codenator81/relaybay:0.6.1`) so an update is your
 decision; `docker compose pull` and `up -d` move it. The volume holds `relaybay.sqlite`, the
 `token`, `config.toml` and `backups/` (a new version copies the database there before it migrates).
 

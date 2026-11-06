@@ -1,14 +1,16 @@
-"""Time the hook forwarder against a live local server, and check it stays quiet when none runs.
+"""Time the hook forwarder's start-up, and check it works against a live local server and stays
+quiet when none runs.
 
 python scripts/hook_timing.py [--runs 20] [--limit-ms 800] -- dist/relaybay/relaybay-hook
 python scripts/hook_timing.py --interpreter   # this interpreter: -I -m relaybay.hook_client
 
-Timed: N runs with `{}` on stdin against a threaded HTTP server on 127.0.0.1 that answers
-`200 application/json {}`; each run must exit 0 and print `{}`. Fails when the median is above the
-limit (800 ms: a bloated bundle takes seconds; Claude Code allows the command 3 s). Then one run
-against a dead port must exit 0 with no output; its time is printed for comparison only, because
-Windows retries a refused loopback connect until the hook's own 0.3 s timeout: a live median equal
-to the dead-port time means the live run waited for that timeout too.
+Timed against the limit: N runs of `--version`, which exits before any network work, so the
+median is the start-up alone (a bloated bundle takes seconds; Claude Code allows the command
+3 s). Then N runs with `{}` on stdin against a threaded HTTP server on 127.0.0.1 that answers
+`200 application/json {}`: each must exit 0 and print `{}`; their median is printed for
+comparison only, because on Windows a loopback connect can wait for the hook's own 0.3 s timeout
+and would measure that, not the program. Last, one run against a dead port must exit 0 with no
+output.
 """
 
 import argparse
@@ -74,6 +76,18 @@ def main(argv: list[str] | None = None) -> int:
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
+        starts = []
+        for _ in range(args.runs):
+            start = time.perf_counter()
+            done = subprocess.run([*command, "--version"], capture_output=True, check=False)
+            starts.append((time.perf_counter() - start) * 1000)
+            if done.returncode != 0 or not done.stdout.startswith(b"relaybay"):
+                print(
+                    f"{name} --version exited {done.returncode}, stdout {done.stdout!r},"
+                    f" stderr {done.stderr!r}",
+                    file=sys.stderr,
+                )
+                return 1
         with tempfile.TemporaryDirectory() as folder:
             token = Path(folder) / "token"
             token.write_text("ci", encoding="utf-8")
@@ -102,10 +116,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    median = statistics.median(times)
+    median = statistics.median(starts)
     print(
-        f"{name}: median {median:.0f} ms over {args.runs} runs against a live server"
-        f" (min {min(times):.0f}, max {max(times):.0f}, limit {args.limit_ms:.0f});"
+        f"{name}: start-up median {median:.0f} ms over {args.runs} runs of --version"
+        f" (min {min(starts):.0f}, max {max(starts):.0f}, limit {args.limit_ms:.0f});"
+        f" live server: {statistics.median(times):.0f} ms median, every run answered {{}};"
         f" dead port: exit 0, no output, {dead_ms:.0f} ms"
     )
     return 0 if median <= args.limit_ms else 1

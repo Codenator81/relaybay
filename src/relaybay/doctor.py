@@ -155,6 +155,27 @@ def _desktop_check(environ: Mapping[str, str]) -> Check:
     return Check(True, "desktop", f"start at login {autostart}; settings {file}")
 
 
+def _desktop_start_check(environ: Mapping[str, str]) -> Check:
+    """The program's last start from its start journal: read after a login it did not survive,
+    without opening files."""
+    from relaybay.desktop import start_journal
+    from relaybay.desktop.settings import config_dir
+
+    name = "desktop start"
+    path = start_journal.journal_path(config_dir(environ))
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return Check(True, name, f"no start journal yet ({path})")
+    except OSError as exc:
+        return Check(False, name, f"{path} cannot be read: {exc}")
+    last = start_journal.last_start(text)
+    if last is None:
+        return Check(True, name, f"no start in {path}")
+    outcome = "; ".join(last.outcomes) or "nothing after the start line"
+    return Check(not last.failed, name, f"{last.time} {last.start} -> {outcome} ({path})")
+
+
 def doctor_checks(
     settings: Settings,
     *,
@@ -181,6 +202,7 @@ def doctor_checks(
         _server_mode_check(settings),
         _hook_executable_check(run),
         _desktop_check(environ),
+        _desktop_start_check(environ),
     ]
     token_item, token = _token_check(settings)
     checks.append(token_item)

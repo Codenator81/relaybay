@@ -88,9 +88,7 @@ class EmbeddedServer:
     def start(self, timeout: float = START_TIMEOUT) -> None:
         """Start and wait until /healthz answers. Raises PortTaken, or RuntimeError when the
         server stopped during start-up (the reason is in the log)."""
-        import uvicorn
-
-        from relaybay.app import create_app, server_options
+        from relaybay.app import create_app, make_server, server_options
 
         if self.running:
             raise RuntimeError("the server is already running")
@@ -102,7 +100,7 @@ class EmbeddedServer:
         options = {**server_options(settings), "log_config": self.log_config}
         if self.log_config is None:
             options["log_level"] = "warning"
-        server = uvicorn.Server(uvicorn.Config(create_app(settings), **options))
+        server = make_server(create_app(settings), **options)
         thread = threading.Thread(
             target=server.run, kwargs={"sockets": [sock]}, name="relaybay-server", daemon=False
         )

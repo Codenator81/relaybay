@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import httpx
+import pytest
 
 from relaybay.security import csrf_token
 from relaybay.service import Service
@@ -130,3 +131,28 @@ async def test_live_event_and_heartbeat(
     assert ": ping" in lines  # heartbeat (0.5 s in tests) while waiting for the edit
     stage_data = json.loads(lines[-1][len("data: ") :])
     assert stage_data["from"] == "plan" and stage_data["to"] == "test"
+
+
+async def test_bus_close_wakes_a_waiting_subscriber() -> None:
+    """A shutdown ends every stream at once, not after the heartbeat."""
+    from relaybay.events import EventBus, SubscriberDropped
+
+    bus = EventBus()
+    with bus.subscribe() as sub:
+        waiting = asyncio.ensure_future(sub.get(30))
+        await asyncio.sleep(0)
+        bus.close()
+        with pytest.raises(SubscriberDropped):
+            await asyncio.wait_for(waiting, 2)
+    assert bus.subscriber_count == 0
+
+
+async def test_bus_subscribe_after_close_ends_at_once() -> None:
+    """A request accepted just before the shutdown must not wait the graceful timeout."""
+    from relaybay.events import EventBus, SubscriberDropped
+
+    bus = EventBus()
+    bus.close()
+    with bus.subscribe() as sub, pytest.raises(SubscriberDropped):
+        await sub.get(30)
+    assert bus.subscriber_count == 0

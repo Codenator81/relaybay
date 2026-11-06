@@ -26,6 +26,11 @@ failure (no editing of `~/.claude/settings.json` or `~/.claude.json` by hand).
   PowerShell). On Windows use PowerShell syntax; there is no `&&` in Windows PowerShell 5.1.
 - Is relaybay already installed? `relaybay --version`. If it prints `relaybay <version>`, skip
   step 2.
+- Is it the desktop program? The installed program's `relaybay` answers `--version` too, so run
+  `relaybay doctor` and read two items: `install` (`desktop-windows`, `desktop-macos` or
+  `desktop-deb` means the desktop program) and `server mode` (`embedded` or `external`). If the
+  desktop program is installed, use it: step 3 starts the program, steps 4 to 7 (`relaybay token`,
+  `relaybay setup`) run with its `relaybay`; never start a bare `relaybay serve` next to it.
 - Is `uv` available? `uv --version`. Otherwise `pipx --version`.
 - Is Claude Code available? `claude --version`. relaybay works without it, but steps 5–6 need it.
 
@@ -43,7 +48,21 @@ If `relaybay` is not found afterwards, the tool's bin folder is not on `PATH`: r
 
 ### 3. Start the server in the background
 
-Check first; start only when nothing answers:
+**Desktop program installed** (step 1): do not run `relaybay serve`. A server started that way
+bypasses the program: the program then finds the port taken and runs no server of its own. Start
+the program instead (it runs its server inside):
+
+- Windows: the Start Menu entry relaybay, or
+  `Start-Process "$env:LOCALAPPDATA\Programs\relaybay\relaybay-desktop.exe"`
+- macOS: `open -a relaybay`
+- Linux: the relaybay entry in the applications menu, or `/opt/relaybay/relaybay-desktop &`
+
+With `server mode` `embedded`, wait until `curl -s http://127.0.0.1:8765/healthz` answers (up to
+10 seconds), then go to step 4. With `server mode` `external` the server runs elsewhere (for example in Docker): start no server;
+the program and the CLI (`token`, `setup`, `doctor`) talk to `server_url` from `desktop.toml`. If
+`relaybay doctor` reports that server unreachable, tell the user; otherwise go to step 4.
+
+**No desktop program:** check first; start only when nothing answers:
 
 ```bash
 curl -s http://127.0.0.1:8765/healthz

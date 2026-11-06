@@ -7,10 +7,24 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Aleksandrs Poltarjonoks" }]
 requires-python = ">=3.12"
+keywords = [
+    "claude-code",
+    "mcp",
+    "mcp-server",
+    "agents",
+    "ai-agents",
+    "kanban",
+    "task-board",
+    "developer-tools",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Web Environment",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: MacOS X",
+    "Environment :: X11 Applications :: GTK",
     "Framework :: FastAPI",
+    "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",

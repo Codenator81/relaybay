@@ -7,6 +7,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Desktop program: a start journal, `desktop-start.log` in the config folder, written before the log
+  file is set up: the time, version, command line and working folder of each start and how it ended
+  (another instance answered, the lock held without an answer, the extra missing, started, or the
+  exception with its traceback) and the exit code. `relaybay doctor` shows the last start as its
+  `desktop start` item.
+
+### Fixed
+
+- Desktop program: a start that ended before its log file was set up (for example at login) left no
+  trace anywhere, because the windowed program has no console for its messages; it is now in the
+  start journal. Troubleshooting has a "relaybay did not start at login" section.
+- Backlog page: cards instead of a table, so a long title, the origin and the three actions no
+  longer crowd one row; the status filter is as wide as its longest option.
+- Stopping the server (Quit, Restart server, Ctrl+C on `relaybay serve`) ends the board's `/events`
+  streams first instead of waiting the graceful timeout for them and cutting them with a
+  `CancelledError` traceback in the log.
+- `backlog.md` import: a title without ASCII words (for example in Cyrillic) no longer gets the
+  identity `item`, so two such rows on one day are two items; an item an earlier import tracked
+  under that identity is found again, not added twice.
+- Desktop program: the downloaded installer is deleted at the next start of the program instead of
+  staying in the cache folder; the backup folders before a new version are stamped in local time,
+  the same clock as the log.
+- CI: the hook forwarder's start-up is timed with `--version`, not with a request whose connect
+  could wait for a timeout on Windows.
+
+### Changed
+
+- PyPI: keywords and classifiers (Beta, Developers, Windows, macOS, GTK), so the package is found
+  by "claude-code" and "mcp".
+
 ## [0.6.1] - 2026-11-05
 
 ### Fixed

@@ -1,7 +1,7 @@
 # Connect Claude Code
 
 relaybay runs one MCP server for all your sessions. [Install it](getting-started/install.md) and
-start it first:
+start it first: start the desktop program (it runs the server inside), or without it:
 
 ```bash
 relaybay serve
@@ -39,7 +39,10 @@ To keep the token out of the configuration file, put it in an environment variab
 
 Project-scoped servers from `.mcp.json` ask for approval once in interactive sessions.
 
-After `relaybay token --rotate`, restart `relaybay serve` and update the token in the entry.
+After `relaybay token --rotate`, restart the server (`relaybay serve`, or **Restart server** in
+the desktop program's tray) and update the token in the entry. When the program is the client of
+an external server (`server_mode = "external"`), `token --rotate` is refused: rotate the token
+where that server runs.
 
 ## 2. Tell the agent when to use it
 
@@ -92,8 +95,9 @@ one that changed between your dry run and the write. `--check --json` prints the
 and exits non-zero when an item fails.
 
 The same plan, buttons (Apply, Remove, Run check) and check results are on the board under
-**Integrations** (link in the header). Apply and Remove ask for confirmation and write only the
-plan shown on the page: if the file changed meanwhile, they refuse and show the new plan.
+**Settings → Integrations** (`/settings/integrations`). Apply and Remove ask for confirmation and
+write only the plan shown on the page: if the file changed meanwhile, they refuse and show the new
+plan.
 
 What it writes, and what it never touches:
 
@@ -202,7 +206,8 @@ For tests or a second machine profile, `--claude-home <folder>` (and `relaybay s
 
 ## 4. Watch the board
 
-Open the login link printed by `relaybay serve` (or by `relaybay token`). Cards appear and move as
+Open the board from the desktop program's tray (Open board), or open the login link printed by
+`relaybay serve` (or by `relaybay token`). Cards appear and move as
 sessions call the tools; no reload needed. For a session bound by its desktop session id, the card's
 "Open in desktop" button opens it in the Claude desktop app; if nothing opens, use "Copy link" and
 paste the link into the app.

@@ -67,8 +67,9 @@ uv sync --group docs
 uv run --no-sync mkdocs build --strict   # or: mkdocs serve
 ```
 
-The CLI, configuration and MCP reference pages in `docs/reference/` are generated from the code.
-After changing a command, a setting or an MCP tool, regenerate them; CI fails when they drift:
+The CLI, configuration, MCP and policy reference pages in `docs/reference/`, and
+`docs/reference/policy.schema.json`, are generated from the code. After changing a command, a
+setting, an MCP tool or the policy schema and presets, regenerate them; CI fails when they drift:
 
 ```bash
 uv run python scripts/gen_reference.py           # rewrite docs/reference/*.md
