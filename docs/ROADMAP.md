@@ -114,7 +114,11 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| A Diff tab on the task card, across all the task's repositories: one piece of work spread over several repositories seen in one place, not per session and folder | later | — |
+| Plugins on top of the versioned MCP contract: a manifest, an MCP server and, if needed, a panel on the card in a `sandbox`. A plugin declares what it may read; the contract's version keeps an update of relaybay from breaking plugins | later | — |
+| Diff as the first plugin: one piece of work across all the task's repositories. On the card, an Open diff button per repository opens a ready tool (VS Code, a GitHub or Bitbucket compare page); an MCP tool gives an agent the task's diff. Uncommitted changes show only in a local tool. No line comments in the first version | later | — |
+| Browser as the second plugin: claude-in-chrome or Playwright MCP, no panel of its own; live hosts stay behind the No live now switch | later | — |
+
+Not planned: Electron and a browser panel of our own, because the browser and the diff are solved through MCP and plugins.
 
 ## 0.7+ — agents inside
 
