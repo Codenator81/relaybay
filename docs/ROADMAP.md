@@ -83,6 +83,12 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | The program follows the machine's light or dark theme, the window keeps its state | done | [0016](design/0016-desktop-program.md) |
 
+## 0.6.2 — fixes from practice (released 2026-11-06)
+
+| Item | Status | Design |
+|---|---|---|
+| Backlog page as cards, a start journal for the desktop program, clean stops, import identity, docs to date | done | [0016](design/0016-desktop-program.md) |
+
 ## 0.7+ — agents inside
 
 | Item | Status | Design |
