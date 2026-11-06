@@ -101,11 +101,13 @@ def create_window(
         hidden=hidden,
         background_color=background_color(),
     )
+    tracker.visible = not hidden
 
     def on_closing() -> bool:
         save_state()
         if keep_open():
             window.hide()
+            tracker.visible = False
             return False  # cancels the close
         return True
 
@@ -122,6 +124,7 @@ def show(window: Any, tracker: WindowTracker) -> None:
     """Raise the window as it was. On Windows `restore()` also un-maximizes, so only a minimized
     window gets a state change, back to what it was before; elsewhere `restore()` is what raises."""
     window.show()
+    tracker.visible = True
     if not RESTORE_UNMAXIMIZES:
         window.restore()
     elif tracker.minimized:

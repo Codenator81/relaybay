@@ -16,6 +16,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Setting `plan_draft_hint_hours` (default 1, 0 off): a task in `dev` whose plan has been a draft
   that long gets a hint line in the coordinator's `portfolio_digest`, `project_digest` and
   `task_context`, and its card shows `draft · N h`.
+- Screenshot viewer: zoom from fit up to 8x the natural size with the mouse wheel (around the
+  pointer), a pinch, the keys `+` / `-` / `0` (fit) / `1` (100 percent), a double click, or the new
+  `-` / percentage / `+` / Fit / 1:1 controls in the bar; drag to pan (the Select tool or one finger;
+  the space bar or the middle button under a drawing tool). Markup stays on its spot at every scale,
+  pins keep their size on screen.
 
 ### Changed
 
@@ -27,6 +32,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is closed (N/N done) while work goes on …` (never a refusal); in `dev` the plan reminder says
   the same instead of "all N steps done".
 - Server instruction 11 says how to change the plan after a report.
+
+### Fixed
+
+- Review tab: the step's checkbox shows the hand cursor like its label.
+- Desktop program: after an update the board window that was open comes back; the Windows installer
+  restarts the program with `--background`, which used to leave it in the tray.
 
 ## [0.6.2] - 2026-11-06
 

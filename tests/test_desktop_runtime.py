@@ -944,6 +944,121 @@ def test_a_failed_save_does_not_stop_the_close(
     assert "the window state was not saved: read-only" in caplog.text
 
 
+# --- the window after an update -----------------------------------------------
+
+
+def test_reopen_marker_is_one_shot(tmp_path: Path) -> None:
+    assert window_state.take_reopen(tmp_path, 1000.0) is False
+    window_state.mark_reopen(tmp_path, 1000.0)
+    assert (tmp_path / window_state.REOPEN_FILE).is_file()
+    assert window_state.take_reopen(tmp_path, 1000.0 + window_state.REOPEN_MAX_AGE) is True
+    assert window_state.take_reopen(tmp_path, 1000.0) is False
+
+
+@pytest.mark.parametrize("content", ["1000.0", "garbage", ""], ids=["old", "garbage", "empty"])
+def test_an_old_or_unreadable_marker_is_dropped(tmp_path: Path, content: str) -> None:
+    (tmp_path / window_state.REOPEN_FILE).write_text(content, encoding="utf-8")
+    later = 1000.0 + window_state.REOPEN_MAX_AGE + 1  # the next morning's logon start, say
+    assert window_state.take_reopen(tmp_path, later) is False
+    assert not (tmp_path / window_state.REOPEN_FILE).exists()
+
+
+def test_the_tracker_knows_whether_the_window_is_on_screen(
+    fake_webview: types.SimpleNamespace,
+) -> None:
+    track, _clock = tracker()
+    created = window.create_window("<p>", True, lambda: True, track, lambda: None)
+    assert track.visible is False
+    window.show(created, track)
+    assert track.visible is True
+    created.events.closing[0]()  # closed to the tray
+    assert track.visible is False
+    window.create_window("<p>", False, lambda: True, track, lambda: None)
+    assert track.visible is True
+
+
+@pytest.mark.parametrize(
+    "started_ago, visible, marked",
+    [
+        (5.0, True, True),
+        (5.0, False, False),
+        (None, True, False),
+        (app.INSTALLER_QUIT_WAIT + 1, True, False),
+    ],
+    ids=[
+        "update with the window open",
+        "update from the tray",
+        "plain quit",
+        "quit long after a cancelled setup",
+    ],
+)
+def test_quit_marks_the_reopen_only_for_an_update_with_the_window_open(
+    tmp_path: Path,
+    fake_webview: types.SimpleNamespace,
+    started_ago: float | None,
+    visible: bool,
+    marked: bool,
+) -> None:
+    ctl = DesktopController(tmp_path)
+    ctl.has_window = True
+    ctl.window = object()
+    ctl.window_tracker.visible = visible
+    ctl.clock = lambda: 1000.0
+    ctl.installer_started_at = None if started_ago is None else 1000.0 - started_ago
+    ctl.quit()
+    assert (tmp_path / window_state.REOPEN_FILE).exists() is marked
+
+
+class TrayIcon:
+    def run(self, setup: object = None) -> None:
+        pass
+
+    def run_detached(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize(
+    "background, marker, hidden",
+    [(True, True, False), (True, False, True), (False, True, False)],
+    ids=["background after an update", "background at logon", "plain start"],
+)
+def test_a_start_takes_the_marker_and_shows_the_window_once(
+    controller: DesktopController,
+    desktop_config_dir: Path,
+    fake_webview: types.SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    background: bool,
+    marker: bool,
+    hidden: bool,
+) -> None:
+    fake_webview.start = lambda *args, **kwargs: None
+    monkeypatch.setattr(window, "window_available", lambda: True)
+    monkeypatch.setattr(tray, "create_icon", lambda entries, dispatch: TrayIcon())
+    if marker:
+        window_state.mark_reopen(desktop_config_dir, time.time())
+    controller.background = background
+    assert controller.run() == 0
+    assert fake_webview.created[0]["hidden"] is hidden
+    assert not (desktop_config_dir / window_state.REOPEN_FILE).exists()
+
+
+def test_a_marker_that_cannot_be_removed_keeps_the_start_hidden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def refuse(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError("in use")
+
+    window_state.mark_reopen(tmp_path, time.time())
+    monkeypatch.setattr(Path, "unlink", refuse)
+    ctl = DesktopController(tmp_path, background=True)
+    with caplog.at_level(logging.WARNING, logger="relaybay.desktop"):
+        assert ctl.take_reopen() is False
+    assert "staying hidden: in use" in caplog.text
+
+
 # --- icons ------------------------------------------------------------------
 
 

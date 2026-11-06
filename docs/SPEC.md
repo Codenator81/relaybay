@@ -228,7 +228,21 @@ box as the image, so it scales with it. Every shape is saved when it is drawn. S
 for Delete (or the `Delete` key); shapes do not move. A click on a pin opens its thread with any tool:
 the comment (saved on Save or on leaving the box) and the replies, updated live. Undo (or Ctrl+Z)
 takes back this visit's additions and deletions on this screenshot. ←/→ page and Esc closes; while
-typing in a pin's boxes the arrows stay in the text and Esc closes only the thread. Every write goes to
+typing in a pin's boxes the arrows, the zoom keys and Esc stay in the text (Esc closes only the
+thread).
+
+*Zoom.* From fit (the default, and on every screenshot opened) up to 8x the natural size, never
+below fit (a picture smaller than the screen therefore stays at fit for 1:1). The mouse wheel over
+the picture zooms around the pointer (no Ctrl: the viewer is modal), a pinch around its centre;
+`+` / `-` step by 1.25 around the middle, `0` fits and `1` is 100 percent; the bar has `-`, the
+percentage of the natural size, `+`, Fit and 1:1; a double click (Select tool, or markup hidden)
+toggles fit and 100 percent. Zoomed in, the picture pans by dragging with the Select tool or one
+finger, by dragging with the space bar held or the middle button under any tool, or with two
+fingers while pinching, and never further than its edges; a swipe pages only at fit. One CSS
+transform on the box holding the image and the markup layer zooms both, so every shape stays on
+its spot; a pointer maps to image fractions from the layer's box on screen. Shapes and lines scale
+with the picture (they mark parts of it, as in the flattened image); pins keep their on-screen
+size. Every write goes to
 the screenshot it was made on, whatever is on screen when it runs. While Send to agent runs, paging,
 closing and the tools wait, and the viewer says so. Mouse, pen and
 touch work alike; while a drawing tool is on, a swipe draws instead of paging. Agent text is shown as
@@ -470,7 +484,8 @@ while one of its comment boxes holds text.
 
 **Viewer.** A thumbnail opens a full-screen viewer over the dialog: the image fitted to the
 screen, its caption below, a counter "3 / 7" across the task's screenshots, ‹ › buttons and ← / →,
-Esc or Close to leave (the dialog stays open), swipe left or right on phones.
+Esc or Close to leave (the dialog stays open), swipe left or right on phones; zoom with the wheel,
+a pinch, `+` / `-` / `0` / `1` or the bar ([details](#spec-annotations-viewer)).
 
 <a id="spec-board-notify"></a>
 
@@ -2205,7 +2220,21 @@ middle of the title bar off every current screen is dropped, so the window is ce
 reading the file or the screens stops the program. The geometry of a maximized or minimized window never overwrites
 the normal one, and a move or resize within 1 s before a maximize or minimize does not count. A
 window closed while minimized comes back un-minimized. `--background` still starts hidden, and the
-first show of a window saved as maximized is maximized. On macOS the flag is not restored: pywebview
+first show of a window saved as maximized is maximized.
+
+**The window after an update.** When the program quits for an update it started (the installer's
+`desktop --quit` on Windows, the program's own quit after opening the `.dmg` or `.deb`) and the board
+window is on screen (minimized counts, hidden to the tray does not), it writes the one-shot marker
+`reopen-window` (the time) beside `window-state.json`. The next start removes it before it creates
+the window, and a `--background` start that found it at most 10 minutes old shows the window like a
+plain start, with its saved
+geometry and maximized flag, so the window open before a Windows update comes back while a later
+logon start stays hidden. Tray Quit, `--quit` from a terminal and an installer run by hand write
+no marker: only a quit within 60 s after Update has started the installer does (the silent setup
+sends its `--quit` within seconds; one that never does was cancelled). A marker that cannot be
+removed is ignored (logged), so it never shows the window at every logon; an older or unreadable
+marker (macOS and Linux, where no start follows the quit by itself) is removed without showing it,
+so a logon start the next day stays hidden. On macOS the flag is not restored: pywebview
 calls only full screen maximized there. On Linux the position is not restored: pywebview reports and
 takes it in different coordinates, so only the size and the flag are kept.
 

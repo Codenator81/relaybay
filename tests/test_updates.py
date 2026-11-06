@@ -421,7 +421,26 @@ def test_update_action_starts_a_verified_installer_and_quits(
     )
     controller.install_update()
     assert launched == [(tmp_path / "x.dmg", "desktop-macos")]
-    assert controller.quitting
+    assert controller.quitting and controller.installer_started_at is not None
+
+
+def test_an_installer_that_does_not_start_is_not_an_update_quit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _said = controller_with_update(tmp_path)
+    monkeypatch.setattr("relaybay.desktop.app.install_kind", lambda: "desktop-windows")
+    monkeypatch.setattr(
+        "relaybay.desktop.app.platformdirs.user_cache_dir", lambda *a, **k: tmp_path
+    )
+    monkeypatch.setattr(updates, "prepare_installer", lambda *a, **k: tmp_path / "x.exe")
+
+    def refused(path: Path, kind: str) -> None:
+        raise OSError("blocked")
+
+    monkeypatch.setattr(updates, "launch_installer", refused)
+    with pytest.raises(OSError, match="blocked"):
+        controller.install_update()
+    assert controller.installer_started_at is None and not controller.quitting
 
 
 def test_program_check_now_reports_and_marks_the_menu(
