@@ -1,0 +1,33 @@
+{#- Token budgets on the Usage page. Expects: budgets (BudgetState). Refetched on budget and brake events; the form stays outside. -#}
+<div id="budgets" class="budgets" hx-get="/fragments/budgets" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if budgets %}
+  <div class="usage-table-wrap">
+    <table class="usage-table">
+      <thead><tr><th>Budget for</th><th>Period</th><th>Used</th><th class="num">Limit</th><th>When exceeded</th><th></th></tr></thead>
+      <tbody>
+        {% for s in budgets %}
+        <tr id="budget-{{ s.budget.id }}">
+          <td>{{ s.budget.target }}</td>
+          <td>{{ "UTC day" if s.budget.period == "day" else "Total" }}</td>
+          <td>
+            <progress class="budget-bar" max="{{ s.budget.max_tokens }}" value="{{ s.bar_value }}" aria-label="Used of the limit"></progress>
+            {{ "{:,}".format(s.used) }} ({{ s.percent }}%)
+            {% if s.level == "exceeded" %}<span class="chip waiting">exceeded</span>{% elif s.level == "warned" %}<span class="chip">over 80%</span>{% endif %}
+          </td>
+          <td class="num">{{ "{:,}".format(s.budget.max_tokens) }}</td>
+          <td>{{ "Stop agents" if s.budget.action == "stop" else "Warn" }}</td>
+          <td>
+            <form class="inline-form" method="post" action="/usage/budgets/{{ s.budget.id }}/delete" data-confirm="Remove the budget of {{ s.budget.target }}? A brake it set stays until you release it.">
+              <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+              <button type="submit" class="action">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No budgets yet. Without one nothing warns and nothing stops.</p>
+  {% endif %}
+</div>

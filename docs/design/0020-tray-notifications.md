@@ -54,6 +54,8 @@ on him for an hour with nothing on the screen.
 | `reply` | `comment.added` with `author_kind == "agent"` | on |
 | `answer` | `intake.answer_received` | on |
 | `permission` | `session.status_changed` to `waiting` (the `Notification` hook) | off |
+| `brake` | `brake.set` by an agent or a rule, not a budget's own (`budget` tells it) | on |
+| `budget` | `budget.warned`, `budget.exceeded` | on |
 | `server` | the program's watchdog, local | on |
 
 `permission` is off because the `Notification` hook also fires for an idle prompt, and a working

@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 25
+LATEST = 26
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -292,6 +292,47 @@ async def test_upgrade_from_0023_adds_backlog_priority_and_assignee(tmp_path: Pa
     try:
         async with conn.execute("PRAGMA index_list(backlog_item)") as cur:
             assert "backlog_item_queue" in {row[1] for row in await cur.fetchall()}
+        assert await migrate(conn) == LATEST
+    finally:
+        await conn.close()
+
+
+async def test_upgrade_from_0024_adds_the_brake_tables_and_keeps_usage(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    folder = resources.files("relaybay.db").joinpath("migrations")
+    names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0025")
+    sql = "\n".join(folder.joinpath(n).read_text(encoding="utf-8") for n in names)
+    conn = await connect(db)
+    try:
+        await conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = 24;\nCOMMIT;")
+        await conn.execute(
+            "INSERT INTO usage_file (path, created_at) VALUES ('/d/t.jsonl', ?)", (NOW,)
+        )
+        await conn.execute(
+            "INSERT INTO usage_day (file_id, day, model, input, messages)"
+            " VALUES (1, '2026-01-01', 'demo-model', 7, 1)"
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        assert (await svc.usage_report(days=0)).total.tokens == 7
+        assert await svc.open_brakes() == []
+        budget = await svc.set_budget("all", period="total", max_tokens=5)
+        assert budget.action == "warn"
+        await svc.limits_pass()
+        [state] = await svc.budget_states()
+        assert (state.used, state.level) == (7, "exceeded")
+    finally:
+        await svc.close()
+
+    conn = await connect(db)
+    try:
+        async with conn.execute("SELECT COUNT(*) FROM usage_task_day") as cur:
+            assert (await cur.fetchone())[0] == 0  # no backfill
         assert await migrate(conn) == LATEST
     finally:
         await conn.close()

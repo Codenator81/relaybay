@@ -65,7 +65,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, `record_hook`, …): validation, rules checks, transaction, event append, publish |
 | `events.py` | `EventBus`: one bounded `asyncio.Queue` (256) per subscriber, optional project filter; a full queue drops the subscriber, which then resyncs |
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
-| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), errors |
+| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), the brake and token budgets (`limits.py`: thresholds and the texts sessions read), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
 | `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `api.py` (`GET /api/notifications` for the tray), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
@@ -119,6 +119,14 @@ usage_file    id, path UNIQUE, session_id, parent_id (a subagent's file), read_o
 usage_day     file_id, day (UTC), session_id, model, input, output, cache_read, cache_write,
               messages   -- PK (file_id, day, model)
 usage_message message_id PK, file_id   -- ids already counted: resumed transcripts repeat lines
+usage_task_day file_id, task_id, day (UTC), model, input, output, cache_read, cache_write,
+              messages   -- PK (file_id, task_id, day, model); per task bound when the line was written
+token_budget  id, scope (all|project|task), project_id, task_id, period (day|total), max_tokens,
+              action (warn|stop), updated_at, updated_by   -- one row per target
+budget_mark   budget_id, period_key (UTC day or total), level (warned|exceeded), at   -- PK all but at
+brake         id, scope (all|project|session|task), project_id, session_id, task_id, reason,
+              source (owner|coordinator|budget), budget_id, created_at, created_by, released_at,
+              released_by   -- a released row stays as history
 comment       id, task_id, author_kind (owner|agent|external), author, session_id, body_md, in_reply_to,
               created_at, delivered_at, delivered_to_session_id, read_at, step_id, attachment_id
 review_step   id, task_id, position (UNIQUE per task), title, details_md,

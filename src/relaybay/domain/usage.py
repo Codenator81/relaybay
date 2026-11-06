@@ -75,6 +75,7 @@ class UsageLine:
     output: int
     cache_read: int
     cache_write: int
+    at: str = ""  # when, UTC and in the format of the database's times: tells the bound tasks
 
 
 class _Unknown:
@@ -161,18 +162,18 @@ def subagent_files(value: str, known: set[str], room: int) -> tuple[list[str], i
     return found, over
 
 
-def _day(value: Any, today: date) -> str | None:
-    """The UTC day of a time within 2020-01-01 to tomorrow; anything else is not believed."""
+def _moment(value: Any, today: date) -> datetime | None:
+    """A time within 2020-01-01 to tomorrow, in UTC; anything else is not believed."""
     if not isinstance(value, str):
         return None
     try:
         moment = datetime.fromisoformat(value)
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=UTC)
-        day = moment.astimezone(UTC).date()
+        moment = moment.astimezone(UTC)
     except (ValueError, OverflowError):
         return None
-    return day.isoformat() if FIRST_DAY <= day <= today + timedelta(days=1) else None
+    return moment if FIRST_DAY <= moment.date() <= today + timedelta(days=1) else None
 
 
 def parse_line(raw: bytes, today: date | None = None) -> UsageLine | _Unknown | None:
@@ -200,12 +201,13 @@ def parse_line(raw: bytes, today: date | None = None) -> UsageLine | _Unknown | 
         numbers[name] = value
     if not any(numbers.values()):
         return None  # e.g. a local error message: no tokens were used
-    message_id, day = message.get("id"), _day(line.get("timestamp"), today)
-    if not isinstance(message_id, str) or not _MESSAGE_ID.fullmatch(message_id) or day is None:
+    message_id, moment = message.get("id"), _moment(line.get("timestamp"), today)
+    if not isinstance(message_id, str) or not _MESSAGE_ID.fullmatch(message_id) or moment is None:
         return UNKNOWN_LINE
     model = message.get("model")
     model = model if isinstance(model, str) and _MODEL.fullmatch(model) else UNKNOWN
-    return UsageLine(message_id, day, model, **numbers)
+    at = moment.isoformat(timespec="milliseconds")
+    return UsageLine(message_id, moment.date().isoformat(), model, **numbers, at=at)
 
 
 @dataclass(slots=True)

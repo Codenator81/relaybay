@@ -6,6 +6,14 @@
   <div class="page-head">
     <h1>{% if sessions_project %}Sessions · {{ sessions_project.name }}{% else %}All sessions{% endif %}</h1>
     {% if sessions_project %}<a class="action" href="/sessions">All sessions</a>{% endif %}
+    <form class="inline-form brake-form" method="post" action="/brake" data-confirm="Stop all agents{% if sessions_project %} of {{ sessions_project.name }}{% endif %}? Each one is refused its next tool call and stops, until you release the brake here. A running command or a background process goes on.">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <input type="hidden" name="scope" value="{{ "project" if sessions_project else "all" }}">
+      {% if sessions_project %}<input type="hidden" name="project" value="{{ sessions_project.slug }}">{% endif %}
+      <input type="hidden" name="next" value="{{ nav.path }}">
+      <input type="text" name="reason" maxlength="500" placeholder="Reason (optional)" aria-label="Why the agents stop">
+      <button type="submit" class="btn danger">Stop all agents</button>
+    </form>
   </div>
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}

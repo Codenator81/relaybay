@@ -31,6 +31,9 @@ descriptions clients receive. How to use them together: [MCP tools](../mcp-tools
 | [`memory_update`](#memory_update) | write |
 | [`usage_summary`](#usage_summary) | read |
 | [`audit_list`](#audit_list) | read |
+| [`budget_get`](#budget_get) | read |
+| [`brake_status`](#brake_status) | read |
+| [`brake_set`](#brake_set) | write |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -251,23 +254,26 @@ Move a task to another stage (plan, dev, review, test, live, done) when its work
 
 ### `task_bind_session`
 
-Mark that this session works on the task now; the board shows it with a link that opens the Claude desktop app session. Call it when you pick up an existing task. Pass your own desktop session id (local_…) if you know it. If you don't know your local_ id, don't rebind — the coordinator binds you; pass your session name only as `session` on writes. A plain name never replaces a desktop session bound to the task: it is recorded as that session's alias. Binding a session ends the previous session's binding; the history is kept. It never links a hook session (the caller may bind someone else): your own `hook_session` goes on your other writes.
+Mark that this session works on the task now; the board shows it with a link that opens the Claude desktop app session. Call it when you pick up an existing task. Pass your own desktop session id (local_…) if you know it. If you don't know your local_ id, don't rebind — the coordinator binds you; pass your session name only as `session` on writes. A plain name never replaces a desktop session bound to the task: it is recorded as that session's alias. Binding a session ends the previous session's binding; the history is kept. It never links a hook session (the caller may bind someone else): your own `hook_session` goes on your other writes. Refused while a brake holds the task or its project, except for a coordinator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `session` | string | yes | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Ignored here: pass your hook_session on your own writes instead. |
+| `hook_session` | string or null | no | Not linked here: pass your hook_session on your own writes instead. With `caller`, it shows a coordinator is calling under a brake. |
+| `caller` | string or null | no | You, when `session` is someone else. While a brake holds the task or its project only a coordinator rebinds. Optional. |
 
 ### `task_unbind_session`
 
-Remove the bound session from a task, e.g. when a session stops working on it without a successor. The binding history is kept. To hand the task to another session, call task_bind_session instead.
+Remove the bound session from a task, e.g. when a session stops working on it without a successor. The binding history is kept. To hand the task to another session, call task_bind_session instead. Refused while a brake holds the task or its project, except for a coordinator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `session` | string or null | no | The session you expect to be bound (desktop session id or name); if another session is bound, nothing changes and an error says who. Optional. |
+| `caller` | string or null | no | You, when `session` is someone else. While a brake holds the task or its project only a coordinator unbinds. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `report_add`
 
@@ -373,6 +379,38 @@ Agents' tool calls that touched a live stand, newest first: who, where, the reda
 | `decision` | string or null | no | Only this decision: allow, log, warn, ask or deny. |
 | `days` | integer | no | How many days back. Default: `7`. |
 | `limit` | integer | no | Default: `50`. |
+
+### `budget_get`
+
+Token budgets with what their period used so far. Read-only: the owner sets them on the board. They lag the transcripts by up to a minute plus the reader's own delay. A session on several tasks counts in full on each.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string or null | no | Only the budgets that count this project (slug). |
+| `task` | string or null | no | Only the budgets that count this task: its own, its project's. |
+
+### `brake_status`
+
+Open brakes: who stopped which agents and why. While one covers a session, its tool calls other than relaybay's are refused.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string or null | no | Only brakes on this project (slug) and those on all agents. |
+
+### `brake_set`
+
+Stop agents at their next tool call, for coordinator sessions only. It cannot interrupt a running command or a background process, and it fails open when the server cannot answer. There is no release tool: only the owner releases, on the board.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `scope` | string | yes | What stops: all, project, session or task. |
+| `reason` | string | yes | Why, in one line. Every stopped agent reads it. |
+| `project` | string or null | no | With scope project: its slug. |
+| `target_session` | string or null | no | With scope session: the session to stop (name, desktop id or hook session id). It must exist. |
+| `task` | string or null | no | With scope task: the task whose bound session stops. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `memory_search`
 

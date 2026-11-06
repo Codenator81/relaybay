@@ -189,6 +189,13 @@ EVENT_KINDS = (
     "backlog.added",
     "backlog.updated",
     "backlog.planned",
+    "brake.set",
+    "brake.released",
+    "budget.set",
+    "budget.removed",
+    "budget.warned",
+    "budget.exceeded",
+    "concurrency.over",
 )
 CSRF_HEADER = "x-relaybay-csrf"
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
@@ -377,6 +384,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "saved_filters": await saved_filters_by_project(),
             "backlog_counts": await service.backlog_counts(),
             "filter_active": bool(context.get("filter_query")),
+            "brakes": await service.open_brakes(),
+            "path": request.url.path,
         }
         return render(request, name, nav=nav, **context)
 
@@ -731,6 +740,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         group: str = "day",
     ):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
+        flash = take_flash(request)
         project = project.strip().lower()
         if session and not (session.isascii() and session.isdigit() and len(session) <= 18):
             raise ValidationError("session must be a session's number.")
@@ -743,10 +753,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             group=group,
         )
         sessions, models = await service.usage_filters()
-        return await page(
+        response = await page(
             request,
             "usage.html",
             "usage",
+            budgets=await service.budget_states(),
+            message=flash.get("message"),
+            error=flash.get("error"),
             report=report,
             shown_rows=report.rows[:USAGE_ROWS],
             chart=usage_chart(report),
@@ -759,6 +772,85 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             days_choices=USAGE_DAYS,
             usage_enabled=settings.usage_enabled,
         )
+        return shown_once(request, response)
+
+    @router.get("/fragments/budgets", response_class=HTMLResponse)
+    async def budgets_fragment(request: Request):
+        return render(request, "_budgets.html", budgets=await service.budget_states())
+
+    @router.post("/usage/budgets")
+    async def set_budget(
+        request: Request,
+        scope: Annotated[str, Form()] = "",
+        project: Annotated[str, Form()] = "",
+        task: Annotated[str, Form()] = "",
+        period: Annotated[str, Form()] = "day",
+        max_tokens: Annotated[str, Form()] = "",
+        action: Annotated[str, Form()] = "warn",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        try:
+            budget = await service.set_budget(
+                scope,
+                project=project or None,
+                task=task or None,
+                period=period,
+                max_tokens=max_tokens,
+                action=action,
+            )
+        except DomainError as exc:
+            return flash_redirect(request, "/usage#budgets", error=str(exc))
+        return flash_redirect(
+            request, "/usage#budgets", message=f"Saved the budget of {budget.target}."
+        )
+
+    @router.post("/usage/budgets/{budget_id}/delete")
+    async def remove_budget(
+        request: Request,
+        budget_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        await service.remove_budget(budget_id)
+        return flash_redirect(request, "/usage#budgets", message="Budget removed.")
+
+    @router.get("/fragments/brake-banner", response_class=HTMLResponse)
+    async def brake_banner(request: Request, next: str = "/sessions"):
+        return render(
+            request,
+            "_brake_banner.html",
+            brakes=await service.open_brakes(),
+            back=back_to(next, "/sessions"),
+        )
+
+    @router.post("/brake")
+    async def set_brake(
+        request: Request,
+        scope: Annotated[str, Form()] = "all",
+        project: Annotated[str, Form()] = "",
+        reason: Annotated[str, Form()] = "",
+        next_path: Annotated[str, Form(alias="next")] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        back = back_to(next_path, "/sessions")
+        try:
+            await service.set_board_brake(scope, project=project or None, reason=reason)
+        except DomainError as exc:
+            return flash_redirect(request, back, error=str(exc))
+        return RedirectResponse(back, status_code=303)
+
+    @router.post("/brake/{brake_id}/release")
+    async def release_brake(
+        request: Request,
+        brake_id: int,
+        next_path: Annotated[str, Form(alias="next")] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        await service.release_brake(brake_id, actor="owner")
+        return RedirectResponse(back_to(next_path, "/sessions"), status_code=303)
 
     @router.get("/sessions", response_class=HTMLResponse)
     async def all_sessions_page(request: Request):

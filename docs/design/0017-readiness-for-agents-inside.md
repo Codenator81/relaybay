@@ -30,7 +30,7 @@ document lists the gaps, in order, and which release closes each.
 | Gap | What is needed | Why it blocks agents inside |
 |---|---|---|
 | Sessions talk to each other outside relaybay (the desktop app's messages) | Messages between sessions as a board entity: sender, recipient, task, delivered and read, carried by the same hooks as owner comments; the coordinator role can then live inside | A coordinator inside relaybay has no other channel to its agents |
-| No way to stop everything or to cap spending | "Stop all agents of a project"; a token and cost budget per task and per day from the usage numbers, after which an agent stops and waits for the owner; a cap on concurrent runs | Autonomy without a brake is not acceptable to the owner |
+| No way to stop everything or to cap spending | Stop all, a project, a session or a task at the next tool call; a token budget per task, project or all, per UTC day or in total, warning by default with `stop` opt-in; a warning on concurrent runs. Tokens only: relaybay knows no prices. Done in [0018](0018-brake-and-budgets.md) | Autonomy without a brake is not acceptable to the owner |
 | Agent scenarios are checked by hand | A fake `claude` (a script that answers stream-json and fires the hooks) and end-to-end tests task → run → report → review; this also answers 0012's "verify before start" | The runner cannot be changed without fear otherwise |
 | Clients cache tool schemas; tools change between releases | A versioned MCP contract: `task_patch`-style escape hatches for every tool, deprecations with dates, a test that the published reference did not change by accident (the generated-reference check exists; the deprecation rule does not) | An agent inside relaybay calls the tools from a fixed build |
 | The backlog is a list, not a queue | Priority and "for whom" on backlog items, so a coordinator takes work from the backlog instead of from a chat | The queue is the coordinator's input |
@@ -45,6 +45,7 @@ document lists the gaps, in order, and which release closes each.
 
 - The order above follows the owner's own workflow: reliability of the picture first, then the brake,
   then the channel, then the queue.
-- Budgets at the current stage can only warn (relaybay cannot stop a desktop session); the stop is
-  built together with the runner.
+- ~~Budgets at the current stage can only warn (relaybay cannot stop a desktop session); the stop is
+  built together with the runner.~~ Out of date: a hook answer ends a session's turn at its next tool
+  call ([0018](0018-brake-and-budgets.md)); killing a process tree still needs the runner.
 - Nothing here changes the rule that agents are the user's own `claude` under the user's own login.

@@ -24,6 +24,23 @@
   </section>
   {% endif %}
 
+  {% if inbox.brakes or inbox.budgets or inbox.running_over is not none %}
+  <section class="panel inbox-group" id="inbox-limits">
+    <h2>Limits</h2>
+    <ul class="inbox-list">
+      {% for b in inbox.brakes %}
+      <li class="inbox-row"><p class="inbox-note"><strong>Brake on: {{ b.target }}.</strong> {{ b.reason }} <span class="muted">· set by {{ b.created_by }}; release it in the banner above</span></p></li>
+      {% endfor %}
+      {% for s in inbox.budgets %}
+      <li class="inbox-row"><p class="inbox-note"><a href="/usage#budgets">Token budget of {{ s.budget.target }}</a>: {{ "{:,}".format(s.used) }} of {{ "{:,}".format(s.budget.max_tokens) }} tokens {{ "this UTC day" if s.budget.period == "day" else "in total" }} ({{ s.percent }}%)</p></li>
+      {% endfor %}
+      {% if inbox.running_over is not none %}
+      <li class="inbox-row"><p class="inbox-note">{{ inbox.running_over }} sessions running at once; your cap is {{ inbox.running_cap }} <span class="muted">· a warning, nothing is stopped · <a href="/sessions">Sessions</a></span></p></li>
+      {% endif %}
+    </ul>
+  </section>
+  {% endif %}
+
   {% if inbox.answers %}
   <section class="panel inbox-group" id="inbox-answers">
     <h2>Answers <span class="col-count">{{ inbox.answers|length }}</span></h2>

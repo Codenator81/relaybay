@@ -237,6 +237,13 @@ def doctor_checks(
         _desktop_check(environ),
         _desktop_start_check(environ),
         _hook_spool_check(environ),
+        Check(
+            True,
+            "token budgets",
+            "counting (checked after each usage read)"
+            if settings.usage_enabled
+            else "blind: usage_enabled = false, so no new tokens are counted against them",
+        ),
     ]
     token_item, token = _token_check(settings)
     checks.append(token_item)

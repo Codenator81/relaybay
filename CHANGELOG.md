@@ -45,6 +45,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `desktop.toml`: `notify`, `notify_quiet`, `notify_kinds`; the kind `permission` (a session waiting
   for you) is available and off by default.
 - `GET /api/notifications?after=<id>&limit=100` (Bearer token): the first route under `/api`.
+- A brake: **Stop all agents** on `/sessions` and on a project's Sessions page, a banner on every page
+  with **Release** (only the owner, on the board), `brake_set` for coordinators and `brake_status`
+  over MCP. A covered session is refused its next tool call and its turn ends (`continue: false` and
+  `deny`, relaybay's own tools excepted); its `Stop` hook does not block and the owner's prompts get a
+  context line instead. It cannot interrupt a running command or a background process, and it fails
+  open. `relaybay setup` needs no new run.
+- Token budgets per UTC day or in total, for all projects, a project or a task: a **Budgets** block on
+  `/usage`, a line in the task dialog, `budget_get` over MCP. They warn at 80% and 100% through an
+  event, an Inbox line and one context line per session; a budget set to `stop` uses the brake at 100%.
+  They lag the transcript reader. A daily budget's brake ends with the UTC day. Migration
+  `0026_brake_budgets` (additive; a task counts from this version on).
+- `max_concurrent_sessions` (default 0, off): a `concurrency.over` event per 10 minutes and an Inbox
+  line while more sessions run. It stops nothing.
+- `doctor` shows `token budgets`; `scripts/hook_timing.py --server` times the `PreToolUse` answer.
+- `task_bind_session` and `task_unbind_session` take `caller` (and `task_unbind_session` takes
+  `hook_session`): while a brake holds the task or its project only a coordinator changes the
+  binding over MCP.
+- Server instruction 14 explains a refusal by the brake. An end-to-end scenario covers Stop all and
+  Release with the fake `claude`.
 
 ## [0.7.1] - 2026-11-06
 

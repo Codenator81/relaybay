@@ -18,6 +18,7 @@ from relaybay.domain.environments import (
     split_test_secrets,
 )
 from relaybay.domain.intake import IntakeMessage, IntakeSource
+from relaybay.domain.limits import Brake, TokenBudget
 from relaybay.domain.map_graph import CommentRow, MessageRow
 from relaybay.domain.memory import (
     Document,
@@ -45,7 +46,7 @@ from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
-from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile
+from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile, UsageLine
 
 logger = logging.getLogger("relaybay")
 
@@ -3302,8 +3303,10 @@ async def apply_usage_chunk(
     gives up its own rows and message ids. Ids another file counted stay with that file."""
     if chunk.shrunk:
         await conn.execute("DELETE FROM usage_day WHERE file_id = ?", (file_id,))
+        await conn.execute("DELETE FROM usage_task_day WHERE file_id = ?", (file_id,))
         await conn.execute("DELETE FROM usage_message WHERE file_id = ?", (file_id,))
     counted = 0
+    bound = await _file_bindings(conn, file_id) if chunk.lines else []
     for line in chunk.lines:
         cur = await conn.execute(
             "INSERT OR IGNORE INTO usage_message (message_id, file_id) VALUES (?, ?)",
@@ -3330,6 +3333,9 @@ async def apply_usage_chunk(
                 line.cache_write,
             ),
         )
+        for task_id, bound_at, unbound_at in bound:
+            if bound_at <= line.at and (unbound_at is None or line.at < unbound_at):
+                await _add_task_usage(conn, file_id, task_id, line)
     unknown = "?" if chunk.shrunk else "unknown_lines + ?"
     await conn.execute(
         f"UPDATE usage_file SET read_offset = ?, skipping = ?, unknown_lines = {unknown},"
@@ -3337,6 +3343,42 @@ async def apply_usage_chunk(
         (chunk.offset, int(chunk.skipping), chunk.unknown, now, file_id),
     )
     return counted
+
+
+async def _file_bindings(
+    conn: aiosqlite.Connection, file_id: int
+) -> list[tuple[int, str, str | None]]:
+    """The tasks the file's session was ever bound to, with from when until when."""
+    rows = await _all(
+        conn,
+        "SELECT task_id, bound_at, unbound_at FROM task_session WHERE session_id ="
+        " (SELECT session_id FROM usage_file WHERE id = ?)",
+        (file_id,),
+    )
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+async def _add_task_usage(
+    conn: aiosqlite.Connection, file_id: int, task_id: int, line: UsageLine
+) -> None:
+    await conn.execute(
+        "INSERT INTO usage_task_day (file_id, task_id, day, model, input, output, cache_read,"
+        " cache_write, messages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)"
+        " ON CONFLICT(file_id, task_id, day, model) DO UPDATE SET"
+        " input = input + excluded.input, output = output + excluded.output,"
+        " cache_read = cache_read + excluded.cache_read,"
+        " cache_write = cache_write + excluded.cache_write, messages = messages + 1",
+        (
+            file_id,
+            task_id,
+            line.day,
+            line.model,
+            line.input,
+            line.output,
+            line.cache_read,
+            line.cache_write,
+        ),
+    )
 
 
 async def set_usage_error(conn: aiosqlite.Connection, file_id: int, error: str, now: str) -> None:
@@ -3428,6 +3470,286 @@ async def usage_sessions(conn: aiosqlite.Connection) -> list[tuple[int, str]]:
 async def usage_models(conn: aiosqlite.Connection) -> list[str]:
     rows = await _all(conn, "SELECT DISTINCT model FROM usage_day ORDER BY model", ())
     return [r[0] for r in rows]
+
+
+# --- brake and token budgets ------------------------------------------------
+
+_TOKENS = "TOTAL(input + output + cache_read + cache_write)"
+_BRAKE_SELECT = (
+    "SELECT b.*, p.slug AS project_slug, s.name AS session_name, t.key AS task_key FROM brake b"
+    " LEFT JOIN project p ON p.id = b.project_id"
+    " LEFT JOIN session s ON s.id = b.session_id"
+    " LEFT JOIN task t ON t.id = b.task_id"
+)
+_BUDGET_SELECT = (
+    "SELECT b.*, COALESCE(p.slug, tp.slug) AS project_slug, t.key AS task_key FROM token_budget b"
+    " LEFT JOIN project p ON p.id = b.project_id"
+    " LEFT JOIN task t ON t.id = b.task_id"
+    " LEFT JOIN project tp ON tp.id = t.project_id"
+)
+
+
+def _brake(row: aiosqlite.Row) -> Brake:
+    return Brake(
+        id=row["id"],
+        scope=row["scope"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"],
+        session_id=row["session_id"],
+        session_name=row["session_name"],
+        task_id=row["task_id"],
+        task_key=row["task_key"],
+        reason=row["reason"],
+        source=row["source"],
+        budget_id=row["budget_id"],
+        created_at=row["created_at"],
+        created_by=row["created_by"],
+        released_at=row["released_at"],
+        released_by=row["released_by"],
+    )
+
+
+def _budget(row: aiosqlite.Row) -> TokenBudget:
+    return TokenBudget(
+        id=row["id"],
+        scope=row["scope"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"],
+        task_id=row["task_id"],
+        task_key=row["task_key"],
+        period=row["period"],
+        max_tokens=row["max_tokens"],
+        action=row["action"],
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+    )
+
+
+async def open_brakes(conn: aiosqlite.Connection) -> list[Brake]:
+    """Oldest first. Runs on every tool call: uses the partial index and is empty almost always."""
+    rows = await _all(conn, _BRAKE_SELECT + " WHERE b.released_at IS NULL ORDER BY b.id", ())
+    return [_brake(r) for r in rows]
+
+
+async def get_brake(conn: aiosqlite.Connection, brake_id: int) -> Brake | None:
+    row = await _one(conn, _BRAKE_SELECT + " WHERE b.id = ?", (brake_id,))
+    return _brake(row) if row else None
+
+
+async def insert_brake(
+    conn: aiosqlite.Connection,
+    *,
+    scope: str,
+    project_id: int | None,
+    session_id: int | None,
+    task_id: int | None,
+    reason: str,
+    source: str,
+    budget_id: int | None,
+    now: str,
+    actor: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO brake (scope, project_id, session_id, task_id, reason, source, budget_id,"
+        " created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (scope, project_id, session_id, task_id, reason, source, budget_id, now, actor),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def release_brake(conn: aiosqlite.Connection, brake_id: int, now: str, actor: str) -> None:
+    await conn.execute(
+        "UPDATE brake SET released_at = ?, released_by = ? WHERE id = ? AND released_at IS NULL",
+        (now, actor, brake_id),
+    )
+
+
+async def move_session_brakes(
+    conn: aiosqlite.Connection, from_session: int, to_session: int
+) -> None:
+    await conn.execute(
+        "UPDATE brake SET session_id = ? WHERE session_id = ? AND released_at IS NULL",
+        (to_session, from_session),
+    )
+
+
+async def move_open_bindings(
+    conn: aiosqlite.Connection, from_session: int, to_session: int
+) -> None:
+    await conn.execute(
+        "UPDATE task_session SET session_id = ? WHERE session_id = ? AND unbound_at IS NULL",
+        (to_session, from_session),
+    )
+    await conn.execute(
+        "UPDATE task SET session_id = ? WHERE session_id = ?", (to_session, from_session)
+    )
+
+
+async def session_brake_open(conn: aiosqlite.Connection, session_id: int) -> bool:
+    row = await _one(
+        conn,
+        "SELECT 1 FROM brake WHERE session_id = ? AND released_at IS NULL LIMIT 1",
+        (session_id,),
+    )
+    return row is not None
+
+
+async def daily_brakes_before(conn: aiosqlite.Connection, today: str) -> list[Brake]:
+    """Open brakes a daily budget set on an earlier UTC day."""
+    rows = await _all(
+        conn,
+        _BRAKE_SELECT + " JOIN token_budget tb ON tb.id = b.budget_id"
+        " WHERE b.released_at IS NULL AND b.source = 'budget' AND tb.period = 'day'"
+        " AND substr(b.created_at, 1, 10) < ? ORDER BY b.id",
+        (today,),
+    )
+    return [_brake(r) for r in rows]
+
+
+async def list_budgets(conn: aiosqlite.Connection) -> list[TokenBudget]:
+    rows = await _all(
+        conn,
+        _BUDGET_SELECT
+        + " ORDER BY CASE b.scope WHEN 'all' THEN 0 WHEN 'project' THEN 1 ELSE 2 END,"
+        " project_slug, b.id",
+        (),
+    )
+    return [_budget(r) for r in rows]
+
+
+async def has_budgets(conn: aiosqlite.Connection) -> bool:
+    return await _one(conn, "SELECT 1 FROM token_budget LIMIT 1", ()) is not None
+
+
+async def get_budget(conn: aiosqlite.Connection, budget_id: int) -> TokenBudget | None:
+    row = await _one(conn, _BUDGET_SELECT + " WHERE b.id = ?", (budget_id,))
+    return _budget(row) if row else None
+
+
+async def find_budget(
+    conn: aiosqlite.Connection, scope: str, project_id: int | None, task_id: int | None
+) -> TokenBudget | None:
+    row = await _one(
+        conn,
+        _BUDGET_SELECT + " WHERE b.scope = ? AND b.project_id IS ? AND b.task_id IS ?",
+        (scope, project_id, task_id),
+    )
+    return _budget(row) if row else None
+
+
+async def save_budget(
+    conn: aiosqlite.Connection,
+    existing_id: int | None,
+    *,
+    scope: str,
+    project_id: int | None,
+    task_id: int | None,
+    period: str,
+    max_tokens: int,
+    action: str,
+    now: str,
+    actor: str,
+) -> int:
+    if existing_id is not None:
+        await conn.execute(
+            "UPDATE token_budget SET period = ?, max_tokens = ?, action = ?, updated_at = ?,"
+            " updated_by = ? WHERE id = ?",
+            (period, max_tokens, action, now, actor, existing_id),
+        )
+        return existing_id
+    cur = await conn.execute(
+        "INSERT INTO token_budget (scope, project_id, task_id, period, max_tokens, action,"
+        " updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (scope, project_id, task_id, period, max_tokens, action, now, actor),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def delete_budget(conn: aiosqlite.Connection, budget_id: int) -> None:
+    await conn.execute("DELETE FROM token_budget WHERE id = ?", (budget_id,))
+
+
+async def budget_mark_rows(
+    conn: aiosqlite.Connection, today: str, total_key: str
+) -> list[tuple[int, str, str]]:
+    """(budget, period key, level) of the marks in each budget's current period. Read on tool
+    calls."""
+    rows = await _all(
+        conn,
+        "SELECT m.budget_id, m.period_key, m.level FROM budget_mark m"
+        " JOIN token_budget b ON b.id = m.budget_id WHERE m.period_key ="
+        " CASE b.period WHEN 'day' THEN ? ELSE ? END",
+        (today, total_key),
+    )
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+async def budget_marks(
+    conn: aiosqlite.Connection, today: str, total_key: str
+) -> dict[int, set[str]]:
+    """Thresholds marked in the current period, per budget that has one."""
+    found: dict[int, set[str]] = {}
+    for budget_id, _, level in await budget_mark_rows(conn, today, total_key):
+        found.setdefault(budget_id, set()).add(level)
+    return found
+
+
+async def add_budget_mark(
+    conn: aiosqlite.Connection, budget_id: int, period_key: str, level: str, now: str
+) -> None:
+    await conn.execute(
+        "INSERT OR IGNORE INTO budget_mark (budget_id, period_key, level, at) VALUES (?, ?, ?, ?)",
+        (budget_id, period_key, level, now),
+    )
+
+
+async def clear_budget_marks(conn: aiosqlite.Connection, budget_id: int) -> None:
+    await conn.execute("DELETE FROM budget_mark WHERE budget_id = ?", (budget_id,))
+
+
+async def usage_tokens(
+    conn: aiosqlite.Connection, *, project_id: int | None = None, day: str | None = None
+) -> int:
+    """The Usage page's token total, for one project and one day when given. A session counts in
+    one project, as on that page."""
+    where, params = [], []
+    if day is not None:
+        where.append("d.day = ?")
+        params.append(day)
+    if project_id is not None:
+        where.append(f"{_USAGE_PROJECT} = ?")
+        params.append(project_id)
+    row = await _one(
+        conn,
+        f"SELECT {_TOKENS} FROM usage_day d LEFT JOIN session s ON s.id = d.session_id"
+        + (" WHERE " + " AND ".join(where) if where else ""),
+        tuple(params),
+    )
+    return int(row[0]) if row else 0
+
+
+async def task_tokens(conn: aiosqlite.Connection, task_id: int, day: str | None = None) -> int:
+    row = await _one(
+        conn,
+        f"SELECT {_TOKENS} FROM usage_task_day WHERE task_id = ?"
+        + (" AND day = ?" if day is not None else ""),
+        (task_id, day) if day is not None else (task_id,),
+    )
+    return int(row[0]) if row else 0
+
+
+async def running_sessions(conn: aiosqlite.Connection, since: str) -> int:
+    row = await _one(
+        conn,
+        "SELECT COUNT(*) FROM session WHERE status = 'working' AND last_seen_at >= ?",
+        (since,),
+    )
+    return int(row[0]) if row else 0
+
+
+async def last_event_of_kind(conn: aiosqlite.Connection, kind: str) -> str | None:
+    row = await _one(conn, "SELECT ts FROM event WHERE kind = ? ORDER BY id DESC LIMIT 1", (kind,))
+    return row[0] if row else None
 
 
 # --- intake ----------------------------------------------------------------
