@@ -326,11 +326,14 @@ def drain(path: Path, url: str, token: str, until: float, timeout: float) -> boo
         if left <= 0.05:
             break
         if entry.strip():
-            cut = left < timeout
-            if _send(url, token, entry.strip(), min(timeout, left)) is None:
-                # Only a full timeout says the server is silent; a try cut short by the
-                # budget says nothing, and the live event still gets its own try.
-                if not cut:
+            allowed = min(timeout, left)
+            begun = time.monotonic()
+            if _send(url, token, entry.strip(), allowed) is None:
+                # A refusal or a full timeout says the server is silent; a try that only ran
+                # out of the budget's remainder says nothing, and the live event still gets
+                # its own try.
+                ran_out = allowed < timeout and time.monotonic() - begun >= allowed - 0.05
+                if not ran_out:
                     reached = False
                 break
             reached = True
