@@ -31,7 +31,7 @@ from relaybay.domain.environments import (
 )
 from relaybay.domain.errors import ValidationError
 from relaybay.domain.hooks import WAKE_HOLD_SECONDS
-from relaybay.domain.plan import DEFAULT_REMINDER_EVERY
+from relaybay.domain.plan import DEFAULT_DRAFT_HINT_HOURS, DEFAULT_REMINDER_EVERY
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.review import DEFAULT_FILE_MAX_MB, DEFAULT_TASK_MAX_MB
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
@@ -242,6 +242,15 @@ class Settings:
             " changes still remind).",
             key="plan_reminder_every",
             env="RELAYBAY_PLAN_REMINDER_EVERY",
+        ),
+    )
+    plan_draft_hint_hours: int = field(
+        default=DEFAULT_DRAFT_HINT_HOURS,
+        metadata=_doc(
+            "Hours after which a task in dev whose plan is still a draft gets a hint in the"
+            " coordinator's digests and a 'draft · N h' badge on its card; 0 turns it off.",
+            key="plan_draft_hint_hours",
+            env="RELAYBAY_PLAN_DRAFT_HINT_HOURS",
         ),
     )
     pulse_stale_days: int = field(
@@ -469,15 +478,14 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{source}: {key} must be a whole number >= 1, got {value!r}")
             setattr(settings, key, value)
-    if "plan_reminder_every" in data:
-        value = data["plan_reminder_every"]
-        if isinstance(value, str) and value.strip().isdigit():
-            value = int(value)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise ValueError(
-                f"{source}: plan_reminder_every must be a whole number >= 0, got {value!r}"
-            )
-        settings.plan_reminder_every = value
+    for key in ("plan_reminder_every", "plan_draft_hint_hours"):
+        if key in data:
+            value = data[key]
+            if isinstance(value, str) and value.strip().isdigit():
+                value = int(value)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{source}: {key} must be a whole number >= 0, got {value!r}")
+            setattr(settings, key, value)
     for key, low, high in (
         ("pulse_stale_days", 1, None),
         ("task_stale_days", 1, None),

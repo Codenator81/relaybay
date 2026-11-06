@@ -98,6 +98,7 @@ nav:
           - Task plan: design/0014-task-plan.md
           - Intake and autonomy: design/0015-intake-and-autonomy.md
           - Desktop program: design/0016-desktop-program.md
+          - Readiness for agents inside: design/0017-readiness-for-agents-inside.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
           - Desktop shell: adr/0002-desktop-shell.md

@@ -78,6 +78,72 @@ outcome?, link?, conformance?)`, `plan_accept(task)`; `task_update` gains `size`
 - Reminders count `PostToolUse` events only; `0` turns the periodic reminder off.
 - The card shows the plan, not the todo; the todo is in the Plan tab.
 
+## Living plan (0.7)
+
+On a real task the plan was 3/3 done in draft while rework went on by the owner's decisions: the
+plan could not grow without losing its acceptance and nobody was told to add a step. The plan is a
+map of where the work goes and where it is, for the owner and the agent, all the way.
+
+1. **`plan_step_add(task, title, details?, reason)`** appends a pending step. The plan's status
+   stays as it is; on an accepted plan the step carries `added_after_acceptance_at`, `added_by` and
+   `added_reason` (migration `0022`), shown in the Plan tab and in the history diff as
+   `+ 4. title (added after acceptance)`. A `plan_revision` with the reason and `plan.step_added`.
+   `reason` is required. `plan_set` keeps its rule: changed titles or order make a draft.
+2. **Server instruction 11:** a change or an addition after a report is a new step with
+   `plan_step_add` (or the step back to `in_progress`), the stage back to dev, `progress` and
+   `next_step` updated.
+3. **The stage follows the plan.** `plan_step_add`, and `plan_step_update` taking a done step back
+   to `in_progress`, on a task in `review` or `test` move it to `dev` in the same transaction with
+   the stage note `rework: <reason>` (a reopened step: `rework: <its title>`) and the usual
+   `task.stage_changed`; the answer says `<key> moved from review back to dev (rework: …).`. When a
+   `plan_step_update` makes every step done on a task in `dev` that has review steps, the answer
+   adds `Hint: all steps done and the review checklist is set: move the task to review
+   (task_set_stage).` Nothing moves to review by itself.
+4. **Closed-plan warning.** On a task whose plan steps are all done and a report came strictly
+   after the plan closed (the newer of the newest `done_at` and the newest plan revision, so a
+   `plan_set` dropping the last open step closes it too), `report_add` adds
+   `Warning (rules): the plan is closed (N/N done) while work goes on: add a step with
+   plan_step_add or reopen one.` when the state is `changed` in any open stage (code changed after
+   the plan closed, e.g. rework in review) or `verified` in `dev`; a `task_update` / `task_patch`
+   changing `progress` adds it only in `dev`, behind the same gate. The closing report and the
+   closing progress never warn. A warning in `strict` mode too, never a
+   refusal. The reminder and the session-start context say
+   `Plan of <key> (<state>): the plan is closed (N/N done) …` only for a task in `dev`; other
+   stages keep "all N steps done".
+   `plan_step_add` on a `done` task is refused ("reopen it (task_set_stage) before adding steps");
+   on `live` it is allowed and the answer says the step does not move the task.
+5. **Draft hint.** A task in `dev` whose plan is a draft and whose newest plan revision is at least
+   `plan_draft_hint_hours` old (default 1, `0` off): `portfolio_digest`, `project_digest` and
+   `task_context` end with
+   `Hint: <key>'s plan is a draft for N h: accept it (plan_accept) or ask for changes.` only when
+   the caller is a coordinator session (named in `coordinators`, checked
+   before the call links its hook session); `project_snapshot` has no caller identity and never
+   carries it. Oldest first, at most five lines, then `…and N more drafts.`; the query finds only
+   those tasks. The card's Plan badge shows `draft · N h`. Never a line for the agent.
+
+Decided by default:
+
+- Only a step added to an **accepted** plan is marked; on a draft plan (or a task without a plan,
+  which then gets a draft) `plan_step_add` is a plain append with the reason in the history.
+- A step renamed by `plan_set` loses its mark, like its checkpoint.
+- The automatic move back to `dev` runs no stage rules (the plan's own write decides it) and does
+  not mention the pulse.
+- The rework and all-done lines are MCP answer notes, not rule warnings; the closed-plan warning
+  is a note too, so the owner's board form never shows it.
+- The all-done hint comes only from the update that closes the plan (a done step marked done again
+  says nothing).
+- N in the draft hint is whole hours, rounded down; the hint lines are appended at the end of the
+  digest text, after its budget.
+- "After the plan closed" is strictly later: a report in the same millisecond as the closing
+  write does not count.
+
+**Todo capture on Claude Code 2.1.318** (checked live with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`):
+`TaskCreate` and `TaskUpdate` (status with or without `activeForm`) are recorded and "Now doing"
+shows under the current step; the parser needed no change. Known limit: the forwarder gives up
+after 0.3 s per network step and stays silent, so a dropped hook loses that todo change until the
+next one (seen once: a status-only `TaskUpdate` about 30 s after the create stayed pending until
+the next update).
+
 ## Risks
 
 | Risk | Mitigation |

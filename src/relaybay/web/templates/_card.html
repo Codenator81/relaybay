@@ -22,8 +22,9 @@
   {% endif %}
   {% if t.plan_total %}
   {%- set draft = t.plan_status != "accepted" %}
+  {%- set draft_hours = plan_draft_hours(t) %}
   <a class="chip plan-chip{% if draft %} is-draft{% endif %}{% if t.plan_deviations %} has-deviation{% endif %}{% if t.plan_done == t.plan_total %} is-done{% endif %}" href="/p/{{ slug }}?task={{ t.key }}&amp;tab=plan" data-task="{{ t.key }}" data-tab="plan"
-     title="Plan{% if draft %} (draft, not accepted){% endif %}: {{ t.plan_done }} of {{ t.plan_total }} steps done{% if t.plan_deviations %}, {{ t.plan_deviations }} with a deviation{% endif %}{% if t.plan_now %}; now: {{ t.plan_now }}{% endif %}">Plan {{ t.plan_done }}/{{ t.plan_total }}{% if draft %} · draft{% endif %}{% if t.plan_deviations %} · <span class="deviation-mark">{{ t.plan_deviations }} deviation{{ "s" if t.plan_deviations > 1 else "" }}</span>{% endif %}{% if t.plan_now %} · now: {{ t.plan_now }}{% endif %}</a>
+     title="Plan{% if draft %} (draft, not accepted{% if draft_hours %} for {{ draft_hours }} h{% endif %}){% endif %}: {{ t.plan_done }} of {{ t.plan_total }} steps done{% if t.plan_deviations %}, {{ t.plan_deviations }} with a deviation{% endif %}{% if t.plan_now %}; now: {{ t.plan_now }}{% endif %}">Plan {{ t.plan_done }}/{{ t.plan_total }}{% if draft %} · draft{% if draft_hours %} · {{ draft_hours }} h{% endif %}{% endif %}{% if t.plan_deviations %} · <span class="deviation-mark">{{ t.plan_deviations }} deviation{{ "s" if t.plan_deviations > 1 else "" }}</span>{% endif %}{% if t.plan_now %} · now: {{ t.plan_now }}{% endif %}</a>
   {% endif %}
   {% if t.answer_received_at and is_open %}
   <form class="answer-mark" method="post" action="/p/{{ slug }}/t/{{ t.key }}/answer/clear"

@@ -154,6 +154,8 @@ def plan_label(task: Task) -> str:
 
 def plan_step_line(step: PlanStep) -> str:
     line = f"{step.position}. [{step.status}] {step.title}"
+    if step.added_after_acceptance_at:
+        line += f" (added after acceptance by {step.added_by}: {step.added_reason})"
     if step.status == "done":
         when = f"done {step.done_at[:16]}Z" if step.done_at else "done"
         bits = [when, step.conformance, step.outcome, step.link]
@@ -224,6 +226,13 @@ def plan_step_saved(step: PlanStep) -> str:
     if step.status == "done" and step.conformance:
         text += f" ({step.conformance})"
     return text + "."
+
+
+def plan_step_added(task: Task, step: PlanStep) -> str:
+    text = f"Step {step.position} '{step.title}' added to the plan of **{task.key}** (pending)"
+    if step.added_after_acceptance_at:
+        return text + "; the plan stays accepted, the step is marked as added after acceptance."
+    return text + f"; the plan is {task.plan_status}."
 
 
 def attachment_line(item: Attachment) -> str:
@@ -964,6 +973,8 @@ def event_detail(e: Event) -> str:
         return f"#{p.get('comment_id')} read"
     if e.kind == "plan.set":
         return f"{p.get('steps')} step(s), {p.get('status') or 'removed'}"
+    if e.kind == "plan.step_added":
+        return f"step {p.get('position')} {p.get('title') or ''} added: {p.get('reason') or ''}"
     if e.kind == "plan.step_updated":
         return f"step {p.get('position')} {p.get('previous')} → {p.get('status')}"
     if e.kind == "plan.accepted":

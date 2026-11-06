@@ -136,7 +136,9 @@ program as its client:
 - **Plan and checkpoints** — agents write the task's plan (`plan_set`) and mark each step done
   with one line, `as planned` or `deviation: why`; you accept the plan in the task's Plan tab,
   deviations stand out on the card, and the agent's own Claude Code todo shows under the current
-  step. By default a move to `dev` needs an accepted plan unless the task is size `S`.
+  step. By default a move to `dev` needs an accepted plan unless the task is size `S`. The plan
+  stays alive: work added after a report is a new step (`plan_step_add`, the acceptance kept) and
+  takes the task back to `dev`.
 - **Map** — the owner, projects, open tasks, sessions and environments as a live graph: who works on
   what, who messages whom (sender, recipient and time, never the text), who can touch which
   environment. Structure and Now views, a project filter, collapsing projects.

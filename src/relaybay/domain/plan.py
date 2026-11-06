@@ -28,6 +28,12 @@ DEFAULT_REMINDER_EVERY = 30
 REMINDER_DETAILS_MAX = 300
 REMINDER_TASKS_MAX = 3
 NO_PLAN_HINT = "write down what you are going to do (todo or 2-3 steps with plan_set)"
+ADDED_MARK = "added after acceptance"
+CLOSED_PLAN = (
+    "the plan is closed ({done}/{total} done) while work goes on: add a step with plan_step_add"
+    " or reopen one"
+)
+DEFAULT_DRAFT_HINT_HOURS = 1
 
 
 @dataclass(slots=True)
@@ -45,6 +51,9 @@ class PlanStep:
     created_by: str
     created_at: str
     updated_at: str
+    added_after_acceptance_at: str | None = None  # set by plan_step_add on an accepted plan
+    added_by: str | None = None
+    added_reason: str | None = None
 
     @property
     def deviation(self) -> bool:
@@ -89,6 +98,12 @@ class PlanRevision:
     @property
     def titles(self) -> list[str]:
         return [str(s.get("title", "")) for s in self.body.get("steps", [])]
+
+    @property
+    def added(self) -> set[int]:
+        """Positions (1, 2, …) of the steps marked as added after acceptance."""
+        steps = self.body.get("steps", [])
+        return {i for i, s in enumerate(steps, 1) if s.get("added_after_acceptance_at")}
 
 
 @dataclass(slots=True)
@@ -162,7 +177,7 @@ def clean_outcome(value: object) -> str | None:
 
 
 def step_body(step: PlanStep) -> dict[str, Any]:
-    return {
+    body = {
         "title": step.title,
         "details": step.details_md,
         "status": step.status,
@@ -171,6 +186,11 @@ def step_body(step: PlanStep) -> dict[str, Any]:
         "outcome": step.outcome,
         "conformance": step.conformance,
     }
+    if step.added_after_acceptance_at:
+        body["added_after_acceptance_at"] = step.added_after_acceptance_at
+        body["added_by"] = step.added_by
+        body["added_reason"] = step.added_reason
+    return body
 
 
 def plan_body(status: str | None, steps: list[PlanStep]) -> dict[str, Any]:
@@ -178,8 +198,9 @@ def plan_body(status: str | None, steps: list[PlanStep]) -> dict[str, Any]:
     return {"status": status, "steps": [step_body(s) for s in steps]}
 
 
-def title_diff(before: list[str], after: list[str]) -> list[str]:
-    """`- title` / `+ title` lines for the step titles that changed, in plan order."""
+def title_diff(before: list[str], after: list[str], added: set[int] | None = None) -> list[str]:
+    """`- title` / `+ title` lines for the step titles that changed, in plan order; a new step
+    whose position is in `added` is marked as added after acceptance."""
     if before == after:
         return []
     lines = []
@@ -191,7 +212,8 @@ def title_diff(before: list[str], after: list[str]) -> list[str]:
         if old is not None:
             lines.append(f"- {i + 1}. {old}")
         if new is not None:
-            lines.append(f"+ {i + 1}. {new}")
+            mark = f" ({ADDED_MARK})" if added and i + 1 in added else ""
+            lines.append(f"+ {i + 1}. {new}{mark}")
     return lines
 
 
@@ -285,8 +307,11 @@ def reminder_line(
     if plan.steps:
         state = "accepted" if plan.status == "accepted" else "draft, not accepted yet"
         step = plan.current
-        if step is None:
+        if step is None and stage != "dev":
             return f"Plan of {task_key} ({state}): all {len(plan.steps)} steps done.{doing}"
+        if step is None:
+            closed = CLOSED_PLAN.format(done=plan.done, total=len(plan.steps))
+            return f"Plan of {task_key} ({state}): {closed}.{doing}"
         verb = "step" if step.status == "in_progress" else "next step"
         line = (
             f"Plan of {task_key} ({state}): {verb} {step.position}/{len(plan.steps)} '{step.title}'"

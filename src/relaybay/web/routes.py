@@ -139,6 +139,7 @@ EVENT_KINDS = (
     "review.step_accepted",
     "review.step_rejected",
     "plan.set",
+    "plan.step_added",
     "plan.step_updated",
     "plan.accepted",
     "session.todo_updated",
@@ -271,6 +272,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         annotation_body_max=ANNOTATION_BODY_MAX,
         pulse_stale=service.pulse_stale,
         pulse_stale_days=settings.pulse_stale_days,
+        plan_draft_hours=service.plan_draft_hours,
     )
     versions = static_versions()
 

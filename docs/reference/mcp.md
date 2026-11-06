@@ -62,6 +62,7 @@ descriptions clients receive. How to use them together: [MCP tools](../mcp-tools
 | [`plan_get`](#plan_get) | read |
 | [`plan_set`](#plan_set) | write |
 | [`plan_step_update`](#plan_step_update) | write |
+| [`plan_step_add`](#plan_step_add) | write |
 | [`plan_accept`](#plan_accept) | write |
 | [`attach_file`](#attach_file) | write |
 | [`attachment_caption`](#attachment_caption) | write |
@@ -722,6 +723,20 @@ Mark a plan step in_progress when you start it and done when it is finished (a c
 | `outcome` | string or null | no | One line: what came out of the step (or why it is blocked). |
 | `link` | string or null | no | Done only: a report of this task ('12') or a PR link. |
 | `conformance` | string or null | no | Required with done: 'as planned' or 'deviation: <why it went otherwise>'. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `plan_step_add`
+
+Append a pending step to the plan when the work changes or grows after a report. An accepted plan stays accepted (the step is marked 'added after acceptance'); a task in review or test goes back to dev. Also update progress and next_step.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `title` | string | yes | The new step's title. |
+| `reason` | string | yes | Required: why the step is added, one line (e.g. the owner's decision after review); kept on the step and in the plan's history. |
+| `details` | string or null | no | What and why, 1-2 sentences (markdown). |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
