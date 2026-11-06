@@ -40,6 +40,14 @@ uv run pytest
 run the official SDK client against a uvicorn server started on a free local port. New behaviour
 comes with a test.
 
+`tests/e2e/` runs whole scenarios against a real server: `tests/e2e/fake_claude.py` stands in for
+`claude -p` (a JSON scenario instead of a model), found on PATH through a shim in a temporary folder.
+It runs the hook commands from a temporary Claude home as real processes and calls MCP through the
+SDK client. Assert by polling, never by a fixed wait; keep the folder under 60 s. A feature that
+changes what a session sees gets a scenario there. Against the real CLI, by hand and never in CI:
+`RELAYBAY_E2E_REAL_CLAUDE=1 uv run pytest tests/e2e/test_real_claude.py` and
+`uv run python scripts/probe_claude.py` (both use your login and spend a little quota).
+
 ## Commits and pull requests
 
 - [Conventional Commits](https://www.conventionalcommits.org/) titles: `feat: …`, `fix: …`,

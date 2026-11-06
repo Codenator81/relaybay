@@ -18,6 +18,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `assignee` (`-` lists the items for nobody), and the new `backlog_patch(item, fields, ...)` changes
   any item field as one JSON object, for clients whose `backlog_update` schema is older.
 - `backlog.md` has the columns `priority` and `assignee`. A file without them keeps the stored values.
+- End-to-end tests: `tests/e2e/fake_claude.py` stands in for `claude -p`, on PATH behind a shim, with
+  a real server, hooks installed by the real `machine_setup`, the real forwarder and MCP through the
+  SDK client. Scenarios: task to Inbox, a comment delivered and acknowledged with a Stop block, a
+  guard deny on live with its journal line, the spool replay.
+- `scripts/probe_claude.py` prints what a real `claude -p` session sees (MCP servers without and with
+  `--chrome`); `RELAYBAY_E2E_REAL_CLAUDE=1` runs an opt-in test of the stream shape against the real
+  CLI. Neither runs in CI.
 
 ## [0.7.1] - 2026-11-06
 
