@@ -2407,7 +2407,7 @@ missing or unreadable file means a first start, with a warning for an unreadable
 
 *Limits.* A click on a balloon does nothing: pystray offers no such event on Windows, hence Open Inbox.
 pystray's X11 backend (the `.deb`) has no notifications: there a notice is only a line in the log, as it
-is on every system (`notification: <title>: <text>`). The operating system's Do not disturb may hide a
+is on every system (`notification: <heading>: <text>`). The operating system's Do not disturb may hide a
 toast. A board tab with browser notifications on tells a review as well.
 
 **`GET /api/notifications?after=<id>&limit=100`** (Bearer token, `limit` from 1 to 500):
