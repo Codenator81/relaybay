@@ -5,7 +5,13 @@ import pytest
 from starlette.testclient import TestClient
 
 from relaybay.logs import RedactLoginFilter, uvicorn_log_config
-from relaybay.security import COOKIE_NAME, csrf_token, load_or_create_token, rotate_token
+from relaybay.security import (
+    COOKIE_NAME,
+    csrf_token,
+    load_or_create_token,
+    port_cookie,
+    rotate_token,
+)
 
 
 def test_healthz_is_public(client: TestClient) -> None:
@@ -192,3 +198,48 @@ def test_login_next_stays_local() -> None:
     assert safe_next("/p/acme-shop") == "/p/acme-shop"
     for value in ("https://evil.example", "//evil.example", r"/\evil.example", "/login", ""):
         assert safe_next(value) == "/"
+
+
+@pytest.mark.parametrize(
+    "host, name",
+    [
+        ("127.0.0.1:8765", "relaybay_session_8765"),
+        ("localhost:9000", "relaybay_session_9000"),
+        ("[::1]:8765", "relaybay_session_8765"),
+        ("[::1]", "relaybay_session"),
+        ("board.example", "relaybay_session"),
+        (None, "relaybay_session"),
+    ],
+)
+def test_cookie_names_carry_the_port(host: str | None, name: str) -> None:
+    assert port_cookie(COOKIE_NAME, host) == name
+
+
+def test_a_sign_in_on_one_port_is_not_valid_on_another(client: TestClient, token: str) -> None:
+    this_port = {"Host": "127.0.0.1:8765"}
+    signed = client.get(f"/login?token={token}", headers=this_port, follow_redirects=False)
+    assert signed.headers["set-cookie"].startswith("relaybay_session_8765=")
+    value = signed.cookies["relaybay_session_8765"]
+    client.cookies.clear()
+
+    cookie = {"Cookie": f"relaybay_session_8765={value}"}
+    assert client.get("/", headers={**this_port, **cookie}).status_code == 200
+    other = {"Host": "127.0.0.1:8766", **cookie}
+    assert client.get("/", headers=other).status_code == 401
+    # The name without a port, from before the names carried it, signs in nobody.
+    old = {"Cookie": f"relaybay_session={value}"}
+    assert client.get("/", headers={**this_port, **old}).status_code == 401
+
+
+def test_the_login_form_nonce_cookie_carries_the_port(client: TestClient, token: str) -> None:
+    form = client.get("/login")
+    assert form.headers["set-cookie"].startswith("relaybay_login_csrf_8765=")
+    nonce = form.cookies["relaybay_login_csrf_8765"]
+    posted = client.post(
+        "/login",
+        data={"token": token, "next": "/", "login_csrf": nonce},
+        headers={"Origin": "http://127.0.0.1:8765"},
+        follow_redirects=False,
+    )
+    assert posted.status_code == 303
+    assert "relaybay_session_8765=" in posted.headers["set-cookie"]

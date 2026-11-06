@@ -36,7 +36,13 @@ TASK_FIELDS: tuple[TaskField, ...] = (
         "cannot be cleared",
     ),
     TaskField("stage_note", "text", "Short note next to the stage.", TEXT_CLEARS, TEXT_MAX),
-    TaskField("waiting_on", "text", "Who acts next.", TEXT_CLEARS, TEXT_MAX),
+    TaskField(
+        "waiting_on",
+        "text",
+        "Only who acts next: a name or role, no text after it; what happens goes to next_step.",
+        TEXT_CLEARS,
+        TEXT_MAX,
+    ),
     TaskField(
         "next_step",
         "text",

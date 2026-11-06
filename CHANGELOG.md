@@ -7,6 +7,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Board: a **Compact** toggle in the tools row, kept per browser (in the desktop program's window,
+  until it quits). Compact cards show key, tracker badge, title, the waiting-on chip and the "answer
+  received" mark; a chevron on a card expands just that card (kept by task key), a click on the card
+  still opens the dialog.
+- Task dialog and task page: every block of the Overview (Description, Done so far, Last report,
+  Decisions, Comments, Session, ...) collapses under its title. The choice is kept per browser by
+  section for all tasks (in the desktop program's window, until it quits); typed text is not lost.
+
+### Changed
+
+- Task dialog and task page: the newest report in full, older ones as an accordion whose summary is
+  the report's first line; a live refresh keeps the opened ones.
+- `waiting_on` is only who acts next: server instruction 3 and the tool descriptions say so, the
+  card's chip cuts it at the first colon (the full text in its title, in full in the task dialog),
+  and a write with more than 4 words there gets `Hint: waiting_on is who acts next; put what happens
+  into next_step.` in the answer (never a refusal; the value is saved as given).
+- The cookie names of the board carry the port (`relaybay_session_8765`, `relaybay_login_csrf_8765`,
+  ...), so a server beside another one on the same host no longer signs you out of it. **Browser
+  tabs ask for the login link once after this update;** the desktop program's window signs in by
+  itself.
+
+### Fixed
+
+- Desktop program: after a cancelled or failed installer, Update works again without a restart
+  (it used to answer "already running"). Windows; the program watches the installer process.
+- CI: the "Smoke - desktop program" step gives a slow runner 45 s for `/healthz`, then quits the
+  program with `relaybay desktop --quit`, so a healthy run stays fast.
+
 ## [0.7.0] - 2026-11-06
 
 The plan becomes a living map, review screenshots zoom, hook events survive a server that is away, and the program restarts its own server.

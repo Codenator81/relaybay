@@ -19,7 +19,7 @@ from relaybay.db.connection import connect
 from relaybay.domain import annotations as ann
 from relaybay.domain.errors import NotFoundError, ValidationError
 from relaybay.mcp_server.format import annotation_lines, review_text
-from relaybay.security import COOKIE_NAME, csrf_token, session_cookie_value
+from relaybay.security import COOKIE_NAME, csrf_token, port_cookie, session_cookie_value
 from relaybay.service import Service
 from relaybay.web.routes import static_versions
 from relaybay.web.sse import format_event
@@ -429,7 +429,7 @@ async def test_mcp_returns_images_and_replies(live_server: Callable[[], LiveServ
         browser = {
             "Origin": live.url,
             "X-Relaybay-CSRF": csrf_token(live.token),
-            "Cookie": f"{COOKIE_NAME}={session_cookie_value(live.token)}",
+            "Cookie": (f"{port_cookie(COOKIE_NAME, live.url)}={session_cookie_value(live.token)}"),
         }
         async with httpx2.AsyncClient(base_url=live.url, headers=browser) as http:
             added = (await http.post("/files/1/annotations", json=pin())).json()

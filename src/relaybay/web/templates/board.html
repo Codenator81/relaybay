@@ -19,6 +19,7 @@
     <label class="board-archived"><input type="checkbox" name="archived" value="1"{% if archived %} checked{% endif %}> Show archived</label>
     <button type="submit" class="btn">Filter</button>
     {% if view_qs %}<a class="action" href="/p/{{ project.slug }}">Clear</a>{% endif %}
+    <button type="button" class="btn board-compact" aria-pressed="false" title="Show only key, tracker, title and who the task waits on">Compact</button>
     {#- Pages of the board on wide screens; ←/→ switch them too (app.js). #}
     <span class="board-pager">
       {%- for stages_of_page in board_pages %}

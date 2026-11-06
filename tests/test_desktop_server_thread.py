@@ -13,7 +13,12 @@ import pytest
 
 from relaybay.config import load_settings
 from relaybay.desktop.server_thread import EmbeddedServer
-from relaybay.security import COOKIE_NAME, load_or_create_token, session_cookie_value
+from relaybay.security import (
+    COOKIE_NAME,
+    load_or_create_token,
+    port_cookie,
+    session_cookie_value,
+)
 
 
 def free_port() -> int:
@@ -36,7 +41,8 @@ def test_stop_does_not_wait_for_an_open_event_stream(
 
     def listen() -> None:
         # Like the window: the login cookie, then /events held open until the server goes.
-        cookie = f"{COOKIE_NAME}={session_cookie_value(token)}"
+        name = port_cookie(COOKIE_NAME, settings.base_url)
+        cookie = f"{name}={session_cookie_value(token)}"
         request = Request(f"{settings.base_url}/events", headers={"Cookie": cookie})
         try:
             with urlopen(request, timeout=30) as response:

@@ -12,7 +12,7 @@ start with the digest for your level (`portfolio_digest`, `project_digest` or `t
 drill down only when needed, for example with `project_snapshot` (its first line names the rules,
 like `task_context`'s rules line), and keep the project pulse current with `project_pulse_set`; pick or create a task and pass
 `session` (your `local_` id with `session_title` if you know it, plus `hook_session` if the
-session start gave you one; if not, don't rebind — the coordinator binds you); update `next_step`, `waiting_on` and `progress` on every stage change and
+session start gave you one; if not, don't rebind — the coordinator binds you); update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and
 report; start a report with the configured first line, states and sizes (taken from the
 effective global rules, so they match `rules_get`); set `waiting_on` to who
 decides when the work needs a decision; use `task_patch` for fields your tool schema lacks; treat a
@@ -73,7 +73,10 @@ Conventions:
   step: the session rewrites it as it goes, ideally with every report (`report_add(progress=…)`).
   The board shows both in full in the task dialog (not on the card).
 - **Next step and waiting on** — keep them current: `task_set_stage` and `report_add` take
-  optional `next_step` (what happens next) and `waiting_on` (who acts next), saved in the same
+  optional `next_step` (what happens next) and `waiting_on` (only who acts next: a name or role, no
+  text after it; the card cuts it at the first colon, and a value of more than 4 words gets the
+  answer line `Hint: waiting_on is who acts next; put what happens into next_step.`, never a refusal
+  and the value is saved as given), saved in the same
   transaction as the stage change or the report; omitted, they stay; `"-"` or `""` clears them.
   A next step written before the task's last stage change is *stale*: the card and the task dialog
   show it muted with a "stale" marker, `task_get` and `project_snapshot` append `(stale)`. Writing

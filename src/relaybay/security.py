@@ -86,6 +86,14 @@ def token_id(token: str) -> str:
     return _derive(token, "relaybay-token-id")[:12]
 
 
+def port_cookie(name: str, host: str | None) -> str:
+    """Browsers share cookies between the ports of one host, so two servers there would overwrite
+    each other's sign-in: the name carries the port the request came to, `relaybay_session_8765`
+    (no port in the Host header, as behind a proxy on 80/443: the plain name)."""
+    port = (host or "").rpartition(":")[2]
+    return f"{name}_{port}" if port.isascii() and port.isdigit() else name
+
+
 def session_cookie_value(token: str) -> str:
     return _derive(token, "relaybay-session")
 
@@ -175,7 +183,7 @@ class SecurityMiddleware:
         if same_secret(bearer, self.token):
             # A browser never attaches this header on its own, so CSRF does not apply.
             return None
-        cookie = _cookie(headers.get("cookie"), COOKIE_NAME)
+        cookie = _cookie(headers.get("cookie"), port_cookie(COOKIE_NAME, headers.get("host")))
         if not same_secret(cookie, self.cookie):
             if method == "GET" and _wants_page(headers):
                 return RedirectResponse(login_url(_path_with_query(scope)), status_code=303)

@@ -521,8 +521,118 @@
     }
   }
 
+  // --- what the fragments do not hold: a refresh renders every card collapsed and every older
+  // report closed, so their state lives here and is put back after each swap. Storage can be
+  // unavailable: the choice then lasts until the page is left.
+
+  var COMPACT_KEY = "relaybay.compact";  // read by nav.js before the first paint
+  var EXPANDED_KEY = "relaybay.compact.expanded";
+  var EXPANDED_MAX = 200;
+  var OPEN_REPORTS_KEY = "relaybay.reports.open";
+  var FOLDS_KEY = "relaybay.folds";  // section key -> open, for all tasks
+
+  function storedSet(area, key) {
+    try {
+      return new Set(JSON.parse(window[area].getItem(key) || "[]"));
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function storeValue(area, key, value) {
+    try { window[area].setItem(key, value); } catch (e) { /* see above */ }
+  }
+  var expandedCards = storedSet("localStorage", EXPANDED_KEY);
+  // sessionStorage: the task page reloads itself on most live events.
+  var openReports = storedSet("sessionStorage", OPEN_REPORTS_KEY);
+
+  function storedFolds() {
+    try {
+      return JSON.parse(window.localStorage.getItem(FOLDS_KEY) || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  var folds = storedFolds();
+  function applyFolds(root) {
+    root.querySelectorAll("details[data-fold]").forEach(function (details) {
+      var open = folds[details.dataset.fold];
+      if (open !== undefined) details.open = open;
+    });
+  }
+
+  function showCardExpanded(button, on) {
+    var card = button.closest(".card");
+    var text = (on ? "Collapse " : "Expand ") + card.dataset.key;
+    card.classList.toggle("is-expanded", on);
+    button.setAttribute("aria-expanded", on ? "true" : "false");
+    button.setAttribute("aria-label", text);
+    button.title = text;
+  }
+  function restoreKept(root) {
+    applyFolds(root);
+    root.querySelectorAll(".card-expand").forEach(function (button) {
+      showCardExpanded(button, expandedCards.has(button.closest(".card").dataset.key));
+    });
+    root.querySelectorAll("details[data-report]").forEach(function (details) {
+      if (openReports.has(details.dataset.report)) details.open = true;
+    });
+  }
+  function toggleCard(button) {
+    var key = button.closest(".card").dataset.key;
+    var on = !expandedCards.has(key);
+    if (on) expandedCards.add(key); else expandedCards.delete(key);
+    showCardExpanded(button, on);
+    var kept = Array.from(expandedCards).slice(-EXPANDED_MAX);
+    expandedCards = new Set(kept);
+    storeValue("localStorage", EXPANDED_KEY, JSON.stringify(kept));
+  }
+  function showCompactButton() {
+    var button = document.querySelector(".board-compact");
+    if (!button) return;
+    button.setAttribute("aria-pressed", document.documentElement.dataset.compact ? "true" : "false");
+  }
+  function toggleCompact() {
+    var root = document.documentElement;
+    if (root.dataset.compact) delete root.dataset.compact; else root.dataset.compact = "1";
+    storeValue("localStorage", COMPACT_KEY, root.dataset.compact ? "1" : "0");
+    showCompactButton();
+  }
+
+  document.addEventListener("htmx:load", function (event) {
+    if (event.detail.elt.querySelectorAll) restoreKept(event.detail.elt);
+  });
+  // Right after the swap, ahead of htmx:load (which waits for the settle): no flash of an open
+  // section the owner closed.
+  document.addEventListener("htmx:afterSwap", function () { applyFolds(document); });
+  // The click, not "toggle": toggle also fires for a section just rendered open, and would take
+  // that for the owner's choice. Enter and Space on a summary arrive as a click too.
+  document.addEventListener("click", function (event) {
+    var summary = event.target.closest && event.target.closest("summary");
+    var details = summary && summary.parentElement;
+    if (!details || !details.matches("details[data-fold]")) return;
+    folds[details.dataset.fold] = !details.open;
+    storeValue("localStorage", FOLDS_KEY, JSON.stringify(folds));
+  });
+  // "toggle" does not bubble, hence the capture.
+  document.addEventListener("toggle", function (event) {
+    var details = event.target;
+    if (!details.matches || !details.matches("details[data-report]")) return;
+    if (details.open) openReports.add(details.dataset.report);
+    else openReports.delete(details.dataset.report);
+    storeValue("sessionStorage", OPEN_REPORTS_KEY, JSON.stringify(Array.from(openReports)));
+  }, true);
+
   document.addEventListener("click", function (event) {
     if (!event.target.closest) return;
+    var chevron = event.target.closest(".card-expand");
+    if (chevron) {
+      toggleCard(chevron);
+      return;
+    }
+    if (event.target.closest(".board-compact")) {
+      toggleCompact();
+      return;
+    }
     var button = event.target.closest(".copy-link");
     if (button) {
       event.preventDefault();
@@ -862,6 +972,8 @@
   setupDialog();
   setupViewer();
   showNotifyState();
+  showCompactButton();
+  restoreKept(document);
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") reconnect();
   });

@@ -348,7 +348,9 @@ def test_the_task_dialog_shows_the_linked_section(board: TestClient, spec: str) 
         '<a class="doc-link" href="/p/acme-shop/docs/spec#gift-cards">Acme spec · #gift-cards</a>'
         in view
     )
-    panel = view.split('<details class="panel task-doc">', 1)[1].split("</details>", 1)[0]
+    panel = view.split('<details class="panel fold task-doc" data-fold="document">', 1)[1].split(
+        "</details>", 1
+    )[0]
     assert "Partial payments." in panel and "Pay by card." not in panel
     assert 'href="/p/acme-shop/docs/spec#history"' in panel
 

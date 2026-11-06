@@ -329,11 +329,10 @@ def installer_command(path: Path, kind: str) -> list[str]:
     raise UpdateError(f"no installer for {kind}")
 
 
-def launch_installer(path: Path, kind: str) -> None:
+def launch_installer(path: Path, kind: str) -> subprocess.Popen[bytes]:
     """Start the installer detached, so it outlives the program that quits for it."""
     command = installer_command(path, kind)
     if sys.platform == "win32":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        subprocess.Popen(command, creationflags=flags, close_fds=True)
-    else:
-        subprocess.Popen(command, start_new_session=True, close_fds=True)
+        return subprocess.Popen(command, creationflags=flags, close_fds=True)
+    return subprocess.Popen(command, start_new_session=True, close_fds=True)

@@ -1,5 +1,9 @@
+import re
+from pathlib import Path
+
 from starlette.testclient import TestClient
 
+import relaybay
 from relaybay.app import create_app
 from relaybay.config import load_settings
 from relaybay.security import csrf_token
@@ -392,3 +396,92 @@ def test_board_save_confirms_next_step_only_when_edited(
     # Editing the next step itself confirms it.
     save(next_step="Review the tests")
     assert not run_in_app(board, service.get_task, seeded).next_step_stale
+
+
+def test_card_chip_shows_who_and_the_title_the_full_text(board: TestClient, seeded: str) -> None:
+    service: Service = board.app.state.service
+    text = "owner: accept the PR and merge"
+    run_in_app(board, service.update_task, seeded, {"waiting_on": text})
+    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
+    assert f'title="Waiting on {text}">waiting on owner</span>' in card
+    assert f'<span class="chip waiting">{text}</span>' in board.get(f"/t/{seeded}").text
+    # Nothing before the colon: the text stays as it is.
+    run_in_app(board, service.update_task, seeded, {"waiting_on": ": odd"})
+    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
+    assert ">waiting on : odd</span>" in card
+
+
+def test_older_reports_are_an_accordion(board: TestClient, seeded: str) -> None:
+    service: Service = board.app.state.service
+    older = run_in_app(board, service.add_report, seeded, "verified · M · second\n\nthe details")
+    newest = run_in_app(board, service.add_report, seeded, "committed · S · third\n\nall of it")
+    for url in (f"/t/{seeded}", f"/p/acme-shop/t/{seeded}/dialog", f"/p/acme-shop/t/{seeded}/view"):
+        page = board.get(url).text
+        assert "<p>all of it</p>" in page
+        assert f'data-report="{newest[1].id}"' not in page  # the newest one is in full
+        assert f'<details class="report report-older" data-report="{older[1].id}">' in page
+        assert '<span class="report-gist">second</span>' in page
+        assert "<p>the details</p>" in page
+        assert page.index("all of it") < page.index("report-older")
+
+
+def test_compact_rules_touch_only_task_cards(board: TestClient, seeded: str) -> None:
+    css = board.get("/static/app.css").text
+    selectors = [line for line in css.splitlines() if ":root[data-compact]" in line]
+    assert len(selectors) >= 4
+    assert all(".card[data-key]" in line for line in selectors), selectors
+    assert ".answer-mark" not in " ".join(selectors)  # a fresh answer stays visible
+    # Task cards carry the attribute, backlog cards (also `.card`, `.card-meta`) do not.
+    assert 'class="card" id="card-' in board.get(f"/p/acme-shop/t/{seeded}/card").text
+    service: Service = board.app.state.service
+    run_in_app(board, service.add_backlog_item, "acme-shop", "A finding")
+    page = board.get("/p/acme-shop/backlog").text
+    start = page.index('class="card backlog-card')
+    assert "data-key" not in page[start : page.index(">", start)]
+
+
+def test_every_block_of_the_task_view_is_a_fold(board: TestClient, seeded: str) -> None:
+    templates = Path(relaybay.__file__).parent / "web" / "templates"
+    for name in ("_task_view.html", "_comments.html"):
+        text = (templates / name).read_text(encoding="utf-8")
+        assert '<section class="panel' not in text, name
+        assert '<details class="panel"' not in text, name
+    run_in_app(
+        board,
+        board.app.state.service.update_task,
+        seeded,
+        {"description": "D1", "progress": "P1"},
+    )
+    always = ("session", "description", "progress", "reports", "comments")
+    for url in (f"/t/{seeded}", f"/p/acme-shop/t/{seeded}/dialog"):
+        page = board.get(url).text
+        for key in always:
+            assert re.search(rf'<details class="panel fold[^"]*" data-fold="{key}" open', page), key
+        assert "<summary><h2>Description</h2></summary>" in page
+    dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
+    assert '<details class="panel fold dialog-edit" data-fold="edit">' in dialog
+    assert "<summary><h2>Edit task</h2></summary>" in dialog
+    # The task page's Plan and Review stay plain panels, as the tabs do.
+    task_page = board.get(f"/t/{seeded}").text
+    assert '<section class="panel">\n    <h2>Plan</h2>' in task_page
+    assert 'data-fold="plan"' not in dialog and 'data-fold="review"' not in dialog
+
+
+def test_the_reports_accordion_lives_inside_its_fold(board: TestClient, seeded: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.add_report, seeded, "verified · M · second")
+    page = board.get(f"/t/{seeded}").text
+    fold = page.split('data-fold="reports" open>', 1)[1].split('data-fold="', 1)[0]
+    assert "<summary><h2>Last report</h2></summary>" in fold
+    assert '<details class="report report-older" data-report="' in fold
+
+
+def test_compact_controls_are_real_buttons_and_no_server_state(
+    board: TestClient, seeded: str
+) -> None:
+    page = board.get("/p/acme-shop").text
+    assert 'class="btn board-compact" aria-pressed="false"' in page
+    assert (
+        f'class="card-expand" aria-expanded="false" aria-label="Expand {seeded}"'
+        in board.get(f"/p/acme-shop/t/{seeded}/card").text
+    )

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import io
 import json
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -583,3 +584,65 @@ def test_second_update_click_is_ignored_while_one_runs(
 def test_windows_setup_runs_one_at_a_time() -> None:
     iss = Path(__file__).parents[1] / "packaging" / "windows" / "relaybay.iss"
     assert "SetupMutex=relaybay-setup" in iss.read_text(encoding="utf-8")
+
+
+class FakeInstaller:
+    def __init__(self) -> None:
+        self.exit = threading.Event()
+
+    def wait(self) -> int:
+        self.exit.wait(10)
+        return 1
+
+
+def windows_update_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[DesktopController, list[str], list[FakeInstaller]]:
+    controller, said = controller_with_update(tmp_path)
+    installers: list[FakeInstaller] = []
+
+    def launched(path: Path, kind: str) -> FakeInstaller:
+        installers.append(FakeInstaller())
+        return installers[-1]
+
+    monkeypatch.setattr("relaybay.desktop.app.install_kind", lambda: "desktop-windows")
+    monkeypatch.setattr(
+        "relaybay.desktop.app.platformdirs.user_cache_dir", lambda *a, **k: tmp_path
+    )
+    monkeypatch.setattr(updates, "prepare_installer", lambda *a, **k: tmp_path / "x.exe")
+    monkeypatch.setattr(updates, "launch_installer", launched)
+    controller.install_update()
+    return controller, said, installers
+
+
+def installer_thread() -> threading.Thread:
+    return next(t for t in threading.enumerate() if t.name == "relaybay-installer")
+
+
+def test_update_works_again_after_a_cancelled_installer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, said, installers = windows_update_started(tmp_path, monkeypatch)
+    watcher = installer_thread()
+    controller.install_update()
+    assert said[-1] == "The update is already running." and len(installers) == 1
+
+    installers[0].exit.set()
+    watcher.join(10)
+    assert controller.installer_started_at is None and not controller.quitting
+    controller.install_update()
+    assert len(installers) == 2
+    second = installer_thread()
+    installers[1].exit.set()
+    second.join(10)
+
+
+def test_a_setup_that_asked_for_the_quit_keeps_the_update_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _said, installers = windows_update_started(tmp_path, monkeypatch)
+    watcher = installer_thread()
+    controller.quitting = True
+    installers[0].exit.set()
+    watcher.join(10)
+    assert controller._updating.locked() and controller.installer_started_at is not None

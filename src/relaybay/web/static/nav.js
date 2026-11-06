@@ -17,6 +17,10 @@
   }
 
   if (remembered() === "collapsed") root.dataset.nav = "collapsed";
+  // The board's Compact toggle (app.js), here for the same reason.
+  try {
+    if (window.localStorage.getItem("relaybay.compact") === "1") root.dataset.compact = "1";
+  } catch (e) { /* see remembered() */ }
 
   function toggleButton() { return document.querySelector(".nav-toggle"); }
   function drawerOpen() { return root.dataset.drawer === "open"; }

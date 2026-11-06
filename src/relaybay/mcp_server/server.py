@@ -43,7 +43,8 @@ def instructions(rules: Rules) -> str:
             " one ('Your relaybay hook session: …'). If you don't know your local_ id, don't"
             " rebind a task — the coordinator binds you.",
             "3. On every stage change and every report, also update next_step (what happens next),"
-            " waiting_on (who acts next) and progress (everything done so far).",
+            " waiting_on (only who acts next: a name or role, no text after it; what happens"
+            " goes to next_step) and progress (everything done so far).",
             "4. Add a report at the end of every stage. Its first line is"
             f" `{report['first_line']}`; state is one of {', '.join(report['states'])}; size is one"
             f" of {', '.join(report['sizes'])}.",
@@ -120,7 +121,10 @@ NEXT_STEP_HELP = (
     "What happens next, one line; saved in the same write. A next step set before the last stage"
     " change shows as stale. Omit to keep it;"
 )
-WAITING_ON_HELP = "Who acts next; saved in the same write. Omit to keep it;"
+WAITING_ON_WHO = (
+    "Only who acts next: a name or role, no text after it; what happens goes to next_step."
+)
+WAITING_ON_HELP = WAITING_ON_WHO + " Saved in the same write. Omit to keep it;"
 SOURCE_HELP = (
     "Where it came from: 'report:12', 'comment:7', 'event:301' or 'message:<id>', optionally"
     " followed by display text ('comment:7 owner in the review thread'); or display text alone"
@@ -383,9 +387,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         project: ProjectSlug,
         title: Annotated[str, Field(description="Short task title.")],
         stage: Annotated[str | None, Field(description="Initial stage; default plan.")] = None,
-        waiting_on: Annotated[
-            str | None, Field(description="Who the task waits on." + EMPTY)
-        ] = None,
+        waiting_on: Annotated[str | None, Field(description=WAITING_ON_WHO + EMPTY)] = None,
         next_step: Annotated[
             str | None, Field(description="The next concrete step." + EMPTY)
         ] = None,
@@ -426,15 +428,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
-        return fmt.task_saved(created, "Created")
+        return fmt.with_warnings(
+            fmt.task_saved(created, "Created"), fmt.waiting_on_hint(waiting_on)
+        )
 
     @write
     async def task_update(
         task: TaskRef,
         title: Annotated[str | None, Field(description="New title.")] = None,
-        waiting_on: Annotated[
-            str | None, Field(description="Who the task waits on." + CLEARS)
-        ] = None,
+        waiting_on: Annotated[str | None, Field(description=WAITING_ON_WHO + CLEARS)] = None,
         next_step: Annotated[
             str | None, Field(description="The next concrete step." + CLEARS)
         ] = None,
@@ -496,7 +498,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
-        return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
+        return fmt.with_warnings(
+            fmt.task_saved(saved.task, "Updated"),
+            [*saved.warnings, *fmt.waiting_on_hint(waiting_on)],
+        )
 
     @write
     async def task_patch(
@@ -534,7 +539,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
-        return fmt.with_warnings(fmt.task_saved(saved.task, "Updated"), saved.warnings)
+        return fmt.with_warnings(
+            fmt.task_saved(saved.task, "Updated"),
+            [*saved.warnings, *fmt.waiting_on_hint(fields.get("waiting_on"))],
+        )
 
     @write
     async def task_set_stage(
@@ -568,7 +576,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
-        return fmt.with_warnings(fmt.task_saved(saved.task, "Moved"), saved.warnings)
+        return fmt.with_warnings(
+            fmt.task_saved(saved.task, "Moved"),
+            [*saved.warnings, *fmt.waiting_on_hint(waiting_on)],
+        )
 
     @write
     async def task_bind_session(
@@ -674,7 +685,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         parsed = " · ".join(x for x in (report.state, report.size) if x)
         extra = f" ({parsed})" if parsed else ""
-        return f"Report #{report.id} added to **{saved.key}**{extra}: {report.summary}"
+        return fmt.with_warnings(
+            f"Report #{report.id} added to **{saved.key}**{extra}: {report.summary}",
+            fmt.waiting_on_hint(waiting_on),
+        )
 
     @write
     async def decision_add(
