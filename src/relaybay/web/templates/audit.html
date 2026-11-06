@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Audit · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">Audit</span>{% endblock %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Audit</h1>
+  <p class="muted audit-note">Who did what on which live stand. Only tool calls that touch a live stand are journaled, and only by the names in its access map; test and local stands are not. A session's "No live now" switch is on the <a href="/sessions">Sessions</a> page.</p>
+  <form class="board-tools" method="get" action="/audit">
+    <label class="field-inline">Project
+      <select name="project">
+        <option value="">All projects</option>
+        {% for p in nav.projects %}<option value="{{ p.slug }}"{% if p.slug == project_filter %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Stand
+      <select name="environment">
+        <option value="">All stands</option>
+        {% for name in environment_names %}<option value="{{ name }}"{% if name == environment_filter %} selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Session
+      <select name="session">
+        <option value="">All sessions</option>
+        {% for row in session_rows %}<option value="{{ row.session.id }}"{% if row.session.id|string == session_filter %} selected{% endif %}>{{ row.session.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Decision
+      <select name="decision">
+        <option value="">Any</option>
+        {% for d in decisions %}<option value="{{ d }}"{% if d == decision_filter %} selected{% endif %}>{{ d }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline">Period
+      <select name="days">
+        {% for d in days_choices %}<option value="{{ d }}"{% if d == days_filter %} selected{% endif %}>{% if d %}{{ d }} day{{ "s" if d > 1 }}{% else %}All{% endif %}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-inline"><input type="checkbox" name="changes" value="1"{% if changes_filter %} checked{% endif %}> Changes to the policy, stands and switches</label>
+    <button type="submit" class="btn">Filter</button>
+    {% if project_filter or environment_filter or session_filter or decision_filter or changes_filter or days_filter != 7 or paged %}<a class="action" href="/audit">Clear</a>{% endif %}
+  </form>
+  {% if not events %}
+  <div class="empty activity-empty"><p>Nothing in this view.</p></div>
+  {% endif %}
+  <div class="usage-table-wrap">
+    <table class="usage-table audit-table">
+      <thead><tr><th>Time</th><th>Session</th><th>Project</th><th>Stand</th><th>Tool</th><th>Command (redacted)</th><th>Decision</th><th>Level</th><th>Rule</th><th>Task</th></tr></thead>
+      {#- Live: app.js prepends newer rows (only on the first page, not after "Load more" links). #}
+      <tbody id="audit" data-fragment="/fragments/audit"{% if not paged %} data-live="1"{% endif %}{% if changes_filter %} data-changes="1"{% endif %}
+             data-filters="{{ filters_qs }}" data-newest="{{ events[0].id if events else last_event_id }}">
+        {% include "_audit_rows.html" %}
+      </tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}

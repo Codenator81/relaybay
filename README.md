@@ -123,7 +123,8 @@ program as its client:
   `read`, `ask`, `full`; live is `read` by default), changed only by you on the board (agents
   propose with `environment_propose`). The `PreToolUse` hook warns about or blocks a command aimed
   at an environment its level forbids — a safety net against mistakes, not a sandbox — and every
-  agent tool call that touches live lands in a journal (Activity → Actions on live).
+  agent tool call that touches live lands in a journal (the Audit page, with filters). A
+  **No live now** switch on a session denies it any touch of live at its next tool call.
 - **Policy as data** — the levels, the guard and the secret checks come from a policy, not from
   the code: a preset (`default`, `strict`, `trusted`), an optional `policy.json` in the data
   directory and project or environment layers, each value showing which layer set it (Settings →

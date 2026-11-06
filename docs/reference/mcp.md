@@ -30,6 +30,7 @@ descriptions clients receive. How to use them together: [MCP tools](../mcp-tools
 | [`memory_add`](#memory_add) | write |
 | [`memory_update`](#memory_update) | write |
 | [`usage_summary`](#usage_summary) | read |
+| [`audit_list`](#audit_list) | read |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -359,6 +360,19 @@ Tokens used per day, project, session and model, read from Claude Code transcrip
 | `project` | string or null | no | Only sessions of this project (slug). |
 | `session` | string or null | no | Only this session: its name, desktop id or hook session id. |
 | `days` | integer | no | How many days back, today included. Default: `7`. |
+
+### `audit_list`
+
+Agents' tool calls that touched a live stand, newest first: who, where, the redacted command, the guard's decision, level and rule, the task. Read-only: the "no live now" switch of a session is the owner's, on the board.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string or null | no | Only this project (slug). |
+| `environment` | string or null | no | Only this stand (its name). |
+| `session` | string or null | no | Only this session: its name, desktop id or hook session id. |
+| `decision` | string or null | no | Only this decision: allow, log, warn, ask or deny. |
+| `days` | integer | no | How many days back. Default: `7`. |
+| `limit` | integer | no | Default: `50`. |
 
 ### `memory_search`
 

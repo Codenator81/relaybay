@@ -25,6 +25,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scripts/probe_claude.py` prints what a real `claude -p` session sees (MCP servers without and with
   `--chrome`); `RELAYBAY_E2E_REAL_CLAUDE=1` runs an opt-in test of the stream shape against the real
   CLI. Neither runs in CI.
+- Board: an **Audit** page in the sidebar: who did what on which live stand (time, session, project,
+  stand, tool, redacted command, decision, level, rule, task), with filters, paging and live rows. A
+  checkbox adds the changes to the policy, the stands and the sessions' switches.
+- Sessions: a **No live now** switch on each row (`POST /sessions/{id}/no-live`). While it is on, the
+  guard denies that session any touch of a live stand, reads included, whatever the level and the
+  guard mode (`off` too), and journals it with the rule `no-live-session`. Events
+  `session.no_live_on`, `session.no_live_off`. The switch survives the merge of a guessed hook row
+  and an agent's write with another `hook_session`; on a row with no hook link it applies once the
+  row is linked, and reusing an ended folder row for a new session clears it.
+- MCP: `audit_list(project?, environment?, session?, decision?, days=7, limit=50)`, read-only. There
+  is no write tool: the switch is the owner's.
+- Migration `0025_session_no_live`: `session.no_live_at`, `session.no_live_by`. Additive only.
 
 ## [0.7.1] - 2026-11-06
 

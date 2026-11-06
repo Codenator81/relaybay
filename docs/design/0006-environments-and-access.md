@@ -2,6 +2,8 @@
 
 - Status: **Implemented** (step 11.4b, unreleased, for 0.2.0). Shipped behaviour: [SPEC §7](../SPEC.md#spec-environments).
   Review ([0007](0007-review.md)) uses the sign-in flag for screenshots.
+- As built (0.8): an Audit page shows the journal, and a per-session "no live now" switch denies
+  any touch of live on top of the policy ([SPEC](../SPEC.md#spec-no-live)).
 - As built: the journal event is `live.action` (not `environment.action`); agents have no write
   tool, only `environment_propose` (no `project_environments_set` or `project_upsert(environments=…)`);
   `full` and allowed calls get no `permissionDecision` at all, because `allow` would skip Claude

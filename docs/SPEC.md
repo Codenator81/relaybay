@@ -317,7 +317,8 @@ not a feature: it uses the same tools as any session.
 The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `project.created`,
 `project.updated`, `task.created`, `task.updated`, `task.stage_changed`, `task.session_bound`,
 `task.session_unbound`, `task.tracker_unlogged`, `report.added`, `decision.added`, `session.seen`,
-`session.status_changed`, `session.alias_added`, `comment.added`, `comment.delivered`,
+`session.status_changed`, `session.alias_added`, `session.no_live_on`, `session.no_live_off`,
+`comment.added`, `comment.delivered`,
 `comment.read`, `environment.created`, `environment.updated`, `environment.deleted`,
 `environment.access_added`, `environment.access_updated`, `environment.access_removed`,
 `environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`,
@@ -409,6 +410,7 @@ posts; events `filter.saved`, `filter.deleted`.
 | Map | `/map`, `/map/graph` | Who works on what, who talks to whom, who can touch which environment ([below](#spec-map)). |
 | Usage | `/usage` | Tokens per session, model, project, day and week ([below](#spec-usage)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
+| Audit | `/audit` | Who did what on which live stand, with filters ([below](#spec-board-audit)). |
 | Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
 | Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/edit[?section=]`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)); editing a document ([§8](#spec-documents-edit)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
@@ -588,8 +590,11 @@ those bound to one of its tasks now; `/sessions` lists all sessions. Newest acti
 200. Each row: status dot and hook status (working, waiting, idle, ended, or "no hook status"),
 name, kind (desktop, hook or named), last hook activity and its age, working directory, "Open in
 desktop" for a desktop session, the unlinked reason, and the bound tasks (each opens its task
-dialog) and a link to its usage ([below](#spec-usage)). The list refetches on session and binding
-events, at most once per 2 s.
+dialog) and a link to its usage ([below](#spec-usage)). Each row also has the **No live now**
+switch ([§7](#spec-no-live)): a button `No live now`, or, while it is on, a `live off` mark (on a
+row with no hook link yet it says the switch applies once the row is linked) and a button
+`Allow live again`. The list refetches on session and binding events and on the switch, at
+most once per 2 s.
 
 <a id="spec-board-activity"></a>
 
@@ -601,6 +606,21 @@ link, a short description (the same as `events_since`: `dev → test`, a report'
 changed fields, a session's status change) and the actor. On the first page new events are
 prepended live. Above the feed, **Actions on live** lists the newest 20 `live.action` events
 ([§7](#spec-journal)) for the project filter, refreshed live.
+
+<a id="spec-board-audit"></a>
+
+**Audit** is the journal of actions on live ([§7](#spec-journal)) as a table, newest first, 50 per
+page; "Load more" appends the next page (`?before=<event id>`, also a plain link). Columns: time,
+session, project, stand, tool, redacted command, decision, level, rule, task. Filters: project,
+stand, session (its number, from the list), decision, period (1, 7 (the default), 30 or 90 days, or
+All). The checkbox "Changes to the policy, stands and switches" (`?changes=1`) adds the `policy.*`,
+`environment.*`, `session.no_live_on` and `session.no_live_off` events as rows with their kind and a
+short description. On the first page new rows are prepended live on `live.action`, and on those
+kinds with the checkbox on. A note on the page says what it does not show: only tool calls that
+touch a live stand are journaled, known by the names in its access map; test and local stands are
+not. Events are never pruned. The session filter goes by the row the call was recorded under: calls
+made before a guessed row was merged into its desktop session stay under the old row, whose name
+they still show.
 
 <a id="spec-map"></a>
 
@@ -773,7 +793,7 @@ instruction: act on the task's next step and ask the owner when in doubt; a find
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption`, `attachment_get`, `annotation_reply` |
 | Plan | `plan_get`, `plan_set`, `plan_step_add`, `plan_step_update`, `plan_accept` |
-| Environments | `environments_get`, `environment_propose` |
+| Environments | `environments_get`, `environment_propose`, `audit_list` |
 | Catch-up and rules | `events_since`, `rules_get`, `rules_update`, `rules_propose` |
 | Usage | `usage_summary` |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
@@ -1521,6 +1541,50 @@ access map; a host reached by an IP address, another alias, a script, an environ
 tool other than Bash and MCP, or with the guard off is not recognised, and the heuristics both miss
 changes and flag harmless commands.
 
+<a id="spec-no-live"></a>
+
+**No live now.** The owner's switch per session, on the Sessions rows
+(`POST /sessions/{id}/no-live`, cookie and CSRF; no MCP tool). It is stored on the session
+(`no_live_at`, `no_live_by`) and recorded as `session.no_live_on` / `session.no_live_off`; a repeat
+of the current state records nothing. While it is on, any touch of a `live` environment by that
+session, reads included, is answered with `deny`, whatever the environment's level and guard mode
+(`off` too): level `none`, rule `no-live-session`, and a reason that starts "the owner switched live
+off for this session", names the stand and the matched identifier and says only the owner can switch
+it back. The call is journaled like any other. The policy does not change, cannot disable the rule,
+and applies again once the switch is off. The live environments of every project count, not only
+those of the session's project and tasks; other environments keep their normal decision. A guessed
+hook row that is merged into a desktop session hands its switch to that session, with a
+`session.no_live_on` event carrying `carried_from`; the old row keeps no switch. A failure to write
+the journal is logged and the decision still stands.
+
+A row with no hook link yet (`cc_session_id` empty, most named sessions) denies nothing, because the
+guard finds a session by its Claude Code id; the page says so and the switch stays set for when the
+row is linked. While the switch is on, an agent's write with a `hook_session` does not move the row
+(a warning instead) when the hooks never saw that id, on any row, linked or not, or when the row is
+exactly linked and not ended: either would leave the real hooks a fresh row without the switch. A
+real id the hooks saw still moves a guessed row or an ended exact one, and the switch goes along.
+The desktop app reporting a new id for its window (`/clear`, resume) always moves it, and the switch
+stays with the row. When an ended row named after its folder is reused for a new session, no new
+row appears and the switch is cleared with a `session.no_live_off` event carrying `reason`: it was
+aimed at that session, not at the folder.
+
+It is a revocation for the session's next tool call, on top of the same safety net: it applies only
+to the names in the access map, not to a command already running; a guard error or relaybay down
+means no answer ([§4](#spec-hooks-down)); a `claude` started from inside the session has its own row
+and its own switch. Also:
+
+- `/clear` in a terminal `claude` gives a new Claude Code id. A row named after its folder is reused
+  with `session.no_live_off`; any other row stays ended and the new id gets a new row without the
+  switch, until the agent's write with that real id moves the switch there.
+- A wrong guess stays correctable only with an id the hooks really saw: an agent that names another
+  real id of a guessed row can move it there, and the hooks of the old id then have no switch.
+- "Only the owner" holds for the tools. An agent with a shell can read the board's token from the
+  data folder and call the board, or forge hook events (`relaybay hook` reads the token itself) and
+  the hook's environment; the switch does not stop a determined agent.
+- A host shared between a test stand and another project's live stand is denied too, since the name
+  is a live name; a harmless `grep api-prod` that names a live stand of any project counts as a
+  touch.
+
 <a id="spec-journal"></a>
 
 **Journal of actions on live.** Every guarded tool call that touches a `live` environment is
@@ -1533,7 +1597,8 @@ values whole: `PGPASSWORD='***'`, `mysql -p'***'`, `sshpass -p ***`, `curl -u ad
 at 200 characters — the decision (`allow`,
 `log`, `warn`, `ask`, `deny`), the level and the matched rule. Activity shows the newest 20 as **Actions on
 live** above the feed (with the project filter, refreshed live, linking to `?kind=live.action` for
-all), and the task dialog and page show the task's own as **Actions on live**.
+all), the task dialog and page show the task's own as **Actions on live**, the **Audit** page
+([§2](#spec-board-audit)) shows them all with filters, and `audit_list` returns them to agents.
 
 <a id="spec-environments-mcp"></a>
 
@@ -2077,6 +2142,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0022_plan_step_added` | `plan_step.added_after_acceptance_at`, `added_by`, `added_reason` (a step added to an accepted plan, [§1](#spec-plan-living)). Additive only |
 | `0023_backlog_done` | `backlog_item` rebuilt to allow status `done`, plus `link` ([§12](#spec-backlog-model)). Existing rows keep every value |
 | `0024_backlog_queue` | `backlog_item.priority` (default 0), `assignee`, an index on project, status, priority and id ([§12](#spec-backlog-model)). Additive only |
+| `0025_session_no_live` | `session.no_live_at`, `session.no_live_by` (the owner's switch, [§7](#spec-no-live)). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

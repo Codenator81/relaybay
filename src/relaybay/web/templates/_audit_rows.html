@@ -1,0 +1,27 @@
+{#- Audit rows, newest first. Expects: events, more_qs. A `live.action` fills every column, a
+    change to the policy, a stand or a session's switch only those it has. -#}
+{% for e in events %}
+{%- set p = e.payload %}
+{%- set live = e.kind == "live.action" %}
+<tr class="audit-row" data-id="{{ e.id }}">
+  <td><time class="muted" datetime="{{ e.ts }}" data-age title="{{ e.ts[:19] }}Z">{{ e.ts|age }}</time></td>
+  <td>{{ p.get("session") or e.actor }}</td>
+  <td>{% if p.get("project") %}<a href="/p/{{ p.project }}">{{ p.project }}</a>{% endif %}</td>
+  <td>{{ p.get("environment") or "" }}</td>
+  {% if live %}
+  <td>{{ p.get("tool") }}</td>
+  <td><code>{{ p.get("command") }}</code></td>
+  <td><span class="decision decision-{{ p.get('decision') }}">{{ p.get("decision") }}</span></td>
+  <td>{{ p.get("level") }}</td>
+  <td>{{ p.get("rule") or "" }}</td>
+  {% else %}
+  <td colspan="5"><span class="activity-kind">{{ e.kind }}</span> {{ e|event_detail }} <span class="muted">({{ e.actor }})</span></td>
+  {% endif %}
+  <td>{% if p.get("key") and p.get("project") %}<a class="card-key" href="/p/{{ p.project }}?task={{ p.key }}">{{ p.key }}</a>{% endif %}</td>
+</tr>
+{% endfor %}
+{% if more_qs %}
+<tr class="activity-more">
+  <td colspan="10"><a class="action" href="/audit?{{ more_qs }}" hx-get="/fragments/audit?{{ more_qs }}" hx-target="closest tr" hx-swap="outerHTML">Load more</a></td>
+</tr>
+{% endif %}

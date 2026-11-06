@@ -34,7 +34,7 @@ document lists the gaps, in order, and which release closes each.
 | Agent scenarios are checked by hand | A fake `claude` (a script that answers stream-json and fires the hooks) and end-to-end tests task → run → report → review; this also answers 0012's "verify before start" | The runner cannot be changed without fear otherwise |
 | Clients cache tool schemas; tools change between releases | A versioned MCP contract: `task_patch`-style escape hatches for every tool, deprecations with dates, a test that the published reference did not change by accident (the generated-reference check exists; the deprecation rule does not) | An agent inside relaybay calls the tools from a fixed build |
 | The backlog is a list, not a queue | Priority and "for whom" on backlog items, so a coordinator takes work from the backlog instead of from a chat | The queue is the coordinator's input |
-| Actions on servers are journaled but not shown as an audit, and access cannot be revoked at once | An Audit page (who did what on which stand) and a per-agent "no live now" switch on top of the policy | Agents inside act on the owner's behalf on real stands |
+| Actions on servers are journaled but not shown as an audit, and access cannot be revoked at once | An Audit page (who did what on which stand) and a per-agent "no live now" switch on top of the policy. As built in 0.8: [SPEC](../SPEC.md#spec-no-live); per session row, a nested `claude -p` has its own row | Agents inside act on the owner's behalf on real stands |
 
 ## Not before the runner has run for a week on the owner's workflow
 

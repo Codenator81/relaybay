@@ -11,6 +11,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from relaybay.config import load_settings
+from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain import guard
 from relaybay.domain.environments import (
@@ -26,7 +27,7 @@ from relaybay.domain.environments import (
 from relaybay.domain.errors import ConfirmationNeeded, ConflictError, ValidationError
 from relaybay.policy import EffectivePolicy, Layer, preset
 from relaybay.security import csrf_token
-from relaybay.service import Service
+from relaybay.service import Service, collect_notes
 from tests.conftest import BASE, LiveServer, run_in_app
 from tests.test_hooks import CC_A, CWD, DESKTOP_A, hook
 from tests.test_mcp import call
@@ -553,6 +554,332 @@ async def test_guard_applies_to_the_sessions_project_only(service: Service) -> N
         tool_input={"target": {"host": "prod-alias"}},
     )
     assert "MCP tool restart_service" in output(await answer(service, mcp))["additionalContext"]
+
+
+def test_mentions_prefilter_changes_no_answer() -> None:
+    # A single word goes by the host only, after quotes are stripped: never prefiltered.
+    assert guard.mentions('ssh pr"o"d uptime', "prod")
+    assert guard.mentions("ssh PROD uptime", "prod")
+    long_name = "api-" + "x" * 300 + "-prod.example.com"
+    assert guard.mentions(f"curl https://{long_name.upper()}/health", long_name)
+    assert not guard.mentions(f"curl https://{long_name}.eu/health", long_name)
+    assert not guard.mentions("curl https://other.example.com/health", long_name)
+    # Past the regex cache an absent identifier compiles nothing.
+    guard._identifier_re.cache_clear()
+    for number in range(2000):
+        assert not guard.mentions("ls -la", f"host-{number}.example.com")
+    assert guard._identifier_re.cache_info().misses == 0
+
+
+# --- "no live now" ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["warn", "log", "block", "off"])
+@pytest.mark.parametrize("level", ["read", "full"])
+@pytest.mark.parametrize("command", ["ssh prod-alias uptime", "ssh prod-alias 'rm -rf /x'"])
+async def test_no_live_denies_under_every_mode_and_level(
+    tmp_path: Path, mode: str, level: str, command: str
+) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", guard_mode=mode)
+    await svc.start()
+    try:
+        await live_project(svc, level=level)
+        await svc.create_task(
+            "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+        )
+        session = (await svc.list_sessions())[0].session
+        await svc.set_session_no_live(session.id, True, actor="owner")
+
+        out = output(await answer(svc, bash(command)))
+        assert out["permissionDecision"] == "deny"
+        assert "the owner switched live off for this session" in out["permissionDecisionReason"]
+        action = (await svc.live_journal("acme-shop"))[0]
+        assert (action.payload["decision"], action.payload["level"], action.payload["rule"]) == (
+            "deny",
+            "none",
+            guard.NO_LIVE_RULE,
+        )
+        assert guard.NO_LIVE_RULE not in guard.RULE_IDS  # a policy cannot switch it off
+
+        await svc.set_session_no_live(session.id, False, actor="owner")
+        again = await answer(svc, bash(command))
+        if again is not None and "permissionDecision" in again["hookSpecificOutput"]:
+            assert (
+                "switched live off" not in again["hookSpecificOutput"]["permissionDecisionReason"]
+            )
+    finally:
+        await svc.close()
+
+
+async def test_no_live_leaves_other_stands_and_commands_alone(service: Service) -> None:
+    await live_project(service)
+    env = await service.save_environment("acme-shop", {"name": "test", "kind": "test"})
+    await service.save_access("acme-shop", env.id, "ssh", {"alias": "test-alias", "user": "ci"})
+    await service.create_task(
+        "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    session = (await service.list_sessions())[0].session
+    await service.set_session_no_live(session.id, True, actor="owner")
+    assert await answer(service, bash("ssh test-alias uptime")) is None
+    assert await answer(service, bash("npm test")) is None
+    assert await service.live_journal("acme-shop") == []
+    # A command naming both: the deny on live wins and only live is journaled.
+    both = output(await answer(service, bash("ssh test-alias uptime; ssh prod-alias uptime")))
+    assert both["permissionDecision"] == "deny"
+    assert [e.payload["environment"] for e in await service.live_journal("acme-shop")] == ["live"]
+
+
+async def test_no_live_reaches_live_stands_outside_the_sessions_project(service: Service) -> None:
+    await live_project(service)
+    await answer(service, hook("PreToolUse", "cc-other", cwd="/srv/elsewhere", tool_input={}))
+    other = next(
+        r.session for r in await service.list_sessions() if r.session.cc_session_id == "cc-other"
+    )
+    command = {"command": "ssh prod-alias uptime"}
+    away = hook("PreToolUse", "cc-other", cwd="/srv/elsewhere", tool_input=command)
+    assert await answer(service, away) is None  # not this session's project: not its stand
+    await service.set_session_no_live(other.id, True, actor="owner")
+    assert output(await answer(service, away))["permissionDecision"] == "deny"
+    journal = await service.live_journal("acme-shop")
+    assert journal[0].session_id == other.id
+
+
+async def test_no_live_survives_the_guessed_row_being_merged(service: Service) -> None:
+    await live_project(service)
+    guessed = await service.record_hook(hook("SessionStart"))
+    assert guessed is not None and guessed.kind == "hook"
+    await service.set_session_no_live(guessed.id, True, actor="owner")
+    assert output(await answer(service, bash("ssh prod-alias uptime")))["permissionDecision"] == (
+        "deny"
+    )
+
+    # The agent's own write links the Claude Code id to its desktop session: the row goes away.
+    await service.create_task(
+        "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    rows = [r.session for r in await service.list_sessions()]
+    assert [s.external_id is not None for s in rows] == [True]
+    assert rows[0].no_live_by == "owner" and rows[0].no_live_at == (await _on_event(service)).ts
+    out = output(await answer(service, bash("ssh prod-alias uptime")))
+    assert out["permissionDecision"] == "deny"
+    carried = [e for e in await service.events_since(0) if e.kind == "session.no_live_on"][-1]
+    assert carried.payload["carried_from"] == guessed.name
+    assert carried.session_id == rows[0].id
+
+
+async def test_no_live_merge_keeps_the_desktop_rows_switch(service: Service) -> None:
+    await live_project(service)
+    await service.create_task("acme-shop", "Restart", stage="dev", session=DESKTOP_A)
+    desktop = (await service.list_sessions())[0].session
+    await service.set_session_no_live(desktop.id, True, actor="owner")
+    guessed = hook("SessionStart", "cc-guessed", cwd="/srv/elsewhere")
+    await service.record_hook(guessed)
+    await service.create_task(
+        "acme-shop", "Second", stage="dev", session=DESKTOP_A, hook_session="cc-guessed"
+    )
+    row = next(r.session for r in await service.list_sessions() if r.session.id == desktop.id)
+    assert row.no_live_at is not None and row.cc_session_id == "cc-guessed"
+    away = hook(
+        "PreToolUse", "cc-guessed", cwd="/srv/elsewhere", tool_input={"command": "ssh prod-alias x"}
+    )
+    assert output(await answer(service, away))["permissionDecision"] == "deny"
+
+
+async def test_no_live_merge_clears_the_row_that_stays(service: Service) -> None:
+    await live_project(service)
+    # A row with a binding is kept by the merge; it hands the switch over and keeps none.
+    await service.create_task("acme-shop", "Bound", stage="dev", session="named-agent")
+    await service.record_hook(hook("SessionStart", "cc-named", cwd="/srv/elsewhere"))
+    guessed = await repo.get_session_by_cc(service._r, "cc-named")
+    named = await repo.get_session_by_name(service._r, "named-agent")
+    await service._write_conn.execute(
+        "UPDATE task_session SET session_id = ? WHERE session_id = ?", (guessed.id, named.id)
+    )
+    await service.set_session_no_live(guessed.id, True, actor="owner")
+    await service.create_task(
+        "acme-shop", "Link", stage="dev", session=DESKTOP_A, hook_session="cc-named"
+    )
+    old = await repo.get_session_by_id(service._r, guessed.id)
+    assert old is not None and old.no_live_at is None and old.cc_session_id is None
+    new = await repo.get_session_by_cc(service._r, "cc-named")
+    assert new is not None and new.external_id == DESKTOP_A and new.no_live_by == "owner"
+
+
+async def test_no_live_an_agents_write_cannot_move_the_row(service: Service) -> None:
+    await live_project(service)
+    await service.create_task(
+        "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    row = (await service.list_sessions())[0].session
+    await service.set_session_no_live(row.id, True, actor="owner")
+
+    with collect_notes() as notes:
+        await service.create_task(
+            "acme-shop", "Escape", stage="dev", session=DESKTOP_A, hook_session="bogus"
+        )
+    assert any("hook_session bogus not linked" in n for n in notes)
+    kept = await repo.get_session_by_id(service._r, row.id)
+    assert kept is not None and kept.cc_session_id == CC_A and kept.no_live_at is not None
+    assert output(await answer(service, bash("ssh prod-alias uptime")))["permissionDecision"] == (
+        "deny"
+    )
+
+
+async def test_no_live_a_made_up_id_does_not_move_a_guessed_row(service: Service) -> None:
+    await live_project(service)
+    guessed = await service.record_hook(hook("SessionStart"))
+    assert guessed is not None and not guessed.cc_exact
+    await service.set_session_no_live(guessed.id, True, actor="owner")
+    with collect_notes() as notes:
+        await service.create_task(
+            "acme-shop", "Escape", stage="dev", session=guessed.name, hook_session="made-up"
+        )
+    assert any("hook_session made-up not linked" in n for n in notes)
+    kept = await repo.get_session_by_id(service._r, guessed.id)
+    assert kept is not None and kept.cc_session_id == CC_A and kept.no_live_at is not None
+    assert output(await answer(service, bash("ssh prod-alias uptime")))["permissionDecision"] == (
+        "deny"
+    )
+
+
+async def test_no_live_an_ended_exact_row_moves_to_a_real_new_id(service: Service) -> None:
+    await live_project(service)
+    await service.create_task(
+        "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    row = (await service.list_sessions())[0].session
+    await service.set_session_no_live(row.id, True, actor="owner")
+    await service.record_hook(hook("SessionEnd", CC_A))
+    # A /clear in a terminal: no host id, so the hooks make a row of its own for the new id.
+    fresh = await service.record_hook(hook("SessionStart", "cc-real", cwd="/srv/elsewhere"))
+    assert fresh is not None and fresh.id != row.id and fresh.no_live_at is None
+    await service.add_report(
+        "acme-shop-1", "changed · S · on", session=DESKTOP_A, hook_session="cc-real"
+    )
+    moved = await repo.get_session_by_id(service._r, row.id)
+    assert moved is not None and moved.cc_session_id == "cc-real" and moved.no_live_at is not None
+    away = hook(
+        "PreToolUse", "cc-real", cwd="/srv/elsewhere", tool_input={"command": "ssh prod-alias x"}
+    )
+    assert output(await answer(service, away))["permissionDecision"] == "deny"
+
+
+async def test_no_live_an_ended_exact_row_refuses_a_made_up_id(service: Service) -> None:
+    await live_project(service)
+    await service.create_task(
+        "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    row = (await service.list_sessions())[0].session
+    await service.set_session_no_live(row.id, True, actor="owner")
+    await service.record_hook(hook("SessionEnd", CC_A))
+    await service.add_report(
+        "acme-shop-1", "changed · S · on", session=DESKTOP_A, hook_session="made-up"
+    )
+    kept = await repo.get_session_by_id(service._r, row.id)
+    assert kept is not None and kept.cc_session_id == CC_A
+
+
+async def test_no_live_an_unlinked_row_stays_unlinked_on_a_made_up_id(service: Service) -> None:
+    await live_project(service)
+    await service.create_task("acme-shop", "Named", stage="dev", session="named-agent")
+    row = (await service.list_sessions())[0].session
+    assert row.cc_session_id is None
+    await service.set_session_no_live(row.id, True, actor="owner")
+    with collect_notes() as notes:
+        await service.add_report(
+            "acme-shop-1", "changed · S · on", session="named-agent", hook_session="made-up"
+        )
+    assert any("not linked" in n for n in notes)
+    kept = await repo.get_session_by_id(service._r, row.id)
+    assert kept is not None and kept.cc_session_id is None and kept.no_live_at is not None
+    # A real id the hooks saw still links it, and the switch then applies.
+    await service.record_hook(hook("SessionStart", "cc-real", cwd="/srv/elsewhere"))
+    await service.add_report(
+        "acme-shop-1", "changed · S · two", session="named-agent", hook_session="cc-real"
+    )
+    linked = await repo.get_session_by_id(service._r, row.id)
+    assert linked is not None and linked.cc_session_id == "cc-real"
+
+
+async def test_no_live_stays_through_a_clear_in_the_desktop_window(service: Service) -> None:
+    await live_project(service)
+    await service.create_task(
+        "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    row = (await service.list_sessions())[0].session
+    await service.set_session_no_live(row.id, True, actor="owner")
+    await service.record_hook(hook("SessionStart", CC_A))
+    cleared = hook(
+        "SessionStart",
+        "cc-after-clear",
+        source="clear",
+        relaybay_host_session=row.external_id,
+        relaybay_host_attended="1",
+    )
+    await service.record_hook(cleared)
+    moved = await repo.get_session_by_id(service._r, row.id)
+    assert moved is not None and moved.cc_session_id == "cc-after-clear"
+    assert moved.no_live_at is not None
+    assert output(await answer(service, bash("ssh prod-alias uptime", "cc-after-clear")))[
+        "permissionDecision"
+    ] == ("deny")
+
+
+async def test_no_live_ends_with_the_session_when_its_folder_row_is_reused(
+    service: Service,
+) -> None:
+    await live_project(service)
+    first = await service.record_hook(hook("SessionStart", CC_A))
+    assert first is not None
+    await service.set_session_no_live(first.id, True, actor="owner")
+    await service.record_hook(hook("SessionEnd", CC_A))
+    reused = await service.record_hook(hook("SessionStart", "cc-next"))
+    assert reused is not None and reused.id == first.id and reused.no_live_at is None
+    off = [e for e in await service.events_since(0) if e.kind == "session.no_live_off"]
+    assert [e.actor for e in off] == ["relaybay"] and "new one" in off[0].payload["reason"]
+    out = output(await answer(service, bash("ssh prod-alias 'rm x'", "cc-next")))
+    assert "permissionDecision" not in out  # back to warn mode
+
+
+async def test_no_live_set_on_an_unlinked_folder_row_survives_its_linking(
+    service: Service,
+) -> None:
+    await live_project(service)
+    first = await service.record_hook(hook("SessionStart", CC_A))
+    assert first is not None
+    await service._write_conn.execute(
+        "UPDATE session SET cc_session_id = NULL, status = NULL WHERE id = ?", (first.id,)
+    )
+    await service.set_session_no_live(first.id, True, actor="owner")
+    reused = await service.record_hook(hook("SessionStart", "cc-next"))
+    assert reused is not None and reused.id == first.id and reused.no_live_at is not None
+    assert output(await answer(service, bash("ssh prod-alias uptime", "cc-next")))[
+        "permissionDecision"
+    ] == ("deny")
+
+
+async def test_a_failing_journal_does_not_lose_the_decision(
+    service: Service, monkeypatch, caplog
+) -> None:
+    await live_project(service)
+    await service.create_task(
+        "acme-shop", "Restart", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    row = (await service.list_sessions())[0].session
+    await service.set_session_no_live(row.id, True, actor="owner")
+
+    async def broken(*_: Any) -> None:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(service, "_journal", broken)
+    assert output(await answer(service, bash("ssh prod-alias uptime")))["permissionDecision"] == (
+        "deny"
+    )
+    assert "Writing the live journal failed" in caplog.text
+
+
+async def _on_event(service: Service) -> Any:
+    return next(e for e in await service.events_since(0) if e.kind == "session.no_live_on")
 
 
 async def test_guard_failure_lets_the_call_through(service: Service, monkeypatch) -> None:

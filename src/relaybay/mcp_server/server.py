@@ -900,6 +900,36 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         return fmt.usage_summary(report, service.usage_enabled)
 
     @mcp.tool(annotations=READ, structured_output=False)
+    async def audit_list(
+        project: Annotated[str | None, Field(description="Only this project (slug).")] = None,
+        environment: Annotated[str | None, Field(description="Only this stand (its name).")] = None,
+        session: Annotated[
+            str | None,
+            Field(description="Only this session: its name, desktop id or hook session id."),
+        ] = None,
+        decision: Annotated[
+            str | None, Field(description="Only this decision: allow, log, warn, ask or deny.")
+        ] = None,
+        days: Annotated[int, Field(ge=1, le=366, description="How many days back.")] = 7,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    ) -> str:
+        """Agents' tool calls that touched a live stand, newest first: who, where, the redacted
+        command, the guard's decision, level and rule, the task. Read-only: the "no live now"
+        switch of a session is the owner's, on the board."""
+        ids = await run(service.usage_session_ids(session)) if session else None
+        items = await run(
+            service.audit(
+                project=project or None,
+                environment=environment or None,
+                session_ids=ids,
+                decision=decision or None,
+                days=days,
+                limit=limit,
+            )
+        )
+        return fmt.audit(items, days)
+
+    @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(
         query: Annotated[str, Field(description="Words to look for (word forms match).")],
         scope: Annotated[

@@ -7,8 +7,8 @@ to your test stands. This page sets that up with the `trusted` preset.
 
 !!! warning "Only for a machine you trust"
     `trusted` lets agents change live without asking. The guard still writes every tool call that
-    touches live to the journal (Activity → Actions on live), but nobody is warned. Real secrets
-    still never go into relaybay: test secrets are for throw-away test values only.
+    touches live to the journal (the Audit page, Activity → Actions on live), but nobody is
+    warned. Real secrets still never go into relaybay: test secrets are for throw-away test values only.
 
 ## 1. Pick the preset
 

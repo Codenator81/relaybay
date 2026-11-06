@@ -273,6 +273,9 @@ def mentions(text: str, identifier: str) -> bool:
     if len(identifier) < 3:
         return False
     if re.search(r"[.\-/]", identifier):
+        # Most identifiers are absent: past the regex cache each would be compiled on every call.
+        if identifier.casefold() not in text.casefold():
+            return False
         return _identifier_re(identifier).search(text) is not None
     return identifier.lower() in hosts(text)
 
@@ -336,24 +339,38 @@ def _reason(env: Environment, level: str, mutating: str | None, identifier: str)
 
 # `log` records the call in the journal and tells nobody.
 DECISION_ORDER = ("allow", "log", "warn", "ask", "deny")
+# Not in RULE_IDS: the policy cannot disable the owner's switch on a session.
+NO_LIVE_RULE = "no-live-session"
+
+
+def _no_live_touch(env: Environment, identifier: str) -> Touch:
+    where = f"{env.project_slug} {env.name} ({env.kind})"
+    reason = (
+        f"relaybay guard: the owner switched live off for this session: {where}, matched"
+        f" '{identifier}'. Reads count too. Only the owner can switch it back, on the board."
+    )
+    return Touch(env, identifier, "none", NO_LIVE_RULE, "deny", reason)
 
 
 def check(
     call: ToolCall,
     environments: list[Environment],
     policy_of: Callable[[Environment], "EffectivePolicy"],
+    no_live: bool = False,
 ) -> list[Touch]:
     """Every environment the call mentions, with the strongest decision its level gives under
     the environment's effective policy (levels, guard mode, rules). A mutating rule counts for
     an identifier only when their capabilities agree (an identifier without one, the base URL
-    host, takes any rule)."""
+    host, takes any rule). `no_live`: the session's switch is on, so any touch of a live
+    environment is denied, whatever its level and guard mode."""
     touches = []
     matched: dict[tuple[tuple[Rule, ...], bool], list[tuple[str, str | None]]] = {}
     seen: dict[str, bool] = {}  # identifier -> mentioned; environments share names
     for env in environments:
         policy = policy_of(env)
         mode = policy.guard_mode
-        if mode == "off":
+        revoked = no_live and env.kind == "live"
+        if mode == "off" and not revoked:
             continue
         rule_set = (policy.rules, policy.mcp_tool_names)
         if rule_set not in matched:
@@ -366,6 +383,9 @@ def check(
                 seen[key] = mentions(call.text, identifier)
             if not seen[key]:
                 continue
+            if revoked:
+                best = _no_live_touch(env, identifier)
+                break
             applicable = [
                 (name, cap)
                 for name, cap in rules

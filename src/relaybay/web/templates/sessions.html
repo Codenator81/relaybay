@@ -7,6 +7,8 @@
     <h1>{% if sessions_project %}Sessions · {{ sessions_project.name }}{% else %}All sessions{% endif %}</h1>
     {% if sessions_project %}<a class="action" href="/sessions">All sessions</a>{% endif %}
   </div>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   {% include "_sessions.html" %}
 </main>
 {% endblock %}
