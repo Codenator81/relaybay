@@ -41,6 +41,7 @@ STATE_TIMEOUT_SECONDS = 1.0  # each of the two tries of a state-bearing event
 # Counted from the import of this module: Claude Code ends the command after 3 s
 # (machine_setup.COMMAND_TIMEOUT), and the interpreter's start-up and the spool write come on top.
 BUDGET_SECONDS = 2.0
+SILENT_SECONDS = 0.5  # no answer for this long: the server is away, the event goes to the spool
 RETRY_PAUSE_SECONDS = 0.2
 LOCK_WAIT_SECONDS = 0.2  # the drain's reads and rewrites: skipped when another run is busy
 APPEND_WAIT_SECONDS = 0.5  # an append waits longer before it writes a side file instead
@@ -329,10 +330,13 @@ def drain(path: Path, url: str, token: str, until: float, timeout: float) -> boo
             allowed = min(timeout, left)
             begun = time.monotonic()
             if _send(url, token, entry.strip(), allowed) is None:
-                # A refusal or a full timeout says the server is silent; a try that only ran
-                # out of the budget's remainder says nothing, and the live event still gets
-                # its own try.
-                ran_out = allowed < timeout and time.monotonic() - begun >= allowed - 0.05
+                # A refusal or a timeout of at least SILENT_SECONDS says the server is silent; a
+                # shorter try, cut by the budget's remainder, says nothing, and the live event
+                # still gets its own try.
+                ran_out = (
+                    allowed < min(timeout, SILENT_SECONDS)
+                    and time.monotonic() - begun >= allowed - 0.05
+                )
                 if not ran_out:
                     reached = False
                 break

@@ -367,7 +367,7 @@ def test_a_dead_server_never_reaches_claude_codes_kill(
         assert (done.returncode, done.stdout, done.stderr) == (0, b"", b"")
     path = desktop_config_dir / hook_client.SPOOL_FILE
     assert len(spooled(path)) == 12  # every event kept
-    assert statistics.quantiles(times, n=20, method="inclusive")[18] < 2.3, times
+    assert statistics.median(times) < 1.8, times  # while it stays down, later events pay less
     assert max(times) < 2.8, times  # the first event pays its two tries; Claude Code kills at 3
 
 

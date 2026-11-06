@@ -294,14 +294,15 @@ CODE_OF_CONDUCT.md  SECURITY.md  GOVERNANCE.md
 pyproject.toml  uv.lock  .github/workflows/{ci.yml, desktop.yml, docs.yml, release.yml}
 .github/ISSUE_TEMPLATE/
 scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py
-                hook_timing.py record_gif.md
+                hook_timing.py probe_claude.py record_gif.md
 src/relaybay/   cli.py config.py app.py security.py service.py events.py machine_setup.py
                 doctor.py demo.py markdown_import.py markdown_export.py hook_client.py logs.py
                 install.py updates.py backup.py
                 db/  desktop/  domain/  mcp_server/  policy/  web/
 packaging/      relaybay.spec  launchers/  icons/  windows/  macos/  linux/
 examples/       intake/ (watchers)  compose.yaml (Docker server for the desktop client)
-tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/
+tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/,
+                e2e/ (scenarios against a real server with a fake `claude`)
 docs/           index.md SPEC.md ROADMAP.md architecture.md mcp-tools.md connect-claude-code.md
                 design/ adr/ reference/ getting-started/ how-to/ llms.txt PLAN.md (pointer)
 ```
