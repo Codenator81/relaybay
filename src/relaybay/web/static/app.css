@@ -811,6 +811,12 @@ a.card-key:hover { color: var(--accent); }
 }
 .panel h2 { margin: 0 0 10px; font-size: 16px; }
 .panel h3 { margin: 14px 0 6px; font-size: 13px; color: var(--muted); }
+.fold > summary { display: flex; gap: 8px; align-items: baseline; cursor: pointer; list-style: none; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: "\25B8"; color: var(--muted); }
+.fold[open] > summary::before { content: "\25BE"; }
+.fold > summary h2 { flex: 1; min-width: 0; margin: 0; }
+.fold[open] > summary { margin-bottom: 10px; }
 .history { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; }
 .history-name { font-weight: 600; }
 .report + .report { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
@@ -942,8 +948,6 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .dialog-body { padding: 16px; }
 .dialog-loading { margin: 0; padding: 24px 16px; }
 .task-title { overflow-wrap: anywhere; }
-.dialog-edit > summary { cursor: pointer; font-weight: 600; }
-.dialog-edit[open] > summary { margin-bottom: 12px; }
 
 @media (max-width: 760px) {
   .task-dialog {
@@ -1436,8 +1440,6 @@ body:has(.task-dialog[open]) { overflow: hidden; }
   border-radius: 6px;
 }
 .doc-edit-form textarea { font-family: var(--mono); font-size: 13px; }
-.task-doc > summary { cursor: pointer; }
-.task-doc > summary h2 { display: inline; }
 .task-doc .doc-body { max-height: 32em; overflow: auto; }
 
 /* --- Map ------------------------------------------------------------------ */

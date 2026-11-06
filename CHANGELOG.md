@@ -13,6 +13,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   until it quits). Compact cards show key, tracker badge, title, the waiting-on chip and the "answer
   received" mark; a chevron on a card expands just that card (kept by task key), a click on the card
   still opens the dialog.
+- Task dialog and task page: every block of the Overview (Description, Done so far, Last report,
+  Decisions, Comments, Session, ...) collapses under its title. The choice is kept per browser by
+  section for all tasks (in the desktop program's window, until it quits); typed text is not lost.
 
 ### Changed
 

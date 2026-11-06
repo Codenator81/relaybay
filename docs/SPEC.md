@@ -470,6 +470,17 @@ first, then the others, most recently seen first; the same binding history and
 `task.session_bound` event as `task_bind_session`, actor `board`), the comments and the edit form. A stage move that
 misses a rule shows the warning in the form (or the refusal in `strict` mode).
 
+<a id="spec-board-folds"></a>
+
+**Collapsible blocks.** Every block of the Overview tab and of the task page (Intake, Findings,
+Document, Tracker history, Session, Description, Done so far, Last report, Actions on live,
+Decisions, Comments, Edit task) folds under its title: a chevron, the whole title row clickable, by
+keyboard too. They start open, except Document and Edit task. The owner's choice is kept per browser
+in `localStorage` by section, not by task (collapse Decisions once and it stays collapsed on every
+task), survives live refreshes and lives nowhere on the server; without storage it lasts until the
+page is left, in the desktop program's window until the program quits. A collapsed block keeps its
+content, so a half-written comment or an edit is not lost. Plan and Review are not folded.
+
 <a id="spec-plan-board"></a>
 
 **Plan tab** (task dialog, `?tab=plan`; a Plan section on the task page; tabs Overview | Plan |

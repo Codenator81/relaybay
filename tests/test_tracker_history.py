@@ -193,7 +193,7 @@ def test_task_view_renders_history_escaped(board: TestClient) -> None:
     for url in (f"/t/{task.key}", f"/p/acme-shop/t/{task.key}/view"):
         page = board.get(url).text
         assert "<h2>Tracker history</h2>" in page
-        section = page.split("<h2>Tracker history</h2>", 1)[1].split("</section>", 1)[0]
+        section = page.split("<h2>Tracker history</h2>", 1)[1].split("</details>", 1)[0]
         assert section.index("Linear ENG-2") < section.index("&lt;b&gt;ENG-1&lt;/b&gt;")
         assert '<a class="history-name" href="https://t.example/2"' in section
         assert "<b>ENG-1</b>" not in section

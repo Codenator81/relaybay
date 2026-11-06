@@ -1,5 +1,9 @@
+import re
+from pathlib import Path
+
 from starlette.testclient import TestClient
 
+import relaybay
 from relaybay.app import create_app
 from relaybay.config import load_settings
 from relaybay.security import csrf_token
@@ -434,6 +438,42 @@ def test_compact_rules_touch_only_task_cards(board: TestClient, seeded: str) -> 
     page = board.get("/p/acme-shop/backlog").text
     start = page.index('class="card backlog-card')
     assert "data-key" not in page[start : page.index(">", start)]
+
+
+def test_every_block_of_the_task_view_is_a_fold(board: TestClient, seeded: str) -> None:
+    templates = Path(relaybay.__file__).parent / "web" / "templates"
+    for name in ("_task_view.html", "_comments.html"):
+        text = (templates / name).read_text(encoding="utf-8")
+        assert '<section class="panel' not in text, name
+        assert '<details class="panel"' not in text, name
+    run_in_app(
+        board,
+        board.app.state.service.update_task,
+        seeded,
+        {"description": "D1", "progress": "P1"},
+    )
+    always = ("session", "description", "progress", "reports", "comments")
+    for url in (f"/t/{seeded}", f"/p/acme-shop/t/{seeded}/dialog"):
+        page = board.get(url).text
+        for key in always:
+            assert re.search(rf'<details class="panel fold[^"]*" data-fold="{key}" open', page), key
+        assert "<summary><h2>Description</h2></summary>" in page
+    dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
+    assert '<details class="panel fold dialog-edit" data-fold="edit">' in dialog
+    assert "<summary><h2>Edit task</h2></summary>" in dialog
+    # The task page's Plan and Review stay plain panels, as the tabs do.
+    task_page = board.get(f"/t/{seeded}").text
+    assert '<section class="panel">\n    <h2>Plan</h2>' in task_page
+    assert 'data-fold="plan"' not in dialog and 'data-fold="review"' not in dialog
+
+
+def test_the_reports_accordion_lives_inside_its_fold(board: TestClient, seeded: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.add_report, seeded, "verified · M · second")
+    page = board.get(f"/t/{seeded}").text
+    fold = page.split('data-fold="reports" open>', 1)[1].split('data-fold="', 1)[0]
+    assert "<summary><h2>Last report</h2></summary>" in fold
+    assert '<details class="report report-older" data-report="' in fold
 
 
 def test_compact_controls_are_real_buttons_and_no_server_state(

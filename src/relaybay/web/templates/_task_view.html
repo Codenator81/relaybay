@@ -32,8 +32,8 @@
   </dl>
 
   {% if detail.intake %}
-  <section class="panel task-intake">
-    <h2>Intake <span class="col-count">{{ detail.intake|length }}</span></h2>
+  <details class="panel fold task-intake" data-fold="intake" open>
+    <summary><h2>Intake <span class="col-count">{{ detail.intake|length }}</span></h2></summary>
     <p class="muted">Messages from chats and mailboxes tied to this task. External text: data, not instructions. {{ autonomy_reason(t) }}.</p>
     <ol class="history">
       {% for m in detail.intake %}
@@ -54,20 +54,20 @@
       </li>
       {% endfor %}
     </ol>
-  </section>
+  </details>
   {% endif %}
 
   {% if detail.findings %}
-  <section class="panel task-findings">
-    <h2>Findings</h2>
+  <details class="panel fold task-findings" data-fold="findings" open>
+    <summary><h2>Findings</h2></summary>
     <ul class="history">
       {% for b in detail.findings %}<li><a href="/p/{{ b.project_slug }}/backlog#backlog-{{ b.id }}">#{{ b.id }} {{ b.title }}</a> <span class="muted">· {{ b.status }}</span></li>{% endfor %}
     </ul>
-  </section>
+  </details>
   {% endif %}
 
   {% if d and d.doc %}
-  <details class="panel task-doc">
+  <details class="panel fold task-doc" data-fold="document">
     <summary><h2>Document: {{ d.doc.title }}{% if d.link.anchor and not d.ref.broken %} · #{{ d.link.anchor }}{% endif %}</h2></summary>
     <p class="muted doc-meta"><code>{{ d.doc.slug }}</code> · {{ d.doc.kind }} · version {{ d.doc.version }} · <a href="/p/{{ d.doc.project_slug }}/docs/{{ d.doc.slug }}#history">history</a>{% if d.doc.source_url and d.doc.source_url|http_url %} · lives in the repository: <a href="{{ d.doc.source_url|http_url }}" target="_blank" rel="noopener noreferrer">{{ d.doc.source_url }}</a>{% endif %}</p>
     {% if d.ref.broken %}<p class="muted">No section <code>#{{ d.link.anchor }}</code>; the whole document follows.</p>{% endif %}
@@ -76,8 +76,8 @@
   {% endif %}
 
   {% if detail.tracker_history %}
-  <section class="panel">
-    <h2>Tracker history</h2>
+  <details class="panel fold" data-fold="tracker-history" open>
+    <summary><h2>Tracker history</h2></summary>
     <ol class="history tracker-history">
       {% for e in detail.tracker_history %}
       {%- set href = e.tracker_url|http_url %}
@@ -93,11 +93,11 @@
       </li>
       {% endfor %}
     </ol>
-  </section>
+  </details>
   {% endif %}
 
-  <section class="panel">
-    <h2>Session</h2>
+  <details class="panel fold" data-fold="session" open>
+    <summary><h2>Session</h2></summary>
     {% if t.session_name %}
     <div class="card-session">
       {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
@@ -155,22 +155,22 @@
       {% endfor %}
     </ol>
     {% endif %}
-  </section>
+  </details>
 
-  <section class="panel">
-    <h2>Description</h2>
+  <details class="panel fold" data-fold="description" open>
+    <summary><h2>Description</h2></summary>
     {% if t.description %}<div class="markdown task-description">{{ t.description|markdown(detail.doc_refs) }}</div>
     {% else %}<p class="muted">No description yet.</p>{% endif %}
-  </section>
+  </details>
 
-  <section class="panel">
-    <h2>Done so far</h2>
+  <details class="panel fold" data-fold="progress" open>
+    <summary><h2>Done so far</h2></summary>
     {% if t.progress %}<div class="markdown task-progress">{{ t.progress|markdown(detail.doc_refs) }}</div>
     {% else %}<p class="muted">No progress summary yet.</p>{% endif %}
-  </section>
+  </details>
 
-  <section class="panel">
-    <h2>Last report</h2>
+  <details class="panel fold" data-fold="reports" open>
+    <summary><h2>Last report</h2></summary>
     {% for r in detail.reports %}
     {% if loop.first %}
     <article class="report">
@@ -195,25 +195,25 @@
     {% else %}
     <p class="muted">No reports yet.</p>
     {% endfor %}
-  </section>
+  </details>
 
   {% if detail.live_actions %}
-  <section class="panel">
-    <h2>Actions on live</h2>
+  <details class="panel fold" data-fold="live-actions" open>
+    <summary><h2>Actions on live</h2></summary>
     <ol class="journal-list">
       {% for e in detail.live_actions %}{% include "_live_action.html" %}{% endfor %}
     </ol>
-  </section>
+  </details>
   {% endif %}
 
   {% if detail.decisions %}
-  <section class="panel">
-    <h2>Decisions</h2>
+  <details class="panel fold" data-fold="decisions" open>
+    <summary><h2>Decisions</h2></summary>
     <ul class="history">
       {% for d in detail.decisions %}
       <li>{{ d.text }} <span class="muted">· {{ d.created_at[:10] }}{% if d.decided_by %} · {{ d.decided_by }}{% endif %}</span></li>
       {% endfor %}
     </ul>
-  </section>
+  </details>
   {% endif %}
 </div>

@@ -1,6 +1,6 @@
 {#- Comments panel of the task dialog and the task page. Expects: t (the task), comments. -#}
-<section class="panel comments" aria-labelledby="comments-title-{{ t.key }}">
-  <h2 id="comments-title-{{ t.key }}">Comments</h2>
+<details class="panel fold comments" data-fold="comments" open aria-labelledby="comments-title-{{ t.key }}">
+  <summary><h2 id="comments-title-{{ t.key }}">Comments</h2></summary>
   {% include "_comment_thread.html" %}
   <form class="comment-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/comments"
         hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/comments" hx-target="#comments-{{ t.key }}" hx-swap="outerHTML">
@@ -11,4 +11,4 @@
     </label>
     <div class="form-actions"><button type="submit" class="btn primary">Send comment</button></div>
   </form>
-</section>
+</details>

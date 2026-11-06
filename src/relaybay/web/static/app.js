@@ -529,6 +529,7 @@
   var EXPANDED_KEY = "relaybay.compact.expanded";
   var EXPANDED_MAX = 200;
   var OPEN_REPORTS_KEY = "relaybay.reports.open";
+  var FOLDS_KEY = "relaybay.folds";  // section key -> open, for all tasks
 
   function storedSet(area, key) {
     try {
@@ -544,6 +545,21 @@
   // sessionStorage: the task page reloads itself on most live events.
   var openReports = storedSet("sessionStorage", OPEN_REPORTS_KEY);
 
+  function storedFolds() {
+    try {
+      return JSON.parse(window.localStorage.getItem(FOLDS_KEY) || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  var folds = storedFolds();
+  function applyFolds(root) {
+    root.querySelectorAll("details[data-fold]").forEach(function (details) {
+      var open = folds[details.dataset.fold];
+      if (open !== undefined) details.open = open;
+    });
+  }
+
   function showCardExpanded(button, on) {
     var card = button.closest(".card");
     var text = (on ? "Collapse " : "Expand ") + card.dataset.key;
@@ -553,6 +569,7 @@
     button.title = text;
   }
   function restoreKept(root) {
+    applyFolds(root);
     root.querySelectorAll(".card-expand").forEach(function (button) {
       showCardExpanded(button, expandedCards.has(button.closest(".card").dataset.key));
     });
@@ -583,6 +600,18 @@
 
   document.addEventListener("htmx:load", function (event) {
     if (event.detail.elt.querySelectorAll) restoreKept(event.detail.elt);
+  });
+  // Right after the swap, ahead of htmx:load (which waits for the settle): no flash of an open
+  // section the owner closed.
+  document.addEventListener("htmx:afterSwap", function () { applyFolds(document); });
+  // The click, not "toggle": toggle also fires for a section just rendered open, and would take
+  // that for the owner's choice. Enter and Space on a summary arrive as a click too.
+  document.addEventListener("click", function (event) {
+    var summary = event.target.closest && event.target.closest("summary");
+    var details = summary && summary.parentElement;
+    if (!details || !details.matches("details[data-fold]")) return;
+    folds[details.dataset.fold] = !details.open;
+    storeValue("localStorage", FOLDS_KEY, JSON.stringify(folds));
   });
   // "toggle" does not bubble, hence the capture.
   document.addEventListener("toggle", function (event) {
