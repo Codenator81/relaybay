@@ -43,6 +43,10 @@ ATTENDED_FIELD = "relaybay_host_attended"
 ATTENDED_HEADER = "X-Relaybay-Host-Attended"
 # SessionEnd reasons after which the same window goes on with a new Claude Code id.
 CONTINUED_END_REASONS = ("clear", "resume")
+# The forwarder's spool: an event the server did not take is sent again later with the time it
+# happened in this field (UTC, ISO 8601). Such an event never changes a session that has seen
+# newer activity, and it gets no answer (comments are not delivered to a replay).
+SPOOLED_FIELD = "relaybay_spooled_at"
 TRANSCRIPT_PATH_MAX = 4096
 RECIPIENT_MAX = 120
 # The tools whose `to` names another session. Any other tool's `to` may be a mail address or a
@@ -67,6 +71,7 @@ class HookEvent:
     # None when the field is empty or missing (older desktop apps may not send it).
     attended: bool | None = None
     transcript_path: str | None = None  # the session's transcript file (`*.jsonl`)
+    spooled_at: str | None = None  # a replay from the forwarder's spool: when it happened (UTC)
 
     @property
     def nested(self) -> bool:
@@ -109,6 +114,22 @@ def _transcript_path(value: Any) -> str | None:
     if not value.lower().endswith(".jsonl") or not value.isprintable():
         return None
     return value
+
+
+def _spooled_at(value: Any) -> str | None:
+    """The spooled event's time in the server's own format, or None when it is not one."""
+    # Imported here: the forwarder imports this module and never parses a time.
+    from datetime import UTC, datetime
+
+    if not isinstance(value, str) or len(value) > 40:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds")
 
 
 def parse_message_recipient(payload: Any) -> str | None:
@@ -163,6 +184,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
         ),
         attended=_attended(payload.get(ATTENDED_FIELD)) if event == "SessionStart" else None,
         transcript_path=_transcript_path(payload.get("transcript_path")),
+        spooled_at=_spooled_at(payload.get(SPOOLED_FIELD)),
     )
 
 

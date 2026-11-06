@@ -175,6 +175,13 @@ ROADMAP line moves to "Later".
 - A re-tie keeps the outcome of a message that already reached an agent.
 - Import matches backlog items made on the board by project, date and title slug, never moves a
   board-planned item back, and export writes the backlog uncapped.
+- **Done**: findings were fixed in passing, without a task, and could only stay open or be
+  declined. Status `done` with an optional link (`http(s)`, e.g. the pull request) and an optional
+  note closes them: the owner's **Done** on the card, `backlog_update(status="done", link?,
+  reason?)` for coordinators. They join the history ("Planned, done and declined"); the new counts
+  stay `new` only. `0023` rebuilds `backlog_item` to widen the status CHECK and add `link`;
+  `backlog.md` writes `done` or `done: <link>`, the hashes of the other decisions are unchanged so
+  earlier imports stay `unchanged`.
 - Text over 4000 characters is cut, not refused.
 - The project switch lives in Settings -> Intake (the board has no project settings page yet).
 - The e-mail example polls (IMAP IDLE is left to the user).

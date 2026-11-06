@@ -9,12 +9,13 @@ import os
 import platform
 import sys
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import OpenerDirector, ProxyHandler, build_opener
 
-from relaybay import install
+from relaybay import hook_client, install
 from relaybay.config import Settings
 from relaybay.domain.rules import Rules
 from relaybay.machine_setup import (
@@ -30,6 +31,7 @@ from relaybay.machine_setup import (
 )
 
 MIN_PYTHON = (3, 12)
+SPOOL_LATE = timedelta(minutes=10)  # spooled events older than this: the server stays away
 
 
 def _version_text(version: tuple[int, ...]) -> str:
@@ -176,6 +178,37 @@ def _desktop_start_check(environ: Mapping[str, str]) -> Check:
     return Check(not last.failed, name, f"{last.time} {last.start} -> {outcome} ({path})")
 
 
+def _hook_spool_check(environ: Mapping[str, str], now: datetime | None = None) -> Check:
+    """Hook events the forwarder could not deliver yet; red once the oldest waits too long."""
+    from relaybay.desktop.settings import config_dir
+
+    name = "hook spool"
+    # The folder the forwarder works out without platformdirs (hook_client.config_folder).
+    path = config_dir(environ) / hook_client.SPOOL_FILE
+    try:
+        files = [path] if path.exists() else []
+        data = b"".join(f.read_bytes() for f in files + hook_client.spool_parts(path))
+    except OSError as exc:
+        return Check(False, name, f"{path} cannot be read: {exc}")
+    lines = [line for line in data.splitlines() if line.strip()]
+    if not lines:
+        return Check(True, name, f"empty ({path})")
+    count = f"{len(lines)} event{'s' if len(lines) != 1 else ''}"
+    try:
+        first = json.loads(lines[0]).get(hook_client.SPOOLED_FIELD)
+        oldest = datetime.fromisoformat(first)
+    except (ValueError, TypeError, AttributeError):
+        return Check(False, name, f"{count} waiting, the oldest unreadable ({path})")
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=UTC)
+    late = (now or datetime.now(UTC)) - oldest > SPOOL_LATE
+    since = oldest.astimezone().isoformat(timespec="seconds")
+    detail = f"{count} waiting since {since} ({path})"
+    if late:
+        detail += "; the next hook event that reaches the server sends them"
+    return Check(not late, name, detail)
+
+
 def doctor_checks(
     settings: Settings,
     *,
@@ -203,6 +236,7 @@ def doctor_checks(
         _hook_executable_check(run),
         _desktop_check(environ),
         _desktop_start_check(environ),
+        _hook_spool_check(environ),
     ]
     token_item, token = _token_check(settings)
     checks.append(token_item)

@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,16 @@ QUIT_WAIT = 60.0  # seconds Quit waits for a restart in progress
 # Seconds after Update starts the installer during which a quit is the one it asked for: the
 # silent Windows setup sends its --quit within seconds; a setup that never does was cancelled.
 INSTALLER_QUIT_WAIT = 60.0
+# The watchdog: the embedded server's /healthz every WATCH_SECONDS, restarted after WATCH_FAILURES
+# failed checks in a row (or a dead server thread), at most RESTART_CAP times in RESTART_WINDOW;
+# an external server is only checked, every EXTERNAL_WATCH_SECONDS, for the tray tooltip.
+WATCH_SECONDS = 30.0
+EXTERNAL_WATCH_SECONDS = 60.0
+WATCH_FAILURES = 2
+RESTART_CAP = 3
+RESTART_WINDOW = 600.0
+KEEPS_FAILING = "The server keeps failing: see the log {log}"
+TRAY_TITLE = "relaybay"
 
 STARTING_PAGE = _page("relaybay", "<p>Starting the board...</p>")
 
@@ -124,11 +135,16 @@ class DesktopController:
         self.quitting = False
         self._restart_lock = threading.Lock()
         self.update = updates.UpdateStatus()  # the program's own version against the release
-        self._stopped = threading.Event()  # set by Quit: ends the update loop's wait
+        self._stopped = threading.Event()  # set by Quit: ends the update and watchdog loops
         self._updating = threading.Lock()  # held while Update downloads or runs an installer
         self.clock = time.monotonic
         self.wall_clock = time.time  # the reopen marker outlives the process
         self.installer_started_at: float | None = None  # see quitting_for_update
+        self.clock = time.monotonic  # the watchdog's clock (tests pass a fake one)
+        self._health_failures = 0
+        self._auto_restarts: deque[float] = deque()
+        self._gave_up = False
+        self.unreachable_since: str | None = None  # external mode: since when, for the tooltip
 
     # --- state -------------------------------------------------------------
 
@@ -205,6 +221,8 @@ class DesktopController:
             self.start_server()
             url = self.board_url()
         except PortTaken as exc:
+            # A setting to change, not a crash: nothing for the watchdog to restart.
+            self.server = None
             self.show_problem(str(exc), ask_settings=True)
             return
         except (RuntimeError, ValueError, OSError) as exc:
@@ -214,6 +232,13 @@ class DesktopController:
             self.window.load_url(url)
 
     def restart(self) -> None:
+        """Restart server / Reconnect from the menu or Settings; also gives the watchdog its
+        automatic restarts back."""
+        self._auto_restarts.clear()
+        self._gave_up = False
+        self._restart()
+
+    def _restart(self) -> None:
         if self.quitting:
             return
         with self._restart_lock:
@@ -228,6 +253,69 @@ class DesktopController:
 
     def restart_async(self) -> None:
         threading.Thread(target=self.restart, name="relaybay-restart", daemon=True).start()
+
+    # --- watchdog ----------------------------------------------------------
+
+    def watch_loop(self) -> None:
+        """Keeps the server up while the program runs; ends with Quit."""
+        while not self._stopped.wait(EXTERNAL_WATCH_SECONDS if self.external else WATCH_SECONDS):
+            try:
+                self.watch_once()
+            except Exception:
+                log.exception("the watchdog check failed; the next one tries again")
+
+    def watch_once(self) -> None:
+        """One check. Embedded: restart a server whose thread died or whose /healthz failed
+        WATCH_FAILURES times in a row, at most RESTART_CAP times in RESTART_WINDOW; then the
+        problem page. External: never a restart, only the tray tooltip."""
+        settings = self.settings
+        if self.quitting or settings is None or self._restart_lock.locked():
+            return
+        if self.external:
+            self._watch_external(settings.base_url)
+            return
+        server = self.server
+        if server is None or self._gave_up:
+            return  # not started (a problem the page shows), or given up until a manual restart
+        healthy = server.running and healthz(settings.base_url, timeout=5) is not None
+        if self.quitting or self.server is not server or self._restart_lock.locked():
+            return  # Quit or a manual restart came during the probe: it is not this server's
+        if healthy:
+            self._health_failures = 0
+            return
+        self._health_failures += 1
+        if server.running and self._health_failures < WATCH_FAILURES:
+            return
+        reason = "the server thread ended" if not server.running else "/healthz does not answer"
+        now = self.clock()
+        while self._auto_restarts and now - self._auto_restarts[0] > RESTART_WINDOW:
+            self._auto_restarts.popleft()
+        if len(self._auto_restarts) >= RESTART_CAP:
+            self._gave_up = True
+            message = KEEPS_FAILING.format(log=self.log_path)
+            log.error("watchdog: %s; %d restarts in 10 minutes, giving up", reason, RESTART_CAP)
+            self.show_problem(message)
+            if self.window is not None and self.icon is not None:
+                self.icon.notify(message, "relaybay")  # show_problem notifies without a window
+            return
+        self._auto_restarts.append(now)
+        self._health_failures = 0
+        log.warning("watchdog: %s; restarting the server", reason)
+        self._restart()
+
+    def _watch_external(self, base_url: str) -> None:
+        if healthz(base_url, timeout=5) is not None:
+            self.unreachable_since = None
+        elif self.unreachable_since is None:
+            self.unreachable_since = datetime.now().strftime("%Y-%m-%d %H:%M")
+            log.warning("the server at %s does not answer", base_url)
+        if self.icon is not None:
+            self.icon.title = self.tray_title()
+
+    def tray_title(self) -> str:
+        if self.external and self.unreachable_since:
+            return f"{TRAY_TITLE} · server unreachable since {self.unreachable_since}"
+        return TRAY_TITLE
 
     # --- window, tray, dialogs --------------------------------------------
 
@@ -560,6 +648,7 @@ class DesktopController:
         self.has_window = window.window_available()
         self.icon = tray.create_icon(self.menu_entries(), self.dispatch)
         threading.Thread(target=self.update_loop, name="relaybay-updates", daemon=True).start()
+        threading.Thread(target=self.watch_loop, name="relaybay-watchdog", daemon=True).start()
         if self.quitting:  # --quit or Quit arrived during start-up
             return 0
         if not self.has_window:

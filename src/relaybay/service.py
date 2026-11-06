@@ -1335,11 +1335,14 @@ class Service:
             and await repo.get_session_by_cc(self._r, hook.cc_session_id) is None
         ):
             return None  # e.g. after /clear the new id took the session over first: nothing ends
-        session = await self._held_back(hook) or await self._apply_hook(hook)
+        if await self._stale_replay(hook):
+            session = await self._link_only(hook)
+        else:
+            session = await self._held_back(hook) or await self._apply_hook(hook)
         change = parse_todo(payload)
         if change is not None:
             try:
-                await self._record_todo(hook.cc_session_id, change)
+                await self._record_todo(hook.cc_session_id, change, since=hook.spooled_at)
             except Exception:
                 logger.exception("Recording the session's todo failed; the hook goes on")
         recipient = parse_message_recipient(payload)
@@ -1393,6 +1396,25 @@ class Service:
             self._transcript_checked[value] = allowed
         return value if allowed else None
 
+    async def _stale_replay(self, hook: HookEvent) -> bool:
+        """A spooled event older than the session's last status or activity change: newer
+        events already got through (an old SessionEnd must not end a session that started
+        again)."""
+        if hook.spooled_at is None:
+            return False
+        current = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+        return (
+            current is not None
+            and current.activity_at is not None
+            and current.activity_at >= hook.spooled_at
+        )
+
+    async def _link_only(self, hook: HookEvent) -> Session:
+        """A stale replay changes no status; a SessionStart among them still links the desktop
+        session it names."""
+        async with self._tx() as tx:
+            return await self._hook_session(tx, hook)
+
     async def _held_back(self, hook: HookEvent) -> Session | None:
         """The session when this activity is coalesced into the current window, else None."""
         if not hook.activity_only:
@@ -1437,7 +1459,8 @@ class Service:
             if hook.cwd and hook.cwd != session.cwd:
                 changes["cwd"] = hook.cwd
             if changes["status"] != session.status or changes["activity"] != session.activity:
-                changes["activity_at"] = tx.now
+                # A replay keeps its own time, so the spooled events after it stay in order.
+                changes["activity_at"] = hook.spooled_at or tx.now
             if transcript is not None and transcript != session.transcript_path:
                 changes["transcript_path"] = transcript
                 await repo.track_usage_file(tx.conn, session.id, transcript, tx.now)
@@ -4811,11 +4834,18 @@ class Service:
         return {p.slug: counts[p.id] for p in projects if counts.get(p.id)}
 
     async def _set_backlog_status(
-        self, tx: _Tx, item: BacklogItem, status: str, reason: str | None, actor: str
+        self,
+        tx: _Tx,
+        item: BacklogItem,
+        status: str,
+        reason: str | None,
+        actor: str,
+        link: str | None = None,
     ) -> None:
         changes: dict[str, Any] = {
             "status": status,
-            "decline_reason": reason if status == "declined" else None,
+            "decline_reason": reason if status in ("declined", "done") else None,
+            "link": link if status == "done" else None,
             "decided_at": tx.now,
             "decided_by": actor,
         }
@@ -4829,7 +4859,20 @@ class Service:
             title=item.title,
             status=status,
             **({"reason": reason} if reason else {}),
+            **({"link": changes["link"]} if changes["link"] else {}),
         )
+
+    @staticmethod
+    def _backlog_link(value: Any) -> str | None:
+        """A done item's link: where the fix is, an http(s) link such as a pull request."""
+        link = _clean_url(value, "link")
+        if link is not None and (
+            len(link) > backlog.LINK_MAX or not backlog.LINK_RE.fullmatch(link)
+        ):
+            raise ValidationError(
+                f"link must be an http(s) link of at most {backlog.LINK_MAX} characters."
+            )
+        return link
 
     async def update_backlog_item(
         self,
@@ -4837,6 +4880,7 @@ class Service:
         *,
         status: str | None = None,
         reason: str | None = None,
+        link: str | None = None,
         title: str | None = None,
         body: str | None = None,
         area: str | None = None,
@@ -4844,10 +4888,10 @@ class Service:
         session_title: str | None = None,
         hook_session: str | None = None,
     ) -> BacklogItem:
-        """MCP: a status change (new, later, declined with a reason) only for a configured
-        coordinator; `planned` never (only "To plan" on the board creates the task). Anyone else
-        may edit title, body and area of an item that is still new and that the same session
-        added."""
+        """MCP: a status change (new, later, done with an optional link, declined with a reason)
+        only for a configured coordinator; `planned` never (only "To plan" on the board creates
+        the task). Anyone else may edit title, body and area of an item that is still new and
+        that the same session added."""
         async with self._tx() as tx:
             item = await self._backlog(tx.conn, ref)
             coordinator = await self._is_coordinator(tx.conn, session, hook_session)
@@ -4873,6 +4917,8 @@ class Service:
                     )
                 if item.status == "planned":
                     raise ValidationError(f"Backlog item #{item.id} is planned as {item.task_key}.")
+            if link is not None and (status or "").strip().lower() != "done":
+                raise ValidationError("link goes with status done. Nothing changed.")
             if edits and not coordinator:
                 own = sess is not None and item.origin_session_id == sess.id
                 if item.status != "new" or not own:
@@ -4918,7 +4964,10 @@ class Service:
                     raise ValidationError("A declined item needs a reason.")
                 if why:
                     envs.check_secret("reason", why)
-                await self._set_backlog_status(tx, item, wanted, why, actor)
+                where = self._backlog_link(link) if wanted == "done" else None
+                if where:
+                    envs.check_secret("link", where)
+                await self._set_backlog_status(tx, item, wanted, why, actor, where)
             return await self._backlog(tx.conn, item.id)
 
     async def import_backlog_item(
@@ -4942,6 +4991,7 @@ class Service:
                 changes |= {
                     "status": values["status"],
                     "decline_reason": values.get("reason"),
+                    "link": values.get("link"),
                     "decided_at": tx.now,
                     "decided_by": actor,
                 }
@@ -4961,7 +5011,10 @@ class Service:
                 "origin": values["origin"],
                 "status": values["status"],
                 "decline_reason": values.get("reason"),
+                "link": values.get("link"),
             }
+            if values["status"] == "done" == item.status:
+                changes["decline_reason"] = item.decline_reason  # the note is not in backlog.md
             await repo.update_backlog_item(tx.conn, item.id, changes)
             await tx.event(
                 "backlog.updated",
@@ -4975,13 +5028,20 @@ class Service:
             return await self._backlog(tx.conn, item.id)
 
     async def decide_backlog(
-        self, ref: Any, decision: str, reason: str | None = None, *, actor: str = "owner"
+        self,
+        ref: Any,
+        decision: str,
+        reason: str | None = None,
+        *,
+        link: str | None = None,
+        actor: str = "owner",
     ) -> BacklogItem:
         """Board: "To plan" (creates the task in plan, with the item's title and body and the
-        line "From backlog #N"), "Later", "Not doing" (needs a reason) or back to new."""
+        line "From backlog #N"), "Later", "Done" (fixed without a task, with an optional link),
+        "Not doing" (needs a reason) or back to new."""
         choice = str(decision or "").strip().lower()
-        if choice not in ("plan", "later", "decline", "new"):
-            raise ValidationError("decision must be plan, later, decline or new.")
+        if choice not in ("plan", "later", "done", "decline", "new"):
+            raise ValidationError("decision must be plan, later, done, decline or new.")
         async with self._tx() as tx:
             item = await self._backlog(tx.conn, ref)
             if item.status == "planned":
@@ -4992,11 +5052,12 @@ class Service:
                 why = _clean_text(reason, "reason", backlog.REASON_MAX)
                 if choice == "decline" and not why:
                     raise ValidationError("Not doing needs a reason.")
-                if why:
+                where = self._backlog_link(link) if choice == "done" else None
+                if why or where:
                     project = await self.get_project(item.project_slug, tx.conn)
-                    _scan(await self._secret_rules(tx.conn, project), reason=why)
-                status = {"later": "later", "decline": "declined", "new": "new"}[choice]
-                await self._set_backlog_status(tx, item, status, why, actor)
+                    _scan(await self._secret_rules(tx.conn, project), reason=why, link=where)
+                status = {"later": "later", "done": "done", "decline": "declined", "new": "new"}
+                await self._set_backlog_status(tx, item, status[choice], why, actor, where)
             return await self._backlog(tx.conn, item.id)
 
     async def _plan_backlog(self, tx: _Tx, item: BacklogItem, actor: str) -> Task:
@@ -5644,10 +5705,12 @@ class Service:
             )
             return await self.get_task(task.id, tx.conn), plan, True
 
-    async def _record_todo(self, cc_id: str, change: TodoChange) -> None:
+    async def _record_todo(self, cc_id: str, change: TodoChange, since: str | None = None) -> None:
         """Apply a todo tool call to the session's list. A new Claude Code id starts a fresh
         list; an update of an item it never saw is ignored. The session is looked up again in
-        this transaction: an agent's write may have just moved the id to another session."""
+        this transaction: an agent's write may have just moved the id to another session. A
+        replay from the forwarder's spool (`since`: when it happened) changes only items not
+        written since."""
         async with self._tx() as tx:
             session = await repo.get_session_by_cc(tx.conn, cc_id)
             if session is None:
@@ -5655,6 +5718,10 @@ class Service:
             await repo.clear_session_todo(tx.conn, session.id, keep_cc=cc_id)
             before = await repo.list_session_todo(tx.conn, session.id, cc_id)
             by_id = {i.item_id: i for i in before}
+            if since is not None:
+                touched = before if change.kind == "replace" else [by_id.get(change.item_id or "")]
+                if any(i is not None and i.updated_at >= since for i in touched):
+                    return
             if change.kind == "replace":
                 await repo.clear_session_todo(tx.conn, session.id)
                 for item in change.items:

@@ -1,6 +1,6 @@
 """The backlog: add / list / update rules, "To plan" and its links both ways, decline reasons,
-the MCP limits (no `planned`, status for coordinators only), the board (CSRF, XSS), backlog.md
-import and export, and the upgrade."""
+done with a link, the MCP limits (no `planned`, status for coordinators only), the board (CSRF,
+XSS), backlog.md import and export, and the upgrades."""
 
 import sqlite3
 from collections.abc import AsyncIterator, Callable
@@ -260,7 +260,7 @@ def test_board_backlog_csrf_and_xss(board: TestClient, token: str) -> None:
     dialog = board.get("/p/acme-shop/t/acme-shop-1/dialog").text
     assert f"From backlog #{item.id}" in dialog
     fragment = board.get("/fragments/backlog?project=acme-shop&history=1").text
-    assert "Planned and declined" in fragment
+    assert "Planned, done and declined" in fragment
 
 
 def test_board_shows_an_intake_body_as_plain_text(board: TestClient) -> None:
@@ -352,3 +352,177 @@ async def test_upgrade_adds_the_backlog_and_widens_import_items(tmp_path: Path) 
     with sqlite3.connect(db) as raw:
         assert raw.execute("SELECT COUNT(*) FROM backlog_item").fetchone() == (1,)
     raw.close()
+
+
+PR = "https://github.com/acme/shop/pull/7"
+
+
+async def test_done_keeps_the_link_and_leaves_the_open_counts(svc: Service) -> None:
+    item = await svc.add_backlog_item("acme-shop", "Badge", session="dev")
+    with pytest.raises(ValidationError, match="coordinator"):
+        await svc.update_backlog_item(item.id, status="done", session="dev")
+    with pytest.raises(ValidationError, match="link goes with status done"):
+        await svc.update_backlog_item(item.id, status="later", link=PR, session="lead")
+    with pytest.raises(ValidationError, match="http"):
+        await svc.update_backlog_item(item.id, status="done", link="pr 7", session="lead")
+    with svc.bus.subscribe() as sub:
+        done = await svc.update_backlog_item(
+            item.id, status="done", link=PR, reason="fixed with the cart work", session="lead"
+        )
+        events = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
+    assert (done.status, done.link, done.decline_reason, done.decided_by) == (
+        "done",
+        PR,
+        "fixed with the cart work",
+        "lead",
+    )
+    assert done.decided_at and done.decision == f"done: {PR}"
+    updated = [e for e in events if e.kind == "backlog.updated"]
+    assert updated and updated[0].payload["link"] == PR
+    assert await svc.backlog_counts() == {}
+    assert (await svc.inbox(["owner"])).backlog_new == 0
+    assert [b.id for b in await svc.list_backlog(status="done")] == [item.id]
+    # Back to new clears the link; the owner's Done takes no link at all.
+    again = await svc.decide_backlog(item.id, "new")
+    assert (again.status, again.link) == ("new", None)
+    plain = await svc.decide_backlog(item.id, "done")
+    assert (plain.status, plain.link, plain.decision) == ("done", None, "done")
+    with pytest.raises(ValidationError, match="secret"):
+        await svc.decide_backlog(item.id, "done", link="https://x.test/?t=ghp_" + "Ab12" * 8)
+
+
+async def test_mcp_backlog_done(live_server: Callable[[], LiveServer], tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text('coordinators = ["lead"]\n', encoding="utf-8")
+    live = live_server()
+    async with mcp_connect(live) as client:
+        await call(client, "project_upsert", slug="acme-shop")
+        await call(client, "backlog_add", project="acme-shop", title="Badge", session="dev")
+        refused = await client.call_tool(
+            "backlog_update", {"item": 1, "status": "done", "link": PR, "session": "dev"}
+        )
+        assert refused.is_error and "coordinator" in refused.content[0].text
+        assert "No backlog items." in await call(client, "backlog_list", status="done")
+        done = await call(
+            client, "backlog_update", item=1, status="done", link=PR, reason="in #7", session="lead"
+        )
+        assert "Updated backlog item #1 in acme-shop: Badge (done)." in done
+        listed = await call(client, "backlog_list", status="done")
+        assert f"#1 acme-shop Badge · session by dev · done: in #7 ({PR})" in listed
+        assert "No backlog items." in await call(client, "backlog_list", status="new")
+
+
+def test_board_done_with_and_without_a_link(board: TestClient, token: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.upsert_project, "acme-shop")
+    first = run_in_app(board, service.add_backlog_item, "acme-shop", "Badge", by_owner=True)
+    second = run_in_app(board, service.add_backlog_item, "acme-shop", "Totals", by_owner=True)
+    page = board.get("/p/acme-shop/backlog").text
+    assert f'action="/backlog/{first.id}/done"' in page and 'name="link"' in page
+    no_csrf = board.post(f"/backlog/{first.id}/done", data={"link": PR}, headers=FORM)
+    assert no_csrf.status_code == 403
+    csrf = {"csrf_token": csrf_token(token)}
+    done = board.post(f"/backlog/{first.id}/done", data={**csrf, "link": PR}, headers=FORM)
+    assert done.status_code == 200 and f"Backlog item #{first.id}: done." in done.text
+    bad_link = {**csrf, "link": "javascript:x"}
+    bad = board.post(f"/backlog/{second.id}/done", data=bad_link, headers=FORM)
+    assert "http" in bad.text
+    plain = board.post(f"/backlog/{second.id}/done", data=csrf, headers=FORM)
+    assert f"Backlog item #{second.id}: done." in plain.text
+    fragment = board.get("/fragments/backlog?project=acme-shop&history=1").text
+    assert "Planned, done and declined" in fragment and f'href="{PR}"' in fragment
+    assert "Nothing open on the backlog." in fragment
+    items = run_in_app(board, service.list_backlog, project="acme-shop", status="done")
+    assert {(b.id, b.link) for b in items} == {(first.id, PR), (second.id, None)}
+
+
+def test_done_decision_cells() -> None:
+    assert parse_decision("done") == ("done", None)
+    assert parse_decision(f"Done: {PR}") == ("done", PR)
+    for bad in ("done: not a link", "done: javascript:alert(1)"):
+        with pytest.raises(ValueError, match="http"):
+            parse_decision(bad)
+
+
+async def test_done_round_trips_through_backlog_md(svc: Service, tmp_path: Path) -> None:
+    root = tmp_path / "setup"
+    root.mkdir()
+    (root / BACKLOG).write_text(
+        SETUP_BACKLOG.read_text(encoding="utf-8")
+        + f"| 2026-10-11 | acme-shop | cart | Badge count | session | done: {PR} |\n"
+        + "| 2026-10-12 | acme-shop | | Old banner | owner | done |\n",
+        encoding="utf-8",
+    )
+    await apply_plan(svc, await make_plan(svc, root))
+    done = {b.title: b.link for b in await svc.list_backlog(status="done")}
+    assert done == {"Badge count": PR, "Old banner": None}
+    again = await make_plan(svc, root)
+    assert {i.action for i in again.items if i.kind == "backlog"} == {"unchanged"}
+    exported = (await gather(svc))[0][BACKLOG].text
+    assert f"| done: {PR} |" in exported and "| Old banner | owner | done |" in exported
+    (root / BACKLOG).write_text(exported, encoding="utf-8")
+    third = await make_plan(svc, root)
+    assert {i.action for i in third.items if i.kind == "backlog"} == {"unchanged"}
+    # The board moves a row on: the import names it as changed there, like any other decision.
+    badge = next(b for b in await svc.list_backlog(status="done") if b.link)
+    await svc.decide_backlog(badge.id, "done", link=PR + "#2")
+    fourth = await make_plan(svc, root)
+    assert any(i.action != "unchanged" for i in fourth.items if i.kind == "backlog")
+
+
+async def test_upgrade_keeps_backlog_rows_and_allows_done(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    folder = resources.files("relaybay.db").joinpath("migrations")
+    names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0022")
+    sql = "\n".join(folder.joinpath(n).read_text(encoding="utf-8") for n in names)
+    conn = await connect(db)
+    try:
+        await conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = 21;\nCOMMIT;")
+        await conn.execute(
+            "INSERT INTO project (slug, name, task_seq, created_at, updated_at)"
+            " VALUES ('acme-shop', 'Acme Shop', 0, ?, ?)",
+            (NOW, NOW),
+        )
+        await conn.execute(
+            "INSERT INTO backlog_item (project_id, title, origin, status, decline_reason,"
+            " decided_at, decided_by, created_at, created_by)"
+            " VALUES (1, 'XML', 'owner', 'declined', 'JSON only', ?, 'owner', ?, 'owner')",
+            (NOW, NOW),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+    service = Service(db)
+    await service.start()
+    try:
+        [kept] = await service.list_backlog()
+        assert (kept.title, kept.status, kept.decline_reason, kept.link) == (
+            "XML",
+            "declined",
+            "JSON only",
+            None,
+        )
+        assert (await service.decide_backlog(kept.id, "done", link=PR)).status == "done"
+    finally:
+        await service.close()
+
+
+async def test_an_import_update_of_a_done_row_keeps_its_note(svc: Service, tmp_path: Path) -> None:
+    root = tmp_path / "setup"
+    root.mkdir()
+    row = "| 2026-10-11 | acme-shop | {area} | Badge count | session | done: " + PR + " |\n"
+    header = "| date | project | area | what | origin | decision |\n|---|---|---|---|---|---|\n"
+    (root / BACKLOG).write_text(header + row.format(area="cart"), encoding="utf-8")
+    await apply_plan(svc, await make_plan(svc, root))
+    [item] = await svc.list_backlog(status="done")
+    await svc.decide_backlog(item.id, "done", "fixed with the cart work", link=PR)
+    (root / BACKLOG).write_text(header + row.format(area="checkout"), encoding="utf-8")
+    plan = await make_plan(svc, root)
+    assert [i.action for i in plan.items if i.kind == "backlog"] == ["update"]
+    await apply_plan(svc, plan)
+    saved = await svc.backlog_item(item.id)
+    assert (saved.area, saved.status, saved.link, saved.decline_reason) == (
+        "checkout",
+        "done",
+        PR,
+        "fixed with the cart work",
+    )

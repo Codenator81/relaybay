@@ -10,7 +10,7 @@ relaybay doctor --json   # the same as a JSON list of {"ok", "name", "detail"}
 It reads, never writes: relaybay, Python and OS versions; the data folder and whether it is
 writable; the token file (present, private); Claude Code on `PATH` and whether it is at least the
 minimum supported version; the desktop app; relaybay's own program (start at login, its last
-start); the server on the configured port with the same token,
+start); hook events waiting in the spool; the server on the configured port with the same token,
 MCP `initialize` and the hook endpoint; the rules hash of your settings against the one the server
 started with; relaybay's hooks in the Claude Code user settings and the interpreter they run; the
 MCP registration. The exit code is `1` when an item fails. Pass the same `--home`, `--port` and
@@ -27,6 +27,7 @@ MCP registration. The exit code is `1` when an item fails. Pass the same `--home
 | `install` | The desktop program runs from a mounted disk image, macOS's translocation, the temp or the Downloads folder: install it (macOS: move relaybay.app to Applications) and start it from there. |
 | `hook executable` | The installed program's `relaybay-hook` is missing or answers another version: reinstall the program. |
 | `desktop start` | The program's last start ended with an exception, or before any outcome: see [relaybay did not start at login](#relaybay-did-not-start-at-login). |
+| `hook spool` | Hook events have waited more than 10 minutes for the server: see [hook events waiting in the spool](#hook-events-waiting-in-the-spool). |
 | `MCP registered for Claude Code` | Run the `claude mcp add …` line that `relaybay token` prints. |
 
 ## relaybay did not start at login
@@ -55,6 +56,28 @@ If there is no icon after you sign in:
    **Settings → Apps → Startup** (relaybay must be **On** there); Task Manager → Startup apps shows the
    same. On macOS it is `~/Library/LaunchAgents/io.github.codenator81.relaybay.plist`, on Linux
    `~/.config/autostart/relaybay.desktop`.
+
+## Hook events waiting in the spool
+
+When the server does not answer, the command hook keeps the events that change a session's state
+(start and end, a prompt, a notification, the end of a turn, a todo change) in `hook-spool.jsonl` in
+the config folder (the folder of `desktop-start.log` above), at most 200 lines or 256 KB, oldest
+dropped; the prompt text is not written. The next hook event that reaches the server sends them
+first, oldest first, and the file empties. `relaybay doctor` shows
+`hook spool: N events waiting since <time>`; it fails once the oldest has waited more than
+10 minutes.
+
+1. Start the server (the desktop program, or `relaybay serve`) and check `relaybay doctor`: the
+   `relaybay server` item must be ok.
+2. The spool is sent by the next hook event of any session: send a prompt or let a tool run. A
+   session whose newer events already got through ignores its older spooled ones, so nothing is
+   undone by a late replay.
+3. Events of a session that has ended for good can be dropped: delete `hook-spool.jsonl` and any
+   `hook-spool.*.part` beside it (lines of runs that found the file busy).
+
+With an external server, update the server together with the program: a server older than the
+spool takes a replayed event as a live one, so a late `SessionEnd` could end a session that started
+again.
 
 ## "token not valid"
 

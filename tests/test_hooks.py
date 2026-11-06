@@ -401,10 +401,13 @@ def test_hook_client_is_silent_and_quick_when_relaybay_is_down(
             f"http://127.0.0.1:{_closed_port()}/hooks/claude-code",
             f"http://127.0.0.1:{hung.getsockname()[1]}/hooks/claude-code",
         ):
-            monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(body)))
-            started = time.monotonic()
-            assert hook_client.main(["--url", url, "--token-file", str(token_file)]) == 0
-            assert time.monotonic() - started < 1.0
+            # A state-bearing event retries within the budget; an activity ping tries once.
+            for event, limit in (("Stop", hook_client.BUDGET_SECONDS + 0.4), ("PostToolUse", 1.0)):
+                payload = json.dumps(RECORDED[event]).encode()
+                monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload)))
+                started = time.monotonic()
+                assert hook_client.main(["--url", url, "--token-file", str(token_file)]) == 0
+                assert time.monotonic() - started < limit
     finally:
         hung.close()
     # Missing token file and broken arguments: still exit 0, still nothing printed.

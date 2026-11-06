@@ -136,8 +136,10 @@ What it writes, and what it never touches:
   user-scope `relaybay` server is registered there and otherwise prints the `claude mcp add`
   command from step 1.
 
-Hooks never get in the way when relaybay is not running. The command hook gives up after 0.3 s per
-network step, prints nothing and always exits 0, so the session sees nothing. http hook entries use a
+Hooks never get in the way when relaybay is not running. The command hook prints nothing and always
+exits 0, so the session sees nothing: a tool call gets one 0.3 s try, an event that carries state
+(session start and end, a prompt, the end of a turn, a todo change) one retry within 2 s, and then
+waits in a spool that the next run sends once relaybay answers again. http hook entries use a
 2 s timeout and failures do not block the session, but Claude Code shows a non-blocking "hook
 error" notice while relaybay is down. Hook input over 256 KB (for example a large file write) is
 dropped quietly with `204`.

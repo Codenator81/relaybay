@@ -20,7 +20,8 @@
     </span>
     <span class="backlog-status status-{{ b.status }}">{{ b.status }}</span>
     {%- if b.task_key %} <a href="/p/{{ b.project_slug }}?task={{ b.task_key }}">{{ b.task_key }}</a>{% endif %}
-    {%- if b.status == "declined" and b.decline_reason %} <span class="muted backlog-reason">{{ b.decline_reason }}</span>{% endif %}
+    {%- if b.status in ("declined", "done") and b.decline_reason %} <span class="muted backlog-reason">{{ b.decline_reason }}</span>{% endif %}
+    {%- if b.status == "done" and b.link %} <a class="backlog-link" href="{{ b.link }}" rel="noopener noreferrer" target="_blank">{{ b.link }}</a>{% endif %}
   </div>
   {#- An intake item's body is external text: plain text, never markdown. #}
   {% if b.body_md %}<details class="backlog-body"><summary class="muted">what</summary>{% if b.origin == "intake" %}<p class="intake-text">{{ b.body_md }}</p>{% else %}<div class="markdown">{{ b.body_md|markdown }}</div>{% endif %}</details>{% endif %}
@@ -36,6 +37,14 @@
       <button type="submit" class="btn">Later</button>
     </form>
     {% endif %}
+    <details class="bind-picker">
+      <summary class="btn">Done</summary>
+      <form class="bind-menu" method="post" action="/backlog/{{ b.id }}/done">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}"><input type="hidden" name="back" value="{{ back }}">
+        <label class="field"><span>Link (optional)</span><input name="link" type="url" maxlength="500" placeholder="https://"></label>
+        <button type="submit" class="btn">Done</button>
+      </form>
+    </details>
     <details class="bind-picker">
       <summary class="btn">Not doing</summary>
       <form class="bind-menu" method="post" action="/backlog/{{ b.id }}/decline">
@@ -56,7 +65,7 @@
   {% endif %}
   {% if history %}
   <details class="panel backlog-history"{% if show_history %} open{% endif %}>
-    <summary><h2>Planned and declined <span class="col-count">{{ history|length }}</span></h2></summary>
+    <summary><h2>Planned, done and declined <span class="col-count">{{ history|length }}</span></h2></summary>
     <div class="backlog-list">{% for b in history %}{{ item(b, False) }}{% endfor %}</div>
   </details>
   {% endif %}

@@ -12,6 +12,7 @@ from relaybay.domain.hooks import (
     HOOK_PATH,
     HOST_SESSION_FIELD,
     HOST_SESSION_HEADER,
+    SPOOLED_FIELD,
     WAKE_HOLD_SECONDS,
     WAKE_PATH,
 )
@@ -66,6 +67,10 @@ def build_hooks_router(
             payload.setdefault(HOST_SESSION_FIELD, host)
             payload.setdefault(ATTENDED_FIELD, request.headers.get(ATTENDED_HEADER, ""))
         await service.record_hook(payload)
+        if isinstance(payload, dict) and SPOOLED_FIELD in payload:
+            # A replay from the forwarder's spool: nobody reads its answer, so owner comments
+            # are not marked delivered to it.
+            return Response(status_code=204)
         # SessionStart: the agent's exact id to pass as `hook_session` on writes. Prompt, tool
         # and Stop events: owner comments for the exactly linked session, if there are any.
         answer = await service.hook_answer(payload)
