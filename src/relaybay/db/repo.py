@@ -264,6 +264,8 @@ def _session(row: aiosqlite.Row) -> Session:
         unlinked_reason=row["unlinked_reason"],
         cc_exact=bool(row["cc_exact"]),
         transcript_path=row["transcript_path"],
+        no_live_at=row["no_live_at"],
+        no_live_by=row["no_live_by"],
     )
 
 
@@ -342,6 +344,15 @@ async def touch_session(
     await conn.execute(
         f"UPDATE session SET last_seen_at = ?{sets} WHERE id = ?",
         (now, *changes.values(), session_id),
+    )
+
+
+async def set_session_no_live(
+    conn: aiosqlite.Connection, session_id: int, at: str | None, by: str | None
+) -> None:
+    """The owner's switch; not the session's own activity, so `last_seen_at` stays."""
+    await conn.execute(
+        "UPDATE session SET no_live_at = ?, no_live_by = ? WHERE id = ?", (at, by, session_id)
     )
 
 
@@ -1644,6 +1655,47 @@ async def events_page(
     return [_event(r) for r in await _all(conn, sql, (*params, limit))]
 
 
+async def audit_page(
+    conn: aiosqlite.Connection,
+    *,
+    before_id: int | None,
+    after_id: int | None,
+    project_id: int | None,
+    environment: str | None,
+    session_ids: list[int] | None,
+    decision: str | None,
+    since: str | None,
+    kinds: tuple[str, ...],
+    limit: int,
+) -> list[Event]:
+    """Events of `kinds` newest first; `environment` and `decision` look into the payload."""
+    where = [f"kind IN ({', '.join('?' for _ in kinds)})"]
+    params: list[Any] = list(kinds)
+    if before_id is not None:
+        where.append("id < ?")
+        params.append(before_id)
+    if after_id is not None:
+        where.append("id > ?")
+        params.append(after_id)
+    if project_id is not None:
+        where.append("project_id = ?")
+        params.append(project_id)
+    if environment is not None:
+        where.append("json_extract(payload, '$.environment') = ?")
+        params.append(environment)
+    if session_ids is not None:
+        where.append(f"session_id IN ({', '.join('?' for _ in session_ids)})")
+        params.extend(session_ids)
+    if decision is not None:
+        where.append("json_extract(payload, '$.decision') = ?")
+        params.append(decision)
+    if since is not None:
+        where.append("ts >= ?")
+        params.append(since)
+    sql = f"SELECT * FROM event WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?"
+    return [_event(row) for row in await _all(conn, sql, (*params, limit))]
+
+
 async def latest_stage_changes(conn: aiosqlite.Connection) -> dict[int, Event]:
     """The newest `task.stage_changed` event of every task, by task id."""
     rows = await _all(
@@ -2149,15 +2201,21 @@ def _access_json(fields: dict[str, str], test_secrets: dict[str, str] | None) ->
 
 
 async def list_environments(
-    conn: aiosqlite.Connection, project_ids: list[int] | None = None
+    conn: aiosqlite.Connection, project_ids: list[int] | None = None, *, or_live: bool = False
 ) -> list[Environment]:
-    """Environments with their access entries, by project and position."""
+    """Environments with their access entries, by project and position; `or_live`: the live ones
+    of every other project too."""
     sql, params = _ENV_SELECT, ()
     if project_ids is not None:
-        if not project_ids:
+        where = []
+        if project_ids:
+            where.append(f"e.project_id IN ({', '.join('?' for _ in project_ids)})")
+            params = tuple(project_ids)
+        if or_live:
+            where.append("e.kind = 'live'")
+        if not where:
             return []
-        sql += f" WHERE e.project_id IN ({', '.join('?' for _ in project_ids)})"
-        params = tuple(project_ids)
+        sql += " WHERE " + " OR ".join(where)
     sql += " ORDER BY p.slug, e.position, e.id"
     envs = [_environment(r) for r in await _all(conn, sql, params)]
     if not envs:

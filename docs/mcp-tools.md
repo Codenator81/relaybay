@@ -117,6 +117,7 @@ Conventions:
 | `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
 | `environments_get` | `project` | The project's environments (see *Environments and access* below): the preset and guard mode, per environment kind, base URL, agents' level (`(default)` when it comes from the default preset, `(policy: <layer>)` from another policy layer) and per-capability overrides, sign-in flag and login-state path, access entries (references only; test secrets by name only unless the policy exposes them), notes, last change. |
 | `policy_get` | `project?`, `environment?` | The effective policy (see *Policy* below) of the global scope, a project or one of its environments: the layer chain, then one line per value with the layer that set it, e.g. `- levels.live.default = "read"  (preset:default)`, and any ignored broken layer. |
+| `audit_list` | `project?`, `environment?`, `session?` (name, desktop id or hook session id), `decision?` (`allow`, `log`, `warn`, `ask`, `deny`), `days?` (default 7, max 366), `limit?` (default 50, max 500) | Tool calls of agents that touched a live stand, newest first, one line each: id, time, session, project/stand, tool, the redacted command, decision, level, rule, task. Read-only; only live stands are journaled. |
 | `usage_summary` | `project?`, `session?` (name, desktop id or hook session id), `days?` (default 7, max 366) | Tokens from Claude Code transcripts: the total, then per day, project, session and model (input, output, cache read, cache write, messages). Subagents count to their session. Tokens only, no prices or quotas; `unknown` means the data does not say; says when lines were not understood or a file could not be read. |
 | `plan_get` | `task` | The plan (see *Plan* below): status (`accepted by … <time>` or draft), `2/4 done, 1 deviation(s)`, each step as `1. [done] Title — done <time> · as planned · outcome · report:12` with its "what and why", then your Claude Code todo as a separate list. Without steps: how to write one, and the todo if any. |
 | `review_get` | `task` | The checklist (`1. [accepted] Sign in — accepted by owner …`) with each step's what / how / why, its screenshots (`screenshot #7 (image/png, 41 KB): caption`), the owner's pins on them (`pin #1 (x 0.42, y 0.18, annotation 12) 'Text'`, with their replies) and other markup, the owner's comments on the step, then screenshots of no step. Flattened images with the owner's markup follow the text as image content, at most 7 MB in one answer; a line names `attachment_get` for the rest, and an image over 3.5 MB or 7990 px on a side has a text note in its place. |
@@ -355,7 +356,11 @@ are refused.
   Details and the full rule table: [SPEC §7](SPEC.md#spec-guard).
 - **Journal** — every guarded tool call that touches a live environment is recorded as a
   `live.action` event (tool, a short redacted command, decision) on your bound task; the owner sees
-  them under Activity → Actions on live and in the task dialog.
+  them under Activity → Actions on live, on the Audit page and in the task dialog; `audit_list`
+  reads them.
+- **No live now** — the owner can switch live off for one session on the Sessions page. Until the
+  owner switches it back, any touch of a live environment by that session is denied, reads included,
+  whatever the level and the guard mode. There is no tool for it; the reason says so.
 
 ## Policy
 

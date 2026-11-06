@@ -938,6 +938,10 @@ def event_detail(e: Event) -> str:
         return f"✕ {p.get('session')}"
     if e.kind == "session.alias_added":
         return f"'{p.get('alias')}' = {p.get('session')}"
+    if e.kind in ("session.no_live_on", "session.no_live_off"):
+        carried = f" (from {p['carried_from']})" if p.get("carried_from") else ""
+        reason = f": {p['reason']}" if p.get("reason") else ""
+        return f"{p.get('session')}{carried}{reason}"
     if e.kind == "task.tracker_unlogged":
         return f"{p.get('tracker_ref') or ''} ({p.get('reason')})".strip()
     if e.kind == "decision.added":
@@ -1068,6 +1072,29 @@ def events(items: list[Event], since_id: int) -> str:
         key, detail = event_subject(e), event_detail(e)
         lines.append(f"- #{e.id} {e.ts[:19]}Z {e.kind} {key} {detail} ({e.actor})".rstrip())
     lines.append(f"\nNext call: events_since(since_id={items[-1].id})")
+    return "\n".join(lines)
+
+
+def audit(items: list[Event], days: int) -> str:
+    """The journal of actions on live stands, one line per action, newest first."""
+    note = "Only tool calls that touch a live stand are journaled."
+    if not items:
+        return f"No actions on live in the last {days} day(s). {note}"
+    lines = []
+    for e in items:
+        p = e.payload
+        parts = [
+            e.actor,
+            f"{p.get('project')}/{p.get('environment')}",
+            str(p.get("tool")),
+            f"`{p.get('command') or ''}`",
+            str(p.get("decision")),
+            f"level {p.get('level')}",
+            *([f"rule {p['rule']}"] if p.get("rule") else []),
+            *([str(p["key"])] if p.get("key") else []),
+        ]
+        lines.append(f"- #{e.id} {e.ts[:19]}Z " + " · ".join(parts))
+    lines.append(f"\n{note}")
     return "\n".join(lines)
 
 

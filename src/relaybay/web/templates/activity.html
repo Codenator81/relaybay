@@ -25,7 +25,7 @@
   <div class="empty activity-empty"><p>No events{% if project_filter or kind_filter %} match these filters{% endif %}.</p></div>
   {% endif %}
   {#- Live: app.js prepends newer rows (only on the first page, not after "Load more" links). #}
-  <ol class="activity-list" id="activity"{% if not paged %} data-live="1"{% endif %}
+  <ol class="activity-list" id="activity" data-fragment="/fragments/activity"{% if not paged %} data-live="1"{% endif %}
       data-filters="{{ filters_qs }}" data-newest="{{ events[0].id if events else last_event_id }}">
     {% include "_activity_rows.html" %}
   </ol>

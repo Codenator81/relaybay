@@ -8,6 +8,7 @@
     "task.created", "task.updated", "task.stage_changed",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
     "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
+    "session.no_live_on", "session.no_live_off",
     "comment.added", "comment.delivered", "comment.read",
     "environment.created", "environment.updated", "environment.deleted",
     "environment.access_added", "environment.access_updated", "environment.access_removed",
@@ -45,6 +46,7 @@
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
+    "session.no_live_on", "session.no_live_off",
     "task.session_bound", "task.session_unbound"
   ];
   var DOCS_KINDS = [
@@ -123,20 +125,21 @@
     }, THROTTLE_MS));
   }
 
-  // Activity: prepend the events newer than the newest row shown, with the page's filters.
+  // Activity and Audit: prepend the events newer than the newest row shown, with the page's
+  // filters.
   var activityBusy = false;
   var activityAgain = false;
   function prependActivity(list) {
     if (activityBusy) { activityAgain = true; return; }
-    var first = list.querySelector(".activity-row");
+    var first = list.querySelector("[data-id]");
     var newest = first ? first.dataset.id : list.dataset.newest;
     var filters = list.dataset.filters;
     activityBusy = true;
-    htmx.ajax("GET", "/fragments/activity?after=" + encodeURIComponent(newest || "0") +
+    htmx.ajax("GET", list.dataset.fragment + "?after=" + encodeURIComponent(newest || "0") +
       (filters ? "&" + filters : ""), { target: list, swap: "afterbegin" }).finally(function () {
       activityBusy = false;
       var empty = document.querySelector(".activity-empty");
-      if (empty && list.querySelector(".activity-row")) empty.remove();
+      if (empty && list.querySelector("[data-id]")) empty.remove();
       if (activityAgain) { activityAgain = false; prependActivity(list); }
     });
   }
@@ -253,6 +256,14 @@
       if (DOCS_KINDS.indexOf(data.kind) !== -1 &&
           (!data.project || data.project === live.dataset.project)) {
         queue(docsLive);
+      }
+      return;
+    }
+    var audit = document.getElementById("audit");
+    if (audit) {
+      if (audit.dataset.live && (data.kind === "live.action" || (audit.dataset.changes &&
+          /^(policy\.|environment\.|session\.no_live_)/.test(data.kind)))) {
+        prependActivity(audit);
       }
       return;
     }

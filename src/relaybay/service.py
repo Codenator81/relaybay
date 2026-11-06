@@ -197,6 +197,28 @@ HOOK_MEMO_MAX = 4096
 MAP_RECENT_EVENTS = 2000
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
 LIVE_ACTION = "live.action"
+NO_LIVE_ON = "session.no_live_on"
+NO_LIVE_OFF = "session.no_live_off"
+# What the Audit page adds to the journal when asked: changes to who may do what.
+AUDIT_CHANGE_KINDS = (
+    "policy.updated",
+    "policy.proposed",
+    "policy.proposal_accepted",
+    "policy.proposal_rejected",
+    "policy.proposal_reopened",
+    "environment.created",
+    "environment.updated",
+    "environment.deleted",
+    "environment.access_added",
+    "environment.access_updated",
+    "environment.access_removed",
+    "environment.proposed",
+    "environment.proposal_accepted",
+    "environment.proposal_rejected",
+    NO_LIVE_ON,
+    NO_LIVE_OFF,
+)
+AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
 # Left free in the SessionStart answer next to the lines it holds anyway.
 SESSION_CONTEXT_RESERVE = 500
@@ -1139,13 +1161,26 @@ class Service:
                 **common,
             )
 
-    async def _link_hook_session(self, tx: _Tx, session: Session, cc_id: str) -> Session:
+    async def _link_hook_session(
+        self, tx: _Tx, session: Session, cc_id: str, *, from_window: bool = False
+    ) -> Session:
         """Exact link from an agent's write: `cc_id` now belongs to `session`. A row the hooks
-        created for it by guess hands over its status and is removed when nothing refers to it."""
+        created for it by guess hands over its status and is removed when nothing refers to it.
+        `from_window`: the desktop app itself reports the id (a hook, not an agent's write)."""
         if session.cc_session_id == cc_id and session.cc_exact:
             return session
         changes: dict[str, Any] = {"cc_session_id": cc_id, "cc_exact": 1, "unlinked_reason": None}
         other = await repo.get_session_by_cc(tx.conn, cc_id)
+        # Moving the row to an id the hooks never saw leaves the real hooks a fresh row without the
+        # switch: an agent could free itself with a made-up id. A live exact link stays too; an
+        # ended one may go on to a real new id (a /clear in a terminal), and the switch goes along.
+        held = other is None or (session.cc_exact and session.status != "ended")
+        if session.no_live_at is not None and held and not from_window:
+            _note(
+                f"Warning: hook_session {cc_id} not linked: live is switched off for this session"
+                " and its hook link stays as it is."
+            )
+            return session
         if (
             other is not None
             and other.id != session.id
@@ -1177,13 +1212,28 @@ class Service:
                     tx.conn,
                     other.id,
                     tx.now,
-                    {"cc_session_id": None, "cc_exact": 0, "unlinked_reason": None, "status": None},
+                    {
+                        "cc_session_id": None,
+                        "cc_exact": 0,
+                        "unlinked_reason": None,
+                        "status": None,
+                        "no_live_at": None,
+                        "no_live_by": None,
+                    },
                 )
         if session.project_id is None and other is not None and other.project_id is not None:
             changes["project_id"] = other.project_id
+        # `other` may just have been deleted: the owner's revocation must not go with it.
+        carried = None
+        if other is not None and other.id != session.id and session.no_live_at is None:
+            carried = other if other.no_live_at is not None else None
+        if carried is not None:
+            changes.update(no_live_at=carried.no_live_at, no_live_by=carried.no_live_by)
         await repo.touch_session(tx.conn, session.id, tx.now, changes)
         linked = await repo.get_session_by_id(tx.conn, session.id)
         assert linked is not None
+        if carried is not None:
+            await self._no_live_event(tx, linked, NO_LIVE_ON, "relaybay", carried_from=carried.name)
         self._activity_written.pop(session.id, None)
         await self._session_events(tx, linked, linked.name, hook_session=cc_id, linked=True)
         return linked
@@ -1223,14 +1273,22 @@ class Service:
             if existing is not None and (
                 existing.cc_session_id is None or existing.status == "ended"
             ):
-                await repo.touch_session(
-                    tx.conn,
-                    existing.id,
-                    tx.now,
-                    {"cc_session_id": hook.cc_session_id, "cc_exact": 0, "cwd": hook.cwd},
-                )
+                # A switch on an ended row was aimed at that session, not at the folder.
+                expired = existing.no_live_at is not None and existing.status == "ended"
+                changes = {"cc_session_id": hook.cc_session_id, "cc_exact": 0, "cwd": hook.cwd}
+                if expired:
+                    changes.update(no_live_at=None, no_live_by=None)
+                await repo.touch_session(tx.conn, existing.id, tx.now, changes)
                 found = await repo.get_session_by_id(tx.conn, existing.id)
                 assert found is not None
+                if expired:
+                    await self._no_live_event(
+                        tx,
+                        found,
+                        NO_LIVE_OFF,
+                        "relaybay",
+                        reason="the session ended and a new one took this row",
+                    )
                 return found
         if reason is not None or await repo.get_session_by_name(tx.conn, folder) is not None:
             name = f"{folder} · {hook.cc_session_id[:8]}"
@@ -1295,7 +1353,7 @@ class Service:
         found = await repo.get_session_by_cc(tx.conn, hook.cc_session_id)
         desktop = await self._host_desktop(tx, hook, found)
         if desktop is not None:
-            return await self._link_hook_session(tx, desktop, hook.cc_session_id)
+            return await self._link_hook_session(tx, desktop, hook.cc_session_id, from_window=True)
         if found is not None:
             return found
         projects = await repo.projects_with_repo_path(tx.conn)
@@ -1643,15 +1701,20 @@ class Service:
             return None, []
         session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
         project_ids = await self._guard_projects(session, hook.cwd)
-        environments = await repo.list_environments(self._r, project_ids)
+        no_live = session is not None and session.no_live_at is not None
+        # The switch says no live at all, also where the session's links do not reach.
+        environments = await repo.list_environments(self._r, project_ids, or_live=no_live)
         policies = await self._policies(self._r, environments)
-        touches = guard.check(call, environments, lambda env: policies[env.id])
+        touches = guard.check(call, environments, lambda env: policies[env.id], no_live)
         if not touches:
             return None, []
         live = [t for t in touches if t.environment.kind == "live"]
         if live:
             secrets = [v for e in environments for a in e.access for v in a.test_secrets.values()]
-            await self._journal(session, call, live, secrets)
+            try:
+                await self._journal(session, call, live, secrets)
+            except Exception:
+                logger.exception("Writing the live journal failed; the decision still stands")
         top = guard.strongest(touches)
         if top is not None and top.decision in ("deny", "ask"):
             return top, []
@@ -1870,6 +1933,80 @@ class Service:
             exclude_kinds=exclude_kinds,
             limit=max(1, min(limit, 500)),
         )
+
+    # --- audit -------------------------------------------------------------
+
+    async def audit(
+        self,
+        *,
+        project: str | None = None,
+        environment: str | None = None,
+        session_ids: list[int] | None = None,
+        decision: str | None = None,
+        days: int = 7,
+        changes: bool = False,
+        before_id: int | None = None,
+        after_id: int | None = None,
+        limit: int = 50,
+    ) -> list[Event]:
+        """Who did what on which live stand, newest first; `changes` adds the changes to the
+        policy, the stands and the sessions' switches. `days` 0 means all of it."""
+        if decision is not None and decision not in guard.DECISION_ORDER:
+            raise ValidationError(f"decision must be one of: {', '.join(guard.DECISION_ORDER)}.")
+        if not 0 <= days <= AUDIT_DAYS_MAX:
+            raise ValidationError(f"days must be from 0 (all) to {AUDIT_DAYS_MAX}.")
+        project_id = (await self.get_project(project)).id if project else None
+        since = None
+        if days:
+            start = datetime.now(UTC) - timedelta(days=days)
+            since = start.isoformat(timespec="milliseconds")
+        return await repo.audit_page(
+            self._r,
+            before_id=before_id,
+            after_id=after_id,
+            project_id=project_id,
+            environment=environment,
+            session_ids=session_ids,
+            decision=decision,
+            since=since,
+            kinds=(LIVE_ACTION, *AUDIT_CHANGE_KINDS) if changes else (LIVE_ACTION,),
+            limit=max(1, min(limit, 500)),
+        )
+
+    async def environment_names(self) -> list[str]:
+        """The stands of all projects by name, for the Audit filter."""
+        return sorted({e.name for e in await repo.list_environments(self._r)})
+
+    async def _no_live_event(
+        self, tx: _Tx, session: Session, kind: str, actor: str, **payload: Any
+    ) -> None:
+        project = None
+        if session.project_id is not None:
+            project = await repo.get_project_by_id(tx.conn, session.project_id)
+        await tx.event(
+            kind,
+            actor,
+            project_id=session.project_id,
+            session_id=session.id,
+            session=session.name,
+            **({"project": project.slug} if project else {}),
+            **payload,
+        )
+
+    async def set_session_no_live(self, session_id: int, on: bool, *, actor: str) -> Session:
+        """The owner's "no live now" switch. A repeat of the current state changes nothing."""
+        async with self._tx() as tx:
+            session = await repo.get_session_by_id(tx.conn, session_id)
+            if session is None:
+                raise NotFoundError(f"Session {session_id} not found.")
+            if (session.no_live_at is not None) == on:
+                return session
+            at, by = (tx.now, actor) if on else (None, None)
+            await repo.set_session_no_live(tx.conn, session.id, at, by)
+            await self._no_live_event(tx, session, NO_LIVE_ON if on else NO_LIVE_OFF, actor)
+            found = await repo.get_session_by_id(tx.conn, session.id)
+            assert found is not None
+            return found
 
     # --- map ---------------------------------------------------------------
 

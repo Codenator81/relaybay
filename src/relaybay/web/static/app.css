@@ -1521,6 +1521,10 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .usage-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .usage-table .usage-period { white-space: nowrap; }
 
+.audit-note { margin: 4px 0 12px; font-size: 13px; }
+.audit-table td { vertical-align: top; overflow-wrap: break-word; }
+.audit-table code { font-size: 12px; overflow-wrap: anywhere; }
+
 /* --- quick switcher ---------------------------------------------------------- */
 .switcher-open {
   display: inline-flex;

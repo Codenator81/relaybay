@@ -113,7 +113,7 @@ search_index  FTS5 (kind, ref, project_id, title, body, stems), created at start
 session       id, external_id UNIQUE (local_<uuid>), name (unique among rows without external_id),
               project_id, cwd, kind, desktop_link, status (working|idle|waiting|ended), activity,
               cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, transcript_path,
-              last_seen_at, created_at
+              no_live_at, no_live_by, last_seen_at, created_at
 usage_file    id, path UNIQUE, session_id, parent_id (a subagent's file), read_offset, skipping, unknown_lines, error, created_at,
               read_at
 usage_day     file_id, day (UTC), session_id, model, input, output, cache_read, cache_write,

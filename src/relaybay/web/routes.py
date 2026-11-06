@@ -28,6 +28,7 @@ from starlette.responses import StreamingResponse
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
 from relaybay.domain import environments as env_domain
+from relaybay.domain import guard
 from relaybay.domain import memory as mem
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
@@ -108,6 +109,9 @@ def cookie_name(request: Request, name: str) -> str:
 
 
 ACTIVITY_PAGE = 50
+AUDIT_PAGE = 50
+AUDIT_DAYS = (1, 7, 30, 90, 0)
+EVENT_ID_MAX = 2**63 - 1  # the largest integer SQLite binds
 EVENT_KINDS = (
     "project.created",
     "project.updated",
@@ -152,6 +156,8 @@ EVENT_KINDS = (
     "plan.accepted",
     "session.todo_updated",
     "session.message",
+    "session.no_live_on",
+    "session.no_live_off",
     "attachment.added",
     "attachment.updated",
     "attachment.removed",
@@ -359,7 +365,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `map`, `usage`, `activity`, `settings`, `sessions`; `board`, `sessions`,
+        `boards`, `map`, `usage`, `activity`, `audit`, `settings`, `sessions`; `board`,
+        `sessions`,
         `environments` or
         `docs` with `project`)."""
         nav = {
@@ -756,20 +763,25 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/sessions", response_class=HTMLResponse)
     async def all_sessions_page(request: Request):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
-        return await page(
+        flash = take_flash(request)
+        response = await page(
             request,
             "sessions.html",
             "sessions",
             sessions_project=None,
             rows=await service.list_sessions(),
             last_event_id=last_event_id,
+            message=flash.get("message"),
+            error=flash.get("error"),
         )
+        return shown_once(request, response)
 
     @router.get("/p/{slug}/sessions", response_class=HTMLResponse)
     async def sessions_page(request: Request, slug: str):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
         project = await service.get_project(slug)
-        return await page(
+        flash = take_flash(request)
+        response = await page(
             request,
             "sessions.html",
             "sessions",
@@ -777,13 +789,132 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             sessions_project=project,
             rows=await service.list_sessions(project.slug),
             last_event_id=last_event_id,
+            message=flash.get("message"),
+            error=flash.get("error"),
         )
+        return shown_once(request, response)
 
     @router.get("/fragments/sessions", response_class=HTMLResponse)
     async def sessions_fragment(request: Request, project: str = ""):
         sessions_project = await service.get_project(project) if project else None
         rows = await service.list_sessions(sessions_project.slug if sessions_project else None)
         return render(request, "_sessions.html", sessions_project=sessions_project, rows=rows)
+
+    @router.post("/sessions/{session_id}/no-live")
+    async def session_no_live(
+        request: Request,
+        session_id: int,
+        on: Annotated[bool, Form()] = True,
+        back: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        async def write() -> str:
+            saved = await service.set_session_no_live(session_id, on, actor="owner")
+            if on and saved.cc_session_id is None:
+                return (
+                    f"Live is off for {saved.name}, but it is not linked to hooks yet: this"
+                    " applies once it is linked."
+                )
+            if on:
+                return f"Live is off for {saved.name}: any touch of a live stand is denied."
+            return f"Live is back for {saved.name}: its level on each stand applies again."
+
+        return await intake_write(request, csrf, write, back_to(back, "/sessions"))
+
+    async def audit_context(
+        project: str,
+        environment: str,
+        session: str,
+        decision: str,
+        days: int,
+        changes: bool,
+        before: int | None,
+        after: int | None,
+    ) -> dict[str, Any]:
+        if session and not (session.isascii() and session.isdigit() and len(session) <= 18):
+            raise ValidationError("session must be a session's number.")
+        if before is not None:
+            before = max(-EVENT_ID_MAX, min(before, EVENT_ID_MAX))
+        if after is not None:
+            after = max(-EVENT_ID_MAX, min(after, EVENT_ID_MAX))
+        filters: dict[str, Any] = {
+            "project": project,
+            "environment": environment,
+            "session": session,
+            "decision": decision,
+            "changes": 1 if changes else "",
+        }
+        # A live refetch (`after`) takes everything new at once; a page stops at AUDIT_PAGE.
+        limit = AUDIT_PAGE * 4 if after is not None else AUDIT_PAGE
+        items = await service.audit(
+            project=project or None,
+            environment=environment or None,
+            session_ids=[int(session)] if session else None,
+            decision=decision or None,
+            days=days,
+            changes=changes,
+            before_id=before,
+            after_id=after,
+            limit=limit + 1,
+        )
+        more = after is None and len(items) > limit
+        items = items[:limit]
+        kept = {k: v for k, v in filters.items() if v}
+        kept["days"] = days  # 0 (all of it) is a choice, and the default is not 0
+        more_qs = urlencode({**kept, "before": items[-1].id}) if more else ""
+        return {"events": items, "more_qs": more_qs, "filters_qs": urlencode(kept)}
+
+    @router.get("/audit", response_class=HTMLResponse)
+    async def audit_page(
+        request: Request,
+        project: str = "",
+        environment: str = "",
+        session: str = "",
+        decision: str = "",
+        days: int = 7,
+        changes: bool = False,
+        before: int | None = None,
+    ):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        project = project.strip().lower()
+        context = await audit_context(
+            project, environment, session, decision, days, changes, before, None
+        )
+        return await page(
+            request,
+            "audit.html",
+            "audit",
+            **context,
+            project_filter=project,
+            environment_filter=environment,
+            session_filter=session,
+            decision_filter=decision,
+            days_filter=days,
+            changes_filter=changes,
+            days_choices=AUDIT_DAYS,
+            decisions=guard.DECISION_ORDER,
+            environment_names=await service.environment_names(),
+            session_rows=await service.list_sessions(),
+            paged=before is not None,
+            last_event_id=last_event_id,
+        )
+
+    @router.get("/fragments/audit", response_class=HTMLResponse)
+    async def audit_fragment(
+        request: Request,
+        project: str = "",
+        environment: str = "",
+        session: str = "",
+        decision: str = "",
+        days: int = 7,
+        changes: bool = False,
+        before: int | None = None,
+        after: int | None = None,
+    ):
+        context = await audit_context(
+            project.strip().lower(), environment, session, decision, days, changes, before, after
+        )
+        return render(request, "_audit_rows.html", **context)
 
     async def activity_context(
         project: str, kind: str, before: int | None, after: int | None

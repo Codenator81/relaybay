@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "annotation_reply",
     "decision_add",
     "events_since",
+    "audit_list",
     "rules_get",
     "backlog_patch",
 }
