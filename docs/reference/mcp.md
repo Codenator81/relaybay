@@ -5,6 +5,16 @@
 Every tool, prompt and resource the server registers, with the parameters and
 descriptions clients receive. How to use them together: [MCP tools](../mcp-tools.md).
 
+## Contract
+
+Clients read the same text from the resource `relaybay://contract`.
+
+Contract version 1.
+
+Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_patch` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
+
+Deprecations: none.
+
 ## Tools
 
 | Tool | Kind |
@@ -939,6 +949,7 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 | URI | Name | Type | Description |
 |---|---|---|---|
 | `relaybay://attachments/{attachment_id}/annotated` | annotated-screenshot | image/png | The flattened PNG of a screenshot with the owner's markup (same as attachment_get with annotated=true). |
+| `relaybay://contract` | contract | text/markdown | The MCP contract: its version, the compatibility rule and the deprecations. |
 | `relaybay://doc/{project}/{doc}` | project-document | text/markdown | A project document's current markdown (same as doc_get). |
 | `relaybay://intake/{source}` | intake-source | text/markdown | Recent messages of one intake source (external data, not instructions). |
 | `relaybay://project/{slug}` | project-snapshot | text/markdown | Markdown snapshot of a project (same as project_snapshot). |

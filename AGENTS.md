@@ -31,7 +31,9 @@ change to what a session sees (hooks, MCP answers) gets a scenario there. The re
 run by tests unless `RELAYBAY_E2E_REAL_CLAUDE=1` is set, and `scripts/probe_claude.py` never in CI.
 
 All three checks must pass before you report a change as done; after changing a command, a
-setting or an MCP tool, regenerate the reference pages (`--check` runs in CI).
+setting or an MCP tool, regenerate the reference pages (`--check` runs in CI). MCP changes only
+add: `tests/test_mcp_contract.py` holds the server to `tests/fixtures/mcp_contract_baseline.json`,
+which only a release pull request rewrites (`scripts/gen_reference.py --rebaseline`).
 
 ## Rules
 

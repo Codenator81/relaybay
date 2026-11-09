@@ -843,7 +843,8 @@ project pulse current with `project_pulse_set`; pick or create a task and pass `
 rebind without your `local_` id); update `next_step`, `waiting_on` (only who acts next: a name or role, no text
 after it; what happens goes to `next_step`) and `progress` on every stage change and report; report at the end of every stage with the configured first line, states and
 sizes (taken from the effective global rules); set `waiting_on` to who decides when a decision is
-needed; use `task_patch` for fields a cached schema lacks; fix what a `Warning (rules)` line names,
+needed; use `task_patch` for fields a cached schema lacks (a `Deprecated: …` result line names
+what to use instead, [below](#spec-mcp-compat)); fix what a `Warning (rules)` line names,
 read the rules again on a `rules updated to vN` line and change them through `rules_propose`
 (`rules_update` is only for coordinators);
 when a hook gives owner comments, handle them like a user message and call `comment_ack` (or answer
@@ -904,7 +905,8 @@ last write wins.
 `relaybay://doc/{project}/{doc}` (a document's current markdown),
 `relaybay://attachments/{attachment_id}/annotated` (a flattened PNG),
 `relaybay://intake/{source}` (a source's recent messages, [§12](#spec-intake-mcp)), `relaybay://schema/task`
-(the editable task fields as a table: name, type, description, how to clear).
+(the editable task fields as a table: name, type, description, how to clear), `relaybay://contract`
+(the contract version, the rule below and the deprecations, [below](#spec-mcp-compat)).
 
 <a id="spec-prompts"></a>
 
@@ -926,11 +928,37 @@ known rules version is older, a write tool's result also ends with one line, onc
 
 <a id="spec-mcp-compat"></a>
 
-**Compatibility policy.** MCP clients keep the parameter schema of a tool they already loaded, even
-across server restarts. Therefore existing tools never gain required parameters; new behaviour comes
-as new optional parameters or new tools, and `task_patch(task, fields={…})` reaches any editable
-field with a stale schema. Removing a tool or parameter is announced with a deprecation warning for
-one minor version first. MCP protocol: what the pinned SDK (`mcp>=2,<3`) negotiates. Minimum
+**Compatibility policy (MCP contract v1).** MCP clients keep the parameter schema of a tool they
+already loaded, even across server restarts, so a release only adds: new optional parameters, new
+tools, resources and prompts, a wider type, more enum values. Breaking, and allowed only when an
+expired deprecation covers it: removing a tool, a parameter, a resource (URI or template), a prompt or
+a prompt argument; narrowing what a parameter accepts (a type dropped, `null` included, enum values
+dropped or an enum added, a tighter minimum, maximum or length, a field of an object parameter
+removed or made required); a new required parameter or prompt argument, or an optional one made
+required; a read-only tool that starts to write or a tool that becomes destructive. A field a stale
+schema lacks is reached through `task_patch(task, fields={…})` or `backlog_patch(item, fields={…})`;
+there is no such escape hatch for other tools.
+
+A deprecation is an entry in `DEPRECATIONS` (`src/relaybay/mcp_server/contract.py`): the tool (or
+resource URI, or prompt) and the parameter, if only one is meant, the version it is deprecated
+since, a date it is removed not before, and the replacement. The window is at least one minor
+version and 30 days: the entry expires once the server's minor version is above `since` and the
+date has come. The tool is marked with `@deprecated` (or `@deprecated("<parameter>")`), which keeps
+the signature and adds the line
+`Deprecated: <tool> is deprecated since <version> and may be removed in a later minor version, not before <date>; use <replacement> instead.`
+(for a parameter ``Deprecated: parameter `<name>` of <tool> is …``) to the tool's description and to
+its result (for a parameter, only when the call passed it). `relaybay://contract` and the
+[MCP reference](reference/mcp.md#contract) list the version, this rule and the deprecations
+(`Deprecations: none.` in 0.8.0). The release that removes an expired item raises `CONTRACT_VERSION`
+(1 in 0.8.0); additions keep it.
+
+`tests/fixtures/mcp_contract_baseline.json` holds the surface clients cache: tool names, input
+schemas without descriptions, titles and defaults, annotations, resource URIs and templates, prompt
+names and arguments. `tests/test_mcp_contract.py` fails on a breaking change against it that no
+expired deprecation covers. Only a release pull request rewrites it, with
+`scripts/gen_reference.py --rebaseline`, which refuses an uncovered breaking change and a covered
+one without a raised contract version; `tests/test_release.py` checks it was written by the current
+version. MCP protocol: what the pinned SDK (`mcp>=2,<3`) negotiates. Minimum
 supported Claude Code version: 2.0.0, checked by `relaybay doctor` (older releases are not tested;
 unverified); http hooks need 2.1.63 (unverified, see [§4](#spec-hooks)).
 

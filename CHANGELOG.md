@@ -77,6 +77,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   binding over MCP.
 - Server instruction 14 explains a refusal by the brake. An end-to-end scenario covers Stop all and
   Release with the fake `claude`.
+- A versioned MCP contract (version 1): a release only adds tools, parameters, resources and
+  prompts; a removal, a narrowed type or enum, a new required parameter or a read-only tool that
+  starts to write is allowed only after a deprecation of at least one minor version and 30 days.
+  `src/relaybay/mcp_server/contract.py` holds `CONTRACT_VERSION` and `DEPRECATIONS` (none in this
+  release); a `@deprecated` tool or parameter adds a `Deprecated: …` line to its description and to
+  its result. A new resource `relaybay://contract`, a **Contract** section in the MCP reference;
+  server instruction 6 names the `Deprecated:` line. `tests/test_mcp_contract.py` holds the server
+  to `tests/fixtures/mcp_contract_baseline.json`, which only a release pull request rewrites, with
+  `scripts/gen_reference.py --rebaseline`.
 
 ## [0.7.1] - 2026-11-06
 
