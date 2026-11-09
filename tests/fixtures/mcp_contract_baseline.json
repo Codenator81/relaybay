@@ -1,0 +1,3991 @@
+{
+  "contract_version": 1,
+  "prompts": {
+    "finish_stage": {
+      "arguments": {
+        "project": true,
+        "task": false
+      }
+    },
+    "start_task": {
+      "arguments": {
+        "project": true,
+        "task": false
+      }
+    }
+  },
+  "resource_templates": [
+    "relaybay://attachments/{attachment_id}/annotated",
+    "relaybay://doc/{project}/{doc}",
+    "relaybay://intake/{source}",
+    "relaybay://project/{slug}",
+    "relaybay://project/{slug}/environments",
+    "relaybay://rules/{project}"
+  ],
+  "resources": [
+    "relaybay://contract",
+    "relaybay://rules",
+    "relaybay://schema/task"
+  ],
+  "tools": {
+    "annotation_reply": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "annotation": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "annotation",
+          "body"
+        ],
+        "type": "object"
+      }
+    },
+    "attach_file": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "attachment_caption": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "attachment_id": {
+            "type": "integer"
+          },
+          "caption": {
+            "type": "string"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "attachment_id",
+          "caption"
+        ],
+        "type": "object"
+      }
+    },
+    "attachment_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "annotated": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "audit_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "days": {
+            "maximum": 366,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "backlog_add": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "maximum": 9,
+                "minimum": -9,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "title"
+        ],
+        "type": "object"
+      }
+    },
+    "backlog_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "backlog_patch": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "fields": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item": {
+            "type": "integer"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "fields",
+          "item"
+        ],
+        "type": "object"
+      }
+    },
+    "backlog_update": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item": {
+            "type": "integer"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "maximum": 9,
+                "minimum": -9,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "type": "object"
+      }
+    },
+    "block_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "block_set": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "base_version": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "char_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "base_version",
+          "body",
+          "label"
+        ],
+        "type": "object"
+      }
+    },
+    "brake_set": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "reason",
+          "scope"
+        ],
+        "type": "object"
+      }
+    },
+    "brake_status": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "budget_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "comment_ack": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "comment_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "comment_add": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "comments_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "unread_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "decision_add": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "supersedes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "decision_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "include_superseded": {
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "doc_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "doc": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "doc",
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "doc_history": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "doc": {
+            "type": "string"
+          },
+          "from_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "to_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "doc",
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "doc_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "doc_update": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "base_version": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "doc": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "base_version",
+          "body",
+          "doc",
+          "project",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "environment_propose": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "change": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "change",
+          "project",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "environments_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "events_since": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since_id": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "intake_dismiss": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "message": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "intake_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "intake_post": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "external_id": {
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "thread": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "external_id",
+          "source",
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "intake_propose": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "project",
+          "title"
+        ],
+        "type": "object"
+      }
+    },
+    "intake_sources": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "intake_tie": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "message": {
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "memory_add": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "base_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "type": "string"
+          },
+          "force_new": {
+            "type": "boolean"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "op": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "kind",
+          "scope",
+          "title"
+        ],
+        "type": "object"
+      }
+    },
+    "memory_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "memory_search": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "kinds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    },
+    "memory_update": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "base_version": {
+            "type": "integer"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "review_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "base_version",
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "message_ack": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "message_send": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      }
+    },
+    "messages_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "box": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unread_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "type": "object"
+      }
+    },
+    "plan_accept": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "plan_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "plan_set": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "steps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "steps",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "plan_step_add": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "details": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "task",
+          "title"
+        ],
+        "type": "object"
+      }
+    },
+    "plan_step_update": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "conformance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "step": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "step",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "policy_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "environment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "policy_propose": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "patch": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "patch",
+          "reason",
+          "scope"
+        ],
+        "type": "object"
+      }
+    },
+    "portfolio_digest": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "budget": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since_event": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "project_digest": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "budget": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since_event": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "project_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "project_pulse_set": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "project_snapshot": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "include_done": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "project_upsert": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      }
+    },
+    "report_add": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "review_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "review_step_update": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "details": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "step",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "review_steps_set": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "steps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "steps",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "rules_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "rules_propose": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "patch": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "patch",
+          "reason",
+          "scope"
+        ],
+        "type": "object"
+      }
+    },
+    "rules_update": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "patch": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "patch",
+          "reason",
+          "scope"
+        ],
+        "type": "object"
+      }
+    },
+    "task_bind_session": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "caller": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "type": "string"
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "task_context": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "budget": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since_event": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "task_create": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "doc_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "tracker_logged": {
+            "type": "boolean"
+          },
+          "tracker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracker_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracker_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "title"
+        ],
+        "type": "object"
+      }
+    },
+    "task_get": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "reports": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "task_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "include_done": {
+            "type": "boolean"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "task_patch": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fields",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "task_set_stage": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "stage",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "task_unbind_session": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "caller": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "task_update": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "doc_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracker_logged": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracker_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracker_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
+    "usage_summary": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "days": {
+            "maximum": 366,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "version": "0.7.1"
+}

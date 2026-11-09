@@ -18,6 +18,7 @@ from relaybay import __version__
 from relaybay.domain import backlog
 from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
+from relaybay.mcp_server import contract
 from relaybay.mcp_server import format as fmt
 from relaybay.service import Service, collect_notes
 
@@ -52,7 +53,8 @@ def instructions(rules: Rules) -> str:
             "5. When the work needs a decision, set waiting_on to who decides and say in the report"
             " what is to be decided.",
             "6. If your tool's parameters lack a field, use task_patch (allowed fields:"
-            " relaybay://schema/task).",
+            " relaybay://schema/task). A result line 'Deprecated: …' names what to use instead"
+            f" (contract v{contract.CONTRACT_VERSION}: relaybay://contract).",
             "7. A response line starting with 'Warning (rules)' names a rule the write did not"
             " meet: fix it (e.g. add the missing report) rather than ignore it. A line 'rules"
             " updated to vN: re-read relaybay://rules…' means they changed: read them again. To"
@@ -2288,6 +2290,17 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     )
     async def task_schema_resource() -> str:
         return fmt.task_schema()
+
+    @mcp.resource(
+        "relaybay://contract",
+        name="contract",
+        description="The MCP contract: its version, the compatibility rule and the deprecations.",
+        mime_type="text/markdown",
+    )
+    async def contract_resource() -> str:
+        lines = ["# relaybay MCP contract", "", f"Server {__version__}.", ""]
+        lines += contract.summary()
+        return "\n".join(lines)
 
     async def prompt_context(project: str, task: str) -> tuple[Any, Any]:
         # Only an MCPError keeps its message: the SDK turns anything else into "Error rendering".

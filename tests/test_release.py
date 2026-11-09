@@ -1,6 +1,7 @@
 """Release plumbing: one version, generated reference pages in sync, release notes."""
 
 import importlib.util
+import json
 import re
 import sys
 import tomllib
@@ -37,6 +38,15 @@ def test_reference_pages_match_the_code() -> None:
         assert committed == text, (
             f"{path.name} is out of date: run 'uv run python scripts/gen_reference.py'"
         )
+
+
+def test_the_mcp_contract_baseline_is_of_this_version() -> None:
+    baseline = ROOT / "tests" / "fixtures" / "mcp_contract_baseline.json"
+    written = json.loads(baseline.read_text(encoding="utf-8"))["version"]
+    assert written == relaybay.__version__, (
+        "a release PR rewrites the MCP contract baseline:"
+        " run 'uv run python scripts/gen_reference.py --rebaseline'"
+    )
 
 
 def test_every_mcp_tool_is_explained_in_the_guide() -> None:

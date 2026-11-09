@@ -15,7 +15,8 @@ like `task_context`'s rules line), and keep the project pulse current with `proj
 session start gave you one; if not, don't rebind — the coordinator binds you); update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and
 report; start a report with the configured first line, states and sizes (taken from the
 effective global rules, so they match `rules_get`); set `waiting_on` to who
-decides when the work needs a decision; use `task_patch` for fields your tool schema lacks; treat a
+decides when the work needs a decision; use `task_patch` for fields your tool schema lacks (a
+`Deprecated: …` result line names what to use instead, see [Contract](#contract-and-deprecations)); treat a
 `Warning (rules)` line as something to fix and a `rules updated to vN` line as a reason to read the
 rules again, and change them through `rules_propose` (`rules_update` is only for coordinators); when a hook hands over owner comments, handle them like
 a message from the user and call `comment_ack` (or answer with `comment_add`); before touching a
@@ -514,6 +515,9 @@ with `source`), texts quoted as external data.
 `relaybay://schema/task` — the editable task fields as a markdown table (field, type, description,
 how to clear it), generated from the same list the server validates writes against.
 
+`relaybay://contract` — the MCP contract: its version, the compatibility rule and the deprecations
+([below](#contract-and-deprecations)).
+
 ## Working rules
 
 One structured document with a fixed set of rule kinds:
@@ -593,6 +597,23 @@ looks unavailable. Two ways out:
   and in the resource `relaybay://schema/task` (name, type, description, how to clear).
 - Refresh the schemas: reconnect the server in the client (`/mcp` in the Claude Code CLI) or start
   a new session.
+
+## Contract and deprecations
+
+The tools, resources and prompts follow a versioned contract (version 1 in 0.8.0): a release only
+adds. It never removes a tool, a parameter, a resource or a prompt, never narrows what a parameter
+accepts, never adds a required parameter to an existing tool and never makes a read-only tool write,
+unless the item was deprecated first for at least one minor version and 30 days. A deprecated tool
+or parameter says so in its description and in its result:
+
+```text
+Deprecated: task_foo is deprecated since 0.9.0 and may be removed in a later minor version, not before 2027-01-15; use task_bar instead.
+```
+
+Switch to the replacement when you see it. `relaybay://contract` and the
+[MCP reference](reference/mcp.md#contract) list the version, the rule and the current deprecations
+(none in 0.8.0). Escape hatches for a stale schema exist only where fields grow: `task_patch` and
+`backlog_patch`. The rule in full: [SPEC](SPEC.md#spec-mcp-compat).
 
 ## Example
 

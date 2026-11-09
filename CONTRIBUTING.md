@@ -84,6 +84,11 @@ uv run python scripts/gen_reference.py           # rewrite docs/reference/*.md
 uv run python scripts/gen_reference.py --check   # what CI runs
 ```
 
+`tests/test_mcp_contract.py` fails when a change breaks the MCP contract (a removed tool or
+parameter, a narrowed type, a new required parameter) against `tests/fixtures/mcp_contract_baseline.json`
+without an expired deprecation ([SPEC](docs/SPEC.md#spec-mcp-compat)); only a release pull request
+rewrites the baseline, with `uv run python scripts/gen_reference.py --rebaseline`.
+
 ## Desktop builds
 
 The installers are built from a PyInstaller onedir folder; [packaging/README.md](packaging/README.md)
