@@ -42,7 +42,7 @@ from relaybay.domain.errors import (
     ValidationError,
 )
 from relaybay.domain.intake import autonomy_reason
-from relaybay.domain.map_graph import DEFAULT_MINUTES
+from relaybay.domain.map_graph import DEFAULT_MINUTES, DEFAULT_VIEW
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
 from relaybay.domain.rules import rules_markdown
@@ -162,6 +162,7 @@ EVENT_KINDS = (
     "plan.accepted",
     "session.todo_updated",
     "session.message",
+    "session.launched",
     "session.no_live_on",
     "session.no_live_off",
     "attachment.added",
@@ -709,7 +710,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/map", response_class=HTMLResponse)
     async def map_page(
         request: Request,
-        view: str = "structure",
+        view: str = DEFAULT_VIEW,
         minutes: int = DEFAULT_MINUTES,
         project: str = "",
     ):
@@ -730,7 +731,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/map/graph")
     async def map_graph(
-        view: str = "structure", minutes: int = DEFAULT_MINUTES, project: str = ""
+        view: str = DEFAULT_VIEW, minutes: int = DEFAULT_MINUTES, project: str = ""
     ) -> JSONResponse:
         graph = await service.map_graph(
             view=view, minutes=minutes, project=project.strip().lower() or None

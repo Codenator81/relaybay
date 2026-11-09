@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Map: an **Agents** view, now the default. Sessions in a box per project (Other without one), each
+  with its status and current task and stage; edges for who started whom, who wrote to whom
+  (`SendMessage` and `message_send`, thicker with more messages) and the owner's comments, only of
+  the last 7 days. The project select comes first; with a project chosen, sessions of other projects
+  linked to it stay, faded. Tapping a node lists its tasks and links; tapping an edge shows its
+  count and latest times. Structure and Now are unchanged.
+- Hooks: a `PostToolUse` of the desktop tool that starts a session records `session.launched`
+  with the caller and the new session's desktop id only, nothing else of the tool's input or answer.
+  The `relaybay hook` forwarder retries and spools it. No backfill of earlier launches.
+
 ### Fixed
 
 - Two writes in one clock tick (about 15 ms on Windows) no longer share a timestamp, so a report right after the plan closed counts as work after it.

@@ -9,11 +9,11 @@ With `--wait` it is the opt-in wake-up hook (`asyncRewake`, run in the backgroun
 waits for an owner comment for the idle session and exits 2 with the comment on stderr, which
 wakes the session; it exits 0 silently in every other case.
 
-Events that carry state (session start and end, a prompt, a notification, the end of a turn and a
-todo tool's change) get one retry with a longer timeout; when the server still does not answer
-they go to a bounded spool in the relaybay config folder, and the next run that reaches the
-server sends them first, oldest first. The guard (PreToolUse) and other tool calls get one short
-try and are never spooled.
+Events that carry state (session start and end, a prompt, a notification, the end of a turn, a
+todo tool's change and a session launch) get one retry with a longer timeout; when the server still
+does not answer they go to a bounded spool in the relaybay config folder, and the next run that
+reaches the server sends them first, oldest first. The guard (PreToolUse) and other tool calls get
+one short try and are never spooled.
 """
 
 import argparse
@@ -32,6 +32,7 @@ from relaybay.domain.hooks import (
     ATTENDED_FIELD,
     HOST_SESSION_ENV,
     HOST_SESSION_FIELD,
+    LAUNCH_TOOLS,
     SPOOLED_FIELD,
     WAKE_HOLD_SECONDS,
 )
@@ -106,7 +107,7 @@ def event_kind(body: bytes) -> str:
         return "state"
     if event == "PostToolUse":
         tool = _TOOL_RE.search(body)
-        if tool is not None and tool.group(1).decode() in TODO_TOOLS:
+        if tool is not None and tool.group(1).decode() in (*TODO_TOOLS, *LAUNCH_TOOLS):
             return "state"
     return "ping"
 

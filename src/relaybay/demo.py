@@ -20,6 +20,10 @@ DEMO_HOOK_SESSION = "demo-hook-session"
 ACME_REPO = "/home/demo/src/acme-shop"
 DEMO_REVIEW_HOOK = "demo-review-hook-session"
 DEMO_TODO_HOOK = "demo-todo-hook-session"
+DEMO_COORDINATOR_HOOK = "demo-coordinator-hook-session"
+COORDINATOR_REPO = "/home/demo/src/coordinator"
+DEMO_V0_SESSION = "local_5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b"
+LAUNCH_TOOL = "mcp__ccd_session__start_session"
 
 
 def mock_screen(width: int, height: int, accent: tuple[int, int, int], rows: int) -> bytes:
@@ -268,7 +272,7 @@ async def seed(service: Service) -> int:
         waiting_on="owner",
     )
     await service.add_report(docs, "changed · S · examples added", session="docs-agent")
-    await task(
+    v0 = await task(
         "demo-api",
         "Remove the v0 endpoints",
         description="v0 has had no traffic for 90 days; remove it and its tests.",
@@ -368,6 +372,7 @@ async def seed(service: Service) -> int:
 
     await seed_memory(service)
     await seed_map_and_usage(service)
+    await seed_launches(service, v0)
 
     # The desktop session of the checkout task is "working": as if its hook had reported. One
     # event only, so no coalescing timer outlives the service.
@@ -439,6 +444,43 @@ async def seed_map_and_usage(service: Service) -> None:
                 "tool_input": {"to": recipient},
             }
         )
+
+
+async def seed_launches(service: Service, v0: str) -> None:
+    """A coordinator session that started two desktop sessions, as its hooks report the desktop
+    tool's answers (one as content blocks, one as an object), and messages between them."""
+    answers = (
+        [{"type": "text", "text": f"Started session {DEMO_DESKTOP_SESSION}."}],
+        {"session_id": DEMO_V0_SESSION, "title": "demo-api · v0 removal"},
+    )
+    for answer in answers:
+        await service.record_hook(
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": DEMO_COORDINATOR_HOOK,
+                "cwd": COORDINATOR_REPO,
+                "tool_name": LAUNCH_TOOL,
+                "tool_input": {"prompt": "Work on the task the coordinator names."},
+                "tool_response": answer,
+            }
+        )
+    await service.bind_session(v0, DEMO_V0_SESSION, session_title="demo-api · v0 removal")
+    await service.record_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": DEMO_COORDINATOR_HOOK,
+            "cwd": COORDINATOR_REPO,
+            "tool_name": "SendMessage",
+            "tool_input": {"to": DEMO_DESKTOP_SESSION},
+        }
+    )
+    await service.send_session_message(
+        "Started on the v0 removal; the announcement date is the open question.",
+        to="coordinator",
+        task=v0,
+        session=DEMO_V0_SESSION,
+    )
+    await service.add_owner_comment(v0, "Put the removal date in the changelog too.")
 
 
 async def seed_annotations(service: Service, shot: int) -> None:

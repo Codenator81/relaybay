@@ -16,7 +16,7 @@ import time
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -70,6 +70,7 @@ from relaybay.domain.hooks import (
     HookEvent,
     folder_name,
     parse_hook,
+    parse_launched_session,
     parse_message_recipient,
     session_start_context,
 )
@@ -1507,7 +1508,27 @@ class Service:
                 await self._record_message(session, recipient)
             except Exception:
                 logger.exception("Recording a message edge failed; the hook goes on")
+        child = parse_launched_session(payload)
+        if child is not None and session is not None and child != session.external_id:
+            try:
+                await self._record_launch(session, child)
+            except Exception:
+                logger.exception("Recording a session launch failed; the hook goes on")
         return session
+
+    async def _record_launch(self, session: Session, child: str) -> None:
+        """A `session.launched` event: the session that started another and the new one's desktop
+        id, nothing else of the tool's input or answer. The Map resolves the id when a session
+        with it is known; a replayed hook adds a row the Map counts once."""
+        async with self._tx() as tx:
+            await tx.event(
+                "session.launched",
+                session.name,
+                project_id=session.project_id,
+                session_id=session.id,
+                session=session.name,
+                child=child,
+            )
 
     async def _record_message(self, session: Session, recipient: str) -> None:
         """A `session.message` event: sender, recipient and time, never the text. At most one per
@@ -2150,7 +2171,7 @@ class Service:
     async def map_graph(
         self,
         *,
-        view: str = "structure",
+        view: str = graphs.DEFAULT_VIEW,
         minutes: int = graphs.DEFAULT_MINUTES,
         project: str | None = None,
     ) -> dict[str, Any]:
@@ -2163,6 +2184,8 @@ class Service:
         conn = self._r
         now = datetime.now(UTC)
         shown = await self.get_project(project) if project else None
+        if view == "agents":
+            return await self._agents_graph(conn, now, shown.slug if shown else None)
         projects = [shown] if shown else await repo.list_projects(conn)
         project_id = shown.id if shown else None
         tasks = await repo.list_tasks(
@@ -2179,12 +2202,7 @@ class Service:
         environments = await repo.list_environments(conn, [p.id for p in projects])
         policies = await self._policies(conn, environments)
         messages = await repo.map_messages(conn, since, recent_since, graphs.MESSAGES_MAX)
-        recipients: dict[str, Session] = {}
-        for name in {m.recipient for m in messages}:
-            found = await repo.find_sessions(conn, name)
-            named = found[0] if found else await repo.get_session_by_cc(conn, name)
-            if named is not None:
-                recipients[name] = named
+        recipients = await self._map_recipients(conn, messages)
         data = graphs.MapData(
             projects=projects,
             tasks=tasks,
@@ -2208,6 +2226,53 @@ class Service:
                 elif event.task_id is not None:
                     data.now_bindings.add((event.session_id, event.task_id))
         return graphs.build_graph(data, view, minutes, shown.slug if shown else None)
+
+    async def _map_recipients(
+        self, conn: aiosqlite.Connection, messages: list[graphs.MessageRow]
+    ) -> dict[str, Session]:
+        recipients: dict[str, Session] = {}
+        for name in {m.recipient for m in messages}:
+            found = await repo.find_sessions(conn, name)
+            named = found[0] if found else await repo.get_session_by_cc(conn, name)
+            if named is not None:
+                recipients[name] = named
+        return recipients
+
+    async def _agents_graph(
+        self, conn: aiosqlite.Connection, now: datetime, project: str | None
+    ) -> dict[str, Any]:
+        """The Agents view: every project's sessions are read, so the filter can keep the ones of
+        other projects an edge links to. Edges older than `RECENT_DAYS` are not drawn."""
+        since = (now - timedelta(days=graphs.RECENT_DAYS)).isoformat(timespec="milliseconds")
+        tasks = await repo.list_tasks(conn, stages=[s.value for s in OPEN_STAGES])
+        bound = {t.session_id for t in tasks}
+        sessions = [
+            s
+            for s in await repo.list_sessions(conn, None, graphs.SESSIONS_MAX)
+            if s.id in bound or s.last_seen_at >= since
+        ]
+        moments = await repo.map_message_moments(conn, since, graphs.MOMENTS_MAX)
+        messages = [
+            replace(m, moments=moments.get((m.session_id, m.recipient), ()))
+            for m in await repo.map_messages(conn, since, since, graphs.MESSAGES_MAX)
+        ]
+        launches = await repo.map_launches(conn, since, graphs.LAUNCHES_MAX)
+        children: dict[str, Session] = {}
+        for child in {launch.child for launch in launches}:
+            found = await repo.get_session_by_external_id(conn, child)
+            if found is not None:
+                children[child] = found
+        data = graphs.AgentsData(
+            projects=await repo.list_projects(conn),
+            tasks=tasks,
+            sessions=sessions,
+            messages=messages,
+            recipients=await self._map_recipients(conn, messages),
+            launches=launches,
+            children=children,
+            comments=await repo.map_owner_comments(conn, since, graphs.MOMENTS_MAX),
+        )
+        return graphs.build_agents(data, project)
 
     # --- usage -------------------------------------------------------------
 

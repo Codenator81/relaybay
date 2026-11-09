@@ -1,5 +1,6 @@
 """The Map's graph as plain nodes and edges: who works on what, who talks to whom, who can touch
-which environment. Pure: the service reads the rows, the page draws the result.
+which environment, and in the Agents view who started whom. Pure: the service reads the rows, the
+page draws the result.
 
 Only people and things the data names become nodes. Roles the data does not hold yet (coordinator,
 managers, workers, intake) are not guessed: a session is a session.
@@ -11,7 +12,8 @@ from typing import Any
 from relaybay.domain.environments import Environment
 from relaybay.domain.models import Project, Session, Task
 
-VIEWS = ("structure", "now")
+VIEWS = ("agents", "structure", "now")
+DEFAULT_VIEW = "agents"
 DEFAULT_MINUTES = 60
 MAX_MINUTES = 7 * 24 * 60
 # More nodes than this start collapsed by project.
@@ -20,6 +22,9 @@ COLLAPSE_OVER = 150
 RECENT_DAYS = 7
 SESSIONS_MAX = 300
 MESSAGES_MAX = 500
+LAUNCHES_MAX = 500
+MOMENTS_MAX = 5  # the latest times an Agents view edge lists
+OTHER_BOX = "project:~other"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +36,25 @@ class MessageRow:
     count: int
     last_at: str
     recent: bool
+    moments: tuple[str, ...] = ()  # the latest times, newest first (Agents view only)
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchRow:
+    """A session that started another one (`session.launched`), known by its desktop id."""
+
+    session_id: int
+    child: str
+    last_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerCommentRow:
+    """The owner's comments on a task within `RECENT_DAYS`."""
+
+    task_id: int
+    count: int
+    moments: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,5 +271,218 @@ def build_graph(data: MapData, view: str, minutes: int, project: str | None) -> 
         "project": project,
         "collapsed": len(nodes) > COLLAPSE_OVER,
         "nodes": nodes,
+        "edges": edges,
+    }
+
+
+# --- Agents view ------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class AgentsData:
+    projects: list[Project]
+    tasks: list[Task]  # open tasks of every project
+    sessions: list[Session]  # every project's: the filter keeps linked ones, faded
+    messages: list[MessageRow]
+    recipients: dict[str, Session]
+    launches: list[LaunchRow]
+    children: dict[str, Session]  # desktop id -> the session that has it
+    comments: list[OwnerCommentRow]
+
+
+def _agent_home(session: Session, slugs: dict[int, str], tasks: list[Task]) -> str | None:
+    """The project a session is drawn in: its bound tasks' first, else its folder's."""
+    if tasks:
+        return tasks[0].project_slug
+    return slugs.get(session.project_id) if session.project_id is not None else None
+
+
+def _short_id(external_id: str) -> str:
+    return external_id[: len("local_") + 8] + "…"
+
+
+def _box(box: str, names: dict[str, str], faded: bool) -> dict[str, Any]:
+    slug = None if box == OTHER_BOX else box.removeprefix("project:")
+    return {
+        "id": box,
+        "kind": "project",
+        "label": names.get(slug, slug) if slug else "Other",
+        "project": slug,
+        "slug": slug,
+        "parent": None,
+        "href": f"/p/{slug}" if slug else "/sessions",
+        "faded": faded,
+    }
+
+
+def build_agents(data: AgentsData, project: str | None) -> dict[str, Any]:
+    """Sessions in a box per project, the owner, and who started, messaged or commented whom.
+    With `project`, that project's sessions and, faded, those of others an edge links to them."""
+    slugs = {p.id: p.slug for p in data.projects}
+    names = {p.slug: p.name for p in data.projects}
+    by_session: dict[int, list[Task]] = {}
+    for task in data.tasks:
+        if task.session_id is not None:
+            by_session.setdefault(task.session_id, []).append(task)
+    sessions = {s.id: s for s in data.sessions}
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+
+    def edge(kind: str, source: str, target: str, **extra: Any) -> None:
+        edges.append(
+            {
+                "id": f"{kind}:{source}>{target}",
+                "kind": kind,
+                "source": source,
+                "target": target,
+                "recent": False,
+                **extra,
+            }
+        )
+
+    def session_node(session: Session) -> str:
+        node_id = f"session:{session.id}"
+        if node_id in nodes:
+            return node_id
+        bound = by_session.get(session.id, [])
+        home = _agent_home(session, slugs, bound)
+        line = f"{bound[0].key} · {bound[0].stage.value}" if bound else None
+        if line and len(bound) > 1:
+            line += f" +{len(bound) - 1}"
+        nodes[node_id] = {
+            "id": node_id,
+            "kind": "session",
+            "label": session.name,
+            "project": home,
+            "parent": f"project:{home}" if home else OTHER_BOX,
+            "status": session.status,
+            "activity": session.activity,
+            "waiting_owner": session.status == "waiting",
+            "task_line": line,
+            "tasks": [
+                {
+                    "key": t.key,
+                    "title": t.title,
+                    "stage": t.stage.value,
+                    "href": f"/p/{t.project_slug}?task={t.key}",
+                }
+                for t in bound
+            ],
+            "launched_by": None,
+            "href": f"/p/{home}/sessions" if home else "/sessions",
+            "usage_href": f"/usage?session={session.id}",
+        }
+        return node_id
+
+    def name_node(node_id: str, label: str, parent: str | None, **extra: Any) -> str:
+        if node_id not in nodes:
+            nodes[node_id] = {
+                "id": node_id,
+                "kind": "session",
+                "label": label,
+                "project": None,
+                "parent": parent,
+                "status": None,
+                "external": True,
+                "tasks": [],
+                "launched_by": None,
+                "href": "/sessions",
+                **extra,
+            }
+        return node_id
+
+    for session in data.sessions:
+        session_node(session)
+
+    for launch in data.launches:
+        parent = sessions.get(launch.session_id)
+        child = data.children.get(launch.child)
+        if parent is None or (child is not None and child.id == parent.id):
+            continue
+        if child is not None:
+            target = session_node(child)
+        else:
+            # Started but not known to relaybay yet: drawn beside the session that started it.
+            target = name_node(
+                f"launch:{launch.child}",
+                _short_id(launch.child),
+                nodes[f"session:{parent.id}"]["parent"],
+                pending=True,
+            )
+        nodes[target]["launched_by"] = parent.name
+        edge("launched", f"session:{parent.id}", target, last_at=launch.last_at)
+
+    for message in data.messages:
+        sender = sessions.get(message.session_id)
+        named = data.recipients.get(message.recipient)
+        if sender is None or (named is not None and named.id == sender.id):
+            continue
+        if named is not None:
+            target = session_node(named)
+        else:
+            target = name_node(f"peer:{message.recipient}", message.recipient, None)
+        edge(
+            "message",
+            f"session:{sender.id}",
+            target,
+            count=message.count,
+            last_at=message.last_at,
+            moments=list(message.moments),
+        )
+
+    tasks = {t.id: t for t in data.tasks}
+    per_session: dict[int, list[OwnerCommentRow]] = {}
+    for row in data.comments:
+        task = tasks.get(row.task_id)
+        if task is not None and task.session_id in sessions:
+            per_session.setdefault(task.session_id, []).append(row)
+    for session_id, rows in per_session.items():
+        moments = sorted((m for r in rows for m in r.moments), reverse=True)[:MOMENTS_MAX]
+        edge(
+            "comment",
+            "owner",
+            session_node(sessions[session_id]),
+            count=sum(r.count for r in rows),
+            last_at=moments[0] if moments else None,
+            moments=moments,
+            tasks=sorted(tasks[r.task_id].key for r in rows),
+        )
+
+    if project is not None:
+        inside = {i for i, n in nodes.items() if n["project"] == project}
+        linked = {
+            end
+            for e in edges
+            if e["source"] in inside or e["target"] in inside
+            for end in (e["source"], e["target"])
+        }
+        nodes = {i: n for i, n in nodes.items() if i in inside or i in linked}
+        for node_id, item in nodes.items():
+            item["faded"] = node_id not in inside
+        edges = [e for e in edges if e["source"] in inside or e["target"] in inside]
+
+    boxes: dict[str, dict[str, Any]] = {}
+    if project is not None:
+        boxes[f"project:{project}"] = _box(f"project:{project}", names, False)
+    for item in nodes.values():
+        box = item["parent"]
+        if box is not None and box not in boxes:
+            members = [n for n in nodes.values() if n["parent"] == box]
+            boxes[box] = _box(box, names, all(n.get("faded", False) for n in members))
+    owner = {
+        "id": "owner",
+        "kind": "owner",
+        "label": "Owner",
+        "project": None,
+        "parent": None,
+        "href": "/inbox",
+    }
+    every = [owner, *boxes.values(), *nodes.values()]
+    return {
+        "view": "agents",
+        "minutes": None,
+        "project": project,
+        "collapsed": len(every) > COLLAPSE_OVER,
+        "nodes": every,
         "edges": edges,
     }

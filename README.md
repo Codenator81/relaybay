@@ -142,9 +142,11 @@ program as its client:
   step. By default a move to `dev` needs an accepted plan unless the task is size `S`. The plan
   stays alive: work added after a report is a new step (`plan_step_add`, the acceptance kept) and
   takes the task back to `dev`.
-- **Map** — the owner, projects, open tasks, sessions and environments as a live graph: who works on
-  what, who messages whom (sender, recipient and time, never the text), who can touch which
-  environment. Structure and Now views, a project filter, collapsing projects.
+- **Map** — a live graph of how your agents interact: sessions in a box per project, who started
+  whom, who messages whom (sender, recipient and time, never the text) and where the owner
+  commented (Agents view, the default); the Structure and Now views add open tasks and who can touch
+  which environment. A project filter that keeps linked sessions of other projects, faded, and
+  collapsing projects.
 - **Usage** — tokens by session and model, per day and week and per project, read locally from the
   Claude Code transcripts the hooks report: only `usage` numbers and the model name are kept, never
   prompt or output text, and no prices or quotas. Turn it off with `usage_enabled = false`.

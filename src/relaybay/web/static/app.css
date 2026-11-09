@@ -1492,7 +1492,11 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 }
 .map-legend li { display: inline-flex; align-items: center; gap: 6px; }
 .map-swatch { display: inline-block; width: 22px; border-top: 2px solid var(--border); }
+.map-detail-list { flex-basis: 100%; margin: 0; padding: 0 0 0 18px; font-size: 13px; }
+.map-detail-list[hidden] { display: none; }
 .swatch-binding { border-top-color: var(--accent); }
+.swatch-launched { border-top-color: var(--accent); }
+.swatch-faded { border-top-color: var(--border); opacity: 0.4; }
 .swatch-message { border-top: 2px dashed var(--text); }
 .swatch-comment { border-top: 2px dotted var(--badge-text); }
 .swatch-level-none { border-top-color: var(--muted); }

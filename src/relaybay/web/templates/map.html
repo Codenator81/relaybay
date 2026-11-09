@@ -9,21 +9,24 @@
 <main class="page map-page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
   <h1>Map</h1>
   <form class="board-tools" method="get" action="/map">
-    <label class="field-inline">View
-      <select name="view">
-        <option value="structure"{% if view == "structure" %} selected{% endif %}>Structure</option>
-        <option value="now"{% if view == "now" %} selected{% endif %}>Now</option>
-      </select>
-    </label>
-    <label class="field-inline">Last minutes
-      <input class="map-minutes" type="number" name="minutes" required min="1" max="10080" value="{{ minutes }}">
-    </label>
     <label class="field-inline">Project
       <select name="project">
         <option value="">All projects</option>
         {% for p in nav.projects %}<option value="{{ p.slug }}"{% if p.slug == project_filter %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
       </select>
     </label>
+    <label class="field-inline">View
+      <select name="view">
+        <option value="agents"{% if view == "agents" %} selected{% endif %}>Agents</option>
+        <option value="structure"{% if view == "structure" %} selected{% endif %}>Structure</option>
+        <option value="now"{% if view == "now" %} selected{% endif %}>Now</option>
+      </select>
+    </label>
+    {% if view != "agents" %}
+    <label class="field-inline">Last minutes
+      <input class="map-minutes" type="number" name="minutes" required min="1" max="10080" value="{{ minutes }}">
+    </label>
+    {% endif %}
     <button type="submit" class="btn">Show</button>
     <button type="button" class="action" id="map-collapse">Collapse projects</button>
     <button type="button" class="action" id="map-expand">Expand projects</button>
@@ -33,7 +36,7 @@
       the one rule it would add (position: relative on the container) is in app.css. #}
   <span id="__________cytoscape_stylesheet" hidden></span>
   <div id="map" class="map" data-graph-url="{{ graph_url }}" data-view="{{ view }}" data-project="{{ project_filter }}">
-    <div id="map-canvas" class="map-canvas" role="img" aria-label="Graph of the owner, projects, tasks, sessions and environments"></div>
+    <div id="map-canvas" class="map-canvas" role="img" aria-label="{% if view == "agents" %}Graph of the owner and the sessions by project: who started, messaged or commented whom{% else %}Graph of the owner, projects, tasks, sessions and environments{% endif %}"></div>
   </div>
   <div class="map-detail" id="map-detail" hidden>
     <strong id="map-detail-title"></strong>
@@ -41,8 +44,15 @@
     <a class="action" id="map-detail-link" href="/">Open</a>
     <a class="action" id="map-detail-usage" href="/usage" hidden>Usage</a>
     <button type="button" class="action" id="map-detail-toggle" hidden>Collapse</button>
+    <ul class="map-detail-list" id="map-detail-list" hidden></ul>
   </div>
   <ul class="map-legend" aria-label="Legend">
+    {% if view == "agents" %}
+    <li><span class="map-swatch swatch-launched"></span>started a session</li>
+    <li><span class="map-swatch swatch-message"></span>message between sessions (thicker: more)</li>
+    <li><span class="map-swatch swatch-comment"></span>owner's comment on its task</li>
+    <li><span class="map-swatch swatch-faded"></span>another project, linked to this one</li>
+    {% else %}
     <li><span class="map-swatch swatch-binding"></span>works on a task</li>
     <li><span class="map-swatch swatch-message"></span>message between sessions</li>
     <li><span class="map-swatch swatch-comment"></span>owner's comment</li>
@@ -50,6 +60,7 @@
     <li><span class="map-swatch swatch-level-read"></span>access: read</li>
     <li><span class="map-swatch swatch-level-ask"></span>access: ask</li>
     <li><span class="map-swatch swatch-level-full"></span>access: full</li>
+    {% endif %}
   </ul>
 </main>
 {% endblock %}
