@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Two writes in one clock tick (about 15 ms on Windows) no longer share a timestamp, so a report right after the plan closed counts as work after it.
+
 ## [0.8.0] - 2026-11-09
 
 ### Added
