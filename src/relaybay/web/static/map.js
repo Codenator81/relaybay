@@ -60,6 +60,11 @@
         "shape": "hexagon", "width": 26, "height": 24, "background-color": t.chip
       } },
       { selector: "node[?external]", style: { "border-style": "dashed" } },
+      { selector: ":parent", style: {
+        "shape": "round-rectangle", "background-color": t.badge, "background-opacity": 0.35,
+        "border-width": 1, "border-color": t.border, "text-valign": "top", "text-halign": "center",
+        "text-margin-y": -4, "padding": 14, "font-weight": 600
+      } },
       { selector: "node[?waiting_owner]", style: { "border-color": t.warn, "border-width": 4 } },
       { selector: "edge", style: {
         "width": 1.5, "line-color": t.border, "target-arrow-color": t.border,
@@ -72,11 +77,20 @@
         "line-color": t.text, "target-arrow-color": t.text, "target-arrow-shape": "vee",
         "line-style": "dashed"
       } },
+      // Agents view: a message edge grows with its count (mapData clamps above 20).
+      { selector: "edge[kind = 'message'][count]", style: {
+        "width": "mapData(count, 1, 20, 1.5, 6)"
+      } },
+      { selector: "edge[kind = 'launched']", style: {
+        "line-color": t.accent, "target-arrow-color": t.accent, "target-arrow-shape": "triangle",
+        "width": 2.5
+      } },
       { selector: "edge[kind = 'comment']", style: {
         "line-color": t.idle, "target-arrow-color": t.idle, "target-arrow-shape": "circle",
         "line-style": "dotted"
       } },
       { selector: ".dim", style: { "opacity": 0.25 } },
+      { selector: "node[?faded]", style: { "opacity": 0.4 } },
       { selector: "edge.recent", style: { "width": 4, "opacity": 1, "z-index": 5 } },
       { selector: "node:selected", style: { "overlay-color": t.accent, "overlay-opacity": 0.2 } }
     ];
@@ -107,11 +121,14 @@
   function badges(node) {
     var parts = [];
     if (node.kind === "session" && node.status) parts.push(node.status);
-    if (node.kind === "session" && node.external) parts.push("not a known session");
+    if (node.kind === "session" && node.pending) parts.push("started, not seen yet");
+    else if (node.kind === "session" && node.external) parts.push("not a known session");
     if (node.kind === "task" && node.stage) parts.push(node.stage);
     if (node.kind === "environment") parts.push(node.env_kind + ": " + (node.level || "unknown"));
-    if (node.kind === "project" && collapsed.has(node.slug)) parts.push("collapsed");
-    if (node.kind === "project" && !collapsed.has(node.slug)) parts.push(node.open_tasks + " open");
+    if (node.kind === "project" && node.slug && collapsed.has(node.slug)) parts.push("collapsed");
+    else if (node.kind === "project" && node.open_tasks !== undefined) {
+      parts.push(node.open_tasks + " open");
+    }
     if (node.unread) parts.push(node.unread + " unread");
     if (node.kind === "owner" && node.waiting_count) parts.push(node.waiting_count + " waiting");
     else if (node.waiting_owner && node.kind !== "owner") parts.push("waiting for you");
@@ -122,7 +139,8 @@
 
   function nodeText(node) {
     var parts = badges(node);
-    return shorten(node.label) + (parts.length ? "\n" + parts.join(" · ") : "");
+    var line = node.task_line ? "\n" + node.task_line : "";
+    return shorten(node.label) + line + (parts.length ? "\n" + parts.join(" · ") : "");
   }
 
   // What is drawn: a collapsed project stands in for its nodes, and the edges that reached them
@@ -135,6 +153,10 @@
         home[node.id] = "project:" + node.project;
       } else {
         nodes[node.id] = Object.assign({}, node, { text: nodeText(node) });
+        // A box of the Agents view holds its sessions; a collapsed box holds none.
+        if (!node.parent || collapsed.has(node.parent.slice("project:".length))) {
+          delete nodes[node.id].parent;
+        }
       }
     });
     var edges = {};
@@ -167,7 +189,55 @@
     }
   }
 
+  // Agents view: cose piles compound nodes on top of each other, so the boxes go on a grid of
+  // their own, each holding its sessions on a small grid; the owner and loose nodes on a row above.
+  var CELL_W = 180;
+  var CELL_H = 90;
+  var BOXES_PER_ROW = 3;
+
+  function boxLayout() {
+    var boxes = cy.nodes(":parent").sort(function (a, b) {
+      var rank = function (box) {
+        if (box.data("project") === projectFilter) return 0;
+        return box.data("slug") ? 1 : 2;
+      };
+      return rank(a) - rank(b) || a.data("label").localeCompare(b.data("label"));
+    });
+    var loose = cy.nodes().filter(function (n) { return !n.isParent() && !n.isChild(); });
+    cy.batch(function () {
+      loose.forEach(function (node, i) { node.position({ x: i * CELL_W, y: 0 }); });
+      var x = 0;
+      var y = CELL_H * 1.5;
+      var rowHeight = 0;
+      boxes.forEach(function (box, i) {
+        if (i && i % BOXES_PER_ROW === 0) {
+          x = 0;
+          y += rowHeight + CELL_H;
+          rowHeight = 0;
+        }
+        // Sessions with edges first; every other box a little lower, so edges between boxes do
+        // not run along one line.
+        var children = box.children().sort(function (a, b) {
+          return b.connectedEdges().length - a.connectedEdges().length;
+        });
+        var cols = Math.max(1, Math.ceil(Math.sqrt(children.length)));
+        var top = y + (i % 2) * CELL_H;
+        children.forEach(function (child, n) {
+          child.position({ x: x + (n % cols) * CELL_W, y: top + Math.floor(n / cols) * CELL_H });
+        });
+        x += cols * CELL_W + CELL_W / 2;
+        rowHeight = Math.max(rowHeight, top - y + Math.ceil(children.length / cols) * CELL_H);
+      });
+    });
+    laidOut = true;
+    if (!userMoved) fitAll();
+  }
+
   function layout() {
+    if (view === "agents") {
+      boxLayout();
+      return;
+    }
     var run = cy.layout({
       name: "cose", animate: false, randomize: !laidOut, fit: false,
       boundingBox: { x1: 0, y1: 0, w: cy.width(), h: cy.height() },
@@ -211,6 +281,8 @@
       Object.keys(want.nodes).forEach(function (id) {
         var found = cy.getElementById(id);
         if (found.nonempty()) {
+          var parent = want.nodes[id].parent || null;
+          if ((found.data("parent") || null) !== parent) found.move({ parent: parent });
           if (!sameData(found, want.nodes[id])) found.data(want.nodes[id]);
           return;
         }
@@ -232,6 +304,7 @@
     showDetail();
     var recent = graph.edges.filter(function (edge) { return edge.recent; }).length;
     status.textContent = graph.nodes.length + " nodes, " + graph.edges.length + " edges" +
+      (view === "agents" ? " of the last 7 days" : "") +
       (view === "now" ? "; " + recent + " active in the last " + graph.minutes + " min" : "") +
       (collapsed.size ? "; " + collapsed.size + " project(s) collapsed" : "") + ".";
   }
@@ -245,7 +318,7 @@
       .then(function (data) {
         graph = data;
         graph.nodes.forEach(function (node) {
-          if (node.kind !== "project" || seenProjects.has(node.slug)) return;
+          if (node.kind !== "project" || !node.slug || seenProjects.has(node.slug)) return;
           seenProjects.add(node.slug);
           if (graph.collapsed) collapsed.add(node.slug);
         });
@@ -258,37 +331,131 @@
 
   // --- selected node --------------------------------------------------------------------------
 
+  var selectedEdgeId = null;
+
   function selectedNode() {
     if (!selected || !graph) return null;
     return graph.nodes.find(function (node) { return node.id === selected; }) || null;
   }
 
+  function selectedEdge() {
+    if (!selectedEdgeId || !graph) return null;
+    return graph.edges.find(function (edge) { return edge.id === selectedEdgeId; }) || null;
+  }
+
+  function labelOf(id) {
+    var node = graph.nodes.find(function (item) { return item.id === id; });
+    return node ? node.label : id;
+  }
+
+  function when(stamp) { return stamp ? stamp.slice(0, 16).replace("T", " ") + " UTC" : ""; }
+
+  // Lines under the detail: text and links built as elements, never as HTML.
+  function fillList(items) {
+    var list = document.getElementById("map-detail-list");
+    while (list.firstChild) list.removeChild(list.firstChild);
+    items.forEach(function (item) {
+      var li = document.createElement("li");
+      if (item.href) {
+        var link = document.createElement("a");
+        link.href = item.href;
+        link.textContent = item.link;
+        li.appendChild(link);
+      }
+      if (item.text) li.appendChild(document.createTextNode((item.href ? " " : "") + item.text));
+      list.appendChild(li);
+    });
+    list.hidden = items.length === 0;
+  }
+
+  function edgeLine(edge, id) {
+    var out = edge.source === id;
+    var other = labelOf(out ? edge.target : edge.source);
+    if (edge.kind === "launched") {
+      return (out ? "started " : "started by ") + other + ", " + when(edge.last_at);
+    }
+    if (edge.kind === "message") {
+      return (out ? "wrote to " : "got messages from ") + other + ": " + edge.count +
+        ", last " + when(edge.last_at);
+    }
+    if (edge.kind === "comment") {
+      return "owner's comments on " + edge.tasks.join(", ") + ": " + edge.count +
+        ", last " + when(edge.last_at);
+    }
+    return edge.kind + " " + other;
+  }
+
+  function nodeItems(node) {
+    var items = (node.tasks || []).map(function (task) {
+      return { href: task.href, link: task.key, text: task.title + " · " + task.stage };
+    });
+    if (view !== "agents") return items;
+    graph.edges.forEach(function (edge) {
+      if (edge.source === node.id || edge.target === node.id) {
+        items.push({ text: edgeLine(edge, node.id) });
+      }
+    });
+    return items;
+  }
+
+  var EDGE_NAMES = {
+    launched: "started a session", message: "messages", comment: "owner's comments",
+    binding: "works on", access: "access", hierarchy: "holds"
+  };
+
+  function showEdge(edge) {
+    document.getElementById("map-detail-title").textContent =
+      labelOf(edge.source) + " → " + labelOf(edge.target);
+    var parts = [EDGE_NAMES[edge.kind] || edge.kind];
+    if (edge.count) parts.push(edge.count + (view === "agents" ? " in the last 7 days" : ""));
+    if (edge.tasks) parts.push("on " + edge.tasks.join(", "));
+    if (edge.level) parts.push(edge.level);
+    if (edge.last_at) parts.push("last " + when(edge.last_at));
+    document.getElementById("map-detail-text").textContent = parts.join(" · ");
+    document.getElementById("map-detail-link").hidden = true;
+    document.getElementById("map-detail-usage").hidden = true;
+    document.getElementById("map-detail-toggle").hidden = true;
+    fillList((edge.moments || []).map(function (stamp) { return { text: when(stamp) }; }));
+  }
+
   function showDetail() {
+    var edge = selectedEdge();
     var node = selectedNode();
-    detail.hidden = !node;
+    detail.hidden = !node && !edge;
+    if (edge) { showEdge(edge); return; }
     if (!node) return;
     document.getElementById("map-detail-title").textContent = node.label;
     var parts = badges(node);
+    if (node.task_line) parts.unshift(node.task_line);
     if (node.activity) parts.push(node.activity);
     document.getElementById("map-detail-text").textContent = parts.join(" · ");
-    document.getElementById("map-detail-link").href = node.href;
+    var link = document.getElementById("map-detail-link");
+    link.hidden = false;
+    link.href = node.href;
     var usage = document.getElementById("map-detail-usage");
     usage.hidden = !node.usage_href;
     if (node.usage_href) usage.href = node.usage_href;
     var toggle = document.getElementById("map-detail-toggle");
-    toggle.hidden = node.kind !== "project";
+    toggle.hidden = node.kind !== "project" || !node.slug;
     toggle.textContent = collapsed.has(node.slug) ? "Expand" : "Collapse";
+    fillList(nodeItems(node));
   }
 
   cy.on("tap", "node", function (event) {
     selected = event.target.id();
+    selectedEdgeId = null;
+    showDetail();
+  });
+  cy.on("tap", "edge", function (event) {
+    selectedEdgeId = event.target.id();
+    selected = null;
     showDetail();
   });
   cy.on("tap", function (event) {
-    if (event.target === cy) { selected = null; showDetail(); }
+    if (event.target === cy) { selected = null; selectedEdgeId = null; showDetail(); }
   });
   cy.on("dbltap", "node[kind = 'project']", function (event) {
-    toggle(event.target.data("slug"));
+    if (event.target.data("slug")) toggle(event.target.data("slug"));
   });
 
   function relayout() {
@@ -304,7 +471,7 @@
 
   document.getElementById("map-detail-toggle").addEventListener("click", function () {
     var node = selectedNode();
-    if (node && node.kind === "project") toggle(node.slug);
+    if (node && node.kind === "project" && node.slug) toggle(node.slug);
   });
   document.getElementById("map-collapse").addEventListener("click", function () {
     seenProjects.forEach(function (slug) { collapsed.add(slug); });

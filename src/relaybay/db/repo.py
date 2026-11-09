@@ -19,7 +19,7 @@ from relaybay.domain.environments import (
 )
 from relaybay.domain.intake import IntakeMessage, IntakeSource, one_line
 from relaybay.domain.limits import Brake, TokenBudget
-from relaybay.domain.map_graph import CommentRow, MessageRow
+from relaybay.domain.map_graph import CommentRow, LaunchRow, MessageRow, OwnerCommentRow
 from relaybay.domain.memory import (
     Document,
     DocumentVersion,
@@ -3431,6 +3431,62 @@ async def map_messages(
         for r in rows
         if isinstance(r["recipient"], str)
     ]
+
+
+async def map_message_moments(
+    conn: aiosqlite.Connection, since: str, per_pair: int
+) -> dict[tuple[int, str], tuple[str, ...]]:
+    """The latest `per_pair` times of each sender and recipient's `session.message` events."""
+    rows = await _all(
+        conn,
+        "SELECT session_id, recipient, ts FROM (SELECT session_id, ts,"
+        " json_extract(payload, '$.to') AS recipient, ROW_NUMBER() OVER (PARTITION BY"
+        " session_id, json_extract(payload, '$.to') ORDER BY ts DESC) AS n FROM event"
+        " WHERE kind = 'session.message' AND ts >= ? AND session_id IS NOT NULL)"
+        " WHERE n <= ? ORDER BY ts DESC",
+        (since, per_pair),
+    )
+    moments: dict[tuple[int, str], list[str]] = {}
+    for r in rows:
+        if isinstance(r["recipient"], str):
+            moments.setdefault((r["session_id"], r["recipient"]), []).append(r["ts"])
+    return {pair: tuple(times) for pair, times in moments.items()}
+
+
+async def map_launches(conn: aiosqlite.Connection, since: str, limit: int) -> list[LaunchRow]:
+    """`session.launched` events from `since` on, one row per parent and child: a replayed hook
+    counts once."""
+    rows = await _all(
+        conn,
+        "SELECT session_id, json_extract(payload, '$.child') AS child, MIN(ts) AS at FROM event"
+        " WHERE kind = 'session.launched' AND ts >= ? AND session_id IS NOT NULL"
+        " GROUP BY session_id, child ORDER BY at DESC LIMIT ?",
+        (since, limit),
+    )
+    return [
+        LaunchRow(r["session_id"], r["child"], r["at"]) for r in rows if isinstance(r["child"], str)
+    ]
+
+
+async def map_owner_comments(
+    conn: aiosqlite.Connection, since: str, per_task: int
+) -> list[OwnerCommentRow]:
+    """The owner's comments from `since` on: a count per task and its latest `per_task` times."""
+    rows = await _all(
+        conn,
+        "SELECT task_id, created_at, total FROM (SELECT task_id, created_at,"
+        " COUNT(*) OVER (PARTITION BY task_id) AS total,"
+        " ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC) AS n FROM comment"
+        " WHERE author_kind = 'owner' AND created_at >= ?) WHERE n <= ?"
+        " ORDER BY task_id, created_at DESC",
+        (since, per_task),
+    )
+    counts: dict[int, int] = {}
+    moments: dict[int, list[str]] = {}
+    for r in rows:
+        counts[r["task_id"]] = r["total"]
+        moments.setdefault(r["task_id"], []).append(r["created_at"])
+    return [OwnerCommentRow(task, counts[task], tuple(times)) for task, times in moments.items()]
 
 
 async def map_recent_comment_tasks(conn: aiosqlite.Connection, since: str) -> set[int]:

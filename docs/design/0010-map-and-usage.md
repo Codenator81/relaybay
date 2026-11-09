@@ -31,6 +31,23 @@ edges without a reload.
 the hook receiver records message edges as events (`session.message`, recipient and time only, never
 the message text).
 
+## Agents view
+
+Decided 2026-11-09: the Map's default view shows how agents interact rather than the whole
+structure. Sessions sit in a box per project (Other when they have none) with the owner beside them;
+edges are who started whom, who wrote to whom and whom the owner commented, only of the last 7
+days. A project filter keeps that project's box and, faded, the sessions of other projects linked
+to it, so cross-project links stay visible. Structure and Now remain one select away.
+
+**Who started whom** is new data, read like a message edge: when a session calls the desktop tool
+that starts a session, the `PostToolUse` hook's answer carries the new session's desktop id; relaybay
+keeps that id and the caller, nothing else (`session.launched`, no migration). There is no backfill:
+launches from before this release are not on the Map. Until relaybay knows a session with that id, the
+child is a name-only node; then the edge reaches it.
+
+**Layout.** The boxes go on a grid of their own, not through `cose`, which piles compound nodes on
+top of each other.
+
 ## Usage
 
 Subscription use by session and model, per day and week and per project, read from the Claude Code

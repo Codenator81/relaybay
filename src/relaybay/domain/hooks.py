@@ -54,6 +54,12 @@ RECIPIENT_MAX = 120
 MESSAGE_TOOLS = ("SendMessage",)
 # An address or an address list is not a session. `name@team` still counts.
 _NOT_A_RECIPIENT = re.compile(r"@[^@\s]+\.[^@\s]+|[<,;]")
+# The desktop tool that starts a session; its `PostToolUse` answer names the new one.
+LAUNCH_TOOLS = ("mcp__ccd_session__start_session",)
+_LAUNCHED_ID = re.compile(r"local_[0-9a-f-]{36}", re.IGNORECASE)
+# How much of a launch answer is searched: strings only, this many characters and this deep.
+LAUNCH_TEXT_MAX = 64 * 1024
+_LAUNCH_DEPTH_MAX = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +152,37 @@ def parse_message_recipient(payload: Any) -> str | None:
         return None
     clean = " ".join("".join(c for c in recipient if c.isprintable()).split())[:RECIPIENT_MAX]
     return clean if clean and not _NOT_A_RECIPIENT.search(clean) else None
+
+
+def _strings(value: Any, out: list[str], budget: list[int], depth: int = 0) -> None:
+    if budget[0] <= 0 or depth > _LAUNCH_DEPTH_MAX:
+        return
+    if isinstance(value, str):
+        out.append(value[: budget[0]])
+        budget[0] -= len(out[-1])
+    elif isinstance(value, dict):
+        for item in value.values():
+            _strings(item, out, budget, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            _strings(item, out, budget, depth + 1)
+
+
+def parse_launched_session(payload: Any) -> str | None:
+    """The desktop session id (`local_<uuid>`) a launch tool's call (`LAUNCH_TOOLS`) started: the
+    first one in `tool_response` of a `PostToolUse`, which may be a string, an object or a list of
+    content blocks. Nothing else of the input or the answer is read or kept."""
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "PostToolUse":
+        return None
+    if payload.get("tool_name") not in LAUNCH_TOOLS:
+        return None
+    texts: list[str] = []
+    _strings(payload.get("tool_response"), texts, [LAUNCH_TEXT_MAX])
+    for text in texts:
+        found = _LAUNCHED_ID.search(text)
+        if found is not None:
+            return _host_session(found.group(0))
+    return None
 
 
 def parse_hook(payload: Any) -> HookEvent | None:

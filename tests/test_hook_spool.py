@@ -17,6 +17,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from relaybay import doctor, hook_client
+from relaybay.domain.hooks import LAUNCH_TOOLS
 from relaybay.domain.plan import TODO_TOOLS
 from relaybay.service import Service
 from tests.conftest import run_in_app
@@ -98,6 +99,9 @@ def test_events_are_classified_by_what_they_carry() -> None:
     }
     for tool in TODO_TOOLS:
         payload = json.dumps(todo_create() | {"tool_name": tool}).encode()
+        assert hook_client.event_kind(payload) == "state"
+    for tool in LAUNCH_TOOLS:  # a session launch is not lost to a busy server either
+        payload = json.dumps(hook("PostToolUse") | {"tool_name": tool}).encode()
         assert hook_client.event_kind(payload) == "state"
     spaced = json.dumps(hook("Stop"), indent=2).encode()
     assert hook_client.event_kind(spaced) == "state"

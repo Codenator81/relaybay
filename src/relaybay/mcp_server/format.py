@@ -1011,6 +1011,8 @@ def event_detail(e: Event) -> str:
         return f"#{p.get('message_id')} seen"
     if e.kind == "session.message":
         return f"{p.get('session')} → {p.get('to')}"
+    if e.kind == "session.launched":
+        return f"{p.get('session')} started {p.get('child')}"
     if e.kind == "live.action":
         return f"{p.get('environment')} · {p.get('decision')} · {p.get('command') or ''}".rstrip()
     if e.kind in ("environment.created", "environment.deleted"):
