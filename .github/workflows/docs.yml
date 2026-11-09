@@ -13,17 +13,8 @@ on:
       - "scripts/gen_reference.py"
       - "uv.lock"
       - ".github/workflows/docs.yml"
+  # Every pull request: "Build docs" is a required check, so it must always run.
   pull_request:
-    paths:
-      - "docs/**"
-      - "mkdocs.yml"
-      - "pyproject.toml"
-      - "src/relaybay/cli.py"
-      - "src/relaybay/config.py"
-      - "src/relaybay/mcp_server/**"
-      - "scripts/gen_reference.py"
-      - "uv.lock"
-      - ".github/workflows/docs.yml"
   workflow_dispatch:
   workflow_call:  # from release.yml on a v* tag
 

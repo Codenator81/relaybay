@@ -261,8 +261,20 @@ def _note_closed_plan(task: Task) -> None:
     _note(CLOSED_PLAN_WARNING.format(done=task.plan_done, total=task.plan_total))
 
 
+_last_now: datetime | None = None
+
+
 def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
+    """Strictly increasing within the process: two writes in one clock tick (about 15 ms on
+    Windows) still sort in the order they happened, which "a report after the plan closed"
+    and other "after" checks rely on."""
+    global _last_now
+    moment = datetime.now(UTC)
+    moment = moment.replace(microsecond=moment.microsecond // 1000 * 1000)
+    if _last_now is not None and moment <= _last_now:
+        moment = _last_now + timedelta(milliseconds=1)
+    _last_now = moment
+    return moment.isoformat(timespec="milliseconds")
 
 
 @dataclass(slots=True)
