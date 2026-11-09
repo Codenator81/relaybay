@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-09
+
 ### Added
 
 - Messages between sessions: `message_send(body, to?, task?, in_reply_to?, ...)`,
@@ -801,7 +803,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.0
 [0.7.1]: https://github.com/Codenator81/relaybay/releases/tag/v0.7.1
 [0.7.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.7.0
 [0.6.2]: https://github.com/Codenator81/relaybay/releases/tag/v0.6.2

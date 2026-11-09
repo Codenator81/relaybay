@@ -103,12 +103,12 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | Collapsible blocks in the task view, older reports in an accordion, Compact cards, `waiting_on` means who | done | — |
 
-## 0.8 — before the runner
+## 0.8.0 — before the runner (released 2026-11-09)
 
 | Item | Status | Design |
 |---|---|---|
 | Tray notifications: a task waiting on you, a review arrival, an agent's answer, a server problem, also with the board closed | done | [0020](design/0020-tray-notifications.md) |
-| Messages between sessions on the board; stop all and budgets; a fake `claude` and end-to-end tests; a versioned MCP contract; backlog priority and assignee; an Audit page and a per-agent live switch | next | [0017](design/0017-readiness-for-agents-inside.md) |
+| Messages between sessions on the board; stop all and budgets; a fake `claude` and end-to-end tests; a versioned MCP contract; backlog priority and assignee; an Audit page and a per-agent live switch | done | [0017](design/0017-readiness-for-agents-inside.md) |
 
 ## After 0.8
 
