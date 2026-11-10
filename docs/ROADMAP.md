@@ -150,25 +150,43 @@ Ships when a coordinator runs its daily work from relaybay.
 
 Not planned: Electron and a browser panel of our own, because the browser and the diff are solved through MCP and plugins.
 
-## 0.7+ — agents inside
+## 0.9 — the runner on a card, questions and approvals
 
 | Item | Status | Design |
 |---|---|---|
-| Runner and embedded terminal with the user's own `claude` | later | [0012](design/0012-runner-and-embedded-terminal.md) |
-| Agent Client Protocol adapters, role profiles, embedded manager, project managers | later | [0012](design/0012-runner-and-embedded-terminal.md) |
-| Coordinator and Managers pages, Schedules in the sidebar | later | [0004](design/0004-navigation.md) |
-| An agents map: who started whom, who writes to whom, with a project filter, once agents run inside the program | later | [0010](design/0010-map-and-usage.md) |
+| The probes of 0012 (resume, permissions in `-p`, the owner's word, concurrent access, bare and subscription terms, token numbers) | done | [0012](design/0012-runner-and-embedded-terminal.md#probes-2026-11) |
+| The server ends open wake-up long polls when it stops | next | [0021](design/0021-agents-inside.md#the-pain-it-removes) |
+| A run on a card: headless turns with `--resume`, the user's own Claude Code layer, a project folder or a repository with a worktree per touched repository, model, effort, permission profile, stop and end, full turn reports with `verified` marks | next | [0021](design/0021-agents-inside.md#the-run) |
+| Questions (with "look at this" for visual acceptance) and approvals as objects on the card and in the Inbox | next | [0022](design/0022-questions-and-approvals.md) |
+| Slots and free memory per machine, queueing with a reason; the brake and budgets on runs; lifecycle and retention | next | [0021](design/0021-agents-inside.md#the-run) |
 
-## 0.7+ — workers
+## 0.10 — the terminal
 
 | Item | Status | Design |
 |---|---|---|
-| Scheduled workers per project | later | — |
+| A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | later | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
+
+## 0.11 — the coordinator and schedules
+
+| Item | Status | Design |
+|---|---|---|
+| The coordinator as one permanent run woken by events, profiles as data, the Coordinator page | later | [0023](design/0023-coordinator-and-schedules.md) |
+| Schedules: coordinator turns, read-only `-p` checks, reminders | later | [0023](design/0023-coordinator-and-schedules.md#schedules) |
+| An agents view: who started whom, who writes to whom | later | [0010](design/0010-map-and-usage.md) |
+
+## 0.12 — role profiles
+
+| Item | Status | Design |
+|---|---|---|
+| Role profiles editable on the board | later | [0023](design/0023-coordinator-and-schedules.md#profiles-as-data) |
+| A manager per project and a Managers page, only if a week of coordinator work shows the need (default: not built) | later | [0021](design/0021-agents-inside.md) |
+| Agent Client Protocol adapters, containers: not before the runner has run a week | later | [0017](design/0017-readiness-for-agents-inside.md) |
 
 ## 1.0
 
 Stable MCP contract, complete documentation, a migration path from earlier versions, tested on three
-operating systems.
+operating systems, and a week of the maintainer's daily work through relaybay without going back to the
+desktop app for anything relaybay should do.
 
 ## Later, not planned
 

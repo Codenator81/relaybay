@@ -5,6 +5,7 @@
   two days on the installed program: what helps the current stage (desktop sessions reporting through
   hooks) is done now; what only the next stage needs waits here.
 - Size: the "now" items ~4 agent-days (0.7.x); the "before the runner" items ~6 agent-days (0.8).
+- Next: the agents themselves, releases 0.9 to 0.12, are designed in [0021](0021-agents-inside.md).
 
 ## Problem
 
