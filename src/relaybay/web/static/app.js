@@ -326,8 +326,11 @@
       case "report.added":
       case "intake.answer_received":
       case "intake.answer_cleared":
-      case "session.status_changed":
         queue(card(data.key) || column(data.stage));
+        break;
+      case "session.status_changed":
+        // One event names every bound task of this project; a card not on the board is skipped.
+        (data.keys || []).forEach(function (key) { queue(card(key)); });
         break;
     }
   }

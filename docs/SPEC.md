@@ -110,7 +110,8 @@ in `live` it is allowed and the answer adds `<key> is in live: the step does not
 (set, step add, step update, acceptance) adds a `plan_revision` row with the whole plan as JSON, its author
 and a reason. Events: `plan.set` (steps, status, previous status, whether the titles changed,
 reason), `plan.step_added`, `plan.step_updated` (position, title, status, previous, conformance,
-outcome), `plan.accepted`.
+outcome), `plan.accepted`, `plan.acceptance_delivered` (the owner's acceptance told to the bound
+session through its hooks, [§4](#spec-hooks-messages)).
 
 <a id="spec-plan-draft-hint"></a>
 
@@ -319,7 +320,7 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `task.session_unbound`, `task.tracker_unlogged`, `report.added`, `decision.added`, `session.seen`,
 `session.status_changed`, `session.alias_added`, `session.no_live_on`, `session.no_live_off`,
 `comment.added`, `comment.delivered`,
-`comment.read`, `environment.created`, `environment.updated`, `environment.deleted`,
+`comment.read`, `plan.acceptance_delivered`, `environment.created`, `environment.updated`, `environment.deleted`,
 `environment.access_added`, `environment.access_updated`, `environment.access_removed`,
 `environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`,
 `live.action`, `document.updated`, `memory.added`, `memory.updated`, `block.updated`,
@@ -630,7 +631,7 @@ list refetches on session, binding and message events and on the switch, at most
 (`?kind=<kind>`; an unknown kind is a 400). Hook status changes (`session.status_changed`) are
 shown only when that kind is selected. Each row has the age, the kind, the task key or project as a
 link, a short description (the same as `events_since`: `dev → test`, a report's summary, the
-changed fields, a session's status change) and the actor. On the first page new events are
+changed fields, a session's status change with up to three of its task keys and `+N`) and the actor. On the first page new events are
 prepended live. Above the feed, **Actions on live** lists the newest 20 `live.action` events
 ([§7](#spec-journal)) for the project filter, refreshed live.
 
@@ -930,8 +931,13 @@ waiting on anything else.
 | `Stop` | idle | `turn finished` |
 | `SessionEnd` | ended | the session is unbound from every task it is bound to (history kept, `task.session_unbound` with `reason: "session_end"`), except after `/clear` or `/resume` (end reason `clear` or `resume`) and for desktop sessions, whose `local_…` id outlives the Claude Code process: the next `SessionStart` links the new Claude Code id to them ([below](#spec-hooks-linking)) |
 
-Other events are ignored. Activity of a working session is written at most once per 5 s per session
-(the latest wins); status changes are written at once, as `session.status_changed` per bound task.
+Other events are ignored. Activity of a working session is written to the session at most once per
+5 s (the latest wins); status changes are written at once. A `session.status_changed` event is
+stored for each status change (working, waiting, idle, ended, with `previous`), and for a change of
+the activity alone at most once per 60 s per session (an activity held back is stored when those
+60 s end, unless another event came first): one event per project of the session's bound
+tasks, with their `keys` and `project` (no `key`, no task id), or one without tasks for an unbound
+session. The board refreshes the cards named in `keys`.
 
 <a id="spec-hooks-messages"></a>
 
@@ -1093,6 +1099,13 @@ After the upgrade to `0008` no session gets comment text until its agent writes 
   normally.
 - `SessionStart` adds `You have <n> unread owner comment(s) on your relaybay tasks: call
   comments_list, then comment_ack or comment_add.` when there are any; that does not deliver them.
+- When the owner accepts a plan on the board, the next `UserPromptSubmit`, `PreToolUse` or
+  `PostToolUse` of the session bound to that task (linked as above) starts its answer with
+  `Owner accepted the plan of <key> (<n> steps): go on with step <first step not done>.` (or
+  `…: all steps are done.`), once (`plan.acceptance_delivered`). Not for an acceptance over MCP
+  (`plan_accept` by the coordinator), nor for one made before the session was bound or more than
+  2 hours ago (`ACCEPTANCE_TELL_HOURS`: after an upgrade or a long idle time it is stale); a plan
+  turned back to `draft` is not told.
 - An idle session receives the comment with its next prompt. The coordinator sees `comment.added`
   (with a 200-character excerpt) in `events_since` and can forward it.
 
@@ -1959,7 +1972,7 @@ Changes are grouped per task (or per project, or `global`, outside any task), on
 kinds counted, newest first, at most 30 lines, then `… N more: events_since(since_id=…)`
 (`project="<slug>"` included in a project or task digest). Left out:
 `session.status_changed`, `session.seen`, `session.todo_updated`, `comment.delivered`,
-`comment.read`. `task_context` also leaves out the caller's own `live.action` events, which its
+`comment.read`, `plan.acceptance_delivered`. `task_context` also leaves out the caller's own `live.action` events, which its
 hooks wrote. The footer names the event id reached.
 
 <a id="spec-digest-session-start"></a>

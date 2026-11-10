@@ -66,6 +66,7 @@ def session_label(task: Task) -> str:
 
 
 SHORT_MAX = 160
+STATUS_KEYS_SHOWN = 3  # task keys a session status line names before "+N"
 
 
 def short(text: str, limit: int = SHORT_MAX) -> str:
@@ -962,7 +963,10 @@ def event_detail(e: Event) -> str:
         return str(p.get("text") or "")
     if e.kind == "session.status_changed":
         change = f"{p['previous']} → {p.get('status')}" if p.get("previous") else p.get("status")
-        return f"{p.get('session')}: {change}"
+        keys = [str(k) for k in p.get("keys") or []]
+        more = f" +{len(keys) - STATUS_KEYS_SHOWN}" if len(keys) > STATUS_KEYS_SHOWN else ""
+        tasks = f" · {', '.join(keys[:STATUS_KEYS_SHOWN])}{more}" if keys else ""
+        return f"{p.get('session')}: {change}{tasks}"
     if e.kind.startswith("annotation."):
         return f"pin #{p['pin_number']}" if p.get("pin_number") else str(p.get("annotation_kind"))
     if e.kind == "intake.wake":
@@ -994,6 +998,8 @@ def event_detail(e: Event) -> str:
         return f"step {p.get('position')} {p.get('previous')} → {p.get('status')}"
     if e.kind == "plan.accepted":
         return f"{p.get('steps')} step(s) accepted"
+    if e.kind == "plan.acceptance_delivered":
+        return f"→ {p.get('session')}"
     if e.kind == "session.todo_updated":
         return f"todo {p.get('completed')}/{p.get('items')} done"
     if e.kind == "message.sent":

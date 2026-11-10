@@ -306,6 +306,7 @@ async def test_activity_is_coalesced_per_window(tmp_path: Path) -> None:
     try:
         task = await bound_task(svc)
         await svc.record_hook(hook("SessionStart"))
+        svc._status_evented.clear()  # as if the last stored event were a minute old
         with svc.bus.subscribe() as sub:
             for tool in ("Read", "Edit", "Bash"):
                 await svc.record_hook(hook("PreToolUse", tool_name=tool))
@@ -327,6 +328,66 @@ async def test_activity_is_coalesced_per_window(tmp_path: Path) -> None:
             assert sub.queue.qsize() == 1
     finally:
         await svc.close()
+
+
+async def test_one_status_event_per_change_names_every_bound_task(tmp_path: Path) -> None:
+    # No coalescing window: every tool call reaches the session row, as when calls are seconds
+    # apart. Before, each of these writes was one event per bound task (192 here).
+    svc = Service(tmp_path / "db.sqlite", hook_activity_window=0)
+    await svc.start()
+    try:
+        await svc.upsert_project("acme-shop", repo_path=CWD)
+        keys = [
+            (await svc.create_task("acme-shop", f"Task {n}", stage="dev", session=DESKTOP_A)).key
+            for n in range(16)
+        ]
+        first = await svc.last_event_id()
+        await svc.record_hook(hook("SessionStart"))
+        for n in range(10):
+            tool = ("Read", "Edit", "Bash", "Grep", "Glob")[n % 5]
+            await svc.record_hook(hook("PreToolUse", tool_name=tool))
+            await svc.record_hook(hook("PostToolUse", tool_name=tool))
+        assert (await svc.get_task(keys[0])).session_activity == "Glob"  # the row follows
+        await svc.record_hook(hook("Stop"))
+        events = [
+            e
+            for e in await svc.events_since(first, limit=500)
+            if e.kind == "session.status_changed"
+        ]
+        assert [e.payload["status"] for e in events] == ["working", "idle"]
+        assert all(e.payload["keys"] == keys and e.task_id is None for e in events)
+        assert all(e.payload["project"] == "acme-shop" and "key" not in e.payload for e in events)
+        assert events[1].payload["previous"] == "working"
+
+        # Activity alone is stored again once the last event is a minute old.
+        await svc.record_hook(hook("PreToolUse", tool_name="Read"))
+        svc._status_evented.clear()
+        await svc.record_hook(hook("PreToolUse", tool_name="Edit"))
+        await svc.record_hook(hook("PreToolUse", tool_name="Bash"))
+        later = await svc.events_since(events[-1].id, limit=500)
+        assert [(e.payload["status"], e.payload["activity"]) for e in later] == [
+            ("working", "Read"),
+            ("working", "Edit"),
+        ]
+    finally:
+        await svc.close()
+
+
+async def test_status_event_per_project_of_the_bound_tasks(service: Service) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    await service.upsert_project("demo-api")
+    shop = await service.create_task("acme-shop", "Checkout", stage="dev", session=DESKTOP_A)
+    api = await service.create_task("demo-api", "Tokens", stage="dev", session=DESKTOP_A)
+    first = await service.last_event_id()
+    await service.record_hook(hook("SessionStart"))
+    events = await service.events_since(first, limit=50)
+    assert {(e.payload["project"], tuple(e.payload["keys"])) for e in events} == {
+        ("acme-shop", (shop.key,)),
+        ("demo-api", (api.key,)),
+    }
+    assert [e.id for e in await service.events_since(first, "demo-api")] == [
+        e.id for e in events if e.payload["project"] == "demo-api"
+    ]
 
 
 # --- endpoint ----------------------------------------------------------------
@@ -496,5 +557,51 @@ async def test_repeated_same_activity_is_held_back_too(tmp_path: Path) -> None:
                 await svc.record_hook(hook("PreToolUse", tool_name="Bash"))
             assert sub.queue.qsize() == 0
         assert len(svc._activity_pending) == 1  # held back, written once when the window ends
+    finally:
+        await svc.close()
+
+
+async def test_status_event_readers_use_the_keys(service: Service) -> None:
+    from relaybay.mcp_server.format import event_detail
+    from relaybay.web.sse import format_event
+
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    keys = [
+        (await service.create_task("acme-shop", f"Task {n}", stage="dev", session=DESKTOP_A)).key
+        for n in range(5)
+    ]
+    await service.record_hook(hook("SessionStart"))
+    after = await service.last_event_id()
+    await service.record_hook(hook("Notification"))
+    [changed] = await service.events_since(after)
+    assert event_detail(changed) == (
+        f"{changed.payload['session']}: working → waiting · {', '.join(keys[:3])} +2"
+    )
+    data = json.loads(format_event(changed).split("data: ", 1)[1])
+    assert data["keys"] == keys and data["project"] == "acme-shop"
+    _, notices = await service.notifications(after)
+    assert [n.kind for _, n in notices] == ["permission"]  # one notice, not one per task
+
+
+async def test_held_back_activity_is_stored_when_the_event_window_ends(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "db.sqlite", hook_activity_window=0)
+    svc.activity_event_window = 0.3
+    await svc.start()
+    try:
+        task = await bound_task(svc)
+        await svc.record_hook(hook("SessionStart"))
+        with svc.bus.subscribe() as sub:
+            for tool in ("Read", "Edit", "Grep"):
+                await svc.record_hook(hook("PreToolUse", tool_name=tool))
+            assert sub.queue.qsize() == 0  # inside the event window: only the row changes
+            assert (await svc.get_task(task.key)).session_activity == "Grep"
+            for _ in range(100):  # the trailing write runs in the background
+                await asyncio.sleep(0.05)
+                if sub.queue.qsize():
+                    break
+            events = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
+        assert [(e.kind, e.payload["activity"]) for e in events] == [
+            ("session.status_changed", "Grep")
+        ]
     finally:
         await svc.close()

@@ -88,10 +88,12 @@ from relaybay.domain.models import (
     Task,
     TrackerEntry,
 )
+from relaybay.domain.notifications import BOARD_ACTORS, Notice
 from relaybay.domain.notifications import EVENT_KINDS as NOTICE_EVENT_KINDS
-from relaybay.domain.notifications import Notice
 from relaybay.domain.notifications import classify as classify_notice
 from relaybay.domain.plan import (
+    ACCEPTANCE_TELL_HOURS,
+    ACCEPTANCE_TOLD,
     CLOSED_PLAN,
     DEFAULT_DRAFT_HINT_HOURS,
     DEFAULT_REMINDER_EVERY,
@@ -105,6 +107,7 @@ from relaybay.domain.plan import (
     PlanStep,
     TodoChange,
     TodoItem,
+    acceptance_line,
     clean_conformance,
     clean_outcome,
     parse_todo,
@@ -196,7 +199,10 @@ from relaybay.policy import (
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity event per session
+HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity write per session
+# Seconds: a working session's activity alone (no status change) is stored as an event at most
+# this often; the session row still follows HOOK_ACTIVITY_WINDOW.
+ACTIVITY_EVENT_WINDOW = 60.0
 MESSAGE_WINDOW = 60.0  # seconds: at most one message event per sender and recipient
 MESSAGE_RECIPIENTS_MAX = 20  # different recipients of one sender per window
 HOOK_MEMO_MAX = 4096
@@ -962,6 +968,11 @@ class Service:
         self._activity_written: dict[int, float] = {}
         self._activity_pending: dict[int, HookEvent] = {}
         self._activity_timers: dict[int, asyncio.TimerHandle] = {}
+        # Per session: when its last `session.status_changed` was stored.
+        self._status_evented: dict[int, float] = {}
+        # Per session: the trailing write of an activity the event throttle held back.
+        self._status_timers: dict[int, asyncio.TimerHandle] = {}
+        self.activity_event_window = ACTIVITY_EVENT_WINDOW
         self._flushes: set[asyncio.Task[Any]] = set()
         # Per session: Stop blocks in the current turn; the newest wake-up waiter's number.
         self._stop_blocks: dict[int, int] = {}
@@ -1021,9 +1032,10 @@ class Service:
         await self._sweep_attachments()
 
     async def close(self) -> None:
-        for timer in self._activity_timers.values():
+        for timer in [*self._activity_timers.values(), *self._status_timers.values()]:
             timer.cancel()
         self._activity_timers.clear()
+        self._status_timers.clear()
         self._activity_pending.clear()
         for task in list(self._flushes):
             task.cancel()
@@ -1204,9 +1216,13 @@ class Service:
     # --- hook sessions -----------------------------------------------------
 
     async def _session_events(self, tx: _Tx, session: Session, actor: str, **payload: Any) -> None:
-        """One `session.status_changed` per task the session is bound to (cards refresh by
-        key), or one for the session alone."""
-        tasks = await repo.open_tasks_of_session(tx.conn, session.id)
+        """One `session.status_changed` per project of the tasks the session is bound to, with
+        their `keys` (cards refresh by key), or one for the session alone. Per project, not one
+        in all: the project filters of the stream, events_since and Activity read the column."""
+        self._status_evented[session.id] = time.monotonic()
+        timer = self._status_timers.pop(session.id, None)
+        if timer is not None:
+            timer.cancel()  # this event carries the latest state
         common = {
             "session": session.name,
             "session_external_id": session.external_id,
@@ -1214,7 +1230,10 @@ class Service:
             "activity": session.activity,
             **payload,
         }
-        if not tasks:
+        by_project: dict[int, list[Task]] = {}
+        for task in await repo.open_tasks_of_session(tx.conn, session.id):
+            by_project.setdefault(task.project_id, []).append(task)
+        if not by_project:
             await tx.event(
                 "session.status_changed",
                 actor,
@@ -1222,18 +1241,48 @@ class Service:
                 session_id=session.id,
                 **common,
             )
-        for task in tasks:
+        for project_id, tasks in by_project.items():
             await tx.event(
                 "session.status_changed",
                 actor,
-                project_id=task.project_id,
-                task_id=task.id,
+                project_id=project_id,
                 session_id=session.id,
-                project=task.project_slug,
-                key=task.key,
-                stage=task.stage.value,
+                project=tasks[0].project_slug,
+                keys=[t.key for t in tasks],
                 **common,
             )
+
+    def _activity_event_due(self, session_id: int) -> bool:
+        """An activity change without a status change is stored once per ACTIVITY_EVENT_WINDOW."""
+        last = self._status_evented.get(session_id)
+        if last is not None and time.monotonic() - last < self.activity_event_window:
+            return False
+        if session_id not in self._status_evented and len(self._status_evented) >= HOOK_MEMO_MAX:
+            self._status_evented.clear()
+        return True
+
+    def _status_event_later(self, session_id: int) -> None:
+        """The throttle held an activity back: store the session's state when its window ends
+        (unless another event comes first), so the board does not keep showing an older one."""
+        if session_id in self._status_timers:
+            return
+        last = self._status_evented.get(session_id, 0.0)
+        wait = max(0.0, self.activity_event_window - (time.monotonic() - last))
+        self._status_timers[session_id] = asyncio.get_running_loop().call_later(
+            wait, self._flush_status, session_id
+        )
+
+    def _flush_status(self, session_id: int) -> None:
+        self._status_timers.pop(session_id, None)
+        task = asyncio.get_running_loop().create_task(self._write_status(session_id))
+        self._flushes.add(task)
+        task.add_done_callback(self._flush_done)
+
+    async def _write_status(self, session_id: int) -> None:
+        async with self._tx() as tx:
+            session = await repo.get_session_by_id(tx.conn, session_id)
+            if session is not None and session.status != "ended":
+                await self._session_events(tx, session, session.name)
 
     async def _link_hook_session(
         self, tx: _Tx, session: Session, cc_id: str, *, from_window: bool = False
@@ -1645,7 +1694,9 @@ class Service:
             if "activity_at" in changes or hook.activity_only:
                 # Also for an unchanged activity: the next ones in the window are held back.
                 self._activity_written[session.id] = time.monotonic()
-            if "activity_at" in changes:
+            if "activity_at" in changes and (
+                session.status != hook.status or self._activity_event_due(session.id)
+            ):
                 await self._session_events(
                     tx,
                     updated,
@@ -1653,8 +1704,11 @@ class Service:
                     hook_event=hook.event,
                     **({"previous": session.status} if session.status != hook.status else {}),
                 )
+            elif "activity_at" in changes:
+                self._status_event_later(session.id)
             if hook.event == "SessionEnd":
                 self._activity_written.pop(session.id, None)
+                self._status_evented.pop(session.id, None)
             if hook.event == "SessionEnd" and not self._continues(updated, hook):
                 for task in await repo.open_tasks_of_session(tx.conn, session.id):
                     await repo.unbind(tx.conn, task.id, tx.now)
@@ -1723,6 +1777,25 @@ class Service:
                 await self._deliver(tx, session, shown)
         return shown, len(waiting)
 
+    async def _take_plan_acceptances(self, session: Session) -> list[str]:
+        """The owner's plan acceptances on the board for tasks bound to `session`, each told
+        once and only within ACCEPTANCE_TELL_HOURS; an acceptance over MCP (a coordinator's) is
+        not news to tell."""
+        since = (datetime.now(UTC) - timedelta(hours=ACCEPTANCE_TELL_HOURS)).isoformat(
+            timespec="milliseconds"
+        )
+        args = (session.id, BOARD_ACTORS, ACCEPTANCE_TOLD, since)
+        if not await repo.untold_plan_acceptances(self._r, *args):
+            return []  # the common case: no write transaction per tool call
+        lines = []
+        async with self._tx() as tx:
+            for task in await repo.untold_plan_acceptances(tx.conn, *args):
+                await self._plan_event(
+                    tx, ACCEPTANCE_TOLD, task, session.name, session.id, session=session.name
+                )
+                lines.append(acceptance_line(task.key, await self._load_plan(tx.conn, task)))
+        return lines
+
     async def _unread_messages_line(self, session: Session) -> str:
         count = len(await repo.unread_session_messages(self._r, session.id))
         return " " + message_text.unread_line(count) if count else ""
@@ -1768,10 +1841,13 @@ class Service:
             due = self._reminder_due(session, payload) if hook.event == "PostToolUse" else None
             if due is not None:
                 reminder = await self._plan_reminder(session, repeat=due == "periodic")
+            accepted = await self._take_plan_acceptances(session)
             budget = CONTEXT_MAX - (len(reminder) + 1 if reminder else 0)
-            budget -= sum(len(line) + 1 for line in lines)
+            budget -= sum(len(line) + 1 for line in [*lines, *accepted])
             shown, total = await self._take_undelivered(session, budget)
-            parts = [comment_text.delivery_text(shown, total)] if shown else []
+            parts = [*accepted]
+            if shown:
+                parts.append(comment_text.delivery_text(shown, total))
             if reminder:
                 parts.append(reminder)
             parts += lines
@@ -1800,6 +1876,7 @@ class Service:
             touch, warnings = None, []
         contexts = list(warnings)
         if exact is not None:
+            contexts += await self._take_plan_acceptances(exact)
             shown, total = await self._take_undelivered(exact)
             if shown:
                 contexts.append(comment_text.delivery_text(shown, total))
