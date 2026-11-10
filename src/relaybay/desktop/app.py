@@ -8,6 +8,7 @@ thread and "Open board" uses the browser. The server runs in a thread (`server_t
 
 import argparse
 import html
+import contextlib
 import logging
 import logging.config
 import os
@@ -783,7 +784,20 @@ def run(background: bool = False, exit_after: float | None = None, quit: bool = 
         journal.exception(exc)
         raise
     journal.exit(code)
+    if getattr(sys, "frozen", False):
+        _hard_exit(code)
     return code
+
+
+def _hard_exit(code: int) -> None:
+    """The installed program ends here once everything is closed and logged. On macOS the
+    process could stay alive after a clean quit (AppKit at interpreter shutdown), so Quit and
+    an update left a hung process; nothing is left to clean up at this point."""
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.flush()
+    os._exit(code)
 
 
 def _ipc_age(folder: Path) -> str:
