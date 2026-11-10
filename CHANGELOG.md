@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Desktop on macOS: the program's process ends after Quit and before an update; it could stay alive after a clean quit.
+
 ### Added
 
 - Card order on the board: drag a card within its column to set its place, or into another column

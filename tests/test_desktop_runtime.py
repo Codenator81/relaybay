@@ -1255,3 +1255,21 @@ def test_update_folder_is_cleared_at_start(
     )
     assert ctl.run() == 0
     assert not list(folder.iterdir())
+
+
+def test_the_installed_program_ends_its_process_after_a_clean_quit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from relaybay.desktop import app
+
+    ended: list[int] = []
+    monkeypatch.setattr(app, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(app, "_start", lambda background, exit_after, journal: 0)
+    monkeypatch.setattr(app.os, "_exit", ended.append)
+    monkeypatch.setattr(app.sys, "frozen", True, raising=False)
+    assert app.run() == 0
+    assert ended == [0]
+    monkeypatch.setattr(app.sys, "frozen", False)
+    ended.clear()
+    assert app.run() == 0
+    assert ended == []  # a source run (and the tests) return normally
