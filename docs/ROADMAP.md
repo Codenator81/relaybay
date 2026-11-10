@@ -122,6 +122,12 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | The Map page removed until agents run inside the program; tests wait longer for a test server | done | [0010](design/0010-map-and-usage.md) |
 
+## 0.8.3 — fewer session events (released 2026-11-10)
+
+| Item | Status | Design |
+|---|---|---|
+| One session status event per change; the bound session hears of a board plan acceptance | done | — |
+
 ## After 0.8
 
 | Item | Status | Design |
