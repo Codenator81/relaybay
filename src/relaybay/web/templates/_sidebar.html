@@ -10,7 +10,6 @@
     <li>{% call item("/inbox", "Inbox", nav.active == "inbox") %}{% with count = nav.inbox_count %}{% include "_inbox_badge.html" %}{% endwith %}{% endcall %}</li>
     <li>{{ item("/", "All boards", nav.active == "boards") }}</li>
     <li>{{ item("/backlog", "All backlog", nav.active == "backlog" and not nav.project) }}</li>
-    <li>{{ item("/map", "Map", nav.active == "map") }}</li>
     <li>{{ item("/usage", "Usage", nav.active == "usage") }}</li>
     <li>{{ item("/activity", "Activity", nav.active == "activity") }}</li>
     <li>{{ item("/audit", "Audit", nav.active == "audit") }}</li>

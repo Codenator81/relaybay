@@ -16,7 +16,7 @@ import time
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -34,7 +34,6 @@ from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
 from relaybay.domain import limits as agent_limits
-from relaybay.domain import map_graph as graphs
 from relaybay.domain import memory as mem
 from relaybay.domain import messages as message_text
 from relaybay.domain import usage as usage_data
@@ -201,7 +200,6 @@ HOOK_ACTIVITY_WINDOW = 5.0  # seconds: at most one activity event per session
 MESSAGE_WINDOW = 60.0  # seconds: at most one message event per sender and recipient
 MESSAGE_RECIPIENTS_MAX = 20  # different recipients of one sender per window
 HOOK_MEMO_MAX = 4096
-MAP_RECENT_EVENTS = 2000
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatch
 LIVE_ACTION = "live.action"
 NO_LIVE_ON = "session.no_live_on"
@@ -1518,8 +1516,8 @@ class Service:
 
     async def _record_launch(self, session: Session, child: str) -> None:
         """A `session.launched` event: the session that started another and the new one's desktop
-        id, nothing else of the tool's input or answer. The Map resolves the id when a session
-        with it is known; a replayed hook adds a row the Map counts once."""
+        id, nothing else of the tool's input or answer. Recorded for a future agents view; for now
+        only Activity shows it, and a replayed hook adds a second row."""
         async with self._tx() as tx:
             await tx.event(
                 "session.launched",
@@ -2165,114 +2163,6 @@ class Service:
             found = await repo.get_session_by_id(tx.conn, session.id)
             assert found is not None
             return found
-
-    # --- map ---------------------------------------------------------------
-
-    async def map_graph(
-        self,
-        *,
-        view: str = graphs.DEFAULT_VIEW,
-        minutes: int = graphs.DEFAULT_MINUTES,
-        project: str | None = None,
-    ) -> dict[str, Any]:
-        """The Map as JSON-ready nodes and edges. The Now view marks what happened in the last
-        `minutes`. No text of a task, comment or message is in it beyond titles and names."""
-        if view not in graphs.VIEWS:
-            raise ValidationError(f"view must be one of: {', '.join(graphs.VIEWS)}.")
-        if not 1 <= minutes <= graphs.MAX_MINUTES:
-            raise ValidationError(f"minutes must be from 1 to {graphs.MAX_MINUTES}.")
-        conn = self._r
-        now = datetime.now(UTC)
-        shown = await self.get_project(project) if project else None
-        if view == "agents":
-            return await self._agents_graph(conn, now, shown.slug if shown else None)
-        projects = [shown] if shown else await repo.list_projects(conn)
-        project_id = shown.id if shown else None
-        tasks = await repo.list_tasks(
-            conn, project_id=project_id, stages=[s.value for s in OPEN_STAGES]
-        )
-        since = (now - timedelta(days=graphs.RECENT_DAYS)).isoformat(timespec="milliseconds")
-        recent_since = (now - timedelta(minutes=minutes)).isoformat(timespec="milliseconds")
-        bound = {t.session_id for t in tasks}
-        sessions = [
-            s
-            for s in await repo.list_sessions(conn, project_id, graphs.SESSIONS_MAX)
-            if s.id in bound or s.last_seen_at >= since
-        ]
-        environments = await repo.list_environments(conn, [p.id for p in projects])
-        policies = await self._policies(conn, environments)
-        messages = await repo.map_messages(conn, since, recent_since, graphs.MESSAGES_MAX)
-        recipients = await self._map_recipients(conn, messages)
-        data = graphs.MapData(
-            projects=projects,
-            tasks=tasks,
-            sessions=sessions,
-            environments=environments,
-            levels={e.id: policies[e.id].level_for(e) for e in environments},
-            comments=await repo.map_comments(conn),
-            messages=messages,
-            recipients=recipients,
-            owner_names={name.strip().casefold() for name in self.owner_names},
-        )
-        if view == "now":
-            data.now_comment_tasks = await repo.map_recent_comment_tasks(conn, recent_since)
-            by_name = {(e.project_id, e.name): e.id for e in environments}
-            for event in await repo.map_recent_events(conn, recent_since, MAP_RECENT_EVENTS):
-                assert event.session_id is not None
-                if event.kind == "live.action":
-                    env_id = by_name.get((event.project_id, event.payload.get("environment")))
-                    if env_id is not None:
-                        data.now_access.add((event.session_id, env_id))
-                elif event.task_id is not None:
-                    data.now_bindings.add((event.session_id, event.task_id))
-        return graphs.build_graph(data, view, minutes, shown.slug if shown else None)
-
-    async def _map_recipients(
-        self, conn: aiosqlite.Connection, messages: list[graphs.MessageRow]
-    ) -> dict[str, Session]:
-        recipients: dict[str, Session] = {}
-        for name in {m.recipient for m in messages}:
-            found = await repo.find_sessions(conn, name)
-            named = found[0] if found else await repo.get_session_by_cc(conn, name)
-            if named is not None:
-                recipients[name] = named
-        return recipients
-
-    async def _agents_graph(
-        self, conn: aiosqlite.Connection, now: datetime, project: str | None
-    ) -> dict[str, Any]:
-        """The Agents view: every project's sessions are read, so the filter can keep the ones of
-        other projects an edge links to. Edges older than `RECENT_DAYS` are not drawn."""
-        since = (now - timedelta(days=graphs.RECENT_DAYS)).isoformat(timespec="milliseconds")
-        tasks = await repo.list_tasks(conn, stages=[s.value for s in OPEN_STAGES])
-        bound = {t.session_id for t in tasks}
-        sessions = [
-            s
-            for s in await repo.list_sessions(conn, None, graphs.SESSIONS_MAX)
-            if s.id in bound or s.last_seen_at >= since
-        ]
-        moments = await repo.map_message_moments(conn, since, graphs.MOMENTS_MAX)
-        messages = [
-            replace(m, moments=moments.get((m.session_id, m.recipient), ()))
-            for m in await repo.map_messages(conn, since, since, graphs.MESSAGES_MAX)
-        ]
-        launches = await repo.map_launches(conn, since, graphs.LAUNCHES_MAX)
-        children: dict[str, Session] = {}
-        for child in {launch.child for launch in launches}:
-            found = await repo.get_session_by_external_id(conn, child)
-            if found is not None:
-                children[child] = found
-        data = graphs.AgentsData(
-            projects=await repo.list_projects(conn),
-            tasks=tasks,
-            sessions=sessions,
-            messages=messages,
-            recipients=await self._map_recipients(conn, messages),
-            launches=launches,
-            children=children,
-            comments=await repo.map_owner_comments(conn, since, graphs.MOMENTS_MAX),
-        )
-        return graphs.build_agents(data, project)
 
     # --- usage -------------------------------------------------------------
 
@@ -5521,7 +5411,7 @@ class Service:
                 saved = await repo.get_session_message(tx.conn, message_id)
                 assert saved is not None
                 await self._message_event(tx, "message.sent", sender.name, saved, sender)
-                # The Map draws an edge from this event, as for a desktop SendMessage.
+                # Who wrote to whom, as for a desktop SendMessage (Activity shows it).
                 await tx.event(
                     "session.message",
                     sender.name,

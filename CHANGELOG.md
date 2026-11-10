@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- The Map page (`/map`, `/map/graph`), its sidebar item and the vendored Cytoscape.js: without agents
+  inside the program it showed little; an agents map comes back with the runner. The hooks still
+  record `session.launched` and `session.message` (no text), shown in Activity.
+
+### Fixed
+
+- Tests wait 45 s for a test server to start on slow CI runners.
+
 ## [0.8.1] - 2026-11-09
 
 ### Added

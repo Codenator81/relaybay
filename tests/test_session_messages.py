@@ -436,8 +436,6 @@ async def test_events_hold_names_and_never_the_text(service: Service) -> None:
     assert sent.payload["message_id"] == message.id and sent.payload["key"] == task.key
     edge = next(e for e in events if e.kind == "session.message")
     assert edge.payload["to"] == "Bob"
-    graph = await service.map_graph(view="structure")
-    assert [e for e in graph["edges"] if e["kind"] == "message"]
 
 
 async def test_not_in_search(service: Service) -> None:
@@ -446,7 +444,7 @@ async def test_not_in_search(service: Service) -> None:
     assert not (await service.search("zebrafish"))
 
 
-async def test_a_desktop_send_message_stays_an_edge(service: Service) -> None:
+async def test_a_desktop_send_message_records_only_who_wrote_to_whom(service: Service) -> None:
     await two_sessions(service)
     payload = hook("PreToolUse", CC_A) | {
         "tool_name": "SendMessage",

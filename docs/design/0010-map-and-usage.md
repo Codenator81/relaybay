@@ -1,5 +1,8 @@
 # 0010 — Map and Usage
 
+> The Map page was removed in 0.8.2 (2026-11-10): without agents inside the program it showed
+> little; it comes back with the runner.
+
 - Status: **Implemented** (see *As built*), for 0.4.0, after environments and access
   ([0006](0006-environments-and-access.md)). Part of the navigation plan
   ([0004](0004-navigation.md)).
@@ -68,7 +71,7 @@ a session to its usage.
 
 ## As built
 
-Behaviour is in [SPEC: Map](../SPEC.md#spec-map) and [SPEC: Usage](../SPEC.md#spec-usage). Where it
+Behaviour of Usage is in [SPEC: Usage](../SPEC.md#spec-usage); the Map's is described here only. Where it
 differs from the plan above:
 
 - **Nodes.** Coordinator, managers, workers and intake do not exist in the data yet, so they are not

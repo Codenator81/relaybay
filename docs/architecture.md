@@ -214,10 +214,6 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
 - The page never receives HTML over SSE: `app.js` maps an event to the fragment it affects
   (column, card, dialog view, comment thread, Inbox badge and list, sessions list) and asks htmx to refetch it, so
   replay is idempotent; the Activity page asks for the rows newer than its newest one.
-- The Map page alone loads `cytoscape.min.js` (vendored from npm like htmx, its licence notice kept
-  at the top of the file) and `map.js`, which redraws from the JSON of `/map/graph`. Cytoscape's only
-  inline `<style>` is skipped because `map.html` holds an element with the id it looks for; its one
-  rule is in `app.css`, so the CSP stays as it is.
 - `nav.js` (loaded before the body, not deferred) applies the remembered collapsed sidebar before
   the first paint and runs the phone drawer.
 - `visibilitychange` and `online` force a reconnect (phones kill `EventSource` in the background);

@@ -2,7 +2,8 @@
 
 - Status: **Accepted; steps (1) and (2) and the quick switcher with saved filters implemented**
   (sidebar, Inbox, Sessions, Activity, Map, Usage; see [SPEC §2](../SPEC.md#spec-board-nav),
-  [switcher](../SPEC.md#spec-switcher), [saved filters](../SPEC.md#spec-saved-filters)). Replaces the planned top tabs (Board | Review | Settings).
+  [switcher](../SPEC.md#spec-switcher), [saved filters](../SPEC.md#spec-saved-filters); the Map was
+  removed in 0.8.2 until agents run inside the program). Replaces the planned top tabs (Board | Review | Settings).
 - Size and order: (1) sidebar, Inbox, Sessions, Activity ~1.5–2 agent-days, right after the
   documentation restructure (0.2.0); (2) Map ~2 and Usage ~1 after environments and access
   ([0010](0010-map-and-usage.md), 0.4.0); (3) Coordinator, Managers, Schedules with the runner

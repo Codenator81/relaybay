@@ -73,6 +73,12 @@ def test_sidebar_on_every_page(board: TestClient, seeded: str) -> None:
     assert "Integrations</a>" not in board.get("/").text.split("</nav>")[1]  # no header link
 
 
+def test_the_removed_map_page_is_gone(board: TestClient) -> None:
+    assert 'href="/map"' not in board.get("/").text
+    for url in ("/map", "/map/graph", "/static/map.js", "/static/cytoscape.min.js"):
+        assert board.get(url).status_code == 404, url
+
+
 def test_login_page_has_no_sidebar(client: TestClient) -> None:
     page = client.get("/login")
     assert page.status_code == 200

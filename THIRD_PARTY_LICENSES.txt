@@ -92,7 +92,6 @@ Microsoft Edge WebView2 SDK (Windows)       Microsoft.Web.WebView2.Core.dll,
                                             Microsoft. The WebView2 runtime is part of Windows and
                                             is not bundled
 htmx and its SSE extension (the board)      0BSD
-Cytoscape.js (the map)                      MIT
 
 On Linux PyInstaller may also copy shared libraries of the build system (Ubuntu 22.04) that the
 modules above link against; each keeps the licence of its Ubuntu package. The WebKitGTK, GTK and
