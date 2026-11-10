@@ -210,6 +210,8 @@ def test_main_spools_on_a_closed_port_and_replays_to_a_live_server(
     # Room for a slow runner's first request: this checks the replay, not its speed.
     monkeypatch.setattr(hook_client, "BUDGET_SECONDS", 10.0)
     monkeypatch.setattr(hook_client, "STATE_TIMEOUT_SECONDS", 4.0)
+    # The second event is a ping: its own (shorter) timeout is the one each replayed line gets.
+    monkeypatch.setattr(hook_client, "TIMEOUT_SECONDS", 4.0)
     monkeypatch.setattr(hook_client, "STARTED", time.monotonic())
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(body("PostToolUse"))))
     live = f"{server.url}/hooks/claude-code"
