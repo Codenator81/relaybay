@@ -112,6 +112,15 @@ async def test_plan_step_add_on_review_moves_the_task_back_to_dev(service: Servi
     assert notes == [f"{key} moved from review back to dev (rework: owner asked)."]
 
 
+async def test_rework_puts_the_card_on_top_of_dev(service: Service) -> None:
+    key = await planned(service, stage="review")
+    for title in ("Payment", "Refunds"):
+        await service.create_task("acme-shop", title, stage="dev")
+    await service.add_plan_step(key, "Undo button", reason="owner asked")
+    dev = await service.list_tasks(project="acme-shop", stage="dev", by_rank=True)
+    assert len(dev) == 3 and dev[0].key == key
+
+
 async def test_reopening_a_done_step_on_test_moves_the_task_back_to_dev(
     service: Service,
 ) -> None:

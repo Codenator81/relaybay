@@ -119,6 +119,7 @@ EVENT_KINDS = (
     "task.created",
     "task.updated",
     "task.stage_changed",
+    "task.reordered",
     "task.session_bound",
     "task.session_unbound",
     "task.tracker_unlogged",
@@ -420,12 +421,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 waiting_on=waiting_on or None,
                 session=session or None,
                 include_done=True,
+                by_rank=True,
             )
         except ValidationError as exc:
             # A hand-typed URL still shows the board, with the reason, not a bare 400.
             filter_error = f"Filter ignored: {exc}"
             stage = waiting_on = session = ""
-            tasks = await service.list_tasks(project=project.slug, include_done=True)
+            tasks = await service.list_tasks(project=project.slug, include_done=True, by_rank=True)
         q = q.strip()[:SEARCH_MAX]
         needle = q.casefold()
         now = utcnow()
@@ -1120,6 +1122,29 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     async def card_fragment(request: Request, slug: str, key: str):
         task = await find_task(slug, key)
         return render(request, "_card.html", t=task, slug=slug)
+
+    @router.post("/p/{slug}/t/{key}/move")
+    async def move_card(
+        request: Request,
+        slug: str,
+        key: str,
+        stage: Annotated[str, Form()] = "",
+        before: Annotated[str, Form()] = "",
+        after: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> JSONResponse:
+        """A card dragged or moved from its menu (board.js). The answer is JSON for the script;
+        a refusal is the plain-text error of every board write."""
+        board_only(request, csrf)
+        task = await find_task(slug, key)
+        saved = await service.move_task(
+            task.key,
+            stage=stage.strip() or None,
+            before=before.strip() or None,
+            after=after.strip() or None,
+            actor="board",
+        )
+        return JSONResponse({"stage": saved.task.stage.value, "warnings": saved.warnings})
 
     async def dialog_context(slug: str, key: str, tab: str = "") -> dict[str, Any]:
         task = await find_task(slug, key)

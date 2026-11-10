@@ -22,6 +22,7 @@ from relaybay.domain.markdown_layout import (
     parse_note,
     place_of,
     registry_meaning,
+    registry_ranks,
     render_backlog,
     render_decisions,
     render_note,
@@ -211,15 +212,17 @@ def _task_folders(root: Path, wanted: dict[str, Wanted]) -> set[str]:
 
 
 def _says_the_same(
-    rel: str, existing: str, wanted: Wanted, aliases: Aliases, folders: set[str]
+    rel: str, existing: str, wanted: Wanted, aliases: Aliases, folders: set[str], written: bool
 ) -> bool:
     """A file that says the same in its own words is kept, so exporting into the folder a setup was
-    imported from leaves hand-written files alone until the board really differs."""
+    imported from leaves hand-written files alone until the board really differs. A hand-written
+    registry without ranks leaves the order to the board; one export wrote gets them."""
     if normalize(existing) == normalize(wanted.text):
         return True
     if rel == REGISTRY:
-        said = registry_meaning(existing, aliases, folders)
-        return said == registry_meaning(wanted.text, aliases)
+        ranks = written or registry_ranks(existing, aliases)
+        said = registry_meaning(existing, aliases, folders, ranks)
+        return said == registry_meaning(wanted.text, aliases, ranks=ranks)
     if rel == BACKLOG:
         return backlog_meaning(existing, aliases) == backlog_meaning(wanted.text, aliases)
     if wanted.note is not None:
@@ -287,7 +290,7 @@ def _plan_file(
         existing = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         existing = None
-    if existing is not None and _says_the_same(rel, existing, want, aliases, folders):
+    if existing is not None and _says_the_same(rel, existing, want, aliases, folders, written):
         # A hand edit that says the same must not become the new base: the next change from the
         # board would overwrite it. Line endings and outer whitespace lose nothing.
         same_text = normalize(existing) == normalize(want.text)

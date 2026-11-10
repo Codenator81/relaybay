@@ -90,6 +90,7 @@ class Task:
     plan_now_position: int | None = None
     plan_revised_at: str | None = None  # when the newest plan revision was written
     autonomy: str = "project"  # project (follows the project's switch), on, off
+    rank: int = 0  # the owner's order within the stage column, lower first
     project_autonomy: bool = False
     answer_received_at: str | None = None  # an external message answered `waiting_on`
     answer_message_id: int | None = None

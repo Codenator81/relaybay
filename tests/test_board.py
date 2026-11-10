@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -6,6 +7,7 @@ from starlette.testclient import TestClient
 import relaybay
 from relaybay.app import create_app
 from relaybay.config import load_settings
+from relaybay.domain.notifications import classify
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, run_in_app
@@ -485,3 +487,120 @@ def test_compact_controls_are_real_buttons_and_no_server_state(
         f'class="card-expand" aria-expanded="false" aria-label="Expand {seeded}"'
         in board.get(f"/p/acme-shop/t/{seeded}/card").text
     )
+
+
+def board_keys(board: TestClient, stage: str) -> list[str]:
+    column = board.get(f"/p/acme-shop/col/{stage}").text
+    return re.findall(r'<article class="card" id="card-([^"]+)"', column)
+
+
+def move(board: TestClient, token: str, key: str, **fields: str):
+    data = {"csrf_token": csrf_token(token), **fields}
+    return board.post(f"/p/acme-shop/t/{key}/move", data=data, headers={"Origin": BASE})
+
+
+def test_new_and_moved_in_tasks_go_on_top_and_edits_keep_the_order(
+    board: TestClient, seeded: str
+) -> None:
+    service: Service = board.app.state.service
+    second = run_in_app(board, service.create_task, "acme-shop", "Payment", stage="dev")
+    assert board_keys(board, "dev") == [second.key, seeded]
+    run_in_app(board, service.update_task, seeded, {"next_step": "Totals"})
+    assert board_keys(board, "dev") == [second.key, seeded]  # an edit does not reorder
+    moved = run_in_app(board, service.create_task, "acme-shop", "Refunds", stage="plan")
+    run_in_app(board, service.set_stage, moved.key, "dev")
+    assert board_keys(board, "dev") == [moved.key, second.key, seeded]
+
+
+def test_drop_within_a_column_renumbers_it_and_writes_one_event(
+    board: TestClient, seeded: str, token: str
+) -> None:
+    service: Service = board.app.state.service
+    second = run_in_app(board, service.create_task, "acme-shop", "Payment", stage="dev")
+    third = run_in_app(board, service.create_task, "acme-shop", "Refunds", stage="dev")
+    assert board_keys(board, "dev") == [third.key, second.key, seeded]
+    last = run_in_app(board, service.last_event_id)
+
+    response = move(board, token, third.key, before=seeded, after=second.key)
+    assert response.status_code == 200
+    assert response.json() == {"stage": "dev", "warnings": []}
+    assert board_keys(board, "dev") == [second.key, third.key, seeded]
+    events = run_in_app(board, service.events_since, last, "acme-shop")
+    assert [(e.kind, e.payload["key"], e.payload["stage"]) for e in events] == [
+        ("task.reordered", third.key, "dev")
+    ]
+    task = run_in_app(board, service.get_task, third.key)
+    assert (task.rank, task.version) == (2, 1)  # an order is not an edit: an open form still saves
+    # The bottom by the card above it; the same place again changes nothing.
+    assert move(board, token, second.key, after=seeded).status_code == 200
+    assert board_keys(board, "dev") == [third.key, seeded, second.key]
+    count = len(run_in_app(board, service.events_since, last, "acme-shop"))
+    assert move(board, token, second.key, after=seeded).status_code == 200
+    assert len(run_in_app(board, service.events_since, last, "acme-shop")) == count
+    # Noise for the agents and the tray: a digest does not count it, no notice is made of it.
+    assert "task.reordered" not in run_in_app(board, service.project_digest, "acme-shop")
+    assert classify(replace(events[0], actor="importer"), set()) is None
+
+
+def test_drop_into_another_column_is_a_stage_change_with_its_warnings(
+    board: TestClient, seeded: str, token: str
+) -> None:
+    service: Service = board.app.state.service
+    plan = run_in_app(board, service.create_task, "acme-shop", "Payment", stage="plan")
+    tested = run_in_app(board, service.create_task, "acme-shop", "Refunds", stage="test")
+    last = run_in_app(board, service.last_event_id)
+
+    response = move(board, token, plan.key, stage="test", after=tested.key)
+    assert response.status_code == 200
+    answer = response.json()
+    assert answer["stage"] == "test"
+    assert any("moving to test usually needs a report" in w for w in answer["warnings"])
+    assert board_keys(board, "test") == [tested.key, plan.key]
+    events = run_in_app(board, service.events_since, last, "acme-shop")
+    assert [e.kind for e in events] == ["task.stage_changed", "task.reordered"]
+    assert events[0].payload["warnings"] == answer["warnings"]
+    # From the card's menu: a stage alone puts the card on top, as any stage change does.
+    assert move(board, token, seeded, stage="test").json()["stage"] == "test"
+    assert board_keys(board, "test") == [seeded, tested.key, plan.key]
+
+
+def test_a_stale_neighbour_moves_nothing(board: TestClient, seeded: str, token: str) -> None:
+    service: Service = board.app.state.service
+    other = run_in_app(board, service.create_task, "acme-shop", "Payment", stage="plan")
+    response = move(board, token, seeded, stage="review", before=other.key)
+    assert response.status_code == 400
+    assert response.text == (
+        f"{other.key} is no longer in this column: the board changed meanwhile. Try again."
+    )
+    assert run_in_app(board, service.get_task, seeded).stage == "dev"  # one transaction
+    assert move(board, token, seeded, stage="qa").status_code == 400
+    itself = move(board, token, seeded, before=seeded)
+    assert itself.status_code == 400
+    assert itself.text == f"{seeded} cannot be placed before or after itself; name another card."
+
+
+def test_moving_a_card_is_for_the_signed_in_board_only(
+    client: TestClient, board: TestClient, seeded: str, token: str
+) -> None:
+    assert move(board, "wrong", seeded, stage="plan").status_code == 403
+    bearer = {"Authorization": f"Bearer {token}", "Origin": BASE}
+    data = {"csrf_token": csrf_token(token), "stage": "plan"}
+    assert (
+        client.post(f"/p/acme-shop/t/{seeded}/move", data=data, headers=bearer).status_code == 403
+    )
+    assert board.get(f"/p/acme-shop/t/{seeded}/move").status_code == 405
+    assert run_in_app(board, board.app.state.service.get_task, seeded).stage == "dev"
+
+
+def test_card_menu_offers_the_keyboard_and_phone_way(
+    board: TestClient, seeded: str, token: str
+) -> None:
+    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
+    assert f'<summary class="card-menu-button" aria-label="Move {seeded}"' in card
+    assert '<button type="button" data-move="up">Move up</button>' in card
+    assert '<button type="button" data-move="down">Move down</button>' in card
+    stages = re.findall(r'data-move-stage="([a-z]+)">Move to ([a-z]+)<', card)
+    assert stages == [(s, s) for s in ("plan", "review", "test", "live", "done")]
+    page = board.get("/p/acme-shop").text
+    assert 'id="board-flash" hidden' in page and "board.js" in page
+    assert f'data-csrf="{csrf_token(token)}"' in page

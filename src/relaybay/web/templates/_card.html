@@ -11,6 +11,15 @@
     {% endif %}
     {#- Shown only in compact mode; app.js keeps its state per browser, the server never knows. #}
     <button type="button" class="card-expand" aria-expanded="false" aria-label="Expand {{ t.key }}" title="Expand {{ t.key }}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
+    {#- The keyboard and phone way of what a drag does (board.js); a stage move lands on top. #}
+    <details class="card-menu">
+      <summary class="card-menu-button" aria-label="Move {{ t.key }}" title="Move {{ t.key }}"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12.5" cy="8" r="1.2"/></svg></summary>
+      <div class="card-menu-items">
+        <button type="button" data-move="up">Move up</button>
+        <button type="button" data-move="down">Move down</button>
+        {% for s in stages if s != t.stage %}<button type="button" data-move-stage="{{ s }}">Move to {{ label(s) }}</button>{% endfor %}
+      </div>
+    </details>
   </div>
   <h3 class="card-title">
     <a class="card-open" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}">{{ t.title }}</a>

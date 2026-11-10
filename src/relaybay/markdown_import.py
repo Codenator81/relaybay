@@ -75,6 +75,7 @@ ACTIONS = ("add", "update", "unchanged", "skipped", "conflict", "refused", "erro
 FAILED = ("conflict", "refused", "error")
 FAILED_NEW = ("refused", "error")  # a task in one of these does not exist for what depends on it
 TASK_FIELDS = ("title", "stage", "stage_note", "waiting_on", "next_step", "doc_path")
+RANK_MAX = 1_000_000_000  # a registry rank beyond this is a typo, not an order
 CHANGED_ON_BOARD = (
     "changed on the board since the last import; 'relaybay export' brings the file up to date"
     " (with --force for a file it did not write), --overwrite takes the file's text"
@@ -233,8 +234,14 @@ def _decide(
     return "conflict", NOT_IMPORTED if tracked is None else CHANGED_ON_BOARD, False
 
 
-def task_hash(task: Task) -> str:
-    return text_hash(*(str(getattr(task, name) or "") for name in TASK_FIELDS))
+def task_hash(task: Task, ranked: bool = False) -> str:
+    """The rank counts only for a registry that gives one, so older imports keep their hashes."""
+    rank = (str(task.rank),) if ranked else ()
+    return text_hash(*(str(getattr(task, name) or "") for name in TASK_FIELDS), *rank)
+
+
+def _field_text(task: Task, name: str) -> str:
+    return str(task.rank) if name == "rank" else str(getattr(task, name) or "")
 
 
 def note_hash(note: MemoryNote) -> str:
@@ -588,6 +595,16 @@ class _Planner:
                 values[name] = value
         if document:
             values["doc_path"] = document
+        if row.rank is not None:
+            try:
+                rank = int(row.rank)
+            except ValueError:
+                rank = RANK_MAX + 1
+            if abs(rank) > RANK_MAX:
+                detail = f"rank must be a whole number from -{RANK_MAX} to {RANK_MAX}"
+                self.add("task", source, REGISTRY, "error", detail)
+                return None
+            values["rank"] = str(rank)
         folder = folders.pop(f"{row.project}/{folder_key}", None) if folder_key else None
         if folder is not None:
             values["doc_path"] = task_link(row.project, folder_key or "")
@@ -622,11 +639,10 @@ class _Planner:
             self.warnings.append(row.warning)
         task = self._existing_task(row)
         tracked = self.tracked.get(("task", name))
-        changes = {
-            k: v for k, v in row.values.items() if task is None or str(getattr(task, k) or "") != v
-        }
+        changes = {k: v for k, v in row.values.items() if task is None or _field_text(task, k) != v}
+        ranked = "rank" in row.values
         content_hash = text_hash(row.values)
-        target_hash = task_hash(task) if task else ""
+        target_hash = task_hash(task, ranked) if task else ""
         action, detail, record = _decide(
             exists=task is not None,
             tracked=tracked,
@@ -637,7 +653,7 @@ class _Planner:
         )
         if task and action in ("update", "conflict"):
             shown = ", ".join(
-                f"{k}: {_first_line(str(getattr(task, k) or '-'), 40)} -> {_first_line(v, 40)}"
+                f"{k}: {_first_line(_field_text(task, k) or '-', 40)} -> {_first_line(v, 40)}"
                 for k, v in changes.items()
             )
             detail = f"{detail}; {shown}" if detail else shown
@@ -655,6 +671,7 @@ class _Planner:
                 "project": row.project,
                 "values": row.values,
                 "changes": changes,
+                "ranked": ranked,
                 "key": task.key if task else None,
                 "target_id": task.id if task else 0,
             },
@@ -1160,17 +1177,26 @@ async def _apply_task(service: Service, item: Item, tasks: dict[str, str]) -> No
     if item.action == "add":
         values = dict(p["values"])
         title = values.pop("title")
+        rank = values.pop("rank", None)
         task = await service.create_task(
             p["project"], title, description=p.get("description"), actor=ACTOR, **values
         )
     elif item.action == "update":
-        task = await service.update_task(p["key"], p["changes"], actor=ACTOR)
+        changes = dict(p["changes"])
+        rank = changes.pop("rank", None)
+        if rank is None and "stage" in changes:
+            # The stage change puts the card on top: the file's rank, unchanged, places it again.
+            rank = p["values"].get("rank")
+        task = await service.update_task(p["key"], changes, actor=ACTOR)
     else:
         tasks[item.item] = p["key"]
         await _record(service, item, p["target_id"], item.target_hash)
         return
+    if rank is not None:
+        # After the stage: a stage change puts the card on top, the file's rank then places it.
+        task = await service.set_task_rank(task.key, int(rank), actor=ACTOR)
     tasks[item.item] = task.key
-    await _record(service, item, task.id, task_hash(task))
+    await _record(service, item, task.id, task_hash(task, p["ranked"]))
 
 
 async def _apply_task_note(service: Service, item: Item, tasks: dict[str, str]) -> None:

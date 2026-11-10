@@ -1274,6 +1274,8 @@ async def test_a_stale_hash_does_not_migrate(
         conn.execute("ALTER TABLE attachment DROP COLUMN annotated_size")
         conn.execute("ALTER TABLE attachment DROP COLUMN annotated_sha256")
         conn.execute("ALTER TABLE attachment DROP COLUMN annotated_sent_sha256")
+        conn.execute("DROP INDEX task_board_order")
+        conn.execute("ALTER TABLE task DROP COLUMN rank")
         conn.execute("DROP TABLE import_item")
         conn.execute("PRAGMA user_version = 14")
         conn.commit()
@@ -1403,3 +1405,101 @@ def test_places() -> None:
     assert place_of("projects/a/tasks/x/other.md") is None
     assert place_of("projects/../x.md") is None
     assert place_of("elsewhere/x.md") is None
+
+
+async def test_rank_column_orders_the_cards_and_a_board_reorder_is_a_conflict(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "ranked"
+    root.mkdir()
+    header = "project | ref | task | stage | order"
+    write_registry(
+        root, header, "acme-shop | a | Deploy | dev | 2", "acme-shop | b | Docs | dev | 1"
+    )
+    assert run_cli(home, "import", root, "--apply") == 0
+    capsys.readouterr()
+    service = await open_service(home)
+    try:
+        tasks = await service.list_tasks(project="acme-shop", by_rank=True)
+        assert [(t.title, t.rank) for t in tasks] == [("Docs", 1), ("Deploy", 2)]
+        assert not (await fresh_plan(service, root)).writes
+        deploy = next(t for t in tasks if t.title == "Deploy")
+        docs = next(t for t in tasks if t.title == "Docs")
+        await service.move_task(deploy.key, before=docs.key)
+        plan = await fresh_plan(service, root)
+        assert {i.action for i in plan.items if i.kind == "task"} == {"conflict"}
+        assert "rank: 2 -> 1" in item(plan, "task", "acme-shop/b").detail
+    finally:
+        await service.close()
+
+    # Export brings the file up to the board's order; the import then changes nothing.
+    assert run_cli(home, "export", root, "--apply", "--force") == 0
+    capsys.readouterr()
+    text = (root / "TASKS.md").read_text(encoding="utf-8")
+    assert "| document | rank |" in text and "| Deploy | dev |  |  |  | 1 |" in text
+    service = await open_service(home)
+    try:
+        plan = await fresh_plan(service, root)
+        assert {i.action for i in plan.items} == {"unchanged"}  # at most bookkeeping
+    finally:
+        await service.close()
+
+
+async def test_a_stage_change_keeps_the_rank_the_file_gives(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "moved"
+    root.mkdir()
+    header = "project | ref | task | stage | rank"
+    write_registry(root, header, "acme-shop | a | Deploy | plan | 5")
+    assert run_cli(home, "import", root, "--apply") == 0
+    service = await open_service(home)
+    try:
+        await service.create_task("acme-shop", "Docs", stage="dev", actor="owner")
+    finally:
+        await service.close()
+    # Only the stage changes in the file; the rank cell is the one already stored.
+    write_registry(root, header, "acme-shop | a | Deploy | dev | 5")
+    assert run_cli(home, "import", root, "--apply") == 0
+    capsys.readouterr()
+    service = await open_service(home)
+    try:
+        dev = await service.list_tasks(project="acme-shop", stage="dev", by_rank=True)
+        assert [(t.title, t.rank) for t in dev] == [("Docs", 0), ("Deploy", 5)]
+        assert {i.action for i in (await fresh_plan(service, root)).items} == {"unchanged"}
+    finally:
+        await service.close()
+
+
+async def test_a_registry_without_ranks_leaves_the_order_to_the_board(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "plain"
+    root.mkdir()
+    write_registry(root, "project | ref | task | stage", "acme-shop | a | Deploy | dev")
+    assert run_cli(home, "import", root, "--apply") == 0
+    capsys.readouterr()
+    service = await open_service(home)
+    try:
+        other = await service.create_task("acme-shop", "Docs", stage="dev", actor="owner")
+        await service.move_task("acme-shop-1", before=other.key)
+        assert not (await fresh_plan(service, root)).writes
+    finally:
+        await service.close()
+    # Docs is a row the file lacks: export rewrites the file, ranks included.
+    assert run_cli(home, "export", root, "--apply", "--force") == 0
+    capsys.readouterr()
+    exported = (root / "TASKS.md").read_text(encoding="utf-8")
+    assert "| Docs | dev |  |  |  | 2 |" in exported
+
+
+def test_a_rank_that_is_no_number_is_an_error(home: Path, tmp_path: Path, capsys) -> None:
+    root = tmp_path / "bad-rank"
+    root.mkdir()
+    write_registry(
+        root, "project | task | rank", "acme-shop | Deploy | first", "acme-shop | Docs | 3"
+    )
+    assert run_cli(home, "import", root, "--apply") == 1
+    out = capsys.readouterr().out
+    assert "rank must be a whole number from -1000000000 to 1000000000" in out
+    assert re.search(r"^  add +task acme-shop/docs", out, re.M), out

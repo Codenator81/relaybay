@@ -62,7 +62,13 @@ TASK_FIELDS: tuple[TaskField, ...] = (
         TEXT_CLEARS,
         MARKDOWN_MAX,
     ),
-    TaskField("priority", "integer", "Higher sorts first; default 0.", "0 resets it"),
+    TaskField(
+        "priority",
+        "integer",
+        "Higher lists first in task_list; default 0. On the board the owner's order of the"
+        " cards decides instead.",
+        "0 resets it",
+    ),
     TaskField(
         "size",
         "size",

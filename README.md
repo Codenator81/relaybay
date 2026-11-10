@@ -76,8 +76,9 @@ program as its client:
 - **Board** — projects with per-stage counts; per project, columns `plan → dev → review → test → live → done` on two pages
   with cards showing only the essentials: key, tracker badge, an "open in desktop" icon when a
   desktop session works on the task, title, waiting-on person, branch and the next step (a
-  Compact toggle leaves key, tracker, title and who it waits on, with a chevron per card). Click a
-  card to open the task in a dialog over the live board (its own URL,
+  Compact toggle leaves key, tracker, title and who it waits on, with a chevron per card). Drag
+  cards to set their order in a column or to move them to another stage (or use the card's ⋯ menu
+  from the keyboard or a phone). Click a card to open the task in a dialog over the live board (its own URL,
   `/p/<project>?task=<key>`, full screen on a phone): description and progress in full, reports,
   session history, "Open in desktop", unbinding the session and editing the task. Each task also has
   a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a

@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Card order on the board: drag a card within its column to set its place, or into another column
+  to change its stage (the same rules and warnings as the edit form; a refusal puts the card back
+  and says why). Mouse, pen and touch (hold, then move), a drop line, auto-scroll near the edges;
+  the card's ⋯ menu has **Move up**, **Move down** and **Move to <stage>** for the keyboard and
+  phones. New tasks and tasks moved to another stage go to the top of their column; other edits no
+  longer move a card. On the board this order is the priority: a task's `priority` no longer sorts
+  the cards (it still orders `task_list`). A reorder writes one `task.reordered` event, refreshes other open boards and
+  is left out of digests and notices. Owner only: cookie + CSRF, no MCP tool.
+- `TASKS.md` export writes a `rank` column, and an import with a `rank` (or `order`) column sets
+  the order; a registry without it leaves the order to the board.
+- Migration `0028_task_rank`: `task.rank`, filled from the order the board showed, so nothing moves.
+
 ## [0.8.3] - 2026-11-10
 
 ### Fixed
