@@ -106,6 +106,8 @@ jobs:
           uv run --no-sync python scripts/hook_timing.py --limit-ms 60000 --interpreter
 
       - name: Smoke - desktop program
+        # A hung program must not hold the job until its 45 minute timeout (seen on macOS).
+        timeout-minutes: 5
         env:
           RELAYBAY_CONFIG_DIR: ${{ runner.temp }}/desktop-config
           RELAYBAY_HOME: ${{ runner.temp }}/desktop-home
@@ -123,13 +125,26 @@ jobs:
             if curl -sf -m 2 "http://127.0.0.1:$DESKTOP_PORT/healthz"; then up=yes; break; fi
             sleep 0.5
           done
-          if [ "$up" = yes ]; then "${wrap[@]}" "$BIN/relaybay$EXE" desktop --quit; fi
+          if [ "$up" = yes ]; then "${wrap[@]}" "$BIN/relaybay$EXE" desktop --quit & fi
+          # The program gets 90 s to exit after --quit (or its --exit-after backstop); then it is hung.
+          SECONDS=0
+          while kill -0 "$program" 2>/dev/null && [ "$SECONDS" -lt 90 ]; do sleep 0.5; done
+          hung=""
+          if kill -0 "$program" 2>/dev/null; then
+            hung=yes
+            kill -9 "$program" 2>/dev/null || true
+          fi
           status=0
           wait "$program" || status=$?
           trap - EXIT
           echo
-          echo "desktop exit $status, healthz up: ${up:-no}"
-          test "$status" = 0 && test "$up" = yes
+          echo "desktop exit $status, healthz up: ${up:-no}, hung: ${hung:-no}"
+          if [ "$status" != 0 ] || [ "$up" != yes ] || [ -n "$hung" ]; then
+            for log in "$RELAYBAY_CONFIG_DIR/desktop-start.log" "$RELAYBAY_HOME/logs/relaybay.log"; do
+              if [ -f "$log" ]; then echo "--- $log"; tail -n 60 "$log"; fi
+            done
+            exit 1
+          fi
 
       - name: Installer - Windows
         if: runner.os == 'Windows'
