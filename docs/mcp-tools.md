@@ -267,7 +267,7 @@ with the hook's input JSON. `relaybay setup` writes the hook entries (see
 |---|---|---|
 | `SessionStart` | working | `started (<source>)`; the answer adds the agent's `hook_session` id to its context, plus "You have N unread owner comment(s)…" when there are some |
 | `UserPromptSubmit` | working | `prompt` (the prompt text is not stored) |
-| `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is not stored; only the recipient of `SendMessage` is kept, for the Map) |
+| `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is not stored; only the recipient of `SendMessage` is kept, shown in Activity) |
 | `Notification` | waiting | the notification message |
 | `Stop` | idle | `turn finished` |
 | `SessionEnd` | ended | the session is unbound from its tasks (history kept, `task.session_unbound` with `reason: "session_end"`), except after `/clear` or `/resume` and for desktop sessions |

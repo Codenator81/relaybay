@@ -318,3 +318,14 @@ async def test_failed_report_rolls_back_next_step(service: Service, monkeypatch)
     after = await service.get_task(task.key)
     assert (after.next_step, after.waiting_on, after.version) == ("Code it", None, task.version)
     assert await service.last_event_id() == last
+
+
+def test_now_iso_is_strictly_increasing_and_stays_near_the_clock() -> None:
+    from datetime import UTC, datetime
+
+    from relaybay.service import now_iso
+
+    stamps = [now_iso() for _ in range(50)]
+    assert stamps == sorted(set(stamps))  # one per write, in order, even within one clock tick
+    ahead = datetime.fromisoformat(stamps[-1]) - datetime.now(UTC)
+    assert ahead.total_seconds() < 0.06  # a burst runs ahead by at most one ms per write

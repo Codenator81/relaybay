@@ -371,7 +371,7 @@ async def seed(service: Service) -> int:
     )
 
     await seed_memory(service)
-    await seed_map_and_usage(service)
+    await seed_environments_and_usage(service)
     await seed_launches(service, v0)
 
     # The desktop session of the checkout task is "working": as if its hook had reported. One
@@ -408,9 +408,9 @@ def demo_transcript(path: Path, seed_number: int, today: datetime) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-async def seed_map_and_usage(service: Service) -> None:
-    """Two environments and a few messages between sessions for the Map, a small usage history for
-    Usage: both through the real paths, a hook's tool call and transcript files in the data
+async def seed_environments_and_usage(service: Service) -> None:
+    """Two environments, a few messages between sessions for Activity and a small usage history for
+    Usage: all through the real paths, a hook's tool call and transcript files in the data
     folder."""
     await service.save_environment("acme-shop", {"name": "test", "kind": "test"}, actor="demo")
     await service.save_environment(

@@ -42,7 +42,6 @@ from relaybay.domain.errors import (
     ValidationError,
 )
 from relaybay.domain.intake import autonomy_reason
-from relaybay.domain.map_graph import DEFAULT_MINUTES, DEFAULT_VIEW
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
 from relaybay.domain.rules import rules_markdown
@@ -379,7 +378,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `map`, `usage`, `activity`, `audit`, `messages`, `settings`, `sessions`;
+        `boards`, `usage`, `activity`, `audit`, `messages`, `settings`, `sessions`;
         `board`,
         `sessions`,
         `environments` or
@@ -706,37 +705,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/fragments/inbox-badge", response_class=HTMLResponse)
     async def inbox_badge(request: Request):
         return render(request, "_inbox_badge.html", count=(await inbox()).count)
-
-    @router.get("/map", response_class=HTMLResponse)
-    async def map_page(
-        request: Request,
-        view: str = DEFAULT_VIEW,
-        minutes: int = DEFAULT_MINUTES,
-        project: str = "",
-    ):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        project = project.strip().lower()
-        await service.map_graph(view=view, minutes=minutes, project=project or None)  # validates
-        query = {"view": view, "minutes": minutes, **({"project": project} if project else {})}
-        return await page(
-            request,
-            "map.html",
-            "map",
-            view=view,
-            minutes=minutes,
-            project_filter=project,
-            graph_url="/map/graph?" + urlencode(query),
-            last_event_id=last_event_id,
-        )
-
-    @router.get("/map/graph")
-    async def map_graph(
-        view: str = DEFAULT_VIEW, minutes: int = DEFAULT_MINUTES, project: str = ""
-    ) -> JSONResponse:
-        graph = await service.map_graph(
-            view=view, minutes=minutes, project=project.strip().lower() or None
-        )
-        return JSONResponse(graph, headers={"Cache-Control": "no-store"})
 
     @router.get("/usage", response_class=HTMLResponse)
     async def usage_page(

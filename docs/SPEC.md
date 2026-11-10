@@ -377,7 +377,7 @@ breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`).
 <a id="spec-board-nav"></a>
 
 **Navigation.** Every signed-in page has a left sidebar ([design 0004](design/0004-navigation.md)):
-**Inbox** with a live count badge, **All boards**, **All backlog**, **Map**, **Usage**, **Activity**, **Settings**
+**Inbox** with a live count badge, **All boards**, **All backlog**, **Usage**, **Activity**, **Settings**
 (the Integrations page), then **Projects**, each expandable (the current one is open) with **Board**,
 **Backlog** (with the count of new items, [§12](#spec-backlog)), **Sessions**, **Stands & access** and **Docs & rules**, plus the project's
 [saved filters](#spec-saved-filters) under Board. The current item is highlighted (`aria-current="page"`). The header button hides or
@@ -428,7 +428,6 @@ posts; events `filter.saved`, `filter.deleted`.
 | Task page | `/t/<key>` | The same details as the dialog on a page of its own. |
 | Inbox | `/inbox` | Everything that needs the owner, across projects ([below](#spec-board-inbox)). |
 | Sessions | `/p/<slug>/sessions`, `/sessions` | The sessions of a project, or all sessions ([below](#spec-board-sessions)). |
-| Map | `/map`, `/map/graph` | Which agents interact: who started, messaged or commented whom; who works on what and can touch which environment ([below](#spec-map)). |
 | Usage | `/usage` | Tokens per session, model, project, day and week ([below](#spec-usage)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Audit | `/audit` | Who did what on which live stand, with filters ([below](#spec-board-audit)). |
@@ -661,93 +660,6 @@ touch a live stand are journaled, known by the names in its access map; test and
 not. Events are never pruned. The session filter goes by the row the call was recorded under: calls
 made before a guessed row was merged into its desktop session stay under the old row, whose name
 they still show.
-
-<a id="spec-map"></a>
-
-**Map** ([design 0010](design/0010-map-and-usage.md)) draws the system as a graph with the vendored
-Cytoscape.js, in the board's light or dark colours. It works at phone width: pan and zoom inside the
-canvas, no horizontal page scroll.
-
-<a id="spec-map-graph"></a>
-
-*Graph.* `GET /map/graph?view=agents|structure|now&minutes=N&project=<slug>` (behind the board
-cookie, `no-store`; `/map` takes the same query) answers JSON: `view` (default `agents`), `minutes`
-(default 60, 1 to 10080; `null` in the Agents view, which has no time window), `project`,
-`collapsed`, `nodes`, `edges`. A wrong view or minutes is a 400, an unknown project a 404. The
-tables below are the Structure and Now views; the Agents view is [below](#spec-map-agents).
-
-| Node | Holds | Badges |
-|---|---|---|
-| `owner` | one | what waits for the owner, agent replies not read |
-| `project` | every project, or the filtered one | open tasks |
-| `task` | open tasks (not done) | stage, waiting for the owner, agent replies not read |
-| `session` | sessions bound to an open task or seen in the last 7 days, at most 300 | status, owner comments the agent has not read, waiting |
-| `environment` | the projects' environments | kind and effective permission level |
-
-Roles the data does not hold (coordinator, managers, workers, intake) are not guessed: a session is
-a session. A message's recipient that names no session relaybay knows, or one outside the project
-filter, is a `session` node with its name only. A node holds no working directory, transcript path,
-base URL or access entry.
-
-| Edge | From → to | Extra |
-|---|---|---|
-| `hierarchy` | owner → project → task, project → environment | |
-| `binding` | session → task it is bound to now | |
-| `message` | session → recipient, messages of the last 7 days, at most 500 pairs | `count`, `last_at` |
-| `access` | session (not ended) → each environment of its own project and of its tasks' projects | `level`, which sets the colour |
-| `comment` | owner → task with owner comments | `count`, `last_at` |
-
-<a id="spec-map-agents"></a>
-
-*Agents view* (the default, decided 2026-11-09) shows what interacts with what. Nodes: the `owner`;
-a `project` box (a Cytoscape compound node) per project that holds a shown session, and an
-**Other** box (`project:~other`) for sessions with no project; and a `session` node for every session
-seen in the last 7 days or bound to an open task (at most 300). A session's box is the project of
-its bound tasks, else of its folder, else Other. A session node holds its name, status (working,
-waiting, idle, ended, as on Sessions), `task_line` (its current task's key and stage, e.g.
-`acme-shop-2 · dev`, `+N` with more), `tasks` (key, title, stage, link) and `launched_by`. No task,
-environment or project-only node is drawn. Edges, only those of the last 7 days:
-
-| Edge | From → to | Extra |
-|---|---|---|
-| `launched` | the session that started another → the one it started (`session.launched`, [§4](#spec-hooks-launch)), once per pair | `last_at` |
-| `message` | sender → recipient, a desktop `SendMessage` and `message_send` alike (`session.message`), at most 500 pairs | `count`, `last_at`, `moments` (the latest 5 times) |
-| `comment` | owner → the session bound to the open task the owner commented on, one per session | `count`, `last_at`, `moments`, `tasks` |
-
-A started session relaybay does not know yet is a `session` node `launch:<desktop id>` with
-`pending: true`, labelled with the start of its id, in the box of the session that started it; once
-a session with that desktop id exists the edge reaches it. A recipient that names no known session
-is a `peer:` node with its name only, outside the boxes. With a project filter the view keeps that
-project's sessions and, with `faded: true`, those of other projects (and their boxes) that an edge
-links to one of them; edges between two outsiders are left out. The boxes sit on a grid (the
-filtered project first, Other last; Cytoscape's `cose` piles compound nodes up), each holding its
-sessions on a small grid, the owner and loose nodes on a row above. The page draws a launch as a solid
-arrow, a message as a dashed arrow that grows thicker with its count, and fades the outsiders.
-Tapping a node lists its tasks with links and every edge it has (started by, started, wrote to, got
-messages from, owner's comments); tapping an edge shows what it carries, its count and its latest
-times. More than 150 nodes start collapsed, as below; a collapsed box stands in for its sessions.
-
-<a id="spec-map-views"></a>
-
-*Views.* **Agents** is above. **Structure** shows all of the tables before it. **Now** marks with `recent: true` the edges active in the
-last N minutes (a message; an owner comment; a session's write to its bound task; an action on a
-live environment, [§7](#spec-journal)) and the page dims the rest. The filter (project, view,
-and minutes outside the Agents view) is a plain form on the query string, the project select
-first.
-
-<a id="spec-map-collapse"></a>
-
-*Collapse.* A collapsed project stands in for its tasks, environments and sessions; edges that
-reached them reach the project, one per kind. More than 150 nodes start with every project collapsed
-(`collapsed: true` in the JSON); the page's buttons, a project's detail line and a double tap change
-it. Tapping a node shows its name, badges and links under the graph.
-
-<a id="spec-map-live"></a>
-
-*Live.* Project, task, session (`session.launched` and `session.message` too), comment and
-environment events, `live.action` and `policy.updated`
-refetch the graph at most once per 1.5 s; only elements that changed are touched, and the layout
-runs again only when an element was added. A view the user panned or zoomed stays as it is.
 
 <a id="spec-usage"></a>
 
@@ -1024,8 +936,8 @@ Other events are ignored. Activity of a working session is written at most once 
 <a id="spec-hooks-messages"></a>
 
 A `PreToolUse` of `SendMessage` (an explicit list of tools: another tool's `to` may be a mail
-address) whose `tool_input.to` is a string records `session.message` for the Map
-([§2](#spec-map)): sender, recipient and time, never any other part of the input. The recipient
+address) whose `tool_input.to` is a string records `session.message`, shown only in
+[Activity](#spec-board-activity): sender, recipient and time, never any other part of the input. The recipient
 loses control characters, its whitespace is collapsed and it is capped at 120 characters; one
 holding `@` with a domain, `<`, a comma or a semicolon is not recorded, so no address list passes
 (`name@team` is recorded). At most one event per sender and recipient per minute, and 20 recipients
@@ -1036,11 +948,12 @@ of its sends records the same event, without those two limits.
 <a id="spec-hooks-launch"></a>
 
 A `PostToolUse` of the desktop tool that starts a session (`mcp__ccd_session__start_session`, an
-explicit list) records `session.launched` for the Map ([§2](#spec-map-agents)): the calling session
+explicit list) records `session.launched`: the calling session
 and the new session's desktop id (`child`), nothing else of the input or the answer. The id is the
 first `local_<uuid>` found in the strings of `tool_response`, which may be a string, an object or a
 list of content blocks (at most 64 KiB of text, 6 levels deep, case folded); an answer without one,
-or naming the caller itself, records nothing. A failure here never stands in the hook's way. The
+or naming the caller itself, records nothing. The event is kept for a future agents view (who
+started whom); for now only [Activity](#spec-board-activity) shows it, one line per event. A failure here never stands in the hook's way. The
 `relaybay hook` forwarder retries and spools this event like the todo tools'. Any event's
 `transcript_path`
 may start the reading of a transcript ([§2](#spec-usage-source)); the file is never opened on this
@@ -2180,7 +2093,7 @@ relaybay is a single-user local server. The security layers, in request order:
 
 <a id="spec-security-usage"></a>
 
-What the Map and Usage keep: sender, recipient and time of a message, never its text; the paths of a
+What Activity and Usage keep: sender, recipient and time of a message, never its text; the paths of a
 transcript and its subagents' files and its `usage` numbers, model names, message ids and days, never prompt or output text.
 Nothing of this leaves the machine.
 

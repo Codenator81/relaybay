@@ -106,7 +106,7 @@ def live_server(tmp_path: Path) -> Iterator[Callable[[], LiveServer]]:
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
         thread.start()
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 45  # slow CI runners take long to start a server
         while not server.started:
             if time.monotonic() > deadline or not thread.is_alive():
                 raise RuntimeError("uvicorn did not start")

@@ -211,8 +211,6 @@
       return;
     }
 
-    if (window.relaybayMap) { window.relaybayMap.onEvent(data); return; }
-
     // The task page: comment events refetch the thread; other changes of its own task reload
     // the page (not every hook status of its session, which comes every few seconds while it
     // works), or only refetch the details while a comment is being written.

@@ -114,7 +114,7 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| The Map's Agents view: who started whom, who writes to whom, which session is on which task, a project filter | done | [0010](design/0010-map-and-usage.md) |
+| The Map's Agents view: who started whom, who writes to whom, which session is on which task, a project filter | done; the Map removed in 0.8.2 | [0010](design/0010-map-and-usage.md) |
 
 ## After 0.8
 
@@ -133,6 +133,7 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | Runner and embedded terminal with the user's own `claude` | later | [0012](design/0012-runner-and-embedded-terminal.md) |
 | Agent Client Protocol adapters, role profiles, embedded manager, project managers | later | [0012](design/0012-runner-and-embedded-terminal.md) |
 | Coordinator and Managers pages, Schedules in the sidebar | later | [0004](design/0004-navigation.md) |
+| An agents map: who started whom, who writes to whom, with a project filter, once agents run inside the program | later | [0010](design/0010-map-and-usage.md) |
 
 ## 0.7+ — workers
 

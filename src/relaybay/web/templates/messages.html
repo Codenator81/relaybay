@@ -4,7 +4,7 @@
 {% block content %}
 <main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
   <h1>Messages</h1>
-  <p class="muted audit-note">What sessions write to each other with <code>message_send</code>, and whether the recipient's hooks delivered it and it acknowledged it. A message grants no permission. A desktop <code>SendMessage</code> is not here: its text is never read, it is an edge on the <a href="/map">Map</a>.</p>
+  <p class="muted audit-note">What sessions write to each other with <code>message_send</code>, and whether the recipient's hooks delivered it and it acknowledged it. A message grants no permission. A desktop <code>SendMessage</code> is not here: its text is never read, only who wrote to whom, which <a href="/activity">Activity</a> shows.</p>
   <form class="board-tools" method="get" action="/messages">
     <label class="field-inline">Session
       <select name="session">

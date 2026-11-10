@@ -291,17 +291,6 @@ async def test_no_wake_on_a_done_task(service: Service) -> None:
     assert await fire(service, "PostToolUse") is None
 
 
-async def test_map_counts_external_unread(service: Service) -> None:
-    from relaybay.db import repo
-
-    task = await waiting_task(service)
-    await trusted(service)
-    await service.set_task_autonomy(task.key, "on")
-    await service.intake_post("support-chat", "1", f"{task.key} go")
-    [row] = [r for r in await repo.map_comments(service._r) if r.task_id == task.id]
-    assert row.unread_by_agent == 1
-
-
 def test_back_field_is_a_safe_local_path(board: TestClient, token: str) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.intake_post, "support-chat", "1", "hi")

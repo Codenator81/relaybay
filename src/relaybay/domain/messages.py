@@ -1,5 +1,5 @@
 """Messages between sessions: limits and the text hooks hand to the agent. The channel of
-`message_send`; a desktop `SendMessage` stays an edge on the Map and its text is never read."""
+`message_send`; of a desktop `SendMessage` only who wrote to whom is recorded, never its text."""
 
 from dataclasses import dataclass
 
