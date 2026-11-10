@@ -11,6 +11,7 @@ RETRY_MS = 3000
 _PAYLOAD_KEYS = (
     "project",
     "key",
+    "keys",
     "stage",
     "from",
     "to",

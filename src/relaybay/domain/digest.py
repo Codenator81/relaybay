@@ -50,6 +50,7 @@ NOISE_KINDS = (
     "session.message",
     "comment.delivered",
     "comment.read",
+    "plan.acceptance_delivered",
     "message.sent",
     "message.delivered",
     "message.read",

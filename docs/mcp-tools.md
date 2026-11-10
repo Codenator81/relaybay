@@ -273,8 +273,11 @@ with the hook's input JSON. `relaybay setup` writes the hook entries (see
 | `SessionEnd` | ended | the session is unbound from its tasks (history kept, `task.session_unbound` with `reason: "session_end"`), except after `/clear` or `/resume` and for desktop sessions |
 
 Other events are ignored (`204`); an event with nothing to say also gets an empty `204`. Activity of a working session is written at most once per 5 s per
-session (the latest one wins); status changes are written at once. Each change is a
-`session.status_changed` event per task the session is bound to.
+session (the latest one wins); status changes are written at once. Each status change is one
+`session.status_changed` event per project of the session's bound tasks, with their `keys`; a
+change of the activity alone is stored as one at most once per 60 s (the latest one when the 60 s
+end). In `events_since` it reads
+`<session>: working → idle · acme-shop-1, acme-shop-2, acme-shop-3 +2`.
 
 A hook session is matched to a relaybay session in this order: on `SessionStart`, the desktop
 session named by `CLAUDE_CODE_HOST_SESSION_ID` (set by the Claude desktop app; after `/clear` or a
@@ -311,7 +314,10 @@ link guessed from the folder, an unlinked or ended session never gets comment te
   comments of the session's tasks, one line each — `Owner comment on acme-shop-12 (#7): …` — and how
   to answer (`comment_add` / `comment_ack`). They count as delivered (`comment.delivered`) and are not
   sent again. At most about 8,000 characters per answer (below Claude Code's 10,000 limit); the rest
-  follow with the next events.
+  follow with the next events. When the owner accepted a task's plan on the board, the next of
+  these answers says so once: `Owner accepted the plan of acme-shop-12 (3 steps): go on with step 2.`
+  (the first step not done; `…: all steps are done.` when none is left). Not for `plan_accept` over
+  MCP, nor for an acceptance more than 2 hours old.
 - `Stop`: while delivered owner comments are not acknowledged (or new ones arrived), the answer is
   `{"decision": "block", "reason": …}` with the comments, so the agent handles them before it ends
   the turn. At most twice per turn per session and twice per comment in all; never when

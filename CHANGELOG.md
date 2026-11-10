@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A hook status change wrote one `session.status_changed` event per task the session is bound to,
+  and every new tool name was a change: a session bound to 16 tasks wrote 16 identical events per
+  tool call. Now one event per status change and project, with the bound tasks in `keys`; the
+  activity alone is stored at most once per 60 s per session, the latest one when the 60 s end. The board, Activity and
+  `events_since` read `keys`.
+- The bound session was not told when the owner accepted its plan on the board; its next hook now
+  says `Owner accepted the plan of <key> (<n> steps): go on with step <n>.` (the first step not
+  done, or `all steps are done.`), once and only within 2 hours of the acceptance.
+
 ## [0.8.2] - 2026-11-10
 
 ### Removed

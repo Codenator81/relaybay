@@ -159,6 +159,7 @@ EVENT_KINDS = (
     "plan.step_added",
     "plan.step_updated",
     "plan.accepted",
+    "plan.acceptance_delivered",
     "session.todo_updated",
     "session.message",
     "session.launched",

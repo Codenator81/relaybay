@@ -979,6 +979,31 @@ async def delivered_unread_comments(conn: aiosqlite.Connection, session_id: int)
     return [_comment(r) for r in rows]
 
 
+async def untold_plan_acceptances(
+    conn: aiosqlite.Connection,
+    session_id: int,
+    actors: tuple[str, ...],
+    told_kind: str,
+    since: str,
+) -> list[Task]:
+    """Tasks bound to this session whose plan one of `actors` accepted while it was bound and
+    not before `since`, and that acceptance was not told to it yet (no `told_kind` event for it
+    since)."""
+    marks = ", ".join("?" for _ in actors)
+    rows = await _all(
+        conn,
+        _TASK_SELECT
+        + "JOIN task_session b ON b.task_id = t.id AND b.session_id = ? AND b.unbound_at IS NULL"
+        f" WHERE t.plan_status = 'accepted' AND t.plan_accepted_by IN ({marks})"
+        " AND b.bound_at <= t.plan_accepted_at AND t.plan_accepted_at >= ?"
+        " AND NOT EXISTS (SELECT 1 FROM event d WHERE d.task_id = t.id AND d.kind = ?"
+        " AND d.session_id = ? AND d.ts >= t.plan_accepted_at)"
+        " ORDER BY t.id",
+        (session_id, *actors, since, told_kind, session_id),
+    )
+    return [_task(r) for r in rows]
+
+
 async def unread_owner_count(conn: aiosqlite.Connection, session_id: int) -> int:
     row = await _one(conn, "SELECT COUNT(*) FROM comment c" + _BOUND_OWNER, (session_id,))
     return int(row[0])

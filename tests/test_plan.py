@@ -2,6 +2,7 @@
 agent's Claude Code todo from hooks, plan reminders, MCP tools, the board's Plan tab, migration."""
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -458,7 +459,9 @@ async def test_reminders_carry_the_current_step_and_the_todo_item(tmp_path: Path
             await svc.accept_plan(task.key, session=DESKTOP_A)
         await svc.accept_plan(task.key)
         answers = [await fire(svc, "PostToolUse", tool_name="Bash") for _ in range(3)]
-        assert answers[:2] == [None, None] and "(accepted)" in context_of(answers[2])
+        told = f"Owner accepted the plan of {task.key} (3 steps): go on with step 1."
+        assert context_of(answers[0]) == told  # the owner's acceptance, once
+        assert answers[1] is None and "(accepted)" in context_of(answers[2])
         # A new SessionStart is a new context: the reminder comes again.
         assert "(accepted)" in context_of(await fire(svc, "SessionStart"))
     finally:
@@ -646,3 +649,72 @@ async def test_upgrade_from_0012_keeps_tasks_and_adds_the_plan(tmp_path: Path) -
         assert (await svc.update_task(task.key, {"size": "S"})).size == "S"
     finally:
         await svc.close()
+
+
+# --- the owner's acceptance told through hooks ------------------------------------------------
+
+
+async def test_owner_acceptance_is_told_to_the_bound_session_once(service: Service) -> None:
+    task = await linked_task(service)
+    await service.set_plan(task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+    await service.accept_plan(task.key, actor="owner")  # the board's call
+    line = f"Owner accepted the plan of {task.key} (3 steps): go on with step 1."
+    assert line in context_of(await fire(service, "PreToolUse", tool_name="Bash"))
+    for event in ("PostToolUse", "PreToolUse", "UserPromptSubmit"):
+        answer = await fire(service, event, tool_name="Bash")
+        assert answer is None or line not in context_of(answer)  # told once
+    events = await service.events_since(0, limit=500)
+    assert [e.kind for e in events].count("plan.acceptance_delivered") == 1
+
+
+async def test_acceptance_over_mcp_or_before_the_binding_is_not_told(service: Service) -> None:
+    task = await linked_task(service)
+    await service.set_plan(task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+    await service.accept_plan(task.key, actor="mcp", session="coordinator")
+    answer = await fire(service, "PostToolUse", tool_name="Bash")
+    assert answer is None or "Owner accepted" not in context_of(answer)
+
+    # Accepted on the board before this session was bound: old news for it.
+    other = await service.create_task("acme-shop", "Payment", stage="dev")
+    await service.set_plan(other.key, STEPS[:1])
+    await service.accept_plan(other.key, actor="owner")
+    await service.bind_session(other.key, DESKTOP_A, hook_session=CC_A)
+    answer = await fire(service, "PostToolUse", tool_name="Bash")
+    assert answer is None or "Owner accepted" not in context_of(answer)
+
+
+async def test_acceptance_names_the_first_step_not_done_and_old_ones_are_not_told(
+    service: Service,
+) -> None:
+    task = await linked_task(service)
+    await service.set_plan(task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+    for position in (1, 2):
+        await service.update_plan_step(task.key, position, "done", conformance="as planned")
+    await service.update_plan_step(task.key, 3, "in_progress")
+    await service.accept_plan(task.key, actor="owner")
+    told = context_of(await fire(service, "PostToolUse", tool_name="Bash"))
+    assert f"Owner accepted the plan of {task.key} (3 steps): go on with step 3." in told
+
+    done = await service.create_task(
+        "acme-shop", "Payment", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    await service.set_plan(done.key, STEPS[:1], session=DESKTOP_A, hook_session=CC_A)
+    await service.update_plan_step(done.key, 1, "done", conformance="as planned")
+    await service.accept_plan(done.key, actor="owner")
+    told = context_of(await fire(service, "PostToolUse", tool_name="Bash"))
+    assert f"Owner accepted the plan of {done.key} (1 step): all steps are done." in told
+
+    # Accepted three hours ago (or before an upgrade that brought this delivery): stale news.
+    old = await service.create_task(
+        "acme-shop", "Refunds", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    await service.set_plan(old.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+    await service.accept_plan(old.key, actor="owner")
+    async with service._tx() as tx:
+        await tx.conn.execute(
+            "UPDATE task SET plan_accepted_at = ? WHERE id = ?",
+            ((datetime.now(UTC) - timedelta(hours=3)).isoformat(timespec="milliseconds"), old.id),
+        )
+        await tx.conn.execute("UPDATE task_session SET bound_at = '2020-01-01T00:00:00.000+00:00'")
+    answer = await fire(service, "PostToolUse", tool_name="Bash")
+    assert answer is None or "Owner accepted" not in context_of(answer)
