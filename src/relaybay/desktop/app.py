@@ -7,8 +7,8 @@ thread and "Open board" uses the browser. The server runs in a thread (`server_t
 """
 
 import argparse
-import html
 import contextlib
+import html
 import logging
 import logging.config
 import os
