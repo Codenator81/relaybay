@@ -156,8 +156,8 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 |---|---|---|
 | The probes of 0012 (resume, permissions in `-p`, the owner's word, concurrent access, bare and subscription terms, token numbers) | done | [0012](design/0012-runner-and-embedded-terminal.md#probes-2026-11) |
 | The server ends open wake-up long polls when it stops | next | [0021](design/0021-agents-inside.md#the-pain-it-removes) |
-| A run on a card: headless turns with `--resume`, worktree, model, effort, permission profile, stop and end, full turn reports with `verified` marks | next | [0021](design/0021-agents-inside.md#the-run) |
-| Questions and approvals as objects on the card and in the Inbox | next | [0022](design/0022-questions-and-approvals.md) |
+| A run on a card: headless turns with `--resume`, the user's own Claude Code layer, a project folder or a repository with a worktree per touched repository, model, effort, permission profile, stop and end, full turn reports with `verified` marks | next | [0021](design/0021-agents-inside.md#the-run) |
+| Questions (with "look at this" for visual acceptance) and approvals as objects on the card and in the Inbox | next | [0022](design/0022-questions-and-approvals.md) |
 | Slots and free memory per machine, queueing with a reason; the brake and budgets on runs; lifecycle and retention | next | [0021](design/0021-agents-inside.md#the-run) |
 
 ## 0.10 — the terminal

@@ -54,8 +54,8 @@ tests/e2e/test_real_claude.py`.
 
 ## Probes 2026-11
 
-Six more answers before any runner code, marked **docs** and **probe** like the two above. The
-probe is one run of `scripts/probe_runner.py` (opt-in, never in CI: it refuses when `CI` is set)
+Seven more answers before any runner code, marked **docs** and **probe** like the two above. Probes
+1 to 6 are one run of `scripts/probe_runner.py` (opt-in, never in CI: it refuses when `CI` is set)
 with a real subscription login on Windows (Claude Code 2.1.312, 2026-11-10, model haiku, a temporary
 relaybay server and a temporary git repository with a bare remote; the user's own hooks kept out
 with `--setting-sources project` and `--settings <file>`). It spent about 0.05 USD of estimated cost.
@@ -68,11 +68,24 @@ with `--setting-sources project` and `--settings <file>`). It spent about 0.05 U
 | 4 | Concurrent access | | Two headless turns on one session id at once (the second 8 s into the first): both exit 0, no lock, no fork, same session id, the transcript interleaved. Interactive `claude --resume` during a headless turn not probed (needs a PTY) | The runner serializes turns per run itself; while a terminal is open (0.10), headless turns for that run queue |
 | 5 | Bare and subscription terms | [Headless](https://code.claude.com/docs/en/headless): `--bare` skips hooks, `CLAUDE.md`, MCP discovery and the subscription login (API key only) and "will become the default for `-p`" in a future release. [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance): subscription sign-in is meant for ordinary use of Claude Code and Anthropic's own applications; products built on the Agent SDK should use an API key; third parties may not route requests through plan credentials for their users or collect credentials; the same page says nothing stops a user from signing in to the unmodified binary with their own subscription. The `-p` page presents it as running Claude Code programmatically | | relaybay never passes `--bare`, never touches credentials, runs the unmodified binary on the user's own machine under the user's own login. That reads as inside the user's own use, but programmatic turns are a grey area: a question for the owner before code ([0021](0021-agents-inside.md#questions-for-the-owner)) |
 | 6 | Token numbers | | `result.usage` per turn (input, output, cache read, cache write), summed over four turns of one session (two in sequence, two at once), equals the transcript's sums exactly. `total_cost_usd` is a client estimate and on resume reports the conversation's total | A turn's `result.usage` can show on the card live; it agrees with what the budgets of [0018](0018-brake-and-budgets.md) count from the transcript |
+| 7 | Sign-in | [CLI reference](https://code.claude.com/docs/en/cli-reference): `claude auth status` prints JSON and exits 0 when signed in, 1 when not (2.1.268+); `authMethod` is one of `none`, `claude.ai`, `oauth_token`, `api_key`, `api_key_helper`, `third_party` | Run by hand, with a signed-in subscription: `loggedIn` true, `authMethod` `claude.ai`, a `subscriptionType`, exit 0. The signed-out and API-key answers not probed | The runner's login check reads only `loggedIn`, `authMethod`, `subscriptionType` ([0021](0021-agents-inside.md#login-check)) |
+
+### Probes before PR 1
+
+Not run yet; added to `scripts/probe_runner.py` before the runner's first pull request.
+
+| # | Probe | Question |
+|---|---|---|
+| 8 | User layer | With the default setting sources, is a rule from the user `CLAUDE.md` visible in a `-p` turn, are user skills and agents listed, and do relaybay's hooks from the user's settings fire once per event? (Probes 1 to 7 used `--setting-sources project` to keep the owner's own hooks off his live board) |
+| 9 | Several repositories | Does `--add-dir` give a turn in a project folder the worktrees of two repositories, and is each repository's own `CLAUDE.md` read when the agent works there? |
 
 ## Model
 
-- `run`: one per card, as [0021](0021-agents-inside.md#the-run) describes: card, cwd, worktree, model,
-  effort, permission profile, Claude session id, status, who started it, started_at, ended_at.
+- `run`: one per card, as [0021](0021-agents-inside.md#the-run) describes: card, cwd (a project
+  folder or one repository), model, effort, permission profile, Claude session id, status, who
+  started it, started_at, ended_at.
+- `run_worktree`: one per repository the run touches: repository, path, branch, created by the run,
+  removed at.
 - `run_turn`: one per turn: prompt, who sent it, pid, started and ended, outcome, tokens from `result`.
 - `run_event`: the stream-json lines of each turn, compressed, secret shapes masked, kept by the
   project's retention policy.
@@ -82,9 +95,12 @@ with `--setting-sources project` and `--settings <file>`). It spent about 0.05 U
 ## Runner (step by step, headless)
 
 - First turn: `asyncio.create_subprocess_exec(shutil.which("claude"), "-p", prompt, "--output-format",
-  "stream-json", "--verbose", "--permission-mode", …, "--allowedTools", …)` in the run's worktree, so
-  the repository's own `CLAUDE.md`, skills, settings and `.mcp.json` load exactly as for a manual
-  session. On Windows resolve `claude.cmd` / `.exe` via `shutil.which`, no `shell=True`. The
+  "stream-json", "--verbose", "--permission-mode", …, "--allowedTools", …, "--add-dir", …)` in the
+  run's cwd, with the worktrees outside it passed by `--add-dir`. The default setting sources (`user,
+  project, local`) stay, so the user's `CLAUDE.md`, skills, agents and output style load as well as
+  the cwd's `CLAUDE.md`, settings and `.mcp.json`, exactly as for a manual session; relaybay's own
+  hooks come from the user's settings or, when `setup` did not put them there, from `--settings`,
+  never both ([0021](0021-agents-inside.md#the-run)). On Windows resolve `claude.cmd` / `.exe` via `shutil.which`, no `shell=True`. The
   environment carries `RELAYBAY_RUN_ID`, which the hook forwarder sends with each event.
 - Every later turn: the same with `--resume <session id>` and the turn's text (the owner's answer, an
   approval, an owner comment, a coordinator's message framed as data). One turn at a time per run;
@@ -96,7 +112,8 @@ with `--setting-sources project` and `--settings <file>`). It spent about 0.05 U
 - Permissions: each project profile sets `--permission-mode` and `--allowedTools` explicitly; never
   skip permissions by default. Never pass `--bare`: it does not use the subscription login.
 - The run's MCP config includes relaybay, so the agent reports through the same tools.
-- Slots per machine and a free-memory check before each turn; one run per worktree.
+- Slots per machine and a free-memory check before each turn (both settings); one run per worktree,
+  for each worktree of a run.
 - A one-shot `-p` without `--resume` only for schedules and read-only checks
   ([0023](0023-coordinator-and-schedules.md)).
 

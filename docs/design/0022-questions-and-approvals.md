@@ -5,7 +5,7 @@
   ([0005](0005-comments-to-agents.md)), the guard and access map ([0006](0006-environments-and-access.md)),
   policy as data ([0013](0013-policy-as-data.md)) and the Inbox and tray
   ([0020](0020-tray-notifications.md)).
-- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0035 `question`, 0036
+- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0036 `question`, 0037
   `approval` (numbers as in 0021's plan).
 
 ## Problem
@@ -18,8 +18,8 @@ owner's button answers or decides them.
 
 ## Questions
 
-**Model.** `question`: id, task, run (or a desktop session), text, options (a list, may be empty),
-default, `blocking`, `default_after` (a deadline, for non-blocking questions), asked at, answer,
+**Model.** `question`: id, task, run (or a desktop session), kind (`question` or `look`), text,
+options (a list, may be empty), default, `blocking`, for `look` the URL and the test account's name, `default_after` (a deadline, for non-blocking questions), asked at, answer,
 answered by (`owner` or `default`), answered at, delivered at, status (`open`, `answered`,
 `defaulted`, `withdrawn`).
 
@@ -34,6 +34,15 @@ answered by (`owner` or `default`), answered at, delivered at, status (`open`, `
 "blocks the run" or "goes on with the default at <time>", its age; option buttons and a text field.
 The card shows its own. A tray notification on each new blocking question.
 `POST /questions/{id}/answer` (cookie and CSRF).
+
+<a id="look-at-this"></a>
+
+**"Look at this".** A question of kind `look`, for visual acceptance in 0.9 (a headless turn has no
+browser pane of the owner's): the agent brings up the stand, then asks with the URL, what to check
+and the name of the test account to sign in with. It is always blocking; its options are "fine" and
+"remarks" (the remarks are the answer text). The Inbox shows the URL as a link the owner opens in
+his own browser. A question whose text or fields look like a password or token is refused, by the
+same check as the policy's secret rules: an account is named, never its secret.
 
 **Delivery.**
 
@@ -82,7 +91,9 @@ agent did not open one. One approval allows one matching call; a push approval n
 **From a denial.** In Manual mode (the `-p` default) a call that needs approval is denied without a
 prompt and listed in the turn's `result.permission_denials`, and the turn ends normally (probe 2 of
 [0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). The runner opens an approval request
-from each denial of a guarded action that the agent did not request itself.
+from each denial of a guarded action that the agent did not request itself. A call refused by
+Claude Code's own `auto` mode that no approval rule covers is not turned into a request: it shows in
+the turn's report as a refusal (tool, input, reason), and the agent or the owner decides what next.
 
 **Delivery.** The decision goes as the next turn: `The owner approved push of <branch>` or `The owner
 refused <action>: <text>`; for a desktop session, as an owner comment. In `auto` mode that turn is

@@ -9,8 +9,8 @@
   [0004](0004-navigation.md) and the autonomy rule of [0015](0015-intake-and-autonomy.md).
 - The probes of 0012 were run on 2026-11-10 and the design relies on them
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
-  accepts this design and the owner answers [O1](#questions-for-the-owner).
-- Size: 0.9 about 12 agent-days ([plan by PR](#plan-of-09-by-pull-request)); 0.10 about 4; 0.11
+  accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).
+- Size: 0.9 about 13 agent-days ([plan by PR](#plan-of-09-by-pull-request)); 0.10 about 4; 0.11
   about 6; 0.12 about 2.
 
 ## Goal
@@ -76,8 +76,8 @@ stop is the first pull request of 0.9: a runner on a program that stops slowly i
 | Field | Comes from | Note |
 |---|---|---|
 | card | the card it was started on | one open run per card |
-| project, cwd | the card's project; cwd is one of the project's repositories ([SPEC](../SPEC.md#spec-project-repos)) | |
-| worktree | a new one per run by default (`git worktree add`), or the repository itself | one run per worktree |
+| project, cwd | the card's project; cwd is the project folder (a container of repositories, not itself a git repository) or one of the project's repositories ([SPEC](../SPEC.md#spec-project-repos)) | the cwd's own `CLAUDE.md` loads |
+| worktrees | a list, one per repository the task touches, chosen at Start from the project's repository list (migration 0029); each a new `git worktree add` by default, or the repository itself | one run per worktree, for each of them; worktrees outside the cwd are passed with `--add-dir` |
 | model, effort | project defaults, the card may override | default Opus, medium effort |
 | permission profile | the project's profile | `--permission-mode` and `--allowedTools` explicit on every turn; default `auto` |
 | Claude session id | the first turn's `system/init` | every later turn uses `--resume` with it |
@@ -85,29 +85,90 @@ stop is the first pull request of 0.9: a runner on a program that stops slowly i
 | turns | one row per turn: prompt, who sent it, started, ended, outcome, `permission_denials`, tokens from `result.usage` | the tokens show on the card live; they equal the transcript's sums that budgets count (probe 6) |
 | events | `run_event`: the stream-json lines of each turn, compressed, kept by the retention policy | subagent lines nested by `parent_tool_use_id` |
 
+**The Claude Code layers.** A run loads what a manual session loads: Claude Code's default
+`--setting-sources user,project,local`, which relaybay never narrows. So the user layer comes with
+every turn: `~/.claude/CLAUDE.md` (the owner's common rules), user skills and agents (a pipeline
+skill, architect, developer and reviewer agents), the output style, user MCP servers; then the
+project's and the local layer of the cwd. (The probes used `--setting-sources project` only to keep
+the owner's own hooks from reaching his live board; a real run wants exactly those hooks.)
+
+**relaybay's hooks without double firing.** relaybay's hooks are the command hooks `relaybay setup`
+installs into the user's settings. Before the first turn the runner reads the same check as `relaybay
+setup --check`: if the user's settings carry relaybay's hooks and MCP server (the normal case), the
+run adds nothing; if not, the run passes them with `--settings <file>` and `--mcp-config <file>`
+(never `--strict-mcp-config`), so they still fire, once. Never both: one source per run, decided
+before the first turn and kept for all its turns. Why not always pass them and dedupe in the
+forwarder: two copies of each hook would double every event, brake check and comment delivery, and a
+dedupe in the forwarder needs state on a path that must stay fast; setup already owns the user's
+settings, with backups.
+
 **The brief.** The first turn's text is assembled from the card: title, description, decisions with
-their source, the accepted plan, attachments as file paths, the project's rules line, the report
-format. It is shown before Start and can be edited for that run only.
+their source, the accepted plan, attachments as file paths, the project's rules line, the paths of
+the run's worktrees and which repository each is, the report format. It is shown before Start and
+can be edited for that run only.
 
 **Turns.** Start (the first turn), continue (`--resume` with the owner's answer, an approval, an owner
 comment, or a coordinator's message framed as data; texts that arrive during a turn queue for the
 next one), stop (kill the current turn's process tree; the
-session stays resumable), end (no more turns). Between turns no `claude` process runs, so an idle run
+session stays resumable), end (no more turns). A call refused by Claude Code's own `auto` mode that no
+approval rule covers shows in the turn's report as a refusal (tool, input, reason), not as an approval
+request: approvals are only for the actions the policy names. Between turns no `claude` process runs, so an idle run
 holds no memory and no slot.
 
-**Limits.** Slots per machine (default two heavy turns at once) and a free-memory check before each
-turn. Too little memory or no free slot: the turn is **queued with its reason** on the card and in the
-Inbox ("waiting for a slot: 2 of 2 running", "waiting for memory: 1.8 GB free, 3 GB needed"), never
-refused silently; the owner may "start anyway". The brake and the budgets of 0018 act on runs: a
+**Limits.** Slots per machine (setting `max_running_turns`, default 2) and a free-memory check
+before each turn (setting `min_free_memory_mb`, default 1500: on a 16 GB machine with a desktop app
+and a few sessions open, 1.8 to 2.4 GB is usually free). A run takes one slot while a turn runs,
+whatever the number of its worktrees; builds in two repositories in one turn are what the memory
+check catches. Too little memory or no free slot: the turn is **queued with its reason** on the card
+and in the Inbox ("waiting for a slot: 2 of 2 running", "waiting for memory: 1.2 GB free, 1.5 GB
+needed") with a **Start anyway** button, never refused silently. The brake and the budgets of 0018 act on runs: a
 braked run takes no new turn, and the current one is killed after its next refused tool call.
 
-**Lifecycle.** A card moved to done ends its run. `run_event` is kept by the project's retention
+**Lifecycle.** A card moved to done ends its run and removes each worktree the run created (`git
+worktree remove`, never one it did not create). A worktree with uncommitted changes or commits not on
+any remote is kept, listed on the card, and a question asks the owner whether to remove it. `run_event` is kept by the project's retention
 policy; a run marked "saw a secret" or one that touched a live environment has its events and its
 Claude Code transcript deleted when the card closes.
+
+**Visual acceptance in 0.9.** A headless turn has no browser pane of the owner's. When a task needs
+the owner to look at a screen, the agent brings up the stand (a local server, a test deployment),
+then asks a **"look at this"** question ([0022](0022-questions-and-approvals.md#look-at-this)):
+blocking, with the URL, what to check and which test account to use (by name; never a password in a
+question). The owner opens it in his own browser and answers on the board; remarks go back to the
+agent as the answer. The agent may check the screen itself first with the browser through
+`--chrome`, when the project's profile turns it on (`-p --chrome` connects the browser extension's
+server, [0012](0012-runner-and-embedded-terminal.md#verify-before-start)). Step-by-step acceptance as
+a conversation with the agent comes with the terminal in 0.10.
 
 **Reports.** Each turn's final report lands on the card in full; subagent work shows as nested events
 under it. A claim may carry `verified: <where>`; an M or L report without any marks gets a rules
 warning.
+
+## Login check
+
+relaybay never signs in for the user and never touches credentials. It only asks the user's own
+`claude`: `claude auth status` (documented in the CLI reference, Claude Code 2.1.268 and later)
+prints JSON and exits 0 when signed in, 1 when not. Its fields include `loggedIn`, `authMethod` (one
+of `none`, `claude.ai`, `oauth_token`, `api_key`, `api_key_helper`, `third_party`), `apiProvider`,
+`subscriptionType` and `configDirectory`. relaybay reads only `loggedIn`, `authMethod` and
+`subscriptionType`; it never stores or shows the e-mail or organization fields of that answer.
+Probed on 2026-11-10 with a signed-in subscription: `loggedIn` true, `authMethod` `claude.ai`, exit 0
+([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). The signed-out and API-key answers
+were not probed; the exit code is taken from the CLI reference.
+
+| `claude auth status` says | Line in `relaybay doctor` and on the card before Start | Start |
+|---|---|---|
+| `loggedIn`, `authMethod` `claude.ai` | "claude: signed in with a subscription" | starts |
+| exit 1 or `loggedIn` false | "claude: not signed in" | no turn |
+| `authMethod` `api_key` or `api_key_helper` | "claude: signed in with an API key (usage is billed to the key)" | no turn, unless the owner allowed API keys in Settings |
+| `authMethod` `third_party` | "claude: third-party provider" | no turn, unless allowed in Settings |
+| `oauth_token`, or an answer relaybay cannot read | the method as reported, "not a subscription sign-in" | no turn, unless allowed in Settings |
+
+Subscription only is the default; API keys and other methods start runs only when the owner turns
+that on in Settings (cookie and CSRF). When Start refuses, it shows one command for a terminal
+(`claude`, then `/login` inside it) and why. The check runs before the first turn of a run and again
+before a turn after a restart of the program; a failed check is a visible state on the card, never a
+silent wait.
 
 ## Who may start a run
 
@@ -131,8 +192,9 @@ not a determined agent.
   holds what the agent's tools printed, and a tool can print a secret. Mitigation: the journal's
   secret masking is applied to every stored line, the "saw a secret" mark deletes on close, and the
   retention policy can turn storage off ([question C3](#questions-for-the-coordinator)).
-- **On the owner's machine the program may**: start `claude` from `PATH` in a project's repository or
-  a worktree of it; run `git worktree add` and, on the owner's button, `git worktree remove`; kill the
+- **On the owner's machine the program may**: start `claude` from `PATH` in a project's folder, one
+  of its repositories or a worktree of one; run `git worktree add`, and `git worktree remove` for
+  the worktrees a run created (by the owner's answer when work is left in one); kill the
   process trees it started; delete a transcript file of its own run under the Claude Code data
   folder; read free memory. **It may not**: run git commit, push or any other git write itself;
   change the user's Claude Code settings outside `relaybay setup`; read credentials; pass
@@ -163,7 +225,7 @@ time. The terminal is off until the owner turns it on, loopback only, cookie, CS
 board. While it is open, headless turns for that run wait in its queue (probe 4 of 0012 decides the
 exact rule).
 
-**Probes.** The six probes of [0012](0012-runner-and-embedded-terminal.md#probes-2026-11) answered
+**Probes.** The probes of [0012](0012-runner-and-embedded-terminal.md#probes-2026-11) answered
 the headless questions on Windows. Still open, for 0.10: interactive `claude --resume` in a PTY while
 a headless turn runs, rendering of the TUI in each system web view, and the same probes on macOS and
 Linux.
@@ -174,7 +236,7 @@ Only these stay with the owner; everything else the coordinator decides.
 
 | # | Question | Default | Why the owner |
 |---|---|---|---|
-| O1 | The terms allow signing in to the unmodified binary with one's own subscription and forbid third parties routing requests through plan credentials or collecting them; programmatic `-p` turns started by a program are a grey area (probe 5 of 0012). Go ahead? | Go ahead; runs only on the owner's own machine under his own login, relaybay never touches credentials, and the README says so | Terms of the owner's account |
+| O1 | The terms allow signing in to the unmodified binary with one's own subscription and forbid third parties routing requests through plan credentials or collecting them; programmatic `-p` turns started by a program are a grey area (probe 5 of 0012). Go ahead? | **Decided 2026-11-10: go ahead.** Runs only on the owner's own machine under his own login, relaybay never signs in or touches credentials ([Login check](#login-check)), and the README says so | Terms of the owner's account |
 | O2 | Anything that sends data outside the machine (none planned) | Nothing leaves the machine | Data leaving the machine |
 | O3 | README promises and the licence (none change) | Unchanged | Public promises |
 
@@ -185,19 +247,22 @@ Only these stay with the owner; everything else the coordinator decides.
 | C1 | First slice | Headless step-by-step runner with questions, approvals, limits and lifecycle in 0.9; terminal in 0.10 | Structured events and the fake already exist; the terminal adds nothing without questions and approvals |
 | C2 | Default permission mode for a run | `auto`, with explicit `--allowedTools`; bypass only by the owner's word per card | Probe 3 passed in `auto`. In Manual (the `-p` default) a call needing approval is denied and the turn ends normally (probe 2); a denial becomes an approval request either way |
 | C3 | Keep `run_event` in the database | Yes, masked, deleted on close for "saw a secret" or live runs, retention `keep 30 days` per project | Full reports and nested subagent events need it; the masking is the journal's |
-| C4 | Slots and memory | 2 heavy turns at once; 3000 MB free before a turn | Two heavy builds froze a 16 GB machine |
+| C4 | Slots and memory | 2 turns at once; 1500 MB free before a turn, both settings; below it the turn queues with its reason and a Start anyway button | Two heavy builds froze a 16 GB machine; 1.8 to 2.4 GB is usually free there, so 3000 would queue everything |
 | C5 | `psutil` for free memory | No; platform code (`GlobalMemoryStatusEx`, `sysctl`, `/proc/meminfo`) | One dependency less in the frozen build |
 | C6 | Default model and effort | Opus, medium; the other model as a card field set by the coordinator or the owner | Today's practice |
 | C7 | One coordinator for all projects | Yes ([0023](0023-coordinator-and-schedules.md)) | Links and priorities across projects are visible only from above |
 | C8 | Managers layer | Not built; decided after a week of coordinator work | A layer of retelling is the problem being removed |
 | C9 | ACP adapters and containers | Not before the runner has run a week (0017) | Same as 0017 |
+| C13 | Sign-in methods a run accepts | Subscription only; API keys and others by the owner's switch in Settings | The owner runs on his subscription; a key bills elsewhere |
+| C11 | relaybay's hooks in a run | The user's settings when `setup` installed them there, else `--settings` for the run; never both | One source of hooks, no dedupe state on the hook path |
+| C12 | Visual acceptance in 0.9 | A blocking "look at this" question with the URL and the test account's name; `--chrome` by the project's profile | No browser pane in a headless turn; the conversation comes with the terminal in 0.10 |
 | C10 | Approval delivery: a new turn, or approval inside a turn | A new turn with the owner's words (probe 3: the agent pushed). `--permission-prompt-tool` or a `PermissionRequest` hook is a documented later upgrade, not probed | A turn is the owner's word to the agent; approving inside a turn is a wider mechanism |
 
 ## Releases
 
 | Release | Content | Acceptance |
 |---|---|---|
-| 0.9 | The shutdown fix; the runner on a card (headless, `--resume`); questions and approvals as objects; slots and memory; lifecycle; full reports with `verified` marks | One real task of size S or M from card to push without the desktop chat; the owner answers one question and gives one approval on the board |
+| 0.9 | The shutdown fix; the runner on a card (headless, `--resume`, several repositories); questions, "look at this" and approvals as objects; slots and memory; lifecycle; full reports with `verified` marks | One real task of size S or M over two repositories (a backend and a frontend change) from card to push without the desktop chat; the owner answers one question, looks at one screen and gives the approvals on the board |
 | 0.10 | Terminal tab on a run (PTY, xterm.js, `claude --resume <id>`), off by default; headless turns queue while it is open | A step-by-step acceptance by eye done in relaybay's terminal |
 | 0.11 | The coordinator as a permanent run, woken by events; schedules; the Coordinator page ([0023](0023-coordinator-and-schedules.md)) | A working day in which the coordinator inside relaybay sets and drives the tasks |
 | 0.12 | Role profiles editable on the board; managers only if the week of 0.11 shows the need | A profile changed on the board takes effect on the next turn |
@@ -211,14 +276,20 @@ practice go ahead of the plan.
 | PR | Content | Migrations | Size |
 |---|---|---|---|
 | 0 | End the wake-up long polls (`/hooks/claude-code/wait`) when the server is told to stop, so a stop no longer waits for the graceful timeout | none | S |
-| 1 | The run: task defaults on the project (model, effort, profile), `run` and `run_turn` tables, the runner (first turn, `--resume`, stop, end, process tree), hooks link turns by `RELAYBAY_RUN_ID` in the environment, the Agent block on the card, `run_start` / `run_status` over MCP | 0030 `project_run_defaults`, 0031 `run`, 0032 `run_turn` | L (4) |
-| 2 | `run_event` stored masked, the full turn report on the card with nested subagent events, `verified: <where>` marks and the rules warning | 0033 `run_event`, 0034 `report_check` | M (2) |
-| 3 | Questions as objects ([0022](0022-questions-and-approvals.md)): `question_ask`, the Inbox, the answer as a new turn, defaults by deadline | 0035 `question` | M (2) |
-| 4 | Approvals as objects ([0022](0022-questions-and-approvals.md)): `approval_request`, policy rules, the guard check, the decision as a new turn | 0036 `approval`, policy keys (data, no migration) | M (2.5) |
-| 5 | Slots and memory, queueing with a reason, the brake and budgets on runs, lifecycle and retention | 0037 `run_lifecycle` (`secret_seen_at`, `touched_live_at`, `transcript_path`, `deleted_at`, `project.run_retention`) | M (1.5) |
+| 1 | The run: the login check before Start (`claude auth status`, the doctor line, the Settings switch for API keys), task defaults on the project (model, effort, profile, `--chrome`), `run`, `run_worktree` and `run_turn` tables, the runner (cwd a project folder or a repository, worktrees per touched repository with `--add-dir`, first turn, `--resume`, stop, end, process tree), the user layer loaded and relaybay's hooks from one source, hooks link turns by `RELAYBAY_RUN_ID` in the environment, the Agent block on the card, `run_start` / `run_status` over MCP | 0030 `project_run_defaults`, 0031 `run`, 0032 `run_worktree` (run, repository, path, branch, created by the run, removed at), 0033 `run_turn` | L (4.5) |
+| 2 | `run_event` stored masked, the full turn report on the card with nested subagent events and refusals of `auto` mode, `verified: <where>` marks and the rules warning | 0034 `run_event`, 0035 `report_check` | M (2) |
+| 3 | Questions as objects ([0022](0022-questions-and-approvals.md)): `question_ask` with the "look at this" kind, the Inbox, the answer as a new turn, defaults by deadline | 0036 `question` | M (2) |
+| 4 | Approvals as objects ([0022](0022-questions-and-approvals.md)): `approval_request`, policy rules, the guard check, the decision as a new turn | 0037 `approval`, policy keys (data, no migration) | M (2.5) |
+| 5 | Slots and memory as settings, queueing with a reason and Start anyway, the brake and budgets on runs, lifecycle (worktree removal) and retention | 0038 `run_lifecycle` (`secret_seen_at`, `touched_live_at`, `transcript_path`, `deleted_at`, `project.run_retention`) | M (2) |
 | 6 | Docs, SPEC, CHANGELOG, release | none | S |
 
 Numbers follow 0029 and move if other migrations land first.
+
+**Probes before PR 1** (opt-in, with a real `claude`, added to `scripts/probe_runner.py`; not run
+yet): (8) with the default setting sources, a rule from the user `CLAUDE.md` is visible in a `-p`
+turn, a user skill and a user agent are listed, and relaybay's hooks from the user's settings fire
+once per event; (9) `--add-dir` gives a turn in a project folder the worktrees of two repositories,
+each repository's own `CLAUDE.md` read when the agent works there.
 
 **Tests with the fake `claude`** (`tests/e2e`; the fake already takes `-p`, `--resume`,
 `--permission-mode` and `--allowedTools`):
@@ -226,16 +297,19 @@ Numbers follow 0029 and move if other migrations land first.
 | PR | Scenario |
 |---|---|
 | 0 | Stop the server with six wake-up polls open: it stops at once, the polls answer `204`, no 500s |
-| 1 | Start a run: the first turn's `system/init` gives the session id; a second turn passes `--resume` with it; the hooks link both turns to the same session row by `RELAYBAY_RUN_ID`; Stop kills the turn's process tree; a second open run on the card or on the worktree is refused; a text sent during a turn waits for it to end (never two turns on one session); a turn's `result.usage` reaches the card |
+| 1 | Start a run: the first turn's `system/init` gives the session id; a second turn passes `--resume` with it; the hooks link both turns to the same session row by `RELAYBAY_RUN_ID`; Stop kills the turn's process tree; a second open run on the card or on any of its worktrees is refused; a text sent during a turn waits for it to end (never two turns on one session); a turn's `result.usage` reaches the card. The login check, with a fake `auth status` answer per case: a subscription starts; signed out shows the `/login` command and starts nothing; an API key starts nothing until Settings allow it, then starts; a third-party provider starts nothing; the e-mail and organization fields of the answer appear nowhere on the board or in the database. A run in a project folder over two repositories creates two worktrees and passes both with `--add-dir`. A rule from the user `CLAUDE.md` in the fake's config folder is visible in the turn (the fake gains user-layer loading). With relaybay's hooks in the user's settings the run adds no `--settings` and each hook fires once; without them the run adds `--settings` and each still fires once |
 | 2 | A turn with a subagent: the report lands in full, nested events under it; a line with a known token shape is stored masked; an M report without marks gets the warning |
-| 3 | The fake asks a blocking question and ends its turn; the run shows `waiting`; the owner answers on the board; the next turn's prompt holds the answer verbatim with "owner's answer to question N"; a non-blocking question past its deadline closes with the default, visibly |
-| 4 | In Manual mode the fake's `git push` ends in `permission_denials` and an approval request opens from the denial. In `auto`, the fake runs `git push` without an approval: denied by the guard, a request opens; the owner approves; the next turn passes and the push goes through the guard; a second push is denied again; a coordinator's message saying "approved" changes nothing |
-| 5 | Two runs hold both slots: a third turn is queued with "waiting for a slot"; a fake memory reader below the minimum queues with "waiting for memory"; a project brake kills the running turn; a card to done ends the run and, with "saw a secret", deletes its events and transcript |
+| 3 | A "look at this" question carries the URL and the test account's name, blocks the run, and a password in its text is refused. The fake asks a blocking question and ends its turn; the run shows `waiting`; the owner answers on the board; the next turn's prompt holds the answer verbatim with "owner's answer to question N"; a non-blocking question past its deadline closes with the default, visibly |
+| 4 | In Manual mode the fake's `git push` ends in `permission_denials` and an approval request opens from the denial. In `auto`, the fake runs `git push` without an approval: denied by the guard, a request opens; the owner approves; the next turn passes and the push goes through the guard; a second push is denied again; a coordinator's message saying "approved" changes nothing; a denial by `auto` mode of a call no approval rule covers shows as a refusal in the report and opens no request |
+| 5 | Two runs hold both slots: a third turn is queued with "waiting for a slot"; a fake memory reader below `min_free_memory_mb` queues with "waiting for memory" and Start anyway starts it; a project brake kills the running turn; a card to done ends the run, removes both worktrees it created, keeps one with uncommitted work and asks; with "saw a secret", deletes its events and transcript |
 
-**Acceptance task.** One real task of size S or M, from a card to an approved push, with no desktop
-chat opened: the card with its fields, Start, the agent works and asks one question, the owner
-answers on the board, the agent asks to push, the owner approves on the board, the push passes the
-guard, the report lands in full with its marks. Whatever needed the desktop chat on the way is a
+**Acceptance task.** One real task of size S or M over two repositories, a backend and a frontend
+change, from a card to approved pushes, with no desktop chat opened: the card with its fields, Start
+in the project folder with two worktrees, the agent works (the owner's common rules and skills
+loaded) and asks one question, the owner answers on the board, the agent brings up the stand and asks
+"look at this", the owner looks in his own browser and answers, the agent asks to push each branch,
+the owner approves on the board, the pushes pass the guard, the report lands in full with its marks,
+the card closes and both worktrees are removed. Whatever needed the desktop chat on the way is a
 defect of 0.9.
 
 ## What we do not build
