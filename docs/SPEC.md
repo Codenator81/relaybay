@@ -2663,7 +2663,10 @@ still leaves a trace. Lines are `<local ISO time> [<pid>] <message>`: first
 `another instance answered`, `lock held, no answer (desktop.ipc written <time>` or
 `no desktop.ipc)`, `extra missing`, `started, log <log file>` (once the log file is configured), or
 `exception: <type>: <message>` followed by its traceback indented by two spaces (the exception is then
-raised as before) — and `exit <code>` when the start returns. Above 64 KB the file keeps its newest
+raised as before) — then `quit: <who asked>` when the program is asked to end (`tray menu`,
+`another run's --quit`, the same with `, for the update installer` while an installer waits, `update`,
+`the window loop ended`, `--exit-after`; the log file has the same line), and `exit <code>` when the
+start returns. Above 64 KB the file keeps its newest
 32 KB. A failure to write it never stops the start; once the log file exists it is a warning there.
 `relaybay doctor` shows the newest start and the lines its process wrote after it as the
 `desktop start` item ("no start journal yet" without the file); the item fails on an exception, or

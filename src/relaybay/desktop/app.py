@@ -103,6 +103,7 @@ QUIT_WAIT = 60.0  # seconds Quit waits for a restart in progress
 # Seconds after Update starts the installer during which a quit is the one it asked for: the
 # silent Windows setup sends its --quit within seconds; a setup that never does was cancelled.
 INSTALLER_QUIT_WAIT = 60.0
+QUIT_BY_IPC = "another run's --quit"
 # The watchdog: the embedded server's /healthz every WATCH_SECONDS, restarted after WATCH_FAILURES
 # failed checks in a row (or a dead server thread), at most RESTART_CAP times in RESTART_WINDOW;
 # an external server is only checked, every EXTERNAL_WATCH_SECONDS, for the tray tooltip.
@@ -577,7 +578,7 @@ class DesktopController:
             self.installer_started_at = None
             raise
         if kind != "desktop-windows":
-            self.quit()
+            self.quit("update")
             return True
         # Windows: setup itself asks this program to quit (desktop --quit) and starts the new
         # one afterwards, which it does only when it found one running.
@@ -613,12 +614,19 @@ class DesktopController:
         started = self.installer_started_at
         return started is not None and self.clock() - started < INSTALLER_QUIT_WAIT
 
-    def quit(self) -> None:
+    def quit(self, reason: str = "tray menu") -> None:
+        """Stop everything and end the program. `reason` says who asked (the tray menu, another
+        run's `--quit`, an update, the window's end, `--exit-after`): it goes to the log and to
+        the start journal, so an exit nobody remembers can be explained afterwards."""
         if self.quitting:
             return
         self.quitting = True
         self._stopped.set()
-        log.info("quit")
+        if reason == QUIT_BY_IPC and self.quitting_for_update():
+            reason = f"{reason}, for the update installer"
+        log.info("quit: %s", reason)
+        if self.journal is not None:
+            self.journal.write(f"quit: {reason}")
         # A restart in progress would start the server again after we stopped it: wait for it.
         locked = self._restart_lock.acquire(timeout=QUIT_WAIT)
         try:
@@ -696,7 +704,7 @@ class DesktopController:
 
     def on_ready(self, exit_after: float | None) -> None:
         if exit_after:
-            timer = threading.Timer(exit_after, self.quit)
+            timer = threading.Timer(exit_after, self.quit, args=("--exit-after",))
             timer.daemon = True
             timer.start()
         self._start_and_load()
@@ -760,7 +768,7 @@ class DesktopController:
             return 0
         webview.start(self.on_ready, (exit_after,), private_mode=True)
         if not self.quitting:
-            self.quit()
+            self.quit("the window loop ended")
         return 0
 
     def _tray_only_ready(self, icon: Any, exit_after: float | None) -> None:
@@ -831,7 +839,9 @@ def _start(background: bool, exit_after: float | None, journal: StartJournal) ->
         return 1
     single_instance.hold_app_mutex()
     controller = DesktopController(folder, background=background, journal=journal)
-    ipc = single_instance.serve_raise(folder, controller.show_window, controller.quit)
+    ipc = single_instance.serve_raise(
+        folder, controller.show_window, lambda: controller.quit(QUIT_BY_IPC)
+    )
     try:
         return controller.run(exit_after)
     finally:

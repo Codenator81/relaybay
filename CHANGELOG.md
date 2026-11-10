@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Desktop: the start journal and the log say who asked the program to quit (the tray menu, another run's `--quit`, an update, the window loop's end, `--exit-after`).
+
 ## [0.8.4] - 2026-11-10
 
 ### Fixed
