@@ -127,6 +127,7 @@ def make_server(app: FastAPI, **options: Any) -> Any:
     class Server(uvicorn.Server):
         async def shutdown(self, sockets: list[Any] | None = None) -> None:
             app.state.service.bus.close()
+            app.state.service.stopping = True  # the wake-up long polls answer 204 and end
             await super().shutdown(sockets)
 
     return Server(uvicorn.Config(app, **options))

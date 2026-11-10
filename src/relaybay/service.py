@@ -1027,6 +1027,9 @@ class Service:
         # Per session: Stop blocks in the current turn; the newest wake-up waiter's number.
         self._stop_blocks: dict[int, int] = {}
         self._waiters: dict[int, int] = {}
+        # Set when the server is told to stop: a wake-up long poll must not hold the shutdown
+        # until uvicorn's graceful timeout cancels it with a 500.
+        self.stopping = False
         self._waiter_seq = 0
         # FTS5 full-text search; False when this SQLite has no FTS5 (search uses LIKE then).
         self.search_fts = False
@@ -2089,6 +2092,8 @@ class Service:
         try:
             while time.monotonic() < deadline:
                 await asyncio.sleep(poll)
+                if self.stopping:
+                    return None
                 if self._waiters.get(session.id) != me or (gone is not None and await gone()):
                     return None
                 current = await self._exact_session(cc_id.strip()[:CC_ID_MAX])

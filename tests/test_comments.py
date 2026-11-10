@@ -274,6 +274,16 @@ async def test_wait_wakes_an_idle_session_with_its_comment(service: Service) -> 
     assert await fire(service, "PostToolUse") is None  # not delivered twice
 
 
+async def test_wait_ends_at_once_when_the_server_stops(service: Service) -> None:
+    await linked_task(service)
+    await fire(service, "Stop")
+    waiter = asyncio.create_task(service.wait_for_comments(hook("Stop"), hold=30, poll=0.02))
+    await asyncio.sleep(0.1)
+    assert not waiter.done()
+    service.stopping = True
+    assert await asyncio.wait_for(waiter, 2) is None
+
+
 async def test_wait_gives_up_without_exact_link_or_when_superseded(service: Service) -> None:
     await service.upsert_project("acme-shop", repo_path=CWD)
     task = await service.create_task("acme-shop", "Checkout", stage="dev", session=DESKTOP_A)

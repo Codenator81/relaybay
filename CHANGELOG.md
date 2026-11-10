@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Stopping the server ends the wake-up hook's long polls at once (they answer 204), instead of holding the shutdown until the graceful timeout cancelled them with a 500 and an error in the log.
+
+### Fixed
+
 - Desktop on Linux under Xorg: a tray without notifications no longer fails a menu action or the watchdog's notice; the message stays in the log.
 
 ### Added
