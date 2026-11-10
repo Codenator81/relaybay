@@ -128,6 +128,12 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | One session status event per change; the bound session hears of a board plan acceptance | done | — |
 
+## 0.8.4 — drag cards and open the code (released 2026-11-10)
+
+| Item | Status | Design |
+|---|---|---|
+| Drag cards to order them and change their stage; project repositories and a Code row with PR links and Open in VS Code; the desktop process ends after Quit on macOS | done | — |
+
 ## After 0.8
 
 | Item | Status | Design |
