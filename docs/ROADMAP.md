@@ -134,6 +134,12 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | Drag cards to order them and change their stage; project repositories and a Code row with PR links and Open in VS Code; the desktop process ends after Quit on macOS | done | — |
 
+## 0.8.5 — the quit reason and small fixes (released 2026-11-10)
+
+| Item | Status | Design |
+|---|---|---|
+| The start journal says who asked the program to quit; a tray without notifications no longer fails a notice | done | — |
+
 ## After 0.8
 
 | Item | Status | Design |
