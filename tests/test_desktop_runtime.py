@@ -1183,7 +1183,10 @@ def test_journal_started_after_logging(
         assert controller.run() == 0
     finally:
         controller.quit()
-    assert messages(desktop_config_dir) == [f"started, log {controller.log_path}"]
+    assert messages(desktop_config_dir) == [
+        f"started, log {controller.log_path}",
+        "quit: tray menu",
+    ]
 
 
 def test_journal_never_stops_the_start(tmp_path: Path) -> None:
@@ -1273,3 +1276,29 @@ def test_the_installed_program_ends_its_process_after_a_clean_quit(
     ended.clear()
     assert app.run() == 0
     assert ended == []  # a source run (and the tests) return normally
+
+
+def test_quit_says_who_asked_in_the_start_journal(tmp_path: Path) -> None:
+    from relaybay.desktop.app import QUIT_BY_IPC, DesktopController
+    from relaybay.desktop.start_journal import StartJournal
+
+    def journal_of(folder: Path, reason: str | None, installer: bool = False) -> str:
+        folder.mkdir()
+        journal = StartJournal(lambda: folder)
+        controller = DesktopController(folder, background=True, journal=journal)
+        if installer:
+            controller.installer_started_at = controller.clock()
+        if reason is None:
+            controller.quit()
+        else:
+            controller.quit(reason)
+        controller.quit("a second ask changes nothing")
+        assert journal.path is not None
+        return journal.path.read_text(encoding="utf-8")
+
+    assert "quit: tray menu" in journal_of(tmp_path / "a", None)
+    assert "quit: --exit-after" in journal_of(tmp_path / "b", "--exit-after")
+    by_ipc = journal_of(tmp_path / "c", QUIT_BY_IPC)
+    assert "quit: another run's --quit\n" in by_ipc and by_ipc.count("quit:") == 1
+    update = journal_of(tmp_path / "d", QUIT_BY_IPC, installer=True)
+    assert "quit: another run's --quit, for the update installer" in update
