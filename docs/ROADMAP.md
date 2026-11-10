@@ -116,6 +116,12 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | The Map's Agents view: who started whom, who writes to whom, which session is on which task, a project filter | done; the Map removed in 0.8.2 | [0010](design/0010-map-and-usage.md) |
 
+## 0.8.2 — the Map removed for now (released 2026-11-10)
+
+| Item | Status | Design |
+|---|---|---|
+| The Map page removed until agents run inside the program; tests wait longer for a test server | done | [0010](design/0010-map-and-usage.md) |
+
 ## After 0.8
 
 | Item | Status | Design |
