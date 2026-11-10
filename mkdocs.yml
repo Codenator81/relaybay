@@ -102,6 +102,9 @@ nav:
           - Brake and token budgets: design/0018-brake-and-budgets.md
           - Messages between sessions: design/0019-session-messages.md
           - Tray notifications: design/0020-tray-notifications.md
+          - Agents inside: design/0021-agents-inside.md
+          - Questions and approvals: design/0022-questions-and-approvals.md
+          - Coordinator and schedules: design/0023-coordinator-and-schedules.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
           - Desktop shell: adr/0002-desktop-shell.md

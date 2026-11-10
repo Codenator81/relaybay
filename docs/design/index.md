@@ -17,7 +17,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0009 | [Screenshot annotations](0009-screenshot-annotations.md) | Implemented (unreleased) | 0.4.0 |
 | 0010 | [Map and Usage](0010-map-and-usage.md) | Implemented; the Map removed in 0.8.2 | 0.4.0 |
 | 0011 | [Project documents in the database](0011-docs-in-database.md) | Implemented (unreleased) | 0.4.0 |
-| 0012 | [Runner and embedded terminal](0012-runner-and-embedded-terminal.md) | Accepted (direction) | 0.7+ |
+| 0012 | [Runner and embedded terminal](0012-runner-and-embedded-terminal.md) | Accepted (direction) | 0.9 / 0.10 |
 | 0013 | [Policy as data](0013-policy-as-data.md) | Implemented (unreleased) | 0.2.0 |
 | 0014 | [Task plan and checkpoints](0014-task-plan.md) | Implemented (unreleased) | 0.3.0 |
 | 0015 | [Intake from chats and e-mail, autonomy, backlog](0015-intake-and-autonomy.md) | Accepted | 0.5.0 |
@@ -26,6 +26,9 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0018 | [Brake and token budgets](0018-brake-and-budgets.md) | Implemented (unreleased) | 0.8.0 |
 | 0019 | [Messages between sessions](0019-session-messages.md) | Implemented (unreleased) | 0.8.0 |
 | 0020 | [Tray notifications](0020-tray-notifications.md) | Implemented (unreleased) | 0.8.0 |
+| 0021 | [Agents inside the program](0021-agents-inside.md) | Proposed | 0.9–0.12 |
+| 0022 | [Questions and approvals as objects](0022-questions-and-approvals.md) | Proposed | 0.9 |
+| 0023 | [Coordinator and schedules](0023-coordinator-and-schedules.md) | Proposed | 0.11 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md),
 [ADR-0002 Desktop shell](../adr/0002-desktop-shell.md).
