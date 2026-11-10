@@ -35,6 +35,30 @@ coordinator moves inside relaybay as one permanent run.
   tokens are spent. A minimum gap between wakes (default 2 minutes) keeps a burst from becoming many
   turns.
 
+## Memory
+
+Two kinds, each with its own job.
+
+| | Claude Code's own memory | relaybay's memory |
+|---|---|---|
+| What | `CLAUDE.md` in the agent's folder and auto memory | notes, blocks, decisions and documents in the database ([0008](0008-memory-and-context.md), [0011](0011-docs-in-database.md)), and the project's files |
+| Who reads it | that agent only | every session, a replacement session, the owner on the board |
+| Works without relaybay | yes | no |
+
+- **The coordinator** (and a manager, if one is ever built) keeps both: its own `CLAUDE.md` and auto
+  memory in its folder, and relaybay's memory.
+- **The rule.** What someone else or a replacement session must know (decisions, project rules,
+  summaries) goes to relaybay's memory or a project file. The personal memory keeps only working
+  style, drafts and a pointer to where the rest lives. A decision is never kept twice. No secrets in
+  either.
+- **A run on a card starts without memory of its own**: every task gets a fresh agent without a tail
+  from the last one. It works from the project's `CLAUDE.md`, the card and the decisions in its brief.
+- **Where auto memory lives** (probe 13 of [0012](0012-runner-and-embedded-terminal.md#probes-2026-11)):
+  per git repository, shared by all its worktrees, so runs in worktrees of one repository read and
+  add to one memory; a project folder that is not a git repository has its own. A project that wants
+  its runs without a tail at all sets `autoMemoryEnabled: false` in its settings; relaybay suggests
+  it on the project page and never changes it itself.
+
 ## Profiles as data
 
 A profile is a stored row: name, permission mode, allowed tools, what it may do on the board. Three

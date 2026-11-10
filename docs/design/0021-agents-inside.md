@@ -77,7 +77,7 @@ stop is the first pull request of 0.9: a runner on a program that stops slowly i
 |---|---|---|
 | card | the card it was started on | one open run per card |
 | project, cwd | the card's project; cwd is the project folder (a container of repositories, not itself a git repository) or one of the project's repositories ([SPEC](../SPEC.md#spec-project-repos)) | the cwd's own `CLAUDE.md` loads |
-| worktrees | a list, one per repository the task touches, chosen at Start from the project's repository list (migration 0029); each a new `git worktree add` by default, or the repository itself | one run per worktree, for each of them; worktrees outside the cwd are passed with `--add-dir` |
+| worktrees | a list, one per repository the task touches, chosen at Start from the project's repository list (migration 0029); each a new `git worktree add` by default, or the repository itself | one run per worktree, for each of them; every worktree is passed with `--add-dir`, and `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` is set so each repository's `CLAUDE.md` loads; the cwd alone gives only its own `CLAUDE.md` (probe 9) |
 | model, effort | project defaults, the card may override | default Opus, medium effort |
 | permission profile | the project's profile | `--permission-mode` and `--allowedTools` explicit on every turn; default `auto` |
 | Claude session id | the first turn's `system/init` | every later turn uses `--resume` with it |
@@ -86,21 +86,24 @@ stop is the first pull request of 0.9: a runner on a program that stops slowly i
 | events | `run_event`: the stream-json lines of each turn, compressed, kept by the retention policy | subagent lines nested by `parent_tool_use_id` |
 
 **The Claude Code layers.** A run loads what a manual session loads: Claude Code's default
-`--setting-sources user,project,local`, which relaybay never narrows. So the user layer comes with
-every turn: `~/.claude/CLAUDE.md` (the owner's common rules), user skills and agents (a pipeline
-skill, architect, developer and reviewer agents), the output style, user MCP servers; then the
-project's and the local layer of the cwd. (The probes used `--setting-sources project` only to keep
-the owner's own hooks from reaching his live board; a real run wants exactly those hooks.)
+`--setting-sources user,project,local`, which relaybay never narrows. The user `~/.claude/CLAUDE.md`
+(the owner's common rules) loads whatever the sources say; user skills and agents (a pipeline skill,
+architect, developer and reviewer agents), the output style and user MCP servers come only with the
+default sources (probe 8: 92 commands and 9 agents against 58 and 6 with `project` only). Then the
+project's and the local layer of the cwd. (The first probes used `--setting-sources project` only to
+keep the owner's own hooks from reaching his live board; `--settings '{"disableAllHooks": true}'`
+does that without narrowing anything.)
 
 **relaybay's hooks without double firing.** relaybay's hooks are the command hooks `relaybay setup`
 installs into the user's settings. Before the first turn the runner reads the same check as `relaybay
 setup --check`: if the user's settings carry relaybay's hooks and MCP server (the normal case), the
 run adds nothing; if not, the run passes them with `--settings <file>` and `--mcp-config <file>`
-(never `--strict-mcp-config`), so they still fire, once. Never both: one source per run, decided
-before the first turn and kept for all its turns. Why not always pass them and dedupe in the
-forwarder: two copies of each hook would double every event, brake check and comment delivery, and a
-dedupe in the forwarder needs state on a path that must stay fast; setup already owns the user's
-settings, with backups.
+(never `--strict-mcp-config`). Claude Code runs an identical handler defined in several settings
+sources once (documented, and probe 8: a byte-identical command in two sources fired once), so the
+run writes exactly the command `setup` writes; if the check was wrong and both are present, nothing
+fires twice. relaybay adds no dedupe of its own on the hook path, which must stay fast; the primary
+path stays "add none when setup installed them", because the documentation does not say how two
+handlers are judged identical.
 
 **The brief.** The first turn's text is assembled from the card: title, description, decisions with
 their source, the accepted plan, attachments as file paths, the project's rules line, the paths of
@@ -152,9 +155,10 @@ prints JSON and exits 0 when signed in, 1 when not. Its fields include `loggedIn
 of `none`, `claude.ai`, `oauth_token`, `api_key`, `api_key_helper`, `third_party`), `apiProvider`,
 `subscriptionType` and `configDirectory`. relaybay reads only `loggedIn`, `authMethod` and
 `subscriptionType`; it never stores or shows the e-mail or organization fields of that answer.
-Probed on 2026-11-10 with a signed-in subscription: `loggedIn` true, `authMethod` `claude.ai`, exit 0
-([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). The signed-out and API-key answers
-were not probed; the exit code is taken from the CLI reference.
+Probed on 2026-11-10 ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11), probes 7 and 11):
+a signed-in subscription gives exit 0, `loggedIn` true, `authMethod` `claude.ai`; signed out, exit 1,
+`loggedIn` false, `authMethod` `none`; with an API key in the environment, exit 0, `loggedIn` true,
+`authMethod` `api_key`. So the API-key case is told apart by `authMethod`, never by the exit code.
 
 | `claude auth status` says | Line in `relaybay doctor` and on the card before Start | Start |
 |---|---|---|
@@ -254,9 +258,9 @@ Only these stay with the owner; everything else the coordinator decides.
 | C8 | Managers layer | Not built; decided after a week of coordinator work | A layer of retelling is the problem being removed |
 | C9 | ACP adapters and containers | Not before the runner has run a week (0017) | Same as 0017 |
 | C13 | Sign-in methods a run accepts | Subscription only; API keys and others by the owner's switch in Settings | The owner runs on his subscription; a key bills elsewhere |
-| C11 | relaybay's hooks in a run | The user's settings when `setup` installed them there, else `--settings` for the run; never both | One source of hooks, no dedupe state on the hook path |
+| C11 | relaybay's hooks in a run | The user's settings when `setup` installed them there, else the byte-identical command with `--settings` for the run | Claude Code runs an identical handler once (probe 8), so a wrong check fires nothing twice; no dedupe state on relaybay's hook path |
 | C12 | Visual acceptance in 0.9 | A blocking "look at this" question with the URL and the test account's name; `--chrome` by the project's profile | No browser pane in a headless turn; the conversation comes with the terminal in 0.10 |
-| C10 | Approval delivery: a new turn, or approval inside a turn | A new turn with the owner's words (probe 3: the agent pushed). `--permission-prompt-tool` or a `PermissionRequest` hook is a documented later upgrade, not probed | A turn is the owner's word to the agent; approving inside a turn is a wider mechanism |
+| C10 | Approval delivery: a new turn, or approval inside a turn | A new turn with the owner's words (probe 3: the agent pushed). `--permission-prompt-tool` (probe 10: works in `-p`) is the upgrade for an approval that must not end the turn ([0022](0022-questions-and-approvals.md#inside-a-turn)) | A turn is the owner's word to the agent; holding a turn open while the owner decides needs the MCP timeout checked first |
 
 ## Releases
 
@@ -285,11 +289,9 @@ practice go ahead of the plan.
 
 Numbers follow 0029 and move if other migrations land first.
 
-**Probes before PR 1** (opt-in, with a real `claude`, added to `scripts/probe_runner.py`; not run
-yet): (8) with the default setting sources, a rule from the user `CLAUDE.md` is visible in a `-p`
-turn, a user skill and a user agent are listed, and relaybay's hooks from the user's settings fire
-once per event; (9) `--add-dir` gives a turn in a project folder the worktrees of two repositories,
-each repository's own `CLAUDE.md` read when the agent works there.
+**Probes.** All thirteen of [0012](0012-runner-and-embedded-terminal.md#probes-2026-11) were run on
+2026-11-10 on Windows; the design above relies on them. Not probed yet: worktrees outside the cwd
+with `--add-dir`, the MCP client timeout of a held permission prompt, and macOS and Linux.
 
 **Tests with the fake `claude`** (`tests/e2e`; the fake already takes `-p`, `--resume`,
 `--permission-mode` and `--allowedTools`):

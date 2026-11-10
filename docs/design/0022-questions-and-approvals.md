@@ -97,10 +97,24 @@ the turn's report as a refusal (tool, input, reason), and the agent or the owner
 
 **Delivery.** The decision goes as the next turn: `The owner approved push of <branch>` or `The owner
 refused <action>: <text>`; for a desktop session, as an owner comment. In `auto` mode that turn is
-enough: the agent ran `git push` after it (probe 3). Approving inside a running turn
-(`--permission-prompt-tool` or a `PermissionRequest` hook) is documented but not probed and is a
-later upgrade; the guard check above holds either way. A session message saying
-"the owner approved" is still a session message: the guard looks only at the `approval` row.
+enough: the agent ran `git push` after it (probe 3). A session message saying "the owner approved"
+is still a session message, and so is a text the agent reads in a tool result: in probe 12 a file
+claiming the owner's approval did not make the agent push. That is a result, not a guarantee; the
+guard looks only at the `approval` row.
+
+<a id="inside-a-turn"></a>
+
+**Inside a turn (the upgrade).** For an approval that must not end the turn, the run passes
+`--permission-prompt-tool mcp__relaybay__permission_prompt` (probe 10 of
+[0012](0012-runner-and-embedded-terminal.md#probes-2026-11): works in `-p`). Claude Code calls that
+tool for each permission prompt with `tool_name`, `input` and `tool_use_id`; relaybay opens the
+approval, waits for the owner's button and answers one plain text content block whose text is JSON:
+`{"behavior": "allow", "updatedInput": <input unchanged>}` or `{"behavior": "deny", "message":
+"<the owner's text>"}`. Gotcha: with the Python MCP SDK 2.x a tool returning `str` is wrapped in
+structured output, which Claude Code rejects as "an invalid result"; the tool returns a
+`CallToolResult` with one `TextContent` and `structured_output=False`. The turn is held while the call
+is open, so the MCP client's timeout must be known before the owner's wait can be long; until then
+the denial plus a new turn stays the default.
 
 **Events.** `approval.requested`, `approval.decided`, `approval.used`; all on the Audit page.
 

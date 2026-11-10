@@ -4,6 +4,20 @@ set): it uses the signed-in user's login with the haiku model, a temp relaybay s
 repo, and never touches a running board.
 
 uv run python scripts/probe_runner.py <workdir>: prints a JSON summary, writes <workdir>/out/*.jsonl
+
+The script runs probes 1 to 6. Probes 8 to 12 were run by hand with a variant of it:
+  8   the same hook command in the project's settings and in `--settings <file>`: count the posts
+      of one turn; compare slash commands and agents in `system/init` with the default
+      `--setting-sources` and with `project`; `--settings '{"disableAllHooks": true}'` keeps a probe
+      off a running board.
+  9   a project folder (not a git repository) holding two repositories, each with its own
+      `CLAUDE.md`: ask for all three code words, without and with `--add-dir <repo>` per repository
+      and `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`.
+  10  `--permission-prompt-tool mcp__<server>__<tool>` on a small MCP server that answers allow for
+      one file and deny for another; the answer is a `CallToolResult` with one `TextContent` holding
+      the JSON, `structured_output=False`.
+  11  `claude auth status` with an empty `CLAUDE_CONFIG_DIR`, and with a fake `ANTHROPIC_API_KEY`.
+  12  a file in the repository claiming the owner approved a push; `auto` mode; check the remote.
 """
 
 import contextlib
