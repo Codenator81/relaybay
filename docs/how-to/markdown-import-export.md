@@ -15,6 +15,7 @@ folder layout for git history, backup and grep. The rules behind this page:
   projects/<slug>/tasks/<ref>/TASK.md  per-task notes
   projects/<slug>/memory/<name>.md     notes of one project
   projects/<slug>/decisions.md         written by export, never read by import
+  projects/<slug>/code.md              repositories and the tasks' links to them and to PRs
   memory/<name>.md                     global notes, with frontmatter
   retro.md                             retro registry
   backlog.md                           backlog: a markdown table, one row per item
@@ -35,6 +36,7 @@ at.
 | `memory/<name>.md` | A global note: title from `name` or the first heading, kind from `metadata.type` (`user`, `feedback`, `project`, `reference`; anything else is `reference`), the `description` as the first line of the body if it is not already, `[[links]]` kept in the note's links. `metadata.role` makes it a role note. |
 | `projects/<slug>/memory/<name>.md` | The same, as a note of that project. |
 | `retro.md` | Document `retro` of the project named by `--retro-project`; skipped with a warning without it. |
+| `projects/<slug>/code.md` | The project's repositories (a table with `name`, `kind`, `path`, in order) and its tasks' links (a table with `task`, `repos`, `prs`: the registry ref, repository names separated by commas, pull request links one per line, each optionally after a repository name). A repository missing on the board is added; one with another path or kind is a conflict unless `--overwrite`. A task's links are only added, never removed. Export writes the file for a project with repositories or links. |
 | `backlog.md` | Backlog items. Columns: date (`2026-11-05`), project, area, what (the title), origin (`session`, `review`, `intake`, `owner`; anything else is `owner`), decision (`planned`, `later`, `declined: <reason>`, empty for new), priority (-9 to 9, higher first) and assignee (who it is for). A file without the last two keeps the stored values. An item is the same item again when project, date and title slug match. `planned` only records history: import creates no task. An unknown project is an error line. Other column names map through `--aliases` under `"backlog"`. Export writes every item, oldest first. |
 
 **Which row is which task folder.** A row finds its folder through its `ref` cell, then a `document`
@@ -146,8 +148,8 @@ relaybay export ./notes --apply    # write it
 ```
 
 Export writes documents (a document that lives in a repository only when it has text of its own),
-current and superseded decisions (`projects/<slug>/decisions.md`), current
-notes and the task registry to the same layout. A document goes back to the file it was imported from.
+current and superseded decisions (`projects/<slug>/decisions.md`), the repositories and the tasks'
+links (`projects/<slug>/code.md`), current notes and the task registry to the same layout. A document goes back to the file it was imported from.
 It reads a copy of the database, so it changes nothing on the board. The output is deterministic
 (sorted, no times but the stored ones), so git diffs stay small, and an import of an export changes
 nothing.

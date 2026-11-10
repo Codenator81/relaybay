@@ -13,6 +13,7 @@
     {%- set stale = t.next_step_stale and not is_done %}
     {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
     {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
+    {% if detail.code.shown %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}
     {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (require_tracker_log and is_done) %}
     <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}
       {%- if t.tracker_url and not t.tracker_ref %}{% set href = t.tracker_url|http_url %}{% if href %} <a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ t.tracker_name or href }}</a>{% endif %}{% endif %}

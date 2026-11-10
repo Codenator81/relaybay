@@ -33,6 +33,7 @@ from relaybay.domain import memory as mem
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
 from relaybay.domain.backlog import ASSIGNEE_MAX
+from relaybay.domain.code import REPO_KINDS, vscode_url
 from relaybay.domain.comments import COMMENT_MAX
 from relaybay.domain.errors import (
     ConfirmationNeeded,
@@ -313,6 +314,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
     env.filters["http_url"] = http_url
+    env.filters["vscode_url"] = vscode_url
     env.filters["event_detail"] = event_detail
     env.filters["event_subject"] = event_subject
     env.filters["change_summary"] = env_domain.change_summary
@@ -452,11 +454,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             n: urlencode({k: v for k, v in {**view, "page": str(n) if n > 1 else ""}.items() if v})
             for n in range(1, len(BOARD_PAGES) + 1)
         }
+        shown = [t for column in by_stage.values() for t in column]
         return {
             "board_pages": BOARD_PAGES,
             "page_qs": page_qs,
             "project": project,
             "columns": by_stage,
+            "code": await service.task_codes(project.id, shown),
             "archived": archived,
             "q": q,
             "stage_filter": stage,
@@ -1121,7 +1125,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/p/{slug}/t/{key}/card", response_class=HTMLResponse)
     async def card_fragment(request: Request, slug: str, key: str):
         task = await find_task(slug, key)
-        return render(request, "_card.html", t=task, slug=slug)
+        code = {task.id: await service.task_code(task)}
+        return render(request, "_card.html", t=task, slug=slug, code=code)
 
     @router.post("/p/{slug}/t/{key}/move")
     async def move_card(
@@ -1618,6 +1623,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             status=status,
             project=project,
             environments=items,
+            repos=(await service.project_repos(project.slug))[1],
+            repo_kinds=REPO_KINDS,
             proposals=await service.proposals(project.slug),
             policies=await service.environment_policies(items),
             project_policy=await service.effective_policy(project.slug),
@@ -1744,6 +1751,61 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return await environment_write(
             request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}", "Environment saved."
         )
+
+    @router.post("/p/{slug}/repos")
+    async def add_repo(
+        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        async def write(form: Any) -> None:
+            await service.save_project_repo(slug, None, **repo_values(form), actor="owner")
+
+        return await environment_write(
+            request, slug, csrf, "repo-new", write, "#repos", "Repository added."
+        )
+
+    @router.post("/p/{slug}/repos/{repo_id}")
+    async def update_repo(
+        request: Request,
+        slug: str,
+        repo_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        async def write(form: Any) -> None:
+            await service.save_project_repo(slug, repo_id, **repo_values(form), actor="owner")
+
+        return await environment_write(
+            request, slug, csrf, f"repo-{repo_id}", write, "#repos", "Repository saved."
+        )
+
+    @router.post("/p/{slug}/repos/{repo_id}/{action}")
+    async def change_repo(
+        request: Request,
+        slug: str,
+        repo_id: int,
+        action: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if action not in ("up", "down", "delete"):
+            raise HTTPException(status_code=404)
+
+        async def write(form: Any) -> None:
+            if action == "delete":
+                await service.remove_project_repo(slug, repo_id, actor="owner")
+            else:
+                await service.move_project_repo(
+                    slug, repo_id, -1 if action == "up" else 1, actor="owner"
+                )
+
+        message = "Repository removed." if action == "delete" else "Order saved."
+        return await environment_write(
+            request, slug, csrf, f"repo-{repo_id}", write, "#repos", message
+        )
+
+    def repo_values(form: Any) -> dict[str, str | None]:
+        return {
+            name: (value if isinstance(value := form.get(name), str) else None)
+            for name in ("name", "path", "kind")
+        }
 
     @router.post("/p/{slug}/environments/{env_id}/delete")
     async def delete_environment(
@@ -2648,7 +2710,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if "hx-request" not in request.headers:
             return RedirectResponse(f"/p/{slug}?task={task.key}", status_code=303)
         if target == "card":
-            return render(request, "_card.html", t=task, slug=slug)
+            code = {task.id: await service.task_code(task)}
+            return render(request, "_card.html", t=task, slug=slug, code=code)
         detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
         return render(request, "_task_view.html", detail=detail)
 

@@ -106,8 +106,12 @@ async def seed(service: Service) -> int:
     await service.upsert_project(
         "acme-shop",
         name="Acme Shop",
-        repo_path=ACME_REPO,
         description="Storefront and checkout for a made-up shop.",
+        repos=[
+            {"name": "web", "path": ACME_REPO, "kind": "web"},
+            {"name": "api", "path": f"{ACME_REPO}-api", "kind": "api"},
+            {"name": "app", "path": f"{ACME_REPO}-app", "kind": "app"},
+        ],
     )
     await service.upsert_project(
         "demo-api", name="Demo API", description="Public REST API behind the shop."
@@ -146,6 +150,17 @@ async def seed(service: Service) -> int:
         tracker_url="https://tracker.example.com/SHOP-42",
         session=DEMO_DESKTOP_SESSION,
         session_title="acme-shop · checkout",
+    )
+    await service.update_task(
+        checkout,
+        {
+            "repos": ["api"],
+            "prs": [
+                "https://git.example.com/acme/web/pull/42",
+                "https://git.example.com/acme/api/pull/17",
+            ],
+        },
+        session=DEMO_DESKTOP_SESSION,
     )
     await service.add_report(
         checkout,

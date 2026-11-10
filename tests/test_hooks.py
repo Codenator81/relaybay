@@ -380,7 +380,9 @@ async def test_status_event_per_project_of_the_bound_tasks(service: Service) -> 
     api = await service.create_task("demo-api", "Tokens", stage="dev", session=DESKTOP_A)
     first = await service.last_event_id()
     await service.record_hook(hook("SessionStart"))
-    events = await service.events_since(first, limit=50)
+    events = [
+        e for e in await service.events_since(first, limit=50) if e.kind == "session.status_changed"
+    ]
     assert {(e.payload["project"], tuple(e.payload["keys"])) for e in events} == {
         ("acme-shop", (shop.key,)),
         ("demo-api", (api.key,)),
@@ -388,6 +390,9 @@ async def test_status_event_per_project_of_the_bound_tasks(service: Service) -> 
     assert [e.id for e in await service.events_since(first, "demo-api")] == [
         e.id for e in events if e.payload["project"] == "demo-api"
     ]
+    # The session works in acme-shop's repository: the bound task there links it by itself.
+    linked = await service.events_since(first, "acme-shop", limit=50)
+    assert [e.payload["how"] for e in linked if e.kind == "task.updated"] == ["auto"]
 
 
 # --- endpoint ----------------------------------------------------------------

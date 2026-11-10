@@ -39,6 +39,20 @@ from relaybay.domain import messages as message_text
 from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.backlog import BacklogItem
+from relaybay.domain.code import (
+    REPO_KINDS,
+    REPO_NAME_MAX,
+    REPO_NAME_RE,
+    REPO_PATH_MAX,
+    REPOS_MAX,
+    ProjectRepo,
+    TaskCode,
+    default_repo_name,
+    holds,
+    pr_number,
+    pr_repo_name,
+    task_code,
+)
 from relaybay.domain.comments import (
     COMMENT_MAX,
     CONTEXT_MAX,
@@ -174,6 +188,7 @@ from relaybay.domain.switcher import (
 from relaybay.domain.task_fields import (
     BY_NAME,
     FIELD_NAMES,
+    LINK_NAMES,
     MARKDOWN_MAX,
     NAME_MAX,
     TEXT_MAX,
@@ -344,6 +359,7 @@ class TaskDetail:
     findings: list[BacklogItem] = field(default_factory=list)  # items this task is the origin of
     budget: agent_limits.BudgetState | None = None  # the task's own token budget
     messages: list[SessionMessage] = field(default_factory=list)  # newest first
+    code: TaskCode = field(default_factory=lambda: TaskCode([], [], []))
 
 
 @dataclass(slots=True)
@@ -483,6 +499,40 @@ def _clean_url(value: Any, name: str) -> str | None:
     if not HTTP_URL_RE.fullmatch(url):
         raise ValidationError(f"{name} must be an http:// or https:// link, got {url!r}.")
     return url
+
+
+def _clean_repo(name: Any, path: Any, kind: Any, fallback: str) -> tuple[str, str, str | None]:
+    """(name, path, kind) of one project repository. The path is kept as written: it is never
+    opened. Without a name the path's last folder names it."""
+    clean_path = _clean_text(path, "path", REPO_PATH_MAX)
+    if clean_path is None:
+        raise ValidationError("A repository needs a path.")
+    if has_hidden_chars(clean_path):
+        raise ValidationError("path holds a control or invisible character.")
+    clean_name = _clean_text(name, "name", REPO_NAME_MAX) or default_repo_name(clean_path, fallback)
+    if not REPO_NAME_RE.match(clean_name):
+        raise ValidationError(
+            f"Repository name {clean_name!r}: letters, digits, '.', '_' and '-' only, starting"
+            " with a letter or digit."
+        )
+    clean_kind = (_clean_text(kind, "kind") or "").lower() or None
+    if clean_kind is not None and clean_kind not in REPO_KINDS:
+        raise ValidationError(
+            f"Repository kind must be one of {', '.join(REPO_KINDS)}, got {kind!r}."
+        )
+    return clean_name, clean_path, clean_kind
+
+
+def _link_entries(value: Any, name: str) -> list[str]:
+    """The entries of a `repos` / `prs` write: a list of strings, or one string."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValidationError(f"{name} must be a list of strings.")
+    entries = [v.strip() for v in value if v.strip()]
+    if len(entries) > REPOS_MAX:
+        raise ValidationError(f"{name}: at most {REPOS_MAX} entries in one write.")
+    return entries
 
 
 def _clean_field(name: str, value: Any) -> Any:
@@ -1672,6 +1722,15 @@ class Service:
             logger.error("Writing hook activity failed", exc_info=task.exception())
 
     async def _apply_hook(self, hook: HookEvent) -> Session:
+        session = await self._apply_hook_status(hook)
+        if hook.cwd and hook.event != "SessionEnd":
+            try:
+                await self._auto_link_repos(session, hook.cwd)
+            except Exception:
+                logger.exception("Linking the task's repository failed; the hook goes on")
+        return session
+
+    async def _apply_hook_status(self, hook: HookEvent) -> Session:
         transcript = await self._allowed_transcript(hook.transcript_path)
         async with self._tx() as tx:
             session = await self._hook_session(tx, hook)
@@ -3062,6 +3121,7 @@ class Service:
                 None,
             ),
             messages=await repo.list_session_messages(self._r, task_id=task.id, limit=50),
+            code=await self.task_code(task),
         )
 
     async def _bind_choices(self, task: Task, limit: int = 40) -> list[Session]:
@@ -3168,11 +3228,15 @@ class Service:
         name: str | None = None,
         repo_path: str | None = None,
         description: str | None = None,
+        repos: list[dict[str, Any]] | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
         actor: str = "mcp",
     ) -> tuple[Project, bool]:
+        """Create or update a project. `repos` replaces its repositories (matched by name, so the
+        tasks' links to a kept one stay); `repo_path` alone sets the first one's path (or adds it).
+        `project.repo_path` always ends up as the first repository's path."""
         slug = _clean_slug(slug)
         name = _clean_text(name, "name", NAME_MAX)
         given = {
@@ -3180,6 +3244,7 @@ class Service:
             "repo_path": _clean_text(repo_path, "repo_path"),
             "description": _clean_text(description, "description"),
         }
+        wanted = self._wanted_repos(repos, slug, given["repo_path"]) if repos is not None else None
         default_actor = actor
         async with self._tx() as tx:
             sess = await self._session(tx, session, session_title, hook_session)
@@ -3190,6 +3255,10 @@ class Service:
                 project_id = await repo.insert_project(
                     tx.conn, slug, name or slug, given["repo_path"], given["description"], tx.now
                 )
+                repo_changes = await self._set_project_repos(
+                    tx, project_id, slug, wanted, given["repo_path"]
+                )
+                await repo.sync_repo_path(tx.conn, project_id, tx.now)
                 await tx.event(
                     "project.created",
                     actor,
@@ -3197,14 +3266,27 @@ class Service:
                     session_id=session_id,
                     project=slug,
                     name=name or slug,
+                    **repo_changes,
                 )
                 created = True
             else:
-                changes = {
-                    k: v for k, v in given.items() if v is not None and v != getattr(existing, k)
+                fields = {
+                    k: v
+                    for k, v in given.items()
+                    if k != "repo_path" and v is not None and v != getattr(existing, k)
                 }
+                path = given["repo_path"]
+                if fields:
+                    await repo.update_project(tx.conn, existing.id, fields, tx.now)
+                changes: dict[str, Any] = dict(fields)
+                # Compared with the repositories, not with repo_path: with none left, the same
+                # path adds one again.
+                changes |= await self._set_project_repos(tx, existing.id, slug, wanted, path)
+                await repo.sync_repo_path(tx.conn, existing.id, tx.now)
+                synced = await repo.get_project_by_id(tx.conn, existing.id)
+                if synced is not None and synced.repo_path != existing.repo_path:
+                    changes["repo_path"] = synced.repo_path
                 if changes:
-                    await repo.update_project(tx.conn, existing.id, changes, tx.now)
                     await tx.event(
                         "project.updated",
                         actor,
@@ -3216,6 +3298,183 @@ class Service:
                 created = False
             project = await self.get_project(slug, tx.conn)
         return project, created
+
+    @staticmethod
+    def _wanted_repos(
+        repos: list[dict[str, Any]], slug: str, repo_path: str | None
+    ) -> list[tuple[str, str, str | None]]:
+        """The `repos` of a project_upsert, checked: names unique, the first one's path the same
+        as a `repo_path` given with them."""
+        if not isinstance(repos, list) or not all(isinstance(r, dict) for r in repos):
+            raise ValidationError("repos must be a list of objects with name, path and kind.")
+        if len(repos) > REPOS_MAX:
+            raise ValidationError(f"repos: at most {REPOS_MAX} repositories in a project.")
+        wanted = []
+        for r in repos:
+            unknown = set(r) - {"name", "path", "kind"}
+            if unknown:
+                raise ValidationError(
+                    f"Unknown repository field(s): {', '.join(sorted(unknown))}."
+                    " Allowed: name, path, kind."
+                )
+            wanted.append(_clean_repo(r.get("name"), r.get("path"), r.get("kind"), slug))
+        names = [n.casefold() for n, _, _ in wanted]
+        twice = sorted({n for n in names if names.count(n) > 1})
+        if twice:
+            raise ValidationError(f"Repository names must be unique: {', '.join(twice)}.")
+        if repo_path is not None and wanted and wanted[0][1] != repo_path:
+            raise ValidationError(
+                "repo_path is the first repository's path: pass it in repos only, or the same."
+            )
+        return wanted
+
+    async def _set_project_repos(
+        self,
+        tx: _Tx,
+        project_id: int,
+        slug: str,
+        wanted: list[tuple[str, str, str | None]] | None,
+        repo_path: str | None,
+    ) -> dict[str, Any]:
+        """Write the project's repositories: the whole list (`wanted`, matched by name), or only
+        a new `repo_path` for the first one. Returns `{"repos": {added, changed, removed}}` for
+        the event, or {} when nothing changed."""
+        current = await repo.list_project_repos(tx.conn, project_id)
+        added: list[str] = []
+        changed: list[str] = []
+        removed: list[str] = []
+        if wanted is None:
+            if repo_path is None:
+                return {}
+            if current:
+                first = current[0]
+                if first.path != repo_path:
+                    await repo.update_project_repo(tx.conn, first.id, {"path": repo_path}, tx.now)
+                    changed.append(first.name)
+            else:
+                name = default_repo_name(repo_path, slug)
+                await repo.insert_project_repo(
+                    tx.conn, project_id, name, repo_path, None, 0, tx.now
+                )
+                added.append(name)
+        else:
+            by_name = {r.name.casefold(): r for r in current}
+            keep = {n.casefold() for n, _, _ in wanted}
+            for r in current:
+                if r.name.casefold() not in keep:
+                    await repo.delete_project_repo(tx.conn, r.id)
+                    removed.append(r.name)
+            for position, (name, path, kind) in enumerate(wanted):
+                old = by_name.get(name.casefold())
+                if old is None:
+                    await repo.insert_project_repo(
+                        tx.conn, project_id, name, path, kind, position, tx.now
+                    )
+                    added.append(name)
+                    continue
+                diff: dict[str, Any] = {
+                    k: v
+                    for k, v in (("name", name), ("path", path), ("kind", kind))
+                    if getattr(old, k) != v
+                }
+                if old.position != position:
+                    diff["position"] = position
+                if diff:
+                    await repo.update_project_repo(tx.conn, old.id, diff, tx.now)
+                    changed.append(name)
+        report = {
+            k: v for k, v in (("added", added), ("changed", changed), ("removed", removed)) if v
+        }
+        return {"repos": report} if report else {}
+
+    async def project_repos(self, slug: str) -> tuple[Project, list[ProjectRepo]]:
+        project = await self.get_project(slug)
+        return project, await repo.list_project_repos(self._r, project.id)
+
+    async def save_project_repo(
+        self,
+        slug: str,
+        repo_id: int | None,
+        *,
+        name: str | None,
+        path: str | None,
+        kind: str | None,
+        actor: str = "board",
+    ) -> ProjectRepo:
+        """Add a repository (`repo_id` None, last in the list) or change one; a rename keeps the
+        row, so the tasks' links to it stay."""
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            current = await repo.list_project_repos(tx.conn, project.id)
+            clean = _clean_repo(name, path, kind, project.slug)
+            old = next((r for r in current if r.id == repo_id), None)
+            if repo_id is not None and old is None:
+                raise NotFoundError(f"Repository #{repo_id} not found in {project.slug}.")
+            if any(r.name.casefold() == clean[0].casefold() for r in current if r is not old):
+                raise ValidationError(f"{project.slug} already has a repository {clean[0]!r}.")
+            wanted = [(r.name, r.path, r.kind) for r in current]
+            if old is None:
+                if len(current) >= REPOS_MAX:
+                    raise ValidationError(f"At most {REPOS_MAX} repositories in a project.")
+                wanted.append(clean)
+            else:
+                wanted[current.index(old)] = clean
+                if old.name != clean[0]:
+                    await repo.update_project_repo(tx.conn, old.id, {"name": clean[0]}, tx.now)
+            changes = await self._set_project_repos(tx, project.id, project.slug, wanted, None)
+            if old is not None and old.name != clean[0]:
+                changes.setdefault("repos", {}).setdefault("changed", [clean[0]])
+            await self._repos_written(tx, project, changes, actor)
+            saved = next(
+                r for r in await repo.list_project_repos(tx.conn, project.id) if r.name == clean[0]
+            )
+        return saved
+
+    async def remove_project_repo(self, slug: str, repo_id: int, *, actor: str = "board") -> None:
+        """Remove a repository: the tasks' links to it go, their pull requests stay, untied."""
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            current = await repo.list_project_repos(tx.conn, project.id)
+            if not any(r.id == repo_id for r in current):
+                raise NotFoundError(f"Repository #{repo_id} not found in {project.slug}.")
+            wanted = [(r.name, r.path, r.kind) for r in current if r.id != repo_id]
+            changes = await self._set_project_repos(tx, project.id, project.slug, wanted, None)
+            await self._repos_written(tx, project, changes, actor)
+
+    async def move_project_repo(
+        self, slug: str, repo_id: int, step: int, *, actor: str = "board"
+    ) -> None:
+        """Move a repository one place up (`step` < 0) or down; the first one is the project's
+        `repo_path`."""
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            current = await repo.list_project_repos(tx.conn, project.id)
+            at = next((i for i, r in enumerate(current) if r.id == repo_id), None)
+            if at is None:
+                raise NotFoundError(f"Repository #{repo_id} not found in {project.slug}.")
+            to = at + (1 if step > 0 else -1)
+            if not 0 <= to < len(current):
+                return
+            current[at], current[to] = current[to], current[at]
+            wanted = [(r.name, r.path, r.kind) for r in current]
+            changes = await self._set_project_repos(tx, project.id, project.slug, wanted, None)
+            await self._repos_written(tx, project, changes, actor)
+
+    async def _repos_written(
+        self, tx: _Tx, project: Project, changes: dict[str, Any], actor: str
+    ) -> None:
+        await repo.sync_repo_path(tx.conn, project.id, tx.now)
+        synced = await repo.get_project_by_id(tx.conn, project.id)
+        if synced is not None and synced.repo_path != project.repo_path:
+            changes["repo_path"] = synced.repo_path
+        if changes:
+            await tx.event(
+                "project.updated",
+                actor,
+                project_id=project.id,
+                project=project.slug,
+                changes=changes,
+            )
 
     async def create_task(
         self,
@@ -3351,12 +3610,16 @@ class Service:
         hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Saved:
-        """`update_task` that also returns the rule warnings of a stage move."""
+        """`update_task` that also returns the rule warnings of a stage move. `repos` and `prs`
+        in `changes` add or remove the task's code links in the same transaction."""
+        links = {k: _link_entries(changes[k], k) for k in LINK_NAMES if k in changes}
+        changes = {k: v for k, v in changes.items() if k not in LINK_NAMES}
         async with self._tx() as tx:
             return await self._update_task_tx(
                 tx,
                 ref,
                 changes,
+                links=links,
                 expected_version=expected_version,
                 session=session,
                 session_title=session_title,
@@ -3370,17 +3633,19 @@ class Service:
         ref: str | int,
         changes: dict[str, Any],
         *,
+        links: dict[str, Any] | None = None,
         expected_version: int | None,
         session: str | None,
         session_title: str | None,
         hook_session: str | None,
         actor: str,
     ) -> Saved:
+        links = links or {}
         unknown = set(changes) - set(FIELD_NAMES)
         if unknown:
             raise ValidationError(
                 f"Unknown task field(s): {', '.join(sorted(unknown))}."
-                f" Allowed: {', '.join(FIELD_NAMES)}."
+                f" Allowed: {', '.join((*FIELD_NAMES, *LINK_NAMES))}."
             )
         clean = {name: _clean_field(name, value) for name, value in changes.items()}
         default_actor = actor
@@ -3391,7 +3656,7 @@ class Service:
                 " someone changed it meanwhile. Re-read it with task_get and retry."
             )
         diff = _task_diff(task, clean)
-        if not diff:
+        if not diff and not any(links.values()):
             return Saved(task, [])
         warnings = await self._stage_warnings(tx, task, diff)
         progress_in_dev = "progress" in diff and task.stage == Stage.DEV
@@ -3417,8 +3682,11 @@ class Service:
         if "stage" in diff:
             rank = await repo.top_rank(tx.conn, task.project_id, diff["stage"])
             await repo.set_rank(tx.conn, task.id, rank)
-        await repo.update_task(tx.conn, task.id, writes, tx.now)
-        await self._sync_tracker(tx, task, writes)
+        if writes:  # links alone do not bump the task's version
+            await repo.update_task(tx.conn, task.id, writes, tx.now)
+            await self._sync_tracker(tx, task, writes)
+        how = "owner" if default_actor in BOARD_ACTORS else "agent"
+        linked = await self._write_code_links(tx, task, links, actor, how) if links else {}
         ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
         if "stage" in diff:
             await tx.event(
@@ -3435,6 +3703,7 @@ class Service:
             )
         # An automatic unlog has its own event; a new issue's reset is an ordinary change.
         others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
+        others |= linked
         if others:
             await tx.event(
                 "task.updated",
@@ -3452,6 +3721,130 @@ class Service:
         if "stage" in diff:
             await self._pulse_note(tx.conn, task)
         return Saved(await self.get_task(task.id, tx.conn), warnings)
+
+    async def _write_code_links(
+        self, tx: _Tx, task: Task, links: dict[str, list[str]], actor: str, how: str
+    ) -> dict[str, Any]:
+        """Add or remove (`-entry`) the task's repository and pull request links. Returns the
+        event's `changes`: `{"repos": {"added": [...], "removed": [...]}, "prs": {...}}`."""
+        repos = await repo.list_project_repos(tx.conn, task.project_id)
+        by_name = {r.name.casefold(): r for r in repos}
+
+        def find(name: str) -> ProjectRepo:
+            found = by_name.get(name.casefold())
+            if found is None:
+                known = ", ".join(r.name for r in repos)
+                raise ValidationError(
+                    f"{task.project_slug} has no repository {name!r}."
+                    + (
+                        f" Its repositories: {known}."
+                        if known
+                        else " It has none yet: set them with project_upsert(repos=...)."
+                    )
+                )
+            return found
+
+        out: dict[str, dict[str, list[str]]] = {"repos": {}, "prs": {}}
+
+        async def link_repo(r: ProjectRepo) -> None:
+            if await repo.insert_task_repo(tx.conn, task.id, r.id, actor, how, tx.now):
+                out["repos"].setdefault("added", []).append(r.name)
+
+        for entry in links.get("repos", []):
+            if entry.startswith("-"):
+                r = find(entry[1:].strip())
+                if await repo.delete_task_repo(tx.conn, task.id, r.id):
+                    out["repos"].setdefault("removed", []).append(r.name)
+            else:
+                await link_repo(find(entry))
+        for entry in links.get("prs", []):
+            if entry.startswith("-"):
+                url = _clean_url(entry[1:].strip(), "prs")
+                if url and await repo.delete_task_pr(tx.conn, task.id, url):
+                    out["prs"].setdefault("removed", []).append(url)
+                continue
+            words = entry.split()
+            if len(words) > 2:
+                raise ValidationError(
+                    f"prs: {entry!r} is not a link, or a repository name and a link."
+                )
+            named = find(words[0]) if len(words) == 2 else None
+            url = _clean_url(words[-1], "prs")
+            assert url is not None
+            target = named or by_name.get(pr_repo_name(url) or "")
+            if await repo.insert_task_pr(
+                tx.conn,
+                task.id,
+                target.id if target else None,
+                url,
+                pr_number(url),
+                None,
+                actor,
+                tx.now,
+            ):
+                out["prs"].setdefault("added", []).append(url)
+            if target is not None:
+                await link_repo(target)  # a pull request in a repository: the task touches it
+        return {k: v for k, v in out.items() if v}
+
+    async def _auto_link_repos(self, session: Session, cwd: str) -> None:
+        """A session bound to a task works in `cwd`: link the task to the project repository whose
+        path holds it (the closest one). One read outside any transaction; a write transaction
+        only for a new link, and its `task.updated` says `how: auto`, which the digests leave
+        out. Its own transaction: a failure here never undoes the hook's status write."""
+        best: dict[int, tuple[int, int, bool]] = {}  # task -> (path length, repo, linked)
+        for task_id, repo_id, path, linked in await repo.session_repo_candidates(
+            self._r, session.id
+        ):
+            size = holds(path, cwd)
+            if size is None:
+                continue
+            if task_id not in best or size > best[task_id][0]:
+                best[task_id] = (size, repo_id, linked)
+        new = [(task_id, repo_id) for task_id, (_, repo_id, linked) in best.items() if not linked]
+        if not new:
+            return
+        async with self._tx() as tx:
+            for task_id, repo_id in new:
+                await self._auto_link(tx, session, task_id, repo_id)
+
+    async def _auto_link(self, tx: _Tx, session: Session, task_id: int, repo_id: int) -> None:
+        if not await repo.insert_task_repo(tx.conn, task_id, repo_id, session.name, "auto", tx.now):
+            return  # linked meanwhile
+        task = await self.get_task(task_id, tx.conn)
+        name = next(
+            r.name
+            for r in await repo.list_project_repos(tx.conn, task.project_id)
+            if r.id == repo_id
+        )
+        await tx.event(
+            "task.updated",
+            session.name,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=session.id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            changes={"repos": {"added": [name]}},
+            how="auto",
+        )
+
+    async def task_code(self, task: Task, conn: aiosqlite.Connection | None = None) -> TaskCode:
+        conn = conn or self._r
+        return task_code(
+            task.id,
+            await repo.list_project_repos(conn, task.project_id),
+            await repo.task_repo_links(conn, task_id=task.id),
+            await repo.task_prs(conn, task_id=task.id),
+        )
+
+    async def task_codes(self, project_id: int, tasks: list[Task]) -> dict[int, TaskCode]:
+        """The Code rows of a board's tasks: three reads for the whole project."""
+        repos = await repo.list_project_repos(self._r, project_id)
+        links = await repo.task_repo_links(self._r, project_id=project_id)
+        prs = await repo.task_prs(self._r, project_id=project_id)
+        return {t.id: task_code(t.id, repos, links, prs) for t in tasks}
 
     async def set_stage(
         self,
