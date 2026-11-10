@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-10
+
 ### Fixed
 
 - Desktop on Linux under Xorg: a tray without notifications no longer fails a menu action or the watchdog's notice; the message stays in the log.
@@ -888,7 +890,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.8.5...HEAD
+[0.8.5]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.5
 [0.8.4]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.4
 [0.8.3]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.3
 [0.8.2]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.2
