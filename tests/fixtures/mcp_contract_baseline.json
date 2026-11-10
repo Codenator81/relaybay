@@ -2814,6 +2814,20 @@
               }
             ]
           },
+          "repos": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "session": {
             "anyOf": [
               {
@@ -3840,6 +3854,32 @@
               }
             ]
           },
+          "prs": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repos": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "session": {
             "anyOf": [
               {
@@ -3987,5 +4027,5 @@
       }
     }
   },
-  "version": "0.8.3"
+  "version": "0.8.4"
 }
