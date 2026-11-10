@@ -316,7 +316,7 @@ not a feature: it uses the same tools as any session.
 
 **Event.** Every write appends a row to the event log in the same transaction as the state change.
 The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `project.created`,
-`project.updated`, `task.created`, `task.updated`, `task.stage_changed`, `task.session_bound`,
+`project.updated`, `task.created`, `task.updated`, `task.stage_changed`, `task.reordered`, `task.session_bound`,
 `task.session_unbound`, `task.tracker_unlogged`, `report.added`, `decision.added`, `session.seen`,
 `session.status_changed`, `session.alias_added`, `session.no_live_on`, `session.no_live_off`,
 `comment.added`, `comment.delivered`,
@@ -479,6 +479,38 @@ the dialog. Both choices are kept per browser in `localStorage` (the expanded ca
 last 200), survive live refreshes of a card or a column, and live nowhere on the server. Without
 storage they last until the page is left; in the desktop program's window (private mode) they last
 until the program quits.
+
+<a id="spec-board-order"></a>
+
+**Card order.** Each stage column shows its cards in the owner's order, `task.rank` ascending (ties:
+the most recently updated first). A new task, and a task that changes stage any other way than by a
+drop (the edit form, MCP, an import, reopened plan work moving it back to dev), goes to the top of its column; other edits keep its place.
+Ranks are whole numbers: a drop renumbers the whole column 1..n (archived done tasks included), so
+they stay small and never need a value between two others; a task put on top takes the column's
+lowest rank minus one. The owner reorders on the board only (cookie + CSRF, `POST
+/p/<slug>/t/<key>/move` with `stage`, `before` and `after` task keys; a Bearer client gets 403); no
+MCP tool sets a rank, and `task_list` and the digests keep their order (`priority` first, then the
+most recently updated). On the board the owner's order is the priority: a task's `priority` no
+longer sorts its cards.
+
+- **Drag** a card (mouse or pen: press and move; touch: hold for about a third of a second, then
+  move) within its column or into another column of the page shown; an accent line marks where it
+  lands, and near the window's top or bottom and the board's left or right edge the page scrolls.
+  A release under a short column counts as its end; Esc or a release outside the columns cancels. The card is placed right before the card below the
+  line, else right after the one above it, else on top.
+- **Card menu** (the ⋯ button on every card, in compact mode too; Tab, Enter, Esc): **Move up**,
+  **Move down** (disabled at the ends) and **Move to <stage>** for each other stage, which puts the
+  card on top of that column. The keyboard focus stays on the card's menu button after the move and
+  after the live refresh.
+- A drop into another column is a stage change like the edit form's (rules, `strict` refusal, done
+  sets the closed time, `task.stage_changed` with its warnings, actor `board`), in one transaction
+  with the placing. Rule warnings show above the columns; a refusal (a rule in `strict` mode, a
+  neighbour that left the column meanwhile: `<key> is no longer in this column: the board changed
+  meanwhile. Try again.`) puts the card back and shows `Not moved: <reason>`.
+- A changed order writes one `task.reordered` (`key`, `stage`, `position` from 1), which refreshes
+  the column on every open board; a drop on the same place writes nothing. The rank is not an edit:
+  `version` and the updated time stay, so an open edit form still saves. The event is left out of
+  the digests' changes and makes no tray or browser notification.
 
 <a id="spec-board-dialog"></a>
 
@@ -2018,7 +2050,10 @@ under a `## Decisions` heading become project decisions with the source `message
 the columns stage, waiting on, next step, document and ref. The leading stage word (up to three words
 are tried) goes through an alias map and the rest, without one leading separator, is the stage note;
 an unknown word gives stage `plan`, the whole text as the note and a warning. `--aliases <file>` adds
-column, stage and heading names. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
+column, stage and heading names. An optional `rank` (or `order`) column sets the card's place in its
+stage column ([§2](#spec-board-order)): a whole number from -1000000000 to 1000000000, else an `error`
+row; an empty cell or a registry without the column keeps the board's order, and the rank then
+counts neither for "changed on the board" nor for a file that says the same. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
 `## Task` section, else the first paragraph), its `## Decisions` bullets as task decisions, the whole
 file as document `task-<ref>`, linked as `relaybay://doc/<project>/task-<ref>`; a folder with no row
 creates the task in stage `plan`. `memory/<name>.md` and `projects/<slug>/memory/<name>.md`: a global
@@ -2081,7 +2116,7 @@ markdown files there are `skipped`, also `memory/MEMORY.md`, an index.
 **Export.** `relaybay export <root>` writes documents (to the file they were imported from, else their
 place in the layout; a task document no task links to under `docs/`; a document that lives in a
 repository only when it has text), current and superseded decisions
-to `projects/<slug>/decisions.md`, current notes and the registry with a `ref` column. It reads a copy
+to `projects/<slug>/decisions.md`, current notes and the registry with a `ref` and a `rank` column. It reads a copy
 of the database. The same data gives the same bytes: sorted, no times but stored ones; an import of an
 export changes nothing. Dry run by default, `--apply` writes. The manifest `.relaybay-export.json`
 holds each file's hash and whether export wrote it. One rule for overwriting: a file export did not
@@ -2265,6 +2300,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0025_session_no_live` | `session.no_live_at`, `session.no_live_by` (the owner's switch, [§7](#spec-no-live)). Additive only |
 | `0026_brake_budgets` | `brake` (scope, project, session, task, reason, source, budget, created and released at and by), `token_budget` (one row per target), `budget_mark` (budget, period key, level), `usage_task_day` (file, task, day, model and the numbers) ([§2](#spec-brake)). Additive only, no backfill |
 | `0027_session_messages` | `session_message` (sender session, name and whether a hook proved it; recipient session and name; task; body; `in_reply_to`, depth; created, delivered and read at, whether a hook proved who read; Stop blocks; loop stopped and seen at) ([§1](#spec-session-messages)). Additive only |
+| `0028_task_rank` | `task.rank` (default 0) and an index on project, stage and rank; existing tasks ranked 1..n per project and stage in the order the board showed (`priority` desc, `updated_at` desc, `id` desc), so no card moves ([§2](#spec-board-order)). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

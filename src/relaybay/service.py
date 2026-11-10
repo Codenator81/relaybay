@@ -3009,6 +3009,7 @@ class Service:
         waiting_on: str | None = None,
         session: str | None = None,
         include_done: bool = False,
+        by_rank: bool = False,
     ) -> list[Task]:
         project_id = (await self.get_project(project)).id if project else None
         if stage:
@@ -3027,6 +3028,7 @@ class Service:
             stages=stages,
             waiting_on=_clean_text(waiting_on, "waiting_on"),
             session_ids=session_ids,
+            by_rank=by_rank,
         )
 
     async def task_detail(self, ref: str | int, reports: int = 5) -> TaskDetail:
@@ -3350,6 +3352,30 @@ class Service:
         actor: str = "mcp",
     ) -> Saved:
         """`update_task` that also returns the rule warnings of a stage move."""
+        async with self._tx() as tx:
+            return await self._update_task_tx(
+                tx,
+                ref,
+                changes,
+                expected_version=expected_version,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+                actor=actor,
+            )
+
+    async def _update_task_tx(
+        self,
+        tx: _Tx,
+        ref: str | int,
+        changes: dict[str, Any],
+        *,
+        expected_version: int | None,
+        session: str | None,
+        session_title: str | None,
+        hook_session: str | None,
+        actor: str,
+    ) -> Saved:
         unknown = set(changes) - set(FIELD_NAMES)
         if unknown:
             raise ValidationError(
@@ -3358,74 +3384,74 @@ class Service:
             )
         clean = {name: _clean_field(name, value) for name, value in changes.items()}
         default_actor = actor
-        async with self._tx() as tx:
-            task = await self.get_task(ref, tx.conn)
-            if expected_version is not None and expected_version != task.version:
-                raise ConflictError(
-                    f"Task {task.key} is at version {task.version}, not {expected_version}:"
-                    " someone changed it meanwhile. Re-read it with task_get and retry."
-                )
-            diff = _task_diff(task, clean)
-            if not diff:
-                return Saved(task, [])
-            warnings = await self._stage_warnings(tx, task, diff)
-            progress_in_dev = "progress" in diff and task.stage == Stage.DEV
-            if progress_in_dev and await self._reported_after_plan_closed(tx, task):
-                _note_closed_plan(task)
-            if diff.get("stage") in ACCEPTANCE_STAGES and not task.review_total:
-                _note(EMPTY_CHECKLIST_HINT.format(key=task.key))
-            no_plan = diff.get("stage") == Stage.DEV and not task.plan_total
-            if no_plan and not await self._task_todo(tx.conn, task):
-                _note(NO_PLAN_STAGE_HINT.format(key=task.key))
-            # An explicit tracker_logged in the same write wins over the automatic unlog.
-            unlog = (
-                _unlog_reason(task, diff)
-                if task.tracker_logged and "tracker_logged" not in clean
-                else None
+        task = await self.get_task(ref, tx.conn)
+        if expected_version is not None and expected_version != task.version:
+            raise ConflictError(
+                f"Task {task.key} is at version {task.version}, not {expected_version}:"
+                " someone changed it meanwhile. Re-read it with task_get and retry."
             )
-            sess = await self._session(tx, session, session_title, hook_session)
-            session_id = sess.id if sess else None
-            actor = sess.name if sess else default_actor
-            # The mark belongs to the issue: a new key starts not logged unless the write says so.
-            new_issue = (
-                "tracker_ref" in diff and "tracker_logged" not in clean and task.tracker_logged
+        diff = _task_diff(task, clean)
+        if not diff:
+            return Saved(task, [])
+        warnings = await self._stage_warnings(tx, task, diff)
+        progress_in_dev = "progress" in diff and task.stage == Stage.DEV
+        if progress_in_dev and await self._reported_after_plan_closed(tx, task):
+            _note_closed_plan(task)
+        if diff.get("stage") in ACCEPTANCE_STAGES and not task.review_total:
+            _note(EMPTY_CHECKLIST_HINT.format(key=task.key))
+        no_plan = diff.get("stage") == Stage.DEV and not task.plan_total
+        if no_plan and not await self._task_todo(tx.conn, task):
+            _note(NO_PLAN_STAGE_HINT.format(key=task.key))
+        # An explicit tracker_logged in the same write wins over the automatic unlog.
+        unlog = (
+            _unlog_reason(task, diff)
+            if task.tracker_logged and "tracker_logged" not in clean
+            else None
+        )
+        sess = await self._session(tx, session, session_title, hook_session)
+        session_id = sess.id if sess else None
+        actor = sess.name if sess else default_actor
+        # The mark belongs to the issue: a new key starts not logged unless the write says so.
+        new_issue = "tracker_ref" in diff and "tracker_logged" not in clean and task.tracker_logged
+        writes = {**diff, "tracker_logged": False} if unlog or new_issue else diff
+        if "stage" in diff:
+            rank = await repo.top_rank(tx.conn, task.project_id, diff["stage"])
+            await repo.set_rank(tx.conn, task.id, rank)
+        await repo.update_task(tx.conn, task.id, writes, tx.now)
+        await self._sync_tracker(tx, task, writes)
+        ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
+        if "stage" in diff:
+            await tx.event(
+                "task.stage_changed",
+                actor,
+                **ids,
+                project=task.project_slug,
+                key=task.key,
+                stage=diff["stage"],
+                title=diff.get("title", task.title),
+                **{"from": task.stage.value, "to": diff["stage"]},
+                note=diff.get("stage_note"),
+                **({"warnings": warnings} if warnings else {}),
             )
-            writes = {**diff, "tracker_logged": False} if unlog or new_issue else diff
-            await repo.update_task(tx.conn, task.id, writes, tx.now)
-            await self._sync_tracker(tx, task, writes)
-            ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
-            if "stage" in diff:
-                await tx.event(
-                    "task.stage_changed",
-                    actor,
-                    **ids,
-                    project=task.project_slug,
-                    key=task.key,
-                    stage=diff["stage"],
-                    title=diff.get("title", task.title),
-                    **{"from": task.stage.value, "to": diff["stage"]},
-                    note=diff.get("stage_note"),
-                    **({"warnings": warnings} if warnings else {}),
-                )
-            # An automatic unlog has its own event; a new issue's reset is an ordinary change.
-            others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
-            if others:
-                await tx.event(
-                    "task.updated",
-                    actor,
-                    **ids,
-                    project=task.project_slug,
-                    key=task.key,
-                    stage=diff.get("stage", task.stage.value),
-                    changes=others,
-                )
-            if unlog:
-                stage = diff.get("stage", task.stage.value)
-                ref = writes.get("tracker_ref", task.tracker_ref)
-                await self._unlogged(tx, task, actor, session_id, stage, ref, unlog)
-            if "stage" in diff:
-                await self._pulse_note(tx.conn, task)
-            return Saved(await self.get_task(task.id, tx.conn), warnings)
+        # An automatic unlog has its own event; a new issue's reset is an ordinary change.
+        others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
+        if others:
+            await tx.event(
+                "task.updated",
+                actor,
+                **ids,
+                project=task.project_slug,
+                key=task.key,
+                stage=diff.get("stage", task.stage.value),
+                changes=others,
+            )
+        if unlog:
+            stage = diff.get("stage", task.stage.value)
+            ref = writes.get("tracker_ref", task.tracker_ref)
+            await self._unlogged(tx, task, actor, session_id, stage, ref, unlog)
+        if "stage" in diff:
+            await self._pulse_note(tx.conn, task)
+        return Saved(await self.get_task(task.id, tx.conn), warnings)
 
     async def set_stage(
         self,
@@ -3484,6 +3510,83 @@ class Service:
             hook_session=hook_session,
             actor=actor,
         )
+
+    async def move_task(
+        self,
+        ref: str | int,
+        *,
+        stage: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+        actor: str = "board",
+    ) -> Saved:
+        """A card dropped on the board: a new `stage` goes the way of every stage change (rules,
+        warnings, its event), then the card is placed right before the task `before`, else right
+        after `after`, else at the top. The column is renumbered 1..n, and a changed order writes
+        one `task.reordered`."""
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            saved = Saved(task, [])
+            if stage and parse_stage(stage) != task.stage:
+                saved = await self._update_task_tx(
+                    tx,
+                    task.id,
+                    {"stage": stage},
+                    expected_version=None,
+                    session=None,
+                    session_title=None,
+                    hook_session=None,
+                    actor=actor,
+                )
+                task = saved.task
+            current = await repo.column_order(tx.conn, task.project_id, task.stage.value)
+            wanted = [i for i in current if i != task.id]
+            index = 0
+            neighbour = before or after
+            if neighbour:
+                other = await self.get_task(neighbour, tx.conn)
+                if other.id == task.id:
+                    raise ValidationError(
+                        f"{task.key} cannot be placed before or after itself; name another card."
+                    )
+                if other.id not in wanted:
+                    raise ConflictError(
+                        f"{other.key} is no longer in this column: the board changed meanwhile."
+                        " Try again."
+                    )
+                index = wanted.index(other.id) + (0 if before else 1)
+            wanted.insert(index, task.id)
+            if wanted != current:
+                await repo.renumber_column(tx.conn, wanted)
+                await tx.event(
+                    "task.reordered",
+                    actor,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    project=task.project_slug,
+                    key=task.key,
+                    stage=task.stage.value,
+                    position=index + 1,
+                )
+            return Saved(await self.get_task(task.id, tx.conn), saved.warnings)
+
+    async def set_task_rank(self, ref: str | int, rank: int, *, actor: str) -> Task:
+        """A rank as an import file gives it; one `task.reordered` when it changes."""
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            if rank != task.rank:
+                await repo.set_rank(tx.conn, task.id, rank)
+                await tx.event(
+                    "task.reordered",
+                    actor,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    project=task.project_slug,
+                    key=task.key,
+                    stage=task.stage.value,
+                    rank=rank,
+                )
+            return await self.get_task(task.id, tx.conn)
 
     async def bind_session(
         self,
@@ -6981,6 +7084,8 @@ class Service:
         if task.stage not in ACCEPTANCE_STAGES:
             return False
         note = _clean_text(note, "stage_note") or "rework"
+        rank = await repo.top_rank(tx.conn, task.project_id, Stage.DEV.value)
+        await repo.set_rank(tx.conn, task.id, rank)
         await repo.update_task(tx.conn, task.id, {"stage": Stage.DEV, "stage_note": note}, tx.now)
         await tx.event(
             "task.stage_changed",

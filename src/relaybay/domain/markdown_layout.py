@@ -24,7 +24,7 @@ _RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul", "memory", *(f"{d}{n}" for d in ("com", "lpt") for n in range(10))}
 )
 
-COLUMNS = ("project", "ref", "task", "stage", "waiting_on", "next_step", "document")
+COLUMNS = ("project", "ref", "task", "stage", "waiting_on", "next_step", "document", "rank")
 COLUMN_ALIASES = {
     "project": "project",
     "ref": "ref",
@@ -46,6 +46,8 @@ COLUMN_ALIASES = {
     "doc": "document",
     "doc_path": "document",
     "notes": "document",
+    "rank": "rank",
+    "order": "rank",
 }
 STAGE_ALIASES = {
     **{s.value: s.value for s in Stage},
@@ -257,6 +259,8 @@ class RegistryRow:
     document: str | None
     ref: str | None
     unknown_stage: bool = False
+    # The card's order within its stage column; None (no column, or an empty cell) keeps it.
+    rank: str | None = None
 
 
 def _split_row(line: str) -> list[str]:
@@ -364,6 +368,7 @@ def parse_registry(text: str, aliases: Aliases) -> tuple[list[RegistryRow], list
                     document=values.get("document") or None,
                     ref=values.get("ref") or None,
                     unknown_stage=not known,
+                    rank=values.get("rank", "").strip() or None,
                 )
             )
     return rows, warnings
@@ -398,8 +403,8 @@ def render_registry(rows: list[tuple[str, str, Task]]) -> str:
     lines = [
         "# Tasks",
         "",
-        "| project | ref | task | stage | waiting on | next step | document |",
-        "|---|---|---|---|---|---|---|",
+        "| project | ref | task | stage | waiting on | next step | document | rank |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for project, ref, task in rows:
         cells = (
@@ -410,6 +415,7 @@ def render_registry(rows: list[tuple[str, str, Task]]) -> str:
             task.waiting_on,
             task.next_step,
             task.doc_path,
+            str(task.rank),
         )
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
     return "\n".join(lines) + "\n"
@@ -519,11 +525,18 @@ def backlog_meaning(text: str, aliases: Aliases) -> set[tuple[Any, ...]]:
     }
 
 
+def registry_ranks(text: str, aliases: Aliases) -> bool:
+    """Whether a registry gives any rank: one without leaves the order of the cards alone."""
+    rows, _ = parse_registry(text, aliases)
+    return any(r.rank is not None for r in rows)
+
+
 def registry_meaning(
-    text: str, aliases: Aliases, folders: Container[str] | None = None
+    text: str, aliases: Aliases, folders: Container[str] | None = None, ranks: bool = True
 ) -> set[tuple[Any, ...]]:
     """What a registry says, whatever its column names and order. With `folders` the document
-    field is what an import of the row would set, else the cell as written."""
+    field is what an import of the row would set, else the cell as written; without `ranks` the
+    rank column is left out."""
     rows, _ = parse_registry(text, aliases)
     return {
         (
@@ -534,6 +547,7 @@ def registry_meaning(
             r.waiting_on,
             r.next_step,
             r.document if folders is None else row_doc_path(r, folders),
+            r.rank if ranks else None,
         )
         for r in rows
     }

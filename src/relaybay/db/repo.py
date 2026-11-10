@@ -50,6 +50,8 @@ from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile, UsageLine
 
 logger = logging.getLogger("relaybay")
 
+# Within a stage column; the tie-break is the order before ranks existed.
+BOARD_ORDER = "t.rank, t.updated_at DESC, t.id DESC"
 _TASK_SELECT = """
 SELECT t.*, p.slug AS project_slug, p.autonomy AS project_autonomy,
        s.name AS session_name, s.external_id AS session_external_id,
@@ -141,6 +143,7 @@ def _task(row: aiosqlite.Row) -> Task:
         plan_now_position=row["plan_now_position"],
         plan_revised_at=row["plan_revised_at"],
         autonomy=row["autonomy"],
+        rank=row["rank"],
         project_autonomy=bool(row["project_autonomy"]),
         answer_received_at=row["answer_received_at"],
         answer_message_id=row["answer_message_id"],
@@ -519,7 +522,9 @@ async def list_tasks(
     stages: list[str] | None = None,
     waiting_on: str | None = None,
     session_ids: list[int] | None = None,
+    by_rank: bool = False,
 ) -> list[Task]:
+    """Most recently updated first; `by_rank` gives the board's order within each stage."""
     where, params = [], []
     if project_id is not None:
         where.append("t.project_id = ?")
@@ -536,8 +541,42 @@ async def list_tasks(
     sql = _TASK_SELECT
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY t.priority DESC, t.updated_at DESC, t.id DESC"
+    order = BOARD_ORDER if by_rank else "t.priority DESC, t.updated_at DESC, t.id DESC"
+    sql += f" ORDER BY {order}"
     return [_task(r) for r in await _all(conn, sql, tuple(params))]
+
+
+async def top_rank(conn: aiosqlite.Connection, project_id: int, stage: str) -> int:
+    """A rank above every card of the column: new and moved-in tasks go to the top."""
+    row = await _one(
+        conn,
+        "SELECT MIN(rank) FROM task WHERE project_id = ? AND stage = ?",
+        (project_id, stage),
+    )
+    return (row[0] if row and row[0] is not None else 1) - 1
+
+
+async def set_rank(conn: aiosqlite.Connection, task_id: int, rank: int) -> None:
+    """Not a change of the task: its version and updated_at stay, so an open form keeps working."""
+    await conn.execute("UPDATE task SET rank = ? WHERE id = ?", (rank, task_id))
+
+
+async def column_order(conn: aiosqlite.Connection, project_id: int, stage: str) -> list[int]:
+    """Task ids of a column in the board's order, archived done tasks included."""
+    rows = await _all(
+        conn,
+        f"SELECT t.id FROM task t WHERE t.project_id = ? AND t.stage = ? ORDER BY {BOARD_ORDER}",
+        (project_id, stage),
+    )
+    return [r[0] for r in rows]
+
+
+async def renumber_column(conn: aiosqlite.Connection, ids: list[int]) -> None:
+    """Ranks 1..n in the order of `ids`: a drop never needs a rank between two others."""
+    await conn.executemany(
+        "UPDATE task SET rank = ? WHERE id = ? AND rank != ?",
+        [(n, task_id, n) for n, task_id in enumerate(ids, 1)],
+    )
 
 
 async def insert_task(
@@ -548,6 +587,7 @@ async def insert_task(
     session_id: int | None,
     now: str,
 ) -> int:
+    fields = {**fields, "rank": await top_rank(conn, project_id, fields["stage"])}
     cols = ["project_id", "key", *fields.keys(), "session_id", "created_at", "updated_at"]
     cols += ["next_step_at", "stage_changed_at"]
     values = [project_id, key, *fields.values(), session_id, now, now, now, now]

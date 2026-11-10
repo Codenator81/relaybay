@@ -30,7 +30,7 @@ at.
 |---|---|
 | `projects/<slug>.md` | The project (created if missing, named after the first `# Heading`) and its document `brief`: the whole file, contacts included. Bullets under `## Decisions` become project decisions with the source `message:import <path>`. |
 | `projects/<slug>/docs/<doc>.md` | Document `<doc>`. The kind comes from the name: `spec`, `status`, `task`, `brief`, `runbook`, `adr`, `retro`, anything else `doc`. |
-| `TASKS.md` | Tasks. Columns: project, task (the title), stage, waiting on, next step, document, and an optional ref. |
+| `TASKS.md` | Tasks. Columns: project, task (the title), stage, waiting on, next step, document, and an optional ref and rank. The rank (`order` works too) is the card's place in its stage column on the board, a whole number, lower first; without the column, or with an empty cell, the board keeps its order. Export writes it. |
 | `projects/<slug>/tasks/<ref>/TASK.md` | The matching task's description (the `## Task` section, else the first paragraph), its `## Decisions` bullets as task decisions, and the whole file as document `task-<ref>`, linked through the task's document field as `relaybay://doc/<slug>/task-<ref>`. A folder with no registry row creates the task in stage plan. |
 | `memory/<name>.md` | A global note: title from `name` or the first heading, kind from `metadata.type` (`user`, `feedback`, `project`, `reference`; anything else is `reference`), the `description` as the first line of the body if it is not already, `[[links]]` kept in the note's links. `metadata.role` makes it a role note. |
 | `projects/<slug>/memory/<name>.md` | The same, as a note of that project. |
@@ -56,7 +56,7 @@ which you keep outside any repository if it says something private:
 }
 ```
 
-Columns map to `project`, `ref`, `task`, `stage`, `waiting_on`, `next_step`, `document`; stages to the
+Columns map to `project`, `ref`, `task`, `stage`, `waiting_on`, `next_step`, `document`, `rank`; stages to the
 six stage keys; headings to `decisions` or `task`.
 
 ## Dry run, then apply

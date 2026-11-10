@@ -5,7 +5,7 @@
 
   var KINDS = [
     "project.created", "project.updated", "project.pulse_set",
-    "task.created", "task.updated", "task.stage_changed",
+    "task.created", "task.updated", "task.stage_changed", "task.reordered",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
     "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
     "session.no_live_on", "session.no_live_off",
@@ -107,7 +107,12 @@
     if (!el) return;
     pending.add(el);
     if (flushTimer === null) {
-      flushTimer = window.setTimeout(function () {
+      flushTimer = window.setTimeout(function flush() {
+        // A refetch under a card being dragged would take the card away mid-drag.
+        if (window.relaybayBoard && window.relaybayBoard.busy()) {
+          flushTimer = window.setTimeout(flush, 250);
+          return;
+        }
         flushTimer = null;
         pending.forEach(function (target) {
           if (!document.body.contains(target)) return;
@@ -313,6 +318,9 @@
       case "task.stage_changed":
         queue(column(data.from));
         queue(column(data.to));
+        break;
+      case "task.reordered":
+        queue(column(data.stage));
         break;
       case "task.updated":
       case "task.tracker_unlogged":

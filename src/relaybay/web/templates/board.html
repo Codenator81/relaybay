@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} · relaybay{% endblock %}
 {% block crumbs %}<span class="crumb-sep">/</span><span class="crumb">{{ project.name }}</span>{% endblock %}
+{% block scripts %}<script src="{{ static_url("board.js") }}" defer></script>{% endblock %}
 {% block content %}
 <main class="board-page" id="live" hx-ext="sse" sse-connect="/events"
       data-last-event-id="{{ last_event_id }}" data-project="{{ project.slug }}">
@@ -32,6 +33,8 @@
   </form>
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {#- What a drag or a card's menu answered: rule warnings of a stage move, or why nothing moved. #}
+  <div class="board-flash" id="board-flash" hidden></div>
   {% if saved_filters or filter_query %}
   <div class="saved-filters">
     {% for f in saved_filters %}
@@ -62,7 +65,7 @@
     <label for="tab-{{ stage }}" class="stage-tab tab-{{ stage }}">{{ label(stage) }}</label>
     {% endfor %}
   </nav>
-  <div id="board" class="board" data-page="{{ board_page }}"{% if filter_query %} data-filtered="1"{% endif %}>
+  <div id="board" class="board" data-page="{{ board_page }}" data-csrf="{{ csrf_token }}"{% if filter_query %} data-filtered="1"{% endif %}>
     {% include "_columns.html" %}
   </div>
   {#- Opened by app.js; with ?task=<key> the content is rendered here and opened on load. #}

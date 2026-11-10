@@ -42,8 +42,10 @@ FIRST_SECTION_LINE_MAX = 1_600
 PLAN_LINE_MAX = 500
 DOC_PREVIEW_LINES = 3
 
-# Left out of "changes since the last read": session status and activity, delivery marks.
+# Left out of "changes since the last read": session status and activity, delivery marks, the
+# owner's order of the cards.
 NOISE_KINDS = (
+    "task.reordered",
     "session.status_changed",
     "session.seen",
     "session.todo_updated",

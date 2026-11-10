@@ -936,6 +936,9 @@ def event_detail(e: Event) -> str:
         return str(p.get("summary") or p.get("title") or "")
     if e.kind == "task.updated":
         return ", ".join(sorted(p.get("changes", {})))
+    if e.kind == "task.reordered":
+        where = f"position {p['position']}" if p.get("position") else f"rank {p.get('rank')}"
+        return f"{p.get('stage')}, {where}"
     if e.kind == "task.session_bound":
         return f"→ {p.get('session')}"
     if e.kind == "task.session_unbound":

@@ -484,6 +484,68 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
 :root[data-compact] .card[data-key]:not(.is-expanded) :is(.open-desktop.icon, .review-chip, .plan-chip, .branch, .card-next),
 :root[data-compact] .card[data-key]:not(.is-expanded) .card-meta:not(:has(.chip.waiting)) { display: none; }
 .board-compact[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+/* Ordering the cards (board.js): the card's menu, the card being dragged, where it would land. */
+.card-menu { position: relative; z-index: 2; flex: none; margin-left: auto; }
+.card-top .open-desktop.icon ~ .card-menu,
+:root[data-compact] .card[data-key] .card-expand ~ .card-menu { margin-left: 0; }
+.card-menu-button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+.card-menu-button::-webkit-details-marker { display: none; }
+.card-menu-button:hover, .card-menu[open] .card-menu-button { border-color: var(--border); color: var(--accent); }
+.card-menu-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.card-menu-button svg { width: 14px; height: 14px; fill: currentColor; }
+/* Fixed, placed by board.js under (or over) its button: the board's scroll box would clip it. */
+.card-menu-items {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.card-menu:not([data-placed]) .card-menu-items { visibility: hidden; }
+.card-menu-items button {
+  padding: 6px 10px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.card-menu-items button:hover:not(:disabled), .card-menu-items button:focus-visible { background: var(--surface-2); }
+.card-menu-items button:disabled { color: var(--muted); cursor: default; }
+#board .card { -webkit-touch-callout: none; }
+.card.is-dragging { opacity: 0.35; }
+.card-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 50;
+  margin: 0;
+  pointer-events: none;
+  border-color: var(--accent);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+}
+.drop-marker { height: 3px; margin: -2px 0; border-radius: 2px; background: var(--accent); }
+:root.is-dragging-card, :root.is-dragging-card * { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.board-flash { display: grid; gap: 6px; margin: 0 0 10px; }
+.board-flash[hidden] { display: none; }
 /* Live session status from the hooks: a dot in the icon's corner. */
 .status-dot {
   position: absolute;

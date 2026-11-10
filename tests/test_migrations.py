@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 27
+LATEST = 28
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -333,6 +333,58 @@ async def test_upgrade_from_0024_adds_the_brake_tables_and_keeps_usage(tmp_path:
     try:
         async with conn.execute("SELECT COUNT(*) FROM usage_task_day") as cur:
             assert (await cur.fetchone())[0] == 0  # no backfill
+        assert await migrate(conn) == LATEST
+    finally:
+        await conn.close()
+
+
+async def test_upgrade_from_0027_ranks_tasks_in_the_order_the_board_showed(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    folder = resources.files("relaybay.db").joinpath("migrations")
+    names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0028")
+    sql = "\n".join(folder.joinpath(n).read_text(encoding="utf-8") for n in names)
+    conn = await connect(db)
+    try:
+        await conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = 27;\nCOMMIT;")
+        await conn.execute(
+            "INSERT INTO project (slug, name, task_seq, created_at, updated_at)"
+            " VALUES ('acme-shop', 'Acme Shop', 4, ?, ?)",
+            (NOW, NOW),
+        )
+        # The old board order: the most recently updated first; another stage is its own column.
+        for n, (stage, updated) in enumerate(
+            [("dev", "2026-01-02"), ("dev", "2026-01-04"), ("dev", "2026-01-03"), ("plan", NOW)], 1
+        ):
+            await conn.execute(
+                "INSERT INTO task (project_id, key, title, stage, created_at, updated_at)"
+                " VALUES (1, ?, ?, ?, ?, ?)",
+                (f"acme-shop-{n}", f"Task {n}", stage, NOW, updated),
+            )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        tasks = await svc.list_tasks(project="acme-shop", by_rank=True)
+        assert [(t.key, t.rank) for t in tasks if t.stage == "dev"] == [
+            ("acme-shop-2", 1),
+            ("acme-shop-3", 2),
+            ("acme-shop-1", 3),
+        ]
+        assert [t.rank for t in tasks if t.stage == "plan"] == [1]
+        created = await svc.create_task("acme-shop", "Payment", stage="dev")
+        assert created.rank == 0  # on top of the column
+    finally:
+        await svc.close()
+
+    conn = await connect(db)
+    try:
+        async with conn.execute("PRAGMA index_list(task)") as cur:
+            assert "task_board_order" in {row[1] for row in await cur.fetchall()}
         assert await migrate(conn) == LATEST
     finally:
         await conn.close()

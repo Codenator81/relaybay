@@ -92,7 +92,8 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
               next_step_at, stage_changed_at, created_at, updated_at, closed_at, size (S|M|L),
               plan_status (draft|accepted), plan_accepted_at, plan_accepted_by,
-              autonomy (project|on|off), answer_received_at, answer_message_id
+              autonomy (project|on|off), answer_received_at, answer_message_id,
+              rank   -- the owner's order within the stage column, lower first; INDEX (project_id, stage, rank)
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
 decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
@@ -219,6 +220,9 @@ Server-rendered Jinja2 + htmx, no build step and no Node toolchain
 - `visibilitychange` and `online` force a reconnect (phones kill `EventSource` in the background);
   `resync` reloads the page.
 - The phone layout switches columns with radio buttons and CSS, without JavaScript.
+- `board.js` orders the cards: native pointer events (no library) drag a card, the card's menu does
+  the same from the keyboard; it moves the card in the page at once, posts the move, puts the card
+  back on a refusal, and holds `app.js`'s live refetches while a drag or a save is under way.
 
 ## MCP transport
 
