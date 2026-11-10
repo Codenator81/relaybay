@@ -87,6 +87,13 @@ the work: **projects → tasks → stages → reports**, and which session is do
 ```
 project       id, slug UNIQUE, name, repo_path, description, task_seq, created_at, updated_at,
               archived_at, pulse, pulse_at, pulse_by, autonomy (0|1)
+              -- repo_path: always the path of the first project_repo (kept for older readers)
+project_repo  id, project_id, name (UNIQUE per project), path (as written, never opened),
+              kind (app|web|api|lib|other, optional), position, created_at, updated_at
+task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), added_at
+              -- UNIQUE (task_id, project_repo_id)
+task_pr       id, task_id, project_repo_id (optional, SET NULL), url (http/https), number,
+              title, added_by, added_at -- UNIQUE (task_id, url)
 task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
               waiting_on, next_step, branch, doc_path, description, progress, session_id,
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,

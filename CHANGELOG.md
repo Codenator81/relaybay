@@ -20,6 +20,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `TASKS.md` export writes a `rank` column, and an import with a `rank` (or `order`) column sets
   the order; a registry without it leaves the order to the board.
 - Migration `0028_task_rank`: `task.rank`, filled from the order the board showed, so nothing moves.
+- Projects have any number of repositories (name, path as written, kind `app`, `web`, `api`, `lib`
+  or `other`): a Repositories block on the project's Stands & access page (add, edit, remove,
+  reorder) and `project_upsert(repos=[…])`. `repo_path` stays and is always the first repository's
+  path; the upgrade (migration 0029) turns each project's `repo_path` into its first repository.
+- Tasks link the repositories they touch and their pull requests: `task_update` / `task_patch` take
+  `repos` (`-name` removes one) and `prs` (`-url` removes one; a link whose path names a repository
+  is tied to it). A session bound to a task links the repository it works in by itself
+  (`how: auto`, left out of the digests' changes).
+- A Code row on the card and in the task dialog: each linked repository with its kind, the task's
+  branch, its pull requests (`#123`) and **Open in VS Code** (`vscode://file/<path>`), or a folded
+  **Repos: all** line when none is linked; compact cards show `Code: 2 repos, 3 PRs`. `task_get`
+  shows them under `## Code`.
+- `relaybay export` writes `projects/<slug>/code.md` (repositories and the tasks' links) and
+  `relaybay import` reads it back, adding what the board lacks.
 
 ## [0.8.3] - 2026-11-10
 

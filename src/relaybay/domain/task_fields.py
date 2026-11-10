@@ -17,14 +17,16 @@ TEXT_CLEARS = "'-', '' or null clears it"
 @dataclass(frozen=True, slots=True)
 class TaskField:
     name: str
-    kind: str  # title, stage, text, markdown, url, bool, integer, size
+    kind: str  # title, stage, text, markdown, url, bool, integer, size, list
     description: str
     clear: str
     max_length: int | None = None
 
     @property
     def type(self) -> str:
-        return {"bool": "boolean", "integer": "integer"}.get(self.kind, "string")
+        return {"bool": "boolean", "integer": "integer", "list": "list of strings"}.get(
+            self.kind, "string"
+        )
 
 
 TASK_FIELDS: tuple[TaskField, ...] = (
@@ -109,3 +111,24 @@ TASK_FIELDS: tuple[TaskField, ...] = (
 
 BY_NAME: dict[str, TaskField] = {f.name: f for f in TASK_FIELDS}
 FIELD_NAMES: tuple[str, ...] = tuple(BY_NAME)
+
+# Not columns of the task: links to the project's repositories and to pull requests, added or
+# removed entry by entry in the same writes (task_update, task_patch).
+LINK_FIELDS: tuple[TaskField, ...] = (
+    TaskField(
+        "repos",
+        "list",
+        "Repositories of the task's project it touches, by name; '-name' removes one. An unknown"
+        " name fails with the project's names (project_upsert(repos=...) sets them).",
+        "'-name' removes one",
+    ),
+    TaskField(
+        "prs",
+        "list",
+        "Pull request links (http:// or https:// only), optionally after a repository name:"
+        " 'web https://host/acme/web/pull/12'. '-url' removes one. Without a name, a link whose"
+        " path names a project repository is tied to it.",
+        "'-url' removes one",
+    ),
+)
+LINK_NAMES: tuple[str, ...] = tuple(f.name for f in LINK_FIELDS)

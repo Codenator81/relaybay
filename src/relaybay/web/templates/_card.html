@@ -53,5 +53,7 @@
     {% if t.branch %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
   </div>
   {% endif %}
+  {%- set c = code.get(t.id) if code else None %}
+  {% if c and c.shown %}<div class="card-code">{% with branch = None %}{% include "_code_row.html" %}{% endwith %}<span class="card-code-count">{{ c.summary }}</span></div>{% endif %}
   {% if t.next_step and is_open %}<p class="card-next clamp clamp-2{% if t.next_step_stale %} stale{% endif %}"><span class="muted">Next:</span> {{ t.next_step }}{% if t.next_step_stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</p>{% endif %}
 </article>

@@ -658,6 +658,21 @@ a.badge.tracker:hover { text-decoration: underline; }
 }
 .card-next { margin: 0; font-size: 13px; }
 .card-next.stale { color: var(--muted); }
+/* The Code row: repositories the task touches, their pull requests, "Open in VS Code". */
+.code-row { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 13px; }
+.code-row ul { margin: 4px 0 0; padding: 0 0 0 12px; list-style: none; display: grid; gap: 2px; }
+.code-repo, .code-loose { min-width: 0; overflow-wrap: anywhere; }
+.code-name { font-weight: 600; }
+.code-kind { padding: 0 6px; border-radius: 999px; background: var(--surface-2); font-size: 11px; color: var(--muted); }
+.code-open { font-size: 12px; white-space: nowrap; }
+.code-all summary { cursor: pointer; }
+.card-code-count { display: none; font-size: 12px; color: var(--muted); }
+:root[data-compact] .card[data-key]:not(.is-expanded) .card-code .code-row { display: none; }
+:root[data-compact] .card[data-key]:not(.is-expanded) .card-code-count { display: inline; }
+.repo-list { margin: 0 0 12px; padding: 0; list-style: none; display: grid; gap: 8px; }
+.repo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.repo-row code { overflow-wrap: anywhere; min-width: 0; }
+.repo-row .inline-form { display: inline; }
 .stale-mark {
   padding: 0 6px;
   border: 1px dashed var(--border);

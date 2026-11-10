@@ -16,6 +16,7 @@ REGISTRY = "TASKS.md"
 RETRO = "retro.md"
 MANIFEST = ".relaybay-export.json"
 TASK_FILE = "TASK.md"
+CODE_FILE = "code.md"  # a project's repositories and its tasks' links to them
 MEMORY_INDEX = "MEMORY"  # an index of the memory folder, not a note
 TASK_LINK = "relaybay://doc/{project}/task-{ref}"
 TITLE_SLUG_MAX = 60
@@ -143,7 +144,7 @@ def doc_kind(name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Place:
-    kind: str  # registry, retro, brief, doc, task, note, decisions
+    kind: str  # registry, retro, brief, doc, task, note, decisions, code
     project: str | None = None
     name: str | None = None  # the document, the task folder or the note's file stem
 
@@ -171,7 +172,9 @@ def place_of(rel: str) -> Place | None:
         return Place("brief", stem)
     project = parts[1]
     if len(parts) == 3:
-        return Place("decisions", project) if parts[2] == "decisions.md" else None
+        return {"decisions.md": Place("decisions", project), CODE_FILE: Place("code", project)}.get(
+            parts[2]
+        )
     if len(parts) == 4 and parts[2] == "docs":
         return Place("doc", project, stem)
     if len(parts) == 4 and parts[2] == "memory":
@@ -419,6 +422,92 @@ def render_registry(rows: list[tuple[str, str, Task]]) -> str:
         )
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
     return "\n".join(lines) + "\n"
+
+
+# --- a project's code: repositories and the tasks' links ----------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CodeRepoRow:
+    line: int
+    name: str
+    kind: str | None
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
+class CodeTaskRow:
+    line: int
+    ref: str
+    repos: list[str]
+    prs: list[str]  # links, each optionally after a repository name: `web https://…`
+
+
+def _tables(text: str) -> list[tuple[int, list[str], list[tuple[int, list[str]]]]]:
+    """(line of the header, lowercased header cells, (line, cells) rows) of every table."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    found = []
+    i = 0
+    while i < len(lines) - 1:
+        if not (_is_table_line(lines[i]) and _TABLE_RULE_RE.match(lines[i + 1])):
+            i += 1
+            continue
+        header = [c.casefold() for c in _split_row(lines[i])]
+        start = i + 1
+        i += 2
+        rows: list[tuple[int, list[str]]] = []
+        while i < len(lines) and _is_table_line(lines[i]):
+            rows.append((i + 1, _split_row(lines[i])))
+            i += 1
+        found.append((start, header, rows))
+    return found
+
+
+def parse_code(text: str) -> tuple[list[CodeRepoRow], list[CodeTaskRow], list[str]]:
+    """`projects/<slug>/code.md`: a table with name and path columns (the repositories, in order)
+    and one with task, repos and prs columns (the links of a task, by its registry ref)."""
+    repos: list[CodeRepoRow] = []
+    tasks: list[CodeTaskRow] = []
+    warnings: list[str] = []
+    for start, header, rows in _tables(text):
+        if "name" in header and "path" in header:
+            for number, cells in rows:
+                values = dict(zip(header, cells, strict=False))
+                if values.get("name") or values.get("path"):
+                    kind = values.get("kind") or None
+                    repos.append(CodeRepoRow(number, values["name"], kind, values["path"]))
+        elif "task" in header and ("repos" in header or "prs" in header):
+            for number, cells in rows:
+                values = dict(zip(header, cells, strict=False))
+                if not values.get("task"):
+                    continue
+                names = [n.strip() for n in values.get("repos", "").split(",") if n.strip()]
+                prs = [p.strip() for p in values.get("prs", "").split("\n") if p.strip()]
+                tasks.append(CodeTaskRow(number, values["task"], names, prs))
+        else:
+            warnings.append(f"line {start}: a table without name and path, or task and repos")
+    return repos, tasks, warnings
+
+
+def render_code(
+    project: str,
+    repos: list[tuple[str, str | None, str]],
+    tasks: list[tuple[str, list[str], list[str]]],
+) -> str:
+    """The project's repositories (name, kind, path) and its tasks' links (ref, repository
+    names, pull request entries) as `projects/<slug>/code.md`."""
+    lines = [f"# Code of {project}", ""]
+    if repos:
+        lines += ["## Repositories", "", "| name | kind | path |", "|---|---|---|"]
+        lines += [f"| {_cell(n)} | {_cell(k)} | {_cell(p)} |" for n, k, p in repos]
+        lines.append("")
+    if tasks:
+        lines += ["## Tasks", "", "| task | repos | prs |", "|---|---|---|"]
+        for ref, names, prs in tasks:
+            cells = (ref, ", ".join(names), "\n".join(prs))
+            lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
+        lines.append("")
+    return "\n".join(lines)
 
 
 # --- the backlog -------------------------------------------------------------------------

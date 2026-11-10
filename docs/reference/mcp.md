@@ -97,14 +97,15 @@ No parameters.
 
 ### `project_upsert`
 
-Create a project, or rename it / set its repository path. Call it once before creating the first task of a project that is not on the board yet (see project_list).
+Create a project, or rename it / set its repositories. Call it once before creating the first task of a project that is not on the board yet (see project_list).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `slug` | string | yes | Project slug such as 'acme-shop'. |
 | `name` | string or null | no | Display name. |
-| `repo_path` | string or null | no | Path to the repository. |
+| `repo_path` | string or null | no | Path to the repository: the path of the first one in `repos`. |
 | `description` | string or null | no | One-line description. |
+| `repos` | list of object or null | no | The project's repositories, the whole list in order: [{"name": "web", "path": "/code/acme/web", "kind": "web"}]. kind is one of app, web, api, lib, other (optional); without a name the path's last folder names it. Matched by name, so tasks keep their links to a repository that stays; [] removes them all. The path is stored as written. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -214,7 +215,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 
 ### `task_update`
 
-Change task fields (waiting on, next step, branch, description, progress, the tracker issue and its work-log mark, ...). Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. To move a task between stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Change task fields (waiting on, next step, branch, description, progress, the tracker issue and its work-log mark, the repositories it touches and its pull requests, ...). Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. To move a task between stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -232,6 +233,8 @@ Change task fields (waiting on, next step, branch, description, progress, the tr
 | `tracker_url` | string or null | no | Link to the issue (http:// or https:// only). '-' or '' clears it. |
 | `tracker_logged` | boolean or null | no | True once the work log is entered in the external tracker. New work clears it again (a report, a progress change, a move back from live or done). A new tracker_ref starts as not logged unless tracker_logged is passed in the same write. Done tasks without it stay on the board marked 'not logged'. |
 | `size` | string or null | no | Task size: S, M or L. S tasks may go without an accepted plan; a task of unknown size needs one. '-' or '' clears it. |
+| `repos` | list of string or null | no | Repositories of the task's project the task touches, by name, added to its links; '-name' removes one. An unknown name fails with the project's names. A session bound to the task links the repository it works in by itself. |
+| `prs` | list of string or null | no | Pull request links (http:// or https://) added to the task, optionally after a repository name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose path names a project repository is tied to it (and links it). |
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |

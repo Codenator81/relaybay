@@ -1277,6 +1277,9 @@ async def test_a_stale_hash_does_not_migrate(
         conn.execute("DROP INDEX task_board_order")
         conn.execute("ALTER TABLE task DROP COLUMN rank")
         conn.execute("DROP TABLE import_item")
+        for table in ("task_pr", "task_repo", "project_repo"):
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute("DROP INDEX task_session_open_session")
         conn.execute("PRAGMA user_version = 14")
         conn.commit()
     code = run_cli(home, "import", root, "--apply", "--expect", "deadbeefdeadbeef")

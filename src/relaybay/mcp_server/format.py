@@ -4,6 +4,7 @@ import json
 
 from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.backlog import BacklogItem
+from relaybay.domain.code import ProjectRepo, TaskCode
 from relaybay.domain.digest import age
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
 from relaybay.domain.environments import (
@@ -48,7 +49,7 @@ from relaybay.domain.rules import (
     rules_markdown,
 )
 from relaybay.domain.stages import STAGES, Stage
-from relaybay.domain.task_fields import FIELD_NAMES, TASK_FIELDS
+from relaybay.domain.task_fields import FIELD_NAMES, LINK_FIELDS, LINK_NAMES, TASK_FIELDS
 from relaybay.domain.usage import UsageReport, UsageTotal
 from relaybay.policy import EffectivePolicy
 from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
@@ -347,10 +348,35 @@ def project_list(items: list[ProjectSummary]) -> str:
     return "\n".join(lines)
 
 
-def project(p: Project, created: bool) -> str:
+def _repo_label(r: ProjectRepo) -> str:
+    kind = f" ({r.kind})" if r.kind else ""
+    return f"{r.name}{kind} `{r.path}`"
+
+
+def project(p: Project, created: bool, repos: list[ProjectRepo] | None = None) -> str:
     verb = "Created" if created else "Updated"
-    repo = f" · repo `{p.repo_path}`" if p.repo_path else ""
-    return f"{verb} project **{p.slug}** ({p.name}){repo}."
+    if repos:
+        where = " · repos: " + ", ".join(_repo_label(r) for r in repos)
+    else:
+        where = f" · repo `{p.repo_path}`" if p.repo_path else ""
+    return f"{verb} project **{p.slug}** ({p.name}){where}."
+
+
+def code_lines(code: TaskCode, branch: str | None) -> list[str]:
+    """The task's Code section of `task_get`: its repositories with their pull requests, or all of
+    the project's when it names none, and the pull requests tied to no repository."""
+    if not code.shown:
+        return []
+    lines = ["\n## Code"]
+    on = f" · branch `{branch}`" if branch else ""
+    for item in code.repos:
+        prs = "".join(f" · PR {pr.label} {pr.url}" for pr in item.prs)
+        lines.append(f"- {_repo_label(item.repo)}{on}{prs} (linked: {item.how})")
+    if not code.repos and code.project_repos:
+        names = ", ".join(r.name for r in code.project_repos)
+        lines.append(f"- repos: all ({names}); link the ones it touches with task_update(repos=…)")
+    lines.extend(f"- PR {pr.label} {pr.url}" for pr in code.loose_prs)
+    return lines
 
 
 MODE_HELP = {
@@ -845,6 +871,7 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
         lines.append(f"\n## Description\n{t.description}")
     if t.progress:
         lines.append(f"\n## Progress (done so far)\n{t.progress}")
+    lines.extend(code_lines(detail.code, t.branch))
     if detail.bindings:
         lines.append("\n## Sessions (newest first)")
         for b in detail.bindings:
@@ -861,7 +888,7 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
     if detail.decisions:
         lines.append("\n## Decisions")
         lines.extend(decision_line(d) for d in detail.decisions)
-    lines.append(f"\nEditable fields: {', '.join(FIELD_NAMES)}")
+    lines.append(f"\nEditable fields: {', '.join((*FIELD_NAMES, *LINK_NAMES))}")
     return "\n".join(lines)
 
 
@@ -874,7 +901,7 @@ def task_schema() -> str:
         "| field | type | description | clearing |",
         "|---|---|---|---|",
     ]
-    for f in TASK_FIELDS:
+    for f in (*TASK_FIELDS, *LINK_FIELDS):
         limit = f" Up to {f.max_length} characters." if f.max_length else ""
         lines.append(f"| `{f.name}` | {f.type} | {f.description}{limit} | {f.clear} |")
     return "\n".join(lines)

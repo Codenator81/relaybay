@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{#- Project → Stands & access. Expects: project, environments, proposals, policies (by
+{#- Project → Stands & access. Expects: project, repos, repo_kinds, environments, proposals, policies (by
     environment id), project_policy, optional error + error_target (the form it belongs to),
     confirm (action, message, fields).
     Plain form posts: every write comes from this page in a browser (cookie + CSRF). -#}
@@ -84,6 +84,26 @@
   <div class="form-actions"><button type="submit" class="btn">{{ "Save" if entry else "Add access" }}</button></div>
 </form>
 {%- endmacro %}
+{%- macro repo_form(r, action) -%}
+<form class="task-form repo-form" method="post" action="{{ action }}">
+  {{ hidden_csrf() }}
+  <div class="field-row">
+    <label class="field"><span>Name</span>
+      <input name="name" maxlength="60" value="{{ r.name if r else '' }}" placeholder="the folder's name" spellcheck="false">
+    </label>
+    <label class="field"><span>Kind</span>
+      <select name="kind">
+        <option value=""{% if not (r and r.kind) %} selected{% endif %}>none</option>
+        {% for k in repo_kinds %}<option value="{{ k }}"{% if r and r.kind == k %} selected{% endif %}>{{ k }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+  <label class="field"><span>Path</span>
+    <input name="path" required maxlength="500" value="{{ r.path if r else '' }}" placeholder="C:/code/acme-shop/web or ~/code/acme-shop/web" spellcheck="false">
+  </label>
+  <div class="form-actions"><button type="submit" class="btn">{{ "Save" if r else "Add repository" }}</button></div>
+</form>
+{%- endmacro %}
 {% block title %}Stands & access · {{ project.name }} · relaybay{% endblock %}
 {% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ project.slug }}">{{ project.name }}</a><span class="crumb-sep">/</span><span class="crumb">Stands &amp; access</span>{% endblock %}
 {% block content %}
@@ -113,6 +133,40 @@
   {% endif %}
 
   {% include "_proposals.html" %}
+
+  <section class="panel" id="repos">
+    <h2>Repositories</h2>
+    <p class="muted">The project's code: tasks link the ones they touch and show them with "Open in VS Code". A path is stored as written; relaybay never opens it. The first one is the project's repository path.</p>
+    {% if repos %}
+    <ul class="repo-list">
+      {% for r in repos %}
+      <li class="repo-row" id="repo-{{ r.id }}">
+        <strong>{{ r.name }}</strong>{% if r.kind %} <span class="env-kind">{{ r.kind }}</span>{% endif %}
+        <code>{{ r.path }}</code>
+        <a class="code-open" href="{{ r.path|vscode_url }}">Open in VS Code</a>
+        {% if not loop.first %}<form class="inline-form" method="post" action="/p/{{ project.slug }}/repos/{{ r.id }}/up">{{ hidden_csrf() }}<button type="submit" class="action" aria-label="Move {{ r.name }} up">Up</button></form>{% endif %}
+        {% if not loop.last %}<form class="inline-form" method="post" action="/p/{{ project.slug }}/repos/{{ r.id }}/down">{{ hidden_csrf() }}<button type="submit" class="action" aria-label="Move {{ r.name }} down">Down</button></form>{% endif %}
+        {{ error_for("repo-" ~ r.id) }}
+        <details class="access-edit"{% if error and error_target == "repo-" ~ r.id %} open{% endif %}>
+          <summary>Edit</summary>
+          {{ repo_form(r, "/p/" ~ project.slug ~ "/repos/" ~ r.id) }}
+          <form method="post" action="/p/{{ project.slug }}/repos/{{ r.id }}/delete" data-confirm="Remove the repository {{ r.name }}? Tasks lose their link to it; their pull requests stay.">
+            {{ hidden_csrf() }}
+            <button type="submit" class="btn danger">Remove</button>
+          </form>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No repositories yet.</p>
+    {% endif %}
+    <details class="env-add-access"{% if error and error_target == "repo-new" %} open{% endif %}>
+      <summary>Add a repository</summary>
+      {{ error_for("repo-new") }}
+      {{ repo_form(None, "/p/" ~ project.slug ~ "/repos") }}
+    </details>
+  </section>
 
   {% for e in environments %}
   {%- set pol = policies[e.id] %}

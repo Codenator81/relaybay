@@ -40,6 +40,7 @@ from relaybay.domain.markdown_layout import (
     load_aliases,
     normalize,
     parse_backlog,
+    parse_code,
     parse_note,
     parse_registry,
     place_of,
@@ -70,7 +71,18 @@ DIFF_ITEM_LINES = 40
 DIFF_TOTAL_LINES = 400
 # An edited bullet is one whose text still shares this much with a bullet that left the file.
 SAME_DECISION_RATIO = 0.6
-KINDS = ("project", "document", "task", "task_note", "decision", "note", "backlog", "file")
+KINDS = (
+    "project",
+    "repo",
+    "document",
+    "task",
+    "task_note",
+    "code",
+    "decision",
+    "note",
+    "backlog",
+    "file",
+)
 ACTIONS = ("add", "update", "unchanged", "skipped", "conflict", "refused", "error")
 FAILED = ("conflict", "refused", "error")
 FAILED_NEW = ("refused", "error")  # a task in one of these does not exist for what depends on it
@@ -103,6 +115,13 @@ class Item:
 
     @property
     def order(self) -> tuple[int, str, str]:
+        if self.kind == "repo" and "position" in self.payload:
+            # Repositories keep the file's order: a new one is added last.
+            return (
+                KINDS.index(self.kind),
+                self.payload["project"],
+                f"{self.payload['position']:04d}",
+            )
         return KINDS.index(self.kind), self.item, self.source
 
 
@@ -933,6 +952,82 @@ class _Planner:
                 await self._doc_file(file, place.project or "", place.name or "")
             elif place.kind == "backlog":
                 await self._backlog_file(file)
+            elif place.kind == "code":
+                await self._code_file(file, place.project or "")
+
+    # A project's code
+
+    async def _code_file(self, file: SourceFile, project: str) -> None:
+        """Repositories by name: a new one is added, one with another path or kind is a conflict
+        unless --overwrite. A task's links are only ever added: what the board has more stays."""
+        slug = self._valid_project(project, file.rel)
+        if slug is None:
+            return
+        await self._need_project(slug)
+        secret = await self._secret(file.text, slug)
+        if secret:
+            self.add("file", file.rel, file.rel, "refused", secret)
+            return
+        repos, links, warnings = parse_code(file.text)
+        self.warnings.extend(f"{file.rel}: {w}" for w in warnings)
+        current = {}
+        if slug in self.projects:
+            _, found = await self.service.project_repos(slug)
+            current = {r.name.casefold(): r for r in found}
+        for position, row in enumerate(repos):
+            name = f"{slug}/{row.name}"
+            old = current.get(row.name.casefold())
+            content = text_hash(row.name, row.kind or "", row.path)
+            detail = ""
+            if old is None:
+                action = "add"
+            elif (old.path, old.kind) == (row.path, row.kind):
+                action = "unchanged"
+            elif self.overwrite:
+                action, detail = "update", "--overwrite"
+            else:
+                action = "conflict"
+                detail = (
+                    f"the board has {old.path} ({old.kind or 'no kind'});"
+                    " --overwrite takes the file's"
+                )
+            payload = {
+                "project": slug,
+                "name": row.name,
+                "path": row.path,
+                "kind": row.kind,
+                "position": position,
+                "target_id": old.id if old else None,
+            }
+            self.add("repo", name, file.rel, action, detail, content, payload=payload)
+        for row in links:
+            name = f"{slug}/{slugify(row.ref)}"
+            source = f"{file.rel}:{row.line}"
+            task_item = self.task_items.get(name)
+            if task_item is None:
+                self.add("code", name, source, "error", f"no task {row.ref!r} in the registry")
+                continue
+            if task_item.action in FAILED_NEW:
+                self.add("code", name, source, "skipped", "its task was not imported")
+                continue
+            repos_now: set[str] = set()
+            prs_now: set[str] = set()
+            if task_item.payload.get("key"):
+                task = await self.service.get_task(task_item.payload["key"])
+                code = await self.service.task_code(task)
+                repos_now = {r.repo.name.casefold() for r in code.repos}
+                prs_now = {p.url for r in code.repos for p in r.prs} | {
+                    p.url for p in code.loose_prs
+                }
+            add_repos = [n for n in row.repos if n.casefold() not in repos_now]
+            add_prs = [e for e in row.prs if e.split()[-1] not in prs_now]
+            content = text_hash(row.repos, row.prs)
+            if not add_repos and not add_prs:
+                self.add("code", name, source, "unchanged", "", content)
+                continue
+            shown = ", ".join([*add_repos, *(e.split()[-1] for e in add_prs)])
+            payload = {"repos": add_repos, "prs": add_prs}
+            self.add("code", name, source, "add", _first_line(shown, 120), content, payload=payload)
 
     # The backlog
 
@@ -1303,6 +1398,22 @@ async def apply_plan(service: Service, plan: Plan) -> None:
                 await _apply_note(service, item)
             elif item.kind == "backlog":
                 await _apply_backlog(service, item)
+            elif item.kind == "repo":
+                p = item.payload
+                await service.save_project_repo(
+                    p["project"],
+                    p["target_id"],
+                    name=p["name"],
+                    path=p["path"],
+                    kind=p["kind"],
+                    actor=ACTOR,
+                )
+            elif item.kind == "code":
+                key = tasks.get(item.item)
+                if key is None:
+                    raise NotFoundError("its task was not imported")
+                changes = {k: v for k, v in item.payload.items() if v}
+                await service.update_task(key, changes, actor=ACTOR)
         except (DomainError, sqlite3.Error, OSError) as exc:
             item.action, item.record, item.detail = "error", False, _first_line(str(exc))
 

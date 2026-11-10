@@ -147,6 +147,16 @@ SIZE_HELP = (
     " one."
 )
 PLAN_STEP_HELP = "The step's number in the plan (1, 2, …)."
+REPOS_HELP = (
+    "Repositories of the task's project the task touches, by name, added to its links; '-name'"
+    " removes one. An unknown name fails with the project's names. A session bound to the task"
+    " links the repository it works in by itself."
+)
+PRS_HELP = (
+    "Pull request links (http:// or https://) added to the task, optionally after a repository"
+    " name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose"
+    " path names a project repository is tied to it (and links it)."
+)
 Budget = Annotated[
     int | None,
     Field(description="Size limit in characters, held between 500 and 40000. Optional."),
@@ -245,13 +255,26 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     async def project_upsert(
         slug: ProjectSlug,
         name: Annotated[str | None, Field(description="Display name.")] = None,
-        repo_path: Annotated[str | None, Field(description="Path to the repository.")] = None,
+        repo_path: Annotated[
+            str | None,
+            Field(description="Path to the repository: the path of the first one in `repos`."),
+        ] = None,
         description: Annotated[str | None, Field(description="One-line description.")] = None,
+        repos: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description="The project's repositories, the whole list in order:"
+                ' [{"name": "web", "path": "/code/acme/web", "kind": "web"}]. kind is one of'
+                " app, web, api, lib, other (optional); without a name the path's last folder"
+                " names it. Matched by name, so tasks keep their links to a repository that stays;"
+                " [] removes them all. The path is stored as written."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Create a project, or rename it / set its repository path. Call it once before creating
+        """Create a project, or rename it / set its repositories. Call it once before creating
         the first task of a project that is not on the board yet (see project_list)."""
         project, created = await run(
             service.upsert_project(
@@ -259,12 +282,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 name=name,
                 repo_path=repo_path,
                 description=description,
+                repos=repos,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
             )
         )
-        return fmt.project(project, created)
+        _, repos_now = await run(service.project_repos(project.slug))
+        return fmt.project(project, created, repos_now)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def project_snapshot(
@@ -480,6 +505,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + CLEARS)] = None,
         tracker_logged: Annotated[bool | None, Field(description=TRACKER_LOGGED_HELP)] = None,
         size: Annotated[str | None, Field(description=SIZE_HELP + CLEARS)] = None,
+        repos: Annotated[list[str] | None, Field(description=REPOS_HELP)] = None,
+        prs: Annotated[list[str] | None, Field(description=PRS_HELP)] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -489,10 +516,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         hook_session: HookSession = None,
     ) -> str:
         """Change task fields (waiting on, next step, branch, description, progress, the tracker
-        issue and its work-log mark, ...). Omitted fields stay as they are; '-' or an empty
-        string clears a field. Keep `progress` current with every report. To move a task between
-        stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who
-        acts next) whenever the stage changes or you report."""
+        issue and its work-log mark, the repositories it touches and its pull requests, ...).
+        Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress`
+        current with every report. To move a task between stages use task_set_stage. Also
+        update next_step (what happens next) and waiting_on (who acts next) whenever the stage
+        changes or you report."""
         given = {
             "title": title,
             "waiting_on": waiting_on,
@@ -512,6 +540,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         }
         if tracker_logged is not None:
             changes["tracker_logged"] = tracker_logged
+        if repos:
+            changes["repos"] = repos
+        if prs:
+            changes["prs"] = prs
         if not changes:
             raise ToolError("Nothing to update: pass at least one field.")
         saved = await run(

@@ -28,8 +28,41 @@ Contents:
 
 <a id="spec-project"></a>
 
-**Project.** A unit of work, usually one repository: `slug` (lowercase letters, digits, dashes),
-`name`, optional `repo_path` and `description`. Created or updated with `project_upsert`.
+**Project.** A unit of work: `slug` (lowercase letters, digits, dashes), `name`, optional
+`description` and its repositories. Created or updated with `project_upsert`.
+
+<a id="spec-project-repos"></a>
+
+**Repositories.** A project has any number of repositories (`project_repo`), in order: a name
+(letters, digits, `.`, `_`, `-`; unique per project, case ignored; without one, the path's last
+folder), a path stored exactly as written (never opened or listed by the server) and an optional
+kind `app`, `web`, `api`, `lib` or `other`. `project_upsert(repos=[{name, path, kind}, …])` writes
+the whole list, matched by name, so a repository that stays keeps its tasks' links; `[]` removes
+them all. The owner edits them on the project's **Stands & access** page ([§2](#spec-board-repos)).
+`repo_path` stays for older readers: it is always the path of the first repository, written in the
+same transaction as every change of the list (moving another one first changes it; removing the
+last one leaves it as it was). `project_upsert(repo_path=…)` without `repos` sets the first
+repository's path, or adds one named after the folder when the project has none (also with the
+same path as the kept `repo_path`); passed with `repos` it must equal the first one's path.
+Migration 0029 gave every project with a `repo_path` one repository named after its last folder
+as a name must look (each run of other characters becomes `-`, leading and trailing `-` and `.`
+dropped, at most 60 characters); a bare drive or root, or a name left empty or not starting with a
+letter or digit, takes the project's slug. Matching a session's folder to a project ([§4](#spec-hooks)) still uses `repo_path`.
+
+<a id="spec-task-code"></a>
+
+**A task's code.** A task links the repositories of its project it touches (`task_repo`, one per
+repository, with who added it and how: `auto` from the hooks, `agent` over MCP, `owner` on the
+board) and its pull requests (`task_pr`: an http or https link, unique per task, the number taken
+from a `/pull/<n>`, `/pulls/<n>`, `/merge_requests/<n>` or `/pull-requests/<n>` path, optionally
+tied to one repository). `task_update` / `task_patch` take `repos` (names to add, `-name` removes
+one; an unknown name fails with the project's names) and `prs` (links to add, each optionally after
+a repository name, `web https://…`; `-<url>` removes one). Without a name, a link whose path names
+one of the project's repositories (`…/<owner>/<repo>/pull/1`, GitLab's `/-/merge_requests`) is tied
+to it. A pull request tied to a repository also links that repository. Removing a repository from
+the project removes the tasks' links to it; their pull requests stay, tied to none. Each write is
+one `task.updated` event with `changes: {"repos": {"added": […], "removed": […]}, "prs": {…}}`; the
+task's version does not change for links alone. `task_get` shows them under `## Code`.
 
 <a id="spec-task"></a>
 
@@ -433,7 +466,7 @@ posts; events `filter.saved`, `filter.deleted`.
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Audit | `/audit` | Who did what on which live stand, with filters ([below](#spec-board-audit)). |
 | Messages | `/messages` | What sessions write to each other, with delivery marks ([below](#spec-board-messages)). |
-| Stands & access | `/p/<slug>/environments` | Environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
+| Stands & access | `/p/<slug>/environments` | The project's repositories ([below](#spec-board-repos)), environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
 | Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/edit[?section=]`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)); editing a document ([§8](#spec-documents-edit)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Backlog | `/p/<slug>/backlog`, `/backlog` | Backlog items of a project or of all projects ([§12](#spec-backlog)). |
@@ -468,12 +501,37 @@ shows **Plan 2/5** (done / all) with `· draft` while it is not accepted, the nu
 highlighted and `· now: <step in progress>` (one line, cut with an ellipsis), which opens the
 dialog on its Plan tab.
 
+<a id="spec-board-repos"></a>
+
+**Repositories block.** The project's Stands & access page starts (after pending proposals) with
+**Repositories**: one row per repository in order with its name, kind, path and **Open in VS
+Code**, **Up** / **Down** buttons, an **Edit** fold (name, kind, path) with **Remove** (asks first:
+tasks lose their link, their pull requests stay) and **Add a repository**. Writes are plain form
+posts to `/p/<slug>/repos`, `/p/<slug>/repos/<id>` and `/p/<slug>/repos/<id>/up|down|delete` with
+the session cookie and the CSRF token; a Bearer request is refused (`403`), as for environments.
+A refused value (a name taken, an unknown kind, no path) comes back next to its form. Each change
+is a `project.updated` event with `changes.repos` (`added`, `changed`, `removed` names) and
+`repo_path` when the first repository's path changed.
+
+<a id="spec-board-code"></a>
+
+**Code row.** A task whose project has repositories, or that has pull requests, shows a Code row on
+its card and in the task dialog / page ([§1](#spec-task-code)): one line per linked repository with
+its name, its kind, the task's branch (in the dialog; the card shows the branch once, above), its
+pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and **Open in
+VS Code**, a `vscode://file/<path>` link (backslashes become `/`, a Windows drive stays `C:`, other
+unsafe characters are percent-encoded; a leading `~` is left to the editor). With no repository
+linked the row is one folded line **Repos: all** (the project's names), which opens to the same
+links for every repository. Pull requests tied to no listed repository follow as **PRs:**. The
+compact card ([below](#spec-board-compact)) shows only a count instead: `Code: 2 repos, 3 PRs`
+(`Code: all repos` when none is linked). A `task.updated` event refreshes the card.
+
 <a id="spec-board-compact"></a>
 
 **Compact** (a toggle in the board's tools row, on phones too) leaves key, tracker badge, title and
 the waiting-on chip on every task card, plus the "answer received" mark when a fresh answer is
 there; the "open in desktop" icon, the Review and Plan badges, the branch and the next step are
-hidden. A chevron button on a card
+hidden, and the Code row turns into its count. A chevron button on a card
 (`aria-expanded`, shown only in this mode) expands just that card; a click on the card still opens
 the dialog. Both choices are kept per browser in `localStorage` (the expanded cards by task key, the
 last 200), survive live refreshes of a card or a column, and live nowhere on the server. Without
@@ -874,7 +932,9 @@ its session row.
 Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (or `""`) clears an
 optional text field, because models cannot always send an empty string. `task_update`,
 `task_patch` accept `expected_version` and fail instead of overwriting a newer version; otherwise the
-last write wins.
+last write wins. `project_upsert` takes `repos`, `task_update` takes `repos` and `prs`
+([§1](#spec-task-code)); `task_patch` reaches them as `fields={"repos": […], "prs": […]}` for a
+client whose cached schema lacks them, and `relaybay://schema/task` lists them after the fields.
 
 <a id="spec-mcp-resources"></a>
 
@@ -1043,6 +1103,17 @@ budget's line, once per session and threshold until the next `SessionStart`.
    other live hook sessions): nothing is guessed; the hook session stays **unlinked** with a reason
    and is listed on the Integrations page.
 4. No desktop session in the project, or no project: a plain session named after the folder.
+
+<a id="spec-hooks-repos"></a>
+
+**Repository links from the hooks.** Every applied hook event with a `cwd` (not a `SessionEnd`)
+looks, in one indexed read, at the repositories of the tasks the session is bound to now. For each
+such task the repository whose path is the folder or holds it (the closest one; a leading `~` or
+`~/` is the user's home, `~name` is never expanded and matches only as written; compared with the
+machine's case rules, nothing on disk is read) is linked with `how: auto` when it is not linked
+yet; only a new link opens a write transaction, separate from the hook's status write. A failure
+of the link is logged and never fails the hook. Its `task.updated` event carries `how: "auto"`;
+the digests' "changes since" leave such events out, the board refreshes the card as usual.
 
 <a id="spec-hooks-down"></a>
 
@@ -2061,7 +2132,14 @@ creates the task in stage `plan`. `memory/<name>.md` and `projects/<slug>/memory
 (which then leaves the body), else the file name; kind from `metadata.type`, anything unknown is
 `reference`; `description` as the first line of the body unless it is already; `[[links]]` in `links`.
 `retro.md`: document `retro` of `--retro-project`, skipped with a warning without it. `backlog.md`:
-backlog items ([§12](#spec-backlog-import)), exported back the same way. A row's task is
+backlog items ([§12](#spec-backlog-import)), exported back the same way.
+`projects/<slug>/code.md`: the project's repositories (a table with name, kind, path, in order) and
+its tasks' links (a table with task, repos, prs: the task by its registry ref, repository names
+comma-separated, pull request entries one per line as `prs` takes them, [§1](#spec-task-code));
+export writes it for a project with repositories or links. Import adds a repository missing on the
+board (in the file's order, after the board's), keeps one that says the same, and calls one with
+another path or kind a conflict unless `--overwrite`; a task's links are only ever added, never
+removed, and a row whose task is not in the registry is an error line. A row's task is
 the one imported for its ref, else one no other item is imported for: the one whose key is its ref, or,
 for a row with no `ref` cell whose title no other such row claims, the only one with its title.
 
@@ -2301,6 +2379,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0026_brake_budgets` | `brake` (scope, project, session, task, reason, source, budget, created and released at and by), `token_budget` (one row per target), `budget_mark` (budget, period key, level), `usage_task_day` (file, task, day, model and the numbers) ([§2](#spec-brake)). Additive only, no backfill |
 | `0027_session_messages` | `session_message` (sender session, name and whether a hook proved it; recipient session and name; task; body; `in_reply_to`, depth; created, delivered and read at, whether a hook proved who read; Stop blocks; loop stopped and seen at) ([§1](#spec-session-messages)). Additive only |
 | `0028_task_rank` | `task.rank` (default 0) and an index on project, stage and rank; existing tasks ranked 1..n per project and stage in the order the board showed (`priority` desc, `updated_at` desc, `id` desc), so no card moves ([§2](#spec-board-order)). Additive only |
+| `0029_project_repos` | `project_repo` (project, name unique per project, path, kind, position, created / updated at), `task_repo` (task, repository, added by, how `auto` / `agent` / `owner`, added at; unique per task and repository), `task_pr` (task, optional repository, url unique per task, number, title, added by / at), an index on open `task_session` rows by session; seeded one repository per project with a `repo_path` ([§1](#spec-project-repos)). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

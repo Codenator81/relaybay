@@ -12,6 +12,7 @@ from relaybay.config import Settings
 from relaybay.domain.environments import find_secrets
 from relaybay.domain.markdown_layout import (
     BACKLOG,
+    CODE_FILE,
     MANIFEST,
     REGISTRY,
     TASK_FILE,
@@ -24,6 +25,7 @@ from relaybay.domain.markdown_layout import (
     registry_meaning,
     registry_ranks,
     render_backlog,
+    render_code,
     render_decisions,
     render_note,
     render_registry,
@@ -122,10 +124,22 @@ async def gather(service: Service) -> tuple[dict[str, Wanted], list[FileAction]]
         tasks = await service.list_tasks(project=project.slug, include_done=True)
         tasks.sort(key=lambda t: t.id)
         linked = set()
+        codes = await service.task_codes(project.id, tasks)
+        code_rows: list[tuple[str, list[str], list[str]]] = []
         for task in tasks:
             mark = tracked.get(("task", task.id))
             ref = mark.item.split("/", 1)[1] if mark else task.key
             rows.append((project.slug, ref, task))
+            code = codes[task.id]
+            names = {r.id: r.name for r in code.project_repos}
+            prs = [
+                f"{names[pr.repo_id]} {pr.url}" if pr.repo_id in names else pr.url
+                for pr in sorted(
+                    [*code.loose_prs, *(p for r in code.repos for p in r.prs)], key=lambda p: p.id
+                )
+            ]
+            if code.repos or prs:
+                code_rows.append((ref, [r.repo.name for r in code.repos], prs))
             prefix = task_link(project.slug, "")
             if task.doc_path and task.doc_path.startswith(prefix):
                 linked.add(f"{TASK_DOC_PREFIX}{task.doc_path[len(prefix) :]}")
@@ -139,6 +153,11 @@ async def gather(service: Service) -> tuple[dict[str, Wanted], list[FileAction]]
             places = [path, f"projects/{project.slug}/docs/{document.slug}.md"]
             label = f"document {project.slug}/{document.slug}"
             _claim(wanted, places, Wanted(body + "\n"), label, problems)
+        _, repos = await service.project_repos(project.slug)
+        if repos or code_rows:
+            listed = [(r.name, r.kind, r.path) for r in repos]
+            path = f"projects/{project.slug}/{CODE_FILE}"
+            wanted[path] = Wanted(render_code(project.slug, listed, code_rows))
         decisions = await service.all_decisions(project.id)
         if decisions:
             path = f"projects/{project.slug}/decisions.md"

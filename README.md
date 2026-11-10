@@ -83,6 +83,10 @@ program as its client:
   session history, "Open in desktop", unbinding the session and editing the task. Each task also has
   a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a
   dropped connection, a stage tab bar on narrow screens; ← / → switch the two board pages.
+- **Repositories and "Open in VS Code"** — a project lists its repositories (Stands & access, or
+  `project_upsert(repos=…)`); each card shows the ones the task touches with its pull requests and
+  an "Open in VS Code" link, linked by agents (`task_update(repos=…, prs=…)`) or by the hooks from
+  the folder a bound session works in.
 - **Quick switcher and saved filters** — Ctrl+K (Cmd+K on macOS) finds any task, project or
   session by a few letters; board filters by stage, waiting-on and session stay in the URL and can
   be saved as chips on the board and items in the sidebar.

@@ -10,6 +10,7 @@ import aiosqlite
 
 from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
 from relaybay.domain.backlog import UNASSIGNED, BacklogItem
+from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -245,6 +246,195 @@ async def stage_counts(conn: aiosqlite.Connection) -> dict[int, dict[str, int]]:
     for r in rows:
         counts.setdefault(r["project_id"], {})[r["stage"]] = r["n"]
     return counts
+
+
+# --- project repositories, task code links --------------------------------
+
+
+def _project_repo(row: aiosqlite.Row) -> ProjectRepo:
+    return ProjectRepo(
+        id=row["id"],
+        project_id=row["project_id"],
+        name=row["name"],
+        path=row["path"],
+        kind=row["kind"],
+        position=row["position"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _task_pr(row: aiosqlite.Row) -> TaskPr:
+    return TaskPr(
+        id=row["id"],
+        task_id=row["task_id"],
+        repo_id=row["project_repo_id"],
+        url=row["url"],
+        number=row["number"],
+        title=row["title"],
+        added_by=row["added_by"],
+        added_at=row["added_at"],
+    )
+
+
+async def list_project_repos(conn: aiosqlite.Connection, project_id: int) -> list[ProjectRepo]:
+    rows = await _all(
+        conn,
+        "SELECT * FROM project_repo WHERE project_id = ? ORDER BY position, id",
+        (project_id,),
+    )
+    return [_project_repo(r) for r in rows]
+
+
+async def all_project_repos(conn: aiosqlite.Connection) -> list[ProjectRepo]:
+    rows = await _all(conn, "SELECT * FROM project_repo ORDER BY project_id, position, id")
+    return [_project_repo(r) for r in rows]
+
+
+async def insert_project_repo(
+    conn: aiosqlite.Connection,
+    project_id: int,
+    name: str,
+    path: str,
+    kind: str | None,
+    position: int,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO project_repo (project_id, name, path, kind, position, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (project_id, name, path, kind, position, now, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_project_repo(
+    conn: aiosqlite.Connection, repo_id: int, changes: dict[str, Any], now: str
+) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(
+        f"UPDATE project_repo SET {sets}, updated_at = ? WHERE id = ?",
+        (*changes.values(), now, repo_id),
+    )
+
+
+async def delete_project_repo(conn: aiosqlite.Connection, repo_id: int) -> None:
+    await conn.execute("DELETE FROM project_repo WHERE id = ?", (repo_id,))
+
+
+async def sync_repo_path(conn: aiosqlite.Connection, project_id: int, now: str) -> None:
+    """`project.repo_path` follows the first repository; with none left it keeps its value."""
+    first = "(SELECT path FROM project_repo WHERE project_id = ? ORDER BY position, id LIMIT 1)"
+    await conn.execute(
+        f"UPDATE project SET repo_path = {first}, updated_at = ?"
+        f" WHERE id = ? AND {first} IS NOT NULL AND repo_path IS NOT {first}",
+        (project_id, now, project_id, project_id, project_id),
+    )
+
+
+async def task_repo_links(
+    conn: aiosqlite.Connection, *, task_id: int | None = None, project_id: int | None = None
+) -> list[TaskRepo]:
+    """The repository links of one task, or of every task of a project."""
+    where, params = (
+        ("tr.task_id = ?", task_id)
+        if task_id is not None
+        else (
+            "t.project_id = ?",
+            project_id,
+        )
+    )
+    rows = await _all(
+        conn,
+        "SELECT tr.* FROM task_repo tr JOIN task t ON t.id = tr.task_id"
+        f" WHERE {where} ORDER BY tr.id",
+        (params,),
+    )
+    return [
+        TaskRepo(r["task_id"], r["project_repo_id"], r["added_by"], r["how"], r["added_at"])
+        for r in rows
+    ]
+
+
+async def task_prs(
+    conn: aiosqlite.Connection, *, task_id: int | None = None, project_id: int | None = None
+) -> list[TaskPr]:
+    """The pull requests of one task, or of every task of a project, oldest first."""
+    where, params = (
+        ("tp.task_id = ?", task_id)
+        if task_id is not None
+        else (
+            "t.project_id = ?",
+            project_id,
+        )
+    )
+    rows = await _all(
+        conn,
+        "SELECT tp.* FROM task_pr tp JOIN task t ON t.id = tp.task_id"
+        f" WHERE {where} ORDER BY tp.id",
+        (params,),
+    )
+    return [_task_pr(r) for r in rows]
+
+
+async def insert_task_repo(
+    conn: aiosqlite.Connection, task_id: int, repo_id: int, added_by: str, how: str, now: str
+) -> bool:
+    """False when the task already had the link (the first one stays)."""
+    cur = await conn.execute(
+        "INSERT INTO task_repo (task_id, project_repo_id, added_by, how, added_at)"
+        " VALUES (?, ?, ?, ?, ?) ON CONFLICT (task_id, project_repo_id) DO NOTHING",
+        (task_id, repo_id, added_by, how, now),
+    )
+    return cur.rowcount > 0
+
+
+async def delete_task_repo(conn: aiosqlite.Connection, task_id: int, repo_id: int) -> bool:
+    cur = await conn.execute(
+        "DELETE FROM task_repo WHERE task_id = ? AND project_repo_id = ?", (task_id, repo_id)
+    )
+    return cur.rowcount > 0
+
+
+async def insert_task_pr(
+    conn: aiosqlite.Connection,
+    task_id: int,
+    repo_id: int | None,
+    url: str,
+    number: int | None,
+    title: str | None,
+    added_by: str,
+    now: str,
+) -> bool:
+    """False when the task already had the link (the first one stays)."""
+    cur = await conn.execute(
+        "INSERT INTO task_pr (task_id, project_repo_id, url, number, title, added_by, added_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (task_id, url) DO NOTHING",
+        (task_id, repo_id, url, number, title, added_by, now),
+    )
+    return cur.rowcount > 0
+
+
+async def delete_task_pr(conn: aiosqlite.Connection, task_id: int, url: str) -> bool:
+    cur = await conn.execute("DELETE FROM task_pr WHERE task_id = ? AND url = ?", (task_id, url))
+    return cur.rowcount > 0
+
+
+async def session_repo_candidates(
+    conn: aiosqlite.Connection, session_id: int
+) -> list[tuple[int, int, str, bool]]:
+    """(task id, repository id, path, already linked) for the repositories of every task the
+    session is bound to now: one read on the hook path."""
+    rows = await _all(
+        conn,
+        "SELECT b.task_id, r.id AS repo_id, r.path, EXISTS (SELECT 1 FROM task_repo tr"
+        "  WHERE tr.task_id = b.task_id AND tr.project_repo_id = r.id) AS linked"
+        " FROM task_session b JOIN task t ON t.id = b.task_id"
+        " JOIN project_repo r ON r.project_id = t.project_id"
+        " WHERE b.session_id = ? AND b.unbound_at IS NULL",
+        (session_id,),
+    )
+    return [(r["task_id"], r["repo_id"], r["path"], bool(r["linked"])) for r in rows]
 
 
 # --- session ---------------------------------------------------------------
@@ -2048,11 +2238,13 @@ async def event_counts(
     own_kinds: tuple[str, ...] = (),
 ) -> list[tuple[int | None, str | None, str | None, str, int, int]]:
     """Events in (after_id, upto_id] counted per task or project and kind: (task id, task key or
-    project slug, task title, kind, count, last id). `own_kinds` are left out for one session."""
+    project slug, task title, kind, count, last id). `own_kinds` are left out for one session,
+    and so is every automatic change (`how: auto` in the payload, e.g. a hook's repository link)."""
     where = [
         "e.id > ?",
         "e.id <= ?",
         f"e.kind NOT IN ({', '.join('?' for _ in exclude_kinds)})",
+        "json_extract(e.payload, '$.how') IS NOT 'auto'",
     ]
     params: list[Any] = [after_id, upto_id, *exclude_kinds]
     if project_id is not None:

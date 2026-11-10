@@ -1,0 +1,26 @@
+{#- The Code row of a task: the repositories it touches with the task's branch, its pull requests
+    and an "Open in VS Code" link each; with none linked, all of the project's repositories in one
+    folded line; then the pull requests tied to no repository. Expects: c (TaskCode), branch
+    (the task's, shown per repository; None on the card, which shows it once). -#}
+{%- macro pr_links(prs) -%}
+{%- for pr in prs %}{% set href = pr.url|http_url %}{% if href %} <a class="code-pr" href="{{ href }}" target="_blank" rel="noopener noreferrer" title="{{ pr.title or pr.url }}">{{ pr.label if pr.number is not none else "PR" }}</a>{% endif %}{% endfor %}
+{%- endmacro %}
+{%- macro open_link(r) -%}
+<a class="code-open" href="{{ r.path|vscode_url }}" title="Open {{ r.path }} in VS Code">Open in VS Code</a>
+{%- endmacro %}
+<ul class="code-row">
+  {% for item in c.repos %}
+  <li class="code-repo"><span class="code-name">{{ item.repo.name }}</span>{% if item.repo.kind %} <span class="code-kind">{{ item.repo.kind }}</span>{% endif %}{% if branch %} <code class="branch" title="Branch">{{ branch }}</code>{% endif %}{{ pr_links(item.prs) }} {{ open_link(item.repo) }}</li>
+  {% endfor %}
+  {% if not c.repos and c.project_repos %}
+  <li class="code-all">
+    <details>
+      <summary>Repos: all <span class="muted">({{ c.project_repos|map(attribute="name")|join(", ") }})</span></summary>
+      <ul>
+        {% for r in c.project_repos %}<li class="code-repo"><span class="code-name">{{ r.name }}</span>{% if r.kind %} <span class="code-kind">{{ r.kind }}</span>{% endif %} {{ open_link(r) }}</li>{% endfor %}
+      </ul>
+    </details>
+  </li>
+  {% endif %}
+  {% if c.loose_prs %}<li class="code-loose">PRs:{{ pr_links(c.loose_prs) }}</li>{% endif %}
+</ul>
