@@ -1302,3 +1302,46 @@ def test_quit_says_who_asked_in_the_start_journal(tmp_path: Path) -> None:
     assert "quit: another run's --quit\n" in by_ipc and by_ipc.count("quit:") == 1
     update = journal_of(tmp_path / "d", QUIT_BY_IPC, installer=True)
     assert "quit: another run's --quit, for the update installer" in update
+
+
+def test_a_tray_without_notifications_never_fails_a_notice(controller: DesktopController) -> None:
+    class Xorg:
+        HAS_NOTIFICATION = False
+
+        def notify(self, text: str, title: str) -> None:
+            raise AssertionError("not asked")
+
+    class Older:
+        def notify(self, text: str, title: str) -> None:
+            raise NotImplementedError
+
+    class Broken:
+        def notify(self, text: str, title: str) -> None:
+            raise OSError("no bus")
+
+    for icon in (Xorg(), Older(), Broken()):
+        controller.icon = icon
+        controller.notify("The update check failed")
+        controller.show_problem("the server keeps failing")
+        controller._toast("Waiting on you", "relaybay")
+    controller.icon = None
+
+
+def test_a_cancelled_installer_gives_update_back(controller: DesktopController) -> None:
+    class Process:
+        def wait(self) -> int:
+            return 1
+
+    assert controller._updating.acquire(blocking=False)
+    controller.installer_started_at = controller.clock()
+    controller._after_installer(Process())  # type: ignore[arg-type]
+    assert controller.installer_started_at is None
+    assert controller._updating.acquire(blocking=False)  # Update works again, no restart
+    # A quit in between means the installer is replacing the program: nothing is given back.
+    controller.installer_started_at = controller.clock()
+    controller.quitting = True
+    controller._after_installer(Process())  # type: ignore[arg-type]
+    assert controller.installer_started_at is not None
+    assert not controller._updating.acquire(blocking=False)
+    controller.quitting = False
+    controller._updating.release()

@@ -313,8 +313,8 @@ class DesktopController:
             message = KEEPS_FAILING.format(log=self.log_path)
             log.error("watchdog: %s; %d restarts in 10 minutes, giving up", reason, RESTART_CAP)
             self.show_problem(message)
-            if self.window is not None and self.icon is not None:
-                self.icon.notify(message, "relaybay")  # show_problem notifies without a window
+            if self.window is not None:
+                self._icon_notify(message, "relaybay")  # show_problem notifies without a window
             return
         self._auto_restarts.append(now)
         self._health_failures = 0
@@ -343,8 +343,7 @@ class DesktopController:
     def show_problem(self, message: str, ask_settings: bool = False) -> None:
         log.error("%s", message)
         if self.window is None:
-            if self.icon is not None:
-                self.icon.notify(message, "relaybay")
+            self._icon_notify(message, "relaybay")
             return
         hint = "Use the tray icon: Settings to change the server, or Quit."
         self.window.load_html(
@@ -472,8 +471,21 @@ class DesktopController:
 
     def notify(self, message: str) -> None:
         log.info("%s", message)
-        if self.icon is not None:
-            self.icon.notify(message, "relaybay")
+        self._icon_notify(message, "relaybay")
+
+    def _icon_notify(self, text: str, title: str) -> None:
+        """The tray's own notification, where the tray has one. pystray's X11 backend has none
+        and its notify raises NotImplementedError: the log line written before is all there is,
+        and a menu action or the watchdog never fails over it."""
+        icon = self.icon
+        if icon is None or not getattr(icon, "HAS_NOTIFICATION", True):
+            return
+        try:
+            icon.notify(text, title)
+        except NotImplementedError:
+            log.debug("this tray has no notifications")
+        except Exception:
+            log.warning("the tray notification failed", exc_info=True)
 
     # --- tray notifications --------------------------------------------------
 
@@ -492,9 +504,7 @@ class DesktopController:
 
     def _toast(self, text: str, title: str) -> None:
         log.info("notification: %s: %s", title, text)
-        # pystray's X11 backend has none, and its notify raises: the log line is all there is.
-        if self.icon is not None and getattr(self.icon, "HAS_NOTIFICATION", True):
-            self.icon.notify(text, title)
+        self._icon_notify(text, title)
 
     def _set_pending_dot(self, on: bool) -> None:
         self.pending_dot = on
