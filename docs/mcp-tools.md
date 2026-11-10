@@ -64,7 +64,7 @@ Conventions:
   name on a task without a desktop session binds as before. Aliases are global: one name maps to one
   session across all projects, and later binds by that name move it to the desktop session bound to
   that task. Because an alias would hijack a plain session of the same name, none is created when
-  such a session exists; the call then changes nothing and answers "already bound to <title>
+  such a session exists; the call then changes nothing and answers "already bound to <session title>
   (local_…); pass your local id".
 - **Claude desktop app session links** — for a desktop session id, relaybay builds a link
   (`claude://claude.ai/epitaxy/<id>` by default, see `desktop_link_template` in the README) that the

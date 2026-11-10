@@ -54,3 +54,22 @@ def test_no_cyrillic_in_tracked_text() -> None:
                 hits.append(f"{path.relative_to(ROOT).as_posix()}:{number}")
     assert len(files()) > 20
     assert not hits, "Cyrillic text found: " + ", ".join(hits)
+
+
+# An HTML parser reads everything after these tags as raw text up to the closing tag, so one of them
+# in a markdown page, in backticks too, can swallow the rest of the page in the docs build (it did,
+# with a newer Python than CI's). Write the name another way: "a title placeholder", `<heading>`.
+RAW_TEXT_TAGS = re.compile(
+    r"<(title|textarea|script|style|xmp|plaintext|iframe|noembed|noframes)\b[^>]*>", re.IGNORECASE
+)
+
+
+def test_no_raw_text_tags_in_markdown() -> None:
+    pages = [path for path in files() if path.suffix == ".md"]
+    hits = []
+    for path in pages:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if RAW_TEXT_TAGS.search(line):
+                hits.append(f"{path.relative_to(ROOT).as_posix()}:{number}")
+    assert len(pages) > 10
+    assert not hits, "raw-text HTML tags in markdown: " + ", ".join(hits)

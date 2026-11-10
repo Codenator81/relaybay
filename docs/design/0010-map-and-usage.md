@@ -79,7 +79,7 @@ differs from the plan above:
   environment. They join when the data holds them
   ([0012](0012-runner-and-embedded-terminal.md)).
 - **Layout.** Cytoscape's built-in `cose`, no extension. Positions are not stored.
-- **CSP.** Cytoscape 3.34.4 needs no `unsafe-eval`. It adds one inline `<style>` unless an element
+- **CSP.** Cytoscape 3.34.4 needs no `unsafe-eval`. It adds one inline style element unless an element
   with its id exists; `map.html` holds that element and `app.css` holds the rule. The CSP did not
   change.
 - **Message edges.** Sender, recipient and time; the tool's name is not kept. Only `SendMessage`

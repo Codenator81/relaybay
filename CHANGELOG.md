@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Desktop on Linux under Xorg: a tray without notifications no longer fails a menu action or the watchdog's notice; the message stays in the log.
+
 ### Added
 
 - Desktop: the start journal and the log say who asked the program to quit (the tray menu, another run's `--quit`, an update, the window loop's end, `--exit-after`).
