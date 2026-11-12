@@ -2,6 +2,7 @@
 claude it finds, and the process tree it kills."""
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -438,6 +439,72 @@ def test_every_line_is_stored_masked_also_behind_json_escapes() -> None:
     event, item = read_line(deep, 2)  # deeper than Python follows: stored as text, masked
     assert item is None and event is not None and event.type == "invalid"
     assert GITHUB_TOKEN not in json.dumps(unpack(event.data))
+
+
+def user_text(text: str) -> dict:
+    content = [{"type": "tool_result", "tool_use_id": "t1", "content": text}]
+    return {"type": "user", "message": {"content": content}}
+
+
+@pytest.mark.parametrize(
+    ("line", "secret"),
+    [
+        (user_text('{\n  "password": "hunter2pass",\n  "user": "a"\n}'), "hunter2pass"),
+        (user_text('{"api_key":"abc123secretvalue"}'), "abc123secretvalue"),
+        (user_text("{'password': 'hunter2pass'}"), "hunter2pass"),
+        (user_text('{"body":"{\\"password\\":\\"hunter2pass\\"}"}'), "hunter2pass"),
+        (
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "mcp__db__connect",
+                            "input": {"host": "x", "password": "s3cr3tPW"},
+                        }
+                    ]
+                },
+            },
+            "s3cr3tPW",
+        ),
+        ({"type": "user", "headers": {"Authorization": "Basic ZXhhbXBsZQ"}}, "ZXhhbXBsZQ"),
+        (
+            user_text(
+                "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQIVBF\n-----END PGP PRIVATE KEY BLOCK-----"
+            ),
+            "lQIVBF",
+        ),
+    ],
+)
+def test_secret_names_and_fields_are_masked_in_every_form(line: dict, secret: str) -> None:
+    assert secret in json.dumps(line)
+    assert secret not in stored(json.dumps(line))
+
+
+def test_a_reference_under_a_secret_field_stays_readable() -> None:
+    line = {"type": "assistant", "input": {"password": "${DB_PASSWORD}", "user": "app"}}
+    assert "${DB_PASSWORD}" in stored(json.dumps(line))
+
+
+def test_a_refusal_input_and_a_non_json_line_with_a_quoted_name_are_masked() -> None:
+    denial = {"tool_name": "mcp__db", "tool_input": {"password": "s3cr3tPW"}}
+    parsed = parse_line(json.dumps({"type": "result", "permission_denials": [denial]}))
+    assert isinstance(parsed, Result) and "s3cr3tPW" not in repr(parsed)
+    assert "hunter2pass" not in stored('not json {"password": "hunter2pass"}')
+
+
+def test_masking_stays_linear_on_long_word_runs() -> None:
+    from relaybay.domain.environments import redact
+
+    for text in ("monkey_" * 11_500, base64.urlsafe_b64encode(os.urandom(3_000_000)).decode()):
+        started = time.perf_counter()
+        redact(text)
+        took = time.perf_counter() - started
+        # Quadratic before: 11.9 s for the first, 14.5 s for 4 MB; about 0.6 s now for 4 MB on
+        # a desktop machine, with room for a slow CI runner.
+        assert took < (1.0 if len(text) < 100_000 else 3.0), (len(text), took)
 
 
 def test_the_result_text_and_refusal_inputs_are_masked() -> None:

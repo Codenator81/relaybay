@@ -1,7 +1,7 @@
 {#- One turn of a run, loaded when its row is opened in the Agent block: the report its result
     became, with its verified marks, then its stored stream-json lines (masked), tool calls with
     their results folded, subagent work nested under the call that started it. Expects: run,
-    turn, report (or None), checks, warning, items. -#}
+    turn, report (or None), checks, warning, items (the last board_lines lines). -#}
 {%- macro event_list(list) -%}
 <ul class="run-events">
   {% for e in list %}
@@ -46,5 +46,6 @@
   <p class="muted">No report: the turn ended without a result.</p>
   {% endif %}
   <h4>Events <span class="col-count">{{ turn.events }}</span></h4>
+  {% if turn.events > board_lines %}<p class="muted run-events-earlier">Earlier lines: {{ turn.events - board_lines }}, not shown here; the last {{ board_lines }} follow. An agent reads them with <code>run_events(run={{ run.id }}, turn={{ turn.seq }}, from_seq=1)</code>.</p>{% endif %}
   {% if items %}{{ event_list(items) }}{% else %}<p class="muted">No lines stored for this turn.</p>{% endif %}
 </div>

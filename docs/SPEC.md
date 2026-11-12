@@ -384,12 +384,21 @@ folder or a key variable.
   of the tool call that started it, so they nest under it), the time read and its length. The
   reader thread parses each line, masks every string in it with the journal's secret masking
   (`domain.environments.redact`: the decoded strings, so a secret behind a JSON escape such as
-  `\n` or `g` is caught too), and only then compresses it (zlib, one stream per line: a
-  turn's lines are read, cut and deleted line by line); nothing unmasked is stored or logged. A
+  `\n` or `\u0067` is caught too), and only then compresses it (zlib, one stream per line: a
+  turn's lines are read, cut and deleted line by line); nothing unmasked is stored or logged
+  (the turn's stderr is kept in memory only and never logged). For lines, the masking also catches
+  a quoted secret name before its value (`"password": "x"`, `'api_key': 'x'`, `\"token\":\"x\"`),
+  and a string under a field whose name says secret (`pass`, `pwd`, `token`, `secret`, `key`,
+  `credential`, `private`, `authorization`, `cookie`) is masked whole unless it is a reference
+  (`${DB_PASSWORD}`, `vault://…`). It does **not** catch: a secret used as a field name, a value
+  under a name that does not say secret (`STRIPE=sk_…` without a known prefix is caught only by
+  its shape), a secret in prose ("the password is …"), base64 or other encodings of a secret, and
+  a secret split across lines. The name pattern is bounded (64 characters around the keyword),
+  so masking stays linear: a 4 MiB line is masked in well under a second on a desktop machine. A
   line that is not a JSON object is stored masked as `{"raw": …}`. A line over 4 MiB is never held
   whole: its first 16 KiB, JSON escapes decoded, cut back to the last separator (so no secret is
   kept half, too short to be masked), masked, are stored with `truncated` = 1 and the marker
-  `[relaybay: line truncated]`. Lines reach the database in batches, at 200 lines or 0.5 s after the
+  `[relaybay: line truncated]`; its type and `parent_tool_use_id` are read from the head. Lines reach the database in batches, at 200 lines or 0.5 s after the
   first one waiting, and all that are left before the turn's end is written; the reader thread
   never waits for the database, and the hook path is not involved. A batch that cannot be stored is
   logged and the turn goes on. Events are kept with their run (the retention policy comes later).
@@ -397,15 +406,21 @@ folder or a key variable.
   at most 100,000 characters) becomes a report on the card in the turn's end transaction, through the
   same writes as `report_add` (the board, digests, search and MCP see it; the author is the run's
   session, `run_turn.report_id` links it): in full, under the agent's own `state · size · gist`
-  first line when it wrote one, else under a neutral `Run <id>, turn <n>: <outcome>` (and the
-  rules warning for the first line); an empty text reads "(the turn ended without a final text)".
+  first line when it wrote one, else under a neutral `Run <id>, turn <n>: <outcome>` (with no
+  rules warning for the first line: the turn's text is not a `report_add` the agent can fix); an
+  empty text reads "(the turn ended without a final text)". When the run's session already added
+  a report to the card with `report_add` since the turn started, and the result adds nothing (an
+  empty text, or the same first line as that report, and no refusals), the turn links that report
+  and writes none of its own; otherwise it writes its own as above.
   The turn's `permission_denials` follow as **Refusals** (`- <tool>: <input>`, the input masked,
   a Bash call's command only, cut at 300 characters). Rules never refuse a turn's report, in
   `strict` mode either; a report that cannot be written is undone to a savepoint and logged, and the
   turn still ends. A turn without a result (stopped, lost) has no report.
 - **On the card.** The Agent block lists per turn its report's badges and first line; a folded row
   "Report and events of turn N" loads, when opened, the report in full with its verified marks and
-  the turn's lines: tool calls with their input, folded, each with its result (an error marked)
+  the turn's last 300 lines (a line above them says how many earlier lines are not shown and how
+  an agent reads them with `run_events`; the texts of one view stay within 200,000 characters,
+  past that each item is cut to 160): tool calls with their input, folded, each with its result (an error marked)
   and the subagent work it started nested inside, texts, refusals and the result.
 - **Before a turn** relaybay checks, and refuses with the reason when they fail (nothing is
   written): `claude` is found (`claude_path`, else `PATH`, else the usual install folders); the
@@ -514,13 +529,20 @@ as badges. Any other first line is checked against the rules ([§6](#spec-rules-
 
 **Verified marks.** A claim line may carry `verified: <where>` (`verified: pytest on Windows`,
 `(verified: browser at /p/acme-shop)`): the `where` runs to the end of the line or to a closing
-bracket, a semicolon or a backtick, at most 200 characters, and an empty one is no mark. Marks are
+bracket, a semicolon or a backtick (a `(…)` inside it stays whole), at most 200 characters. A
+mark starts a line or follows a space, `(`, `[` or a backtick, so `https://x/verified:abc` and
+`unverified:` are none; never after `not ` or `no ` ("Not verified: macOS" is a gap, not a mark);
+never inside a fenced code block; an empty `where` or `true`, `false`, `yes`, `no`, `none` is
+none. Marks are
 parsed when a report is written, from `report_add` and from a run's turn alike, and stored in
 `report_check` (the line, the `where`, the claim line without the mark; at most 100 per report). The
 card shows them under the report, a check with the `where`, the claim on hover. An M or L report
 without any mark gets `Warning (rules): an M or L report has no verified marks: …` in the
 `report_add` result, the `report.added` event and under the report on the card; never in `strict`
-mode a refusal, and never for an S report or one without a size.
+mode a refusal, and never for an S report or one without a size. The first start with migration
+0036 reads the marks of the reports written before it, once, and keeps in `app_setting`
+(`report_marks_from`) the first report id after them: older reports show their marks but never
+the warning.
 
 <a id="spec-progress"></a>
 

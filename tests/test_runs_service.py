@@ -891,3 +891,87 @@ async def test_run_events_is_short_masked_and_bounded(svc: Service) -> None:
     async with svc._r.execute("SELECT data FROM run_event") as cur:
         blobs = [r[0] for r in await cur.fetchall()]
     assert all(secret.encode() not in b for b in blobs)
+
+
+async def test_a_turn_the_agent_reported_itself_links_that_report(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    session = f"acme-shop-1 run {run.id}"
+    _, own = await svc.add_report("acme-shop-1", "verified · S · done", session=session)
+    await finish(svc, run.id, result("verified · S · done\n\nthe same, said again"))
+    [turn] = await repo.list_turns(svc._r, run.id)
+    assert turn.report_id == own.id
+    assert len((await svc.task_detail("acme-shop-1")).reports) == 1
+    await svc.send_to_run(run.id, "Again")
+    await finish(svc, run.id, result("Something else entirely."))
+    detail = await svc.task_detail("acme-shop-1")
+    assert len(detail.reports) == 2 and detail.reports[0].author == session
+
+
+async def test_a_turn_report_never_gets_the_first_line_warning(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    await finish(svc, run.id, result("Just text, no state line."))
+    [payload] = await report_events(svc)
+    assert "warnings" not in payload
+
+
+async def test_strict_refuses_a_bad_first_line_before_the_session_is_written(
+    svc: Service,
+) -> None:
+    svc.rules_mode = "strict"
+    with pytest.raises(ValidationError, match="Rules:"):
+        await svc.add_report("acme-shop-1", "no state line here", session="brand-new-session")
+    assert await repo.find_sessions(svc._r, "brand-new-session") == []
+
+
+async def test_reports_before_the_marks_get_their_marks_and_never_the_warning(
+    tmp_path, svc: Service
+) -> None:
+    _, old = await svc.add_report("acme-shop-1", "changed · M · old\n\n- ok (verified: CI)")
+    _, bare = await svc.add_report("acme-shop-1", "changed · M · old, unmarked")
+    async with svc._tx() as tx:
+        await tx.conn.execute("DELETE FROM report_check")
+        await tx.conn.execute("DELETE FROM app_setting WHERE key = 'report_marks_from'")
+    await svc._backfill_report_marks()
+    assert svc.report_marks_from == bare.id + 1
+    _, new = await svc.add_report("acme-shop-1", "changed · M · new, unmarked")
+    detail = await svc.task_detail("acme-shop-1")
+    assert [c.where for c in detail.checks[old.id]] == ["CI"]
+    by_id = {r.id: r for r in detail.reports}
+    assert detail.marks_warning(by_id[bare.id]) is None
+    assert detail.marks_warning(by_id[new.id]).startswith(MARKS_WARNING)
+    await svc._backfill_report_marks()  # once: a second start reads nothing again
+    assert len((await repo.report_checks(svc._r, [old.id]))[old.id]) == 1
+
+
+def test_negated_marks_urls_flags_and_code_are_no_marks() -> None:
+    body = "\n".join(
+        [
+            "Not verified: the browser on macOS",
+            "- not verified: Windows (no machine)",
+            "Unverified: macOS",
+            "status: verified: true",
+            "See https://x/verified:abc",
+            "```",
+            "assert x  # verified: by hand",
+            "```",
+            "- tests pass (verified: pytest on Windows (CI)); docs updated",
+        ]
+    )
+    [mark] = parse_checks(body)
+    assert (mark.line, mark.where, mark.claim) == (
+        9,
+        "pytest on Windows (CI)",
+        "tests pass ; docs updated",
+    )
+
+
+async def test_the_board_view_of_a_long_turn_shows_its_last_lines(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    lines = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "w" * 3000}]}}
+        for _ in range(400)
+    ]
+    await finish(svc, run.id, result("done"), lines)
+    _, turn, _, _, items = await svc.run_turn_detail(run.id, 1)
+    assert turn.events == 400 and len(items) == 300 and items[0].seq == 101
+    assert sum(len(i.text) for i in items) <= 200_000 + 300 * 160

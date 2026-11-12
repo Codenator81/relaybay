@@ -911,6 +911,24 @@ async def insert_report(
     return int(cur.lastrowid or 0)
 
 
+async def latest_report_of_session(
+    conn: aiosqlite.Connection, task_id: int, session_id: int, since: str
+) -> Report | None:
+    """The newest report the session added to the task at or after `since`."""
+    row = await _one(
+        conn,
+        "SELECT * FROM report WHERE task_id = ? AND session_id = ? AND created_at >= ?"
+        " ORDER BY id DESC LIMIT 1",
+        (task_id, session_id, since),
+    )
+    return _report(row) if row else None
+
+
+async def all_report_bodies(conn: aiosqlite.Connection) -> list[tuple[int, str]]:
+    rows = await _all(conn, "SELECT id, body_md FROM report ORDER BY id")
+    return [(r["id"], r["body_md"]) for r in rows]
+
+
 async def get_report(conn: aiosqlite.Connection, report_id: int) -> Report | None:
     row = await _one(conn, "SELECT * FROM report WHERE id = ?", (report_id,))
     return _report(row) if row else None

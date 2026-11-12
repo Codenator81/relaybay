@@ -30,6 +30,7 @@ from relaybay.config import Settings
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
+from relaybay.domain import run_events as run_lines
 from relaybay.domain import runs as run_rules
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
@@ -1524,7 +1525,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         run, turn, report, checks, items = await service.run_turn_detail(
             await run_of(task, run_id), seq
         )
-        problem = verified_marks_problem(report.size, len(checks)) if report else None
+        problem = None
+        if report is not None and report.id >= service.report_marks_from:
+            problem = verified_marks_problem(report.size, len(checks))
         return render(
             request,
             "_run_turn.html",
@@ -1534,6 +1537,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             checks=checks,
             warning=f"Warning (rules): {problem}" if problem else None,
             items=items,
+            board_lines=run_lines.BOARD_LINES,
         )
 
     async def run_write(

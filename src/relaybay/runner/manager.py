@@ -315,7 +315,6 @@ class RunManager:
         else:
             outcome = "lost"
             reason = f"claude exited with code {code} without a result"
-            logger.debug("Run %d turn ended without a result: %s", active.run_id, active.stderr)
         await self.sink.turn_done(active.turn_id, outcome, result, code, reason, stopped)
 
     async def stop(self, run_id: int, reason: str, grace: float = STOP_GRACE_SECONDS) -> bool:

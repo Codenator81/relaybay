@@ -11,6 +11,8 @@ from typing import Any
 
 BOARD_TEXT_MAX = 4000
 COMPACT_TEXT_MAX = 160
+BOARD_LINES = 300  # the board shows a turn's last lines; run_events reads the rest
+BOARD_TOTAL_MAX = 200_000  # characters of text in one turn's view; past it items get COMPACT
 
 
 @dataclass(slots=True)
@@ -73,8 +75,32 @@ def _short(value: Any, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def items(lines: list[StoredLine], limit: int = BOARD_TEXT_MAX) -> list[EventItem]:
-    """The lines in order as items; a tool result is put on its call when that call was read."""
+def items(
+    lines: list[StoredLine], limit: int = BOARD_TEXT_MAX, total: int | None = None
+) -> list[EventItem]:
+    """The lines in order as items; a tool result is put on its call when that call was read.
+    With `total`, the texts together stay within it (then COMPACT_TEXT_MAX each)."""
+    out = _items(lines, limit)
+    if total is not None:
+        _fit(out, total)
+    return out
+
+
+def _fit(out: list[EventItem], total: int) -> None:
+    used = 0
+    for item in out:
+        for attr in ("text", "result"):
+            value = getattr(item, attr)
+            if not value:
+                continue
+            room = max(COMPACT_TEXT_MAX, total - used)
+            if len(value) > room:
+                value = value[: room - 1] + "…"
+                setattr(item, attr, value)
+            used += len(value)
+
+
+def _items(lines: list[StoredLine], limit: int) -> list[EventItem]:
     out: list[EventItem] = []
     tools: dict[str, EventItem] = {}
     for line in lines:

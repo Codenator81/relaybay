@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from relaybay.domain.environments import redact
+from relaybay.domain.environments import is_reference, is_secret_field, redact
 from relaybay.domain.run_events import StreamEvent, pack
 
 LINE_MAX = 4 * 1024 * 1024  # a longer line is not parsed: only its masked head is stored
@@ -65,14 +65,22 @@ def _cut(text: str, limit: int) -> str:
 
 def mask(value: Any) -> Any:
     """`value` with every string masked by the journal's masking. Strings are masked decoded, so
-    a secret behind a JSON escape (`\\n`, `\\u0067`) is caught as well."""
+    a secret behind a JSON escape (`\\n`, `\\u0067`) is caught as well. A string under a secret
+    field name (`{"password": "x"}`, `api_key`, `Authorization`) is masked whole unless it is a
+    reference (`${DB_PASSWORD}`, `vault://…`)."""
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, list):
         return [mask(v) for v in value]
     if isinstance(value, dict):
-        return {k: mask(v) for k, v in value.items()}
+        return {k: _field(k, v) for k, v in value.items()}
     return value
+
+
+def _field(name: str, value: Any) -> Any:
+    if isinstance(value, str) and value and is_secret_field(name) and not is_reference(value):
+        return "***"
+    return mask(value)
 
 
 def now() -> str:
@@ -149,6 +157,7 @@ def read_line(raw: str, seq: int) -> tuple[StreamEvent | None, StreamItem | None
 _ESCAPE = re.compile(r'\\(u[0-9a-fA-F]{4}|["\\/bfnrt])')
 _SIMPLE = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 _TYPE = re.compile(r'"type"\s*:\s*"([a-z_]{1,60})"')
+_PARENT = re.compile(r'"parent_tool_use_id"\s*:\s*"([A-Za-z0-9_-]{1,200})"')
 
 
 def _unescape(text: str) -> str:
@@ -174,9 +183,17 @@ def truncated_event(head: str, size: int, seq: int) -> StreamEvent:
     """A line over LINE_MAX: its masked head with the marker; the rest was never held."""
     text = _masked_head(head, cut=True)
     found = _TYPE.search(head[:HEAD_MAX])
+    parent = _PARENT.search(head[:HEAD_MAX])
     data = pack({"head": text, "note": TRUNCATED_MARK, "size": size})
     return StreamEvent(
-        seq, found.group(1) if found else "unknown", None, None, now(), size, True, data
+        seq,
+        found.group(1) if found else "unknown",
+        None,
+        parent.group(1) if parent else None,
+        now(),
+        size,
+        True,
+        data,
     )
 
 

@@ -57,9 +57,18 @@ def parse_report(body: str) -> tuple[str | None, str | None, str]:
 CHECK_WHERE_MAX = 200
 CHECK_CLAIM_MAX = 300
 CHECKS_MAX = 100
-# `verified: <where>` on a claim line; the `where` runs to the end of the line or to a closing
-# bracket, a semicolon or a backtick, so "(verified: pytest on Windows)" reads "pytest on Windows".
-_CHECK = re.compile(r"\bverified:\s*(?P<where>[^)\]\n;`]+)", re.IGNORECASE)
+# `verified: <where>` on a claim line, at the line's start or after a space, "(", "[" or a
+# backtick (so not inside a URL or a word like "unverified:"), never after "not " or "no ". The
+# `where` runs to the end of the line or to a closing bracket, a semicolon or a backtick, so
+# "(verified: pytest on Windows)" reads "pytest on Windows"; a "(…)" inside it stays whole.
+_CHECK = re.compile(
+    r"(?:^|(?<=[\s(\[`]))(?<!not )(?<!no )verified:\s*"
+    r"(?P<where>(?:[^()\]\n;`]|\([^()\n]*\))+)",
+    re.IGNORECASE,
+)
+_NOT_A_PLACE = frozenset({"true", "false", "yes", "no", "none", "-"})
+_FENCE = re.compile(r"^\s*(```|~~~)")
+_EMPTY_BRACKETS = re.compile(r"\(\s*\)|\[\s*\]|``")
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,14 +79,21 @@ class ReportCheck:
 
 
 def parse_checks(body: str) -> list[ReportCheck]:
-    """The `verified: <where>` marks of a report body, in order; an empty `where` is no mark."""
+    """The `verified: <where>` marks of a report body, in order, outside fenced code blocks; an
+    empty `where`, or a value such as `true`, is no mark."""
     found: list[ReportCheck] = []
+    fenced = False
     for number, line in enumerate(body.splitlines(), start=1):
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         for match in _CHECK.finditer(line):
             where = match.group("where").strip().rstrip(".,")
-            if not where:
+            if not where or where.lower() in _NOT_A_PLACE:
                 continue
-            claim = (line[: match.start()] + line[match.end() :]).strip()
+            claim = _EMPTY_BRACKETS.sub("", line[: match.start()] + line[match.end() :]).strip()
             claim = claim.strip("-*()[]`;:, ").strip() or line.strip()
             found.append(
                 ReportCheck(number, _cut(where, CHECK_WHERE_MAX), _cut(claim, CHECK_CLAIM_MAX))

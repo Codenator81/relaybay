@@ -72,7 +72,7 @@ _REFERENCE_RES = (
 # Values that look like a secret wherever they appear (notes, any field), by detector id (the
 # ids are stable: a policy disables detectors by id).
 _SECRET_VALUE_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
     ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}")),
     ("gitlab-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}")),
@@ -130,9 +130,22 @@ _SECRET_SPOTS: tuple[tuple[str, re.Pattern[str], re.Pattern[str] | None], ...] =
     ),
 )
 # `name=value` / `name: value` where the name says secret: the value must be a reference.
+# The name's parts are bounded: unbounded `[\w-]*` on both sides of the keywords backtracks
+# quadratically over a long run of word characters (a base64url blob).
+_SECRET_NAME_PART = r"[\w-]{0,64}(?:pass|pwd|token|secret|key)[\w-]{0,64}"
 _ASSIGNMENT_RE = re.compile(
-    r"(?<![\w-])([\w-]*(?:pass|pwd|token|secret|key)[\w-]*)(\s*=\s*|\s*:\s*)" + _VALUE,
+    r"(?<![\w-])(" + _SECRET_NAME_PART + r")(\s*=\s*|\s*:\s*)" + _VALUE,
     re.IGNORECASE,
+)
+# For masking only: also a quoted name, as in JSON `"password": "x"`, a Python repr
+# `'password': 'x'` or JSON inside a JSON string `\"password\":\"x\"`.
+_REDACT_ASSIGNMENT_RE = re.compile(
+    r"(?<![\w-])(" + _SECRET_NAME_PART + r")(\\?[\"']?\s*[=:]\s*)" + _VALUE,
+    re.IGNORECASE,
+)
+# Field names whose string value is a secret wherever it appears (masking of structured data).
+_SECRET_FIELD_RE = re.compile(
+    r"pass|pwd|token|secret|key|credential|private|authorization|cookie", re.IGNORECASE
 )
 # `name: value` written as prose counts only for these names (so "key: rotate yearly" passes).
 _PROSE_SECRET_RE = re.compile(r"pass|pwd|token|secret|api[_-]?key", re.IGNORECASE)
@@ -257,7 +270,8 @@ def _mask_assignment(match: re.Match[str]) -> str:
 
 
 _PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?"
+    r"(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)"
 )
 _TOKEN_SHAPES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(token\s+)[A-Za-z0-9._~+/=-]{6,}", re.I), r"\1***"),
@@ -267,14 +281,21 @@ _TOKEN_SHAPES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def is_secret_field(name: str) -> bool:
+    """A field name whose string value is masked whole in structured data (`api_key`,
+    `password`, `Authorization`, `Set-Cookie`)."""
+    return bool(_SECRET_FIELD_RE.search(name))
+
+
 def redact(text: str) -> str:
-    """`text` with obvious secret values masked (for the live-actions journal): everything
-    `check_secret` refuses, plus `token <value>`."""
+    """`text` with obvious secret values masked (for the live-actions journal and a run's
+    stored lines): everything `check_secret` refuses, plus `token <value>` and a quoted secret
+    name before its value (`"password": "x"`)."""
     text = _PRIVATE_KEY_RE.sub("***", text)
     for _, pattern, command in _SECRET_SPOTS:
         if command is None or command.search(text):
             text = pattern.sub(_mask_spot, text)
-    text = _ASSIGNMENT_RE.sub(_mask_assignment, text)
+    text = _REDACT_ASSIGNMENT_RE.sub(_mask_assignment, text)
     for pattern, replacement in _TOKEN_SHAPES:
         text = pattern.sub(replacement, text)
     return text
