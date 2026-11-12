@@ -1,0 +1,50 @@
+{#- One turn of a run, loaded when its row is opened in the Agent block: the report its result
+    became, with its verified marks, then its stored stream-json lines (masked), tool calls with
+    their results folded, subagent work nested under the call that started it. Expects: run,
+    turn, report (or None), checks, warning, items. -#}
+{%- macro event_list(list) -%}
+<ul class="run-events">
+  {% for e in list %}
+  {% if e.kind == "tool" %}
+  <li class="run-event run-event-tool{% if e.is_error %} is-error{% endif %}">
+    <details>
+      <summary><strong>{{ e.name }}</strong> <code>{{ e.text|truncate(200) }}</code>{% if e.children %} <span class="muted">({{ e.children|length }} subagent item{{ "s" if e.children|length != 1 }})</span>{% endif %}{% if e.result is none %} <span class="muted">no result</span>{% elif e.is_error %} <span class="muted">error</span>{% endif %}</summary>
+      {% if e.text|length > 200 %}<pre>{{ e.text }}</pre>{% endif %}
+      {% if e.children %}{{ event_list(e.children) }}{% endif %}
+      {% if e.result is not none %}<pre class="run-event-result">{{ e.result }}</pre>{% endif %}
+    </details>
+  </li>
+  {% elif e.kind == "text" %}
+  <li class="run-event run-event-text"><pre>{{ e.text }}</pre></li>
+  {% elif e.kind == "refusal" %}
+  <li class="run-event run-event-refusal">Refused: <strong>{{ e.name }}</strong> <span class="muted">{{ e.text }}</span></li>
+  {% elif e.kind == "tool_result" %}
+  <li class="run-event{% if e.is_error %} is-error{% endif %}"><span class="muted">tool result</span> <pre>{{ e.text }}</pre></li>
+  {% elif e.kind == "result" %}
+  <li class="run-event"><span class="muted">result ({{ e.name }})</span></li>
+  {% elif e.kind == "init" %}
+  <li class="run-event muted">session started{% if e.name %} · {{ e.name }}{% endif %}</li>
+  {% elif e.kind == "truncated" %}
+  <li class="run-event muted">{{ e.name }} line over the size limit, its head only: <pre>{{ e.text }}</pre></li>
+  {% else %}
+  <li class="run-event muted">{{ e.name }}{% if e.text %}: {{ e.text }}{% endif %}</li>
+  {% endif %}
+  {% endfor %}
+</ul>
+{%- endmacro %}
+<div class="run-turn-body">
+  {% if report %}
+  <article class="report">
+    <header class="report-head">
+      {% with state = report.state, size = report.size %}{% include "_report_badges.html" %}{% endwith %}
+      <span class="muted">report #{{ report.id }} · {{ report.author }}</span>
+    </header>
+    <div class="markdown">{{ report.body_md|markdown }}</div>
+    {% include "_report_checks.html" %}
+  </article>
+  {% else %}
+  <p class="muted">No report: the turn ended without a result.</p>
+  {% endif %}
+  <h4>Events <span class="col-count">{{ turn.events }}</span></h4>
+  {% if items %}{{ event_list(items) }}{% else %}<p class="muted">No lines stored for this turn.</p>{% endif %}
+</div>

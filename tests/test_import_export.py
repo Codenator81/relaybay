@@ -1280,7 +1280,15 @@ async def test_a_stale_hash_does_not_migrate(
         for table in ("task_pr", "task_repo", "project_repo"):
             conn.execute(f"DROP TABLE {table}")
         conn.execute("DROP INDEX task_session_open_session")
-        for table in ("run_worktree", "run_turn", "run", "app_setting", "project_run_defaults"):
+        for table in (
+            "report_check",
+            "run_event",
+            "run_worktree",
+            "run_turn",
+            "run",
+            "app_setting",
+            "project_run_defaults",
+        ):
             conn.execute(f"DROP TABLE {table}")
         conn.execute("PRAGMA user_version = 14")
         conn.commit()

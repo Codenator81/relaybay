@@ -48,7 +48,8 @@ from relaybay.domain.rules import (
     rules_line,
     rules_markdown,
 )
-from relaybay.domain.runs import Run, RunView
+from relaybay.domain.run_events import EventItem
+from relaybay.domain.runs import Run, RunTurn, RunView
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, LINK_FIELDS, LINK_NAMES, TASK_FIELDS
 from relaybay.domain.usage import UsageReport, UsageTotal
@@ -1237,11 +1238,55 @@ def run_status(task: Task, view: RunView | None) -> str:
     if view.turns:
         lines.append(f"Turns ({len(view.turns)}, the latest {RUN_TURNS_SHOWN} shown):")
         for turn in view.turns[-RUN_TURNS_SHOWN:]:
+            report = f", report #{turn.report_id}" if turn.report_id else ""
             lines.append(
                 f"- #{turn.seq} {turn.state} by {turn.sent_by}, queued {turn.queued_at[:19]}Z,"
-                f" {turn.tokens:,} tokens"
+                f" {turn.tokens:,} tokens, {turn.events:,} lines{report}"
             )
+    if view.last_report is not None:
+        lines.append(f"Last turn's report: {_cut(view.last_report, RUN_REPORT_LINE_MAX)}")
+    counts = view.last_counts
+    if counts.get("all"):
+        kinds = ", ".join(
+            f"{k} {n:,}" for k, n in sorted(counts.items()) if k not in ("all", "subagent")
+        )
+        lines.append(
+            f"Lines of the latest turn: {counts['all']:,} ({kinds}; {counts['subagent']:,} from"
+            " subagents). Read them with run_events."
+        )
     return "\n".join(lines)
+
+
+RUN_REPORT_LINE_MAX = 300
+RUN_EVENTS_OUTPUT_MAX = 20_000
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def run_events(run: Run, turn: RunTurn, items: list[EventItem]) -> str:
+    """A turn's lines, one short line per item, already masked; subagent items indented. Cut
+    at RUN_EVENTS_OUTPUT_MAX characters."""
+    shown = f", {len(items)} item(s) of them shown." if items else "; none shown."
+    out = [f"Run {run.id} turn {turn.seq} ({turn.state}): {turn.events:,} lines stored{shown}"]
+    size = len(out[0])
+    for item in items:
+        indent = "  " if item.parent else ""
+        name = f" {item.name}" if item.name else ""
+        text = f": {item.text}" if item.text else ""
+        result = ""
+        if item.kind == "tool" and item.result is not None:
+            result = " -> error" if item.is_error else " -> ok"
+            if item.result:
+                result += f" {_cut(item.result, 80)}"
+        line = f"{indent}#{item.seq} {item.kind}{name}{text}{result}"
+        if size + len(line) + 1 > RUN_EVENTS_OUTPUT_MAX:
+            out.append(f"(cut at {RUN_EVENTS_OUTPUT_MAX:,} characters; pass from_seq={item.seq})")
+            break
+        out.append(line)
+        size += len(line) + 1
+    return "\n".join(out)
 
 
 def run_settings_saved(task: Task, run: Run) -> str:

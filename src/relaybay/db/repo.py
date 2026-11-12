@@ -44,8 +44,10 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
+from relaybay.domain.reports import ReportCheck
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
+from relaybay.domain.run_events import StoredLine, StreamEvent, unpack
 from relaybay.domain.runs import Run, RunDefaults, RunTurn, RunWorktree
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile, UsageLine
@@ -907,6 +909,38 @@ async def insert_report(
         (task_id, session_id, author, state, size, summary, body_md, now),
     )
     return int(cur.lastrowid or 0)
+
+
+async def get_report(conn: aiosqlite.Connection, report_id: int) -> Report | None:
+    row = await _one(conn, "SELECT * FROM report WHERE id = ?", (report_id,))
+    return _report(row) if row else None
+
+
+async def insert_report_checks(
+    conn: aiosqlite.Connection, report_id: int, checks: list[ReportCheck]
+) -> None:
+    await conn.executemany(
+        "INSERT INTO report_check (report_id, line, location, claim) VALUES (?, ?, ?, ?)",
+        [(report_id, c.line, c.where, c.claim) for c in checks],
+    )
+
+
+async def report_checks(
+    conn: aiosqlite.Connection, report_ids: list[int]
+) -> dict[int, list[ReportCheck]]:
+    """The `verified:` marks of each report, by report id, in line order."""
+    if not report_ids:
+        return {}
+    marks = ", ".join("?" for _ in report_ids)
+    rows = await _all(
+        conn,
+        f"SELECT * FROM report_check WHERE report_id IN ({marks}) ORDER BY report_id, line, id",
+        tuple(report_ids),
+    )
+    out: dict[int, list[ReportCheck]] = {}
+    for r in rows:
+        out.setdefault(r["report_id"], []).append(ReportCheck(r["line"], r["location"], r["claim"]))
+    return out
 
 
 async def list_reports(conn: aiosqlite.Connection, task_id: int, limit: int) -> list[Report]:
@@ -4700,9 +4734,19 @@ _TURN_FIELDS = (
 )
 
 
+_TURN_EXTRA = ("report_summary", "report_state", "report_size", "events")
+
+
 def _turn(row: aiosqlite.Row) -> RunTurn:
     denied = json.loads(row["denied_tools"]) if row["denied_tools"] else []
-    return RunTurn(**{k: row[k] for k in _TURN_FIELDS}, denied_tools=denied)
+    keys = row.keys()
+    extra = {k: row[k] for k in _TURN_EXTRA if k in keys}
+    return RunTurn(
+        **{k: row[k] for k in _TURN_FIELDS},
+        denied_tools=denied,
+        report_id=row["report_id"],
+        **extra,
+    )
 
 
 async def insert_turn(
@@ -4728,8 +4772,97 @@ async def get_turn(conn: aiosqlite.Connection, turn_id: int) -> RunTurn | None:
 
 
 async def list_turns(conn: aiosqlite.Connection, run_id: int) -> list[RunTurn]:
-    rows = await _all(conn, "SELECT * FROM run_turn WHERE run_id = ? ORDER BY seq", (run_id,))
+    """With each turn's report first line and the number of its stored lines."""
+    rows = await _all(
+        conn,
+        "SELECT t.*, r.summary AS report_summary, r.state AS report_state,"
+        " r.size AS report_size,"
+        " (SELECT COUNT(*) FROM run_event e WHERE e.turn_id = t.id) AS events"
+        " FROM run_turn t LEFT JOIN report r ON r.id = t.report_id"
+        " WHERE t.run_id = ? ORDER BY t.seq",
+        (run_id,),
+    )
     return [_turn(r) for r in rows]
+
+
+async def set_turn_report(conn: aiosqlite.Connection, turn_id: int, report_id: int) -> None:
+    await conn.execute("UPDATE run_turn SET report_id = ? WHERE id = ?", (report_id, turn_id))
+
+
+async def insert_run_events(
+    conn: aiosqlite.Connection, turn_id: int, events: list[StreamEvent]
+) -> None:
+    """A batch of a turn's lines, already masked and compressed by the runner. A seq stored
+    already (a batch retried) is kept as it was."""
+    await conn.executemany(
+        "INSERT OR IGNORE INTO run_event (turn_id, seq, type, subtype, parent_tool_use_id, ts,"
+        " size, truncated, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                turn_id,
+                e.seq,
+                e.type,
+                e.subtype,
+                e.parent_tool_use_id,
+                e.ts,
+                e.size,
+                int(e.truncated),
+                e.data,
+            )
+            for e in events
+        ],
+    )
+
+
+async def list_run_events(
+    conn: aiosqlite.Connection,
+    turn_id: int,
+    *,
+    from_seq: int | None = None,
+    limit: int | None = None,
+    last: bool = False,
+) -> list[StoredLine]:
+    """A turn's lines in order, unpacked: from `from_seq` on, or the last `limit` with `last`."""
+    where, params = "turn_id = ?", [turn_id]
+    if from_seq is not None:
+        where += " AND seq >= ?"
+        params.append(from_seq)
+    order = "DESC" if last else "ASC"
+    sql = (
+        "SELECT seq, type, subtype, parent_tool_use_id, truncated, data FROM run_event"
+        f" WHERE {where} ORDER BY seq {order}"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = await _all(conn, sql, tuple(params))
+    if last:
+        rows.reverse()
+    return [
+        StoredLine(
+            r["seq"],
+            r["type"],
+            r["subtype"],
+            r["parent_tool_use_id"],
+            bool(r["truncated"]),
+            unpack(r["data"]),
+        )
+        for r in rows
+    ]
+
+
+async def run_event_counts(conn: aiosqlite.Connection, turn_id: int) -> dict[str, int]:
+    """A turn's lines by type, with `all` and `subagent` (lines with a parent_tool_use_id)."""
+    rows = await _all(
+        conn,
+        "SELECT type, COUNT(*) AS n, SUM(parent_tool_use_id IS NOT NULL) AS sub FROM run_event"
+        " WHERE turn_id = ? GROUP BY type ORDER BY type",
+        (turn_id,),
+    )
+    counts = {r["type"]: int(r["n"]) for r in rows}
+    counts["all"] = sum(counts.values())
+    counts["subagent"] = sum(int(r["sub"] or 0) for r in rows)
+    return counts
 
 
 async def active_turn(conn: aiosqlite.Connection, run_id: int) -> RunTurn | None:

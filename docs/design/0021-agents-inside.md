@@ -22,6 +22,13 @@
   below); relaybay's hooks and MCP server passed with `--settings` / `--mcp-config` when the user
   settings lack them, replacing 1a's refusal; MCP `run_start` for coordinators and `run_status` for
   everyone; one open run per worktree path. Removing worktrees stays with PR 5.
+- PR 2 shipped: migrations 0035 `run_event` (every stream-json line of a turn, each string masked
+  with the journal's `redact` before the line is compressed with zlib, `parent_tool_use_id` kept,
+  a line over 4 MiB as its masked head; stored in batches of 200 lines or 0.5 s) and 0036
+  `report_check`; the turn's final text as a full report on the card with its refusals, the Agent
+  block's folded report and nested events per turn, `verified: <where>` marks from runs and
+  `report_add` with the rules warning on an M or L report without any, MCP `run_events` and the
+  report line and event counts in `run_status`. Retention and deletes stay with PR 5 (C3).
 - The probes of 0012 were run on 2026-11-10 and the design relies on them
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
   accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).
@@ -266,7 +273,7 @@ Only these stay with the owner; everything else the coordinator decides.
 |---|---|---|---|
 | C1 | First slice | Headless step-by-step runner with questions, approvals, limits and lifecycle in 0.9; terminal in 0.10 | Structured events and the fake already exist; the terminal adds nothing without questions and approvals |
 | C2 | Default permission mode for a run | `auto`, with explicit `--allowedTools`; bypass only by the owner's word per card | Probe 3 passed in `auto`. In Manual (the `-p` default) a call needing approval is denied and the turn ends normally (probe 2); a denial becomes an approval request either way |
-| C3 | Keep `run_event` in the database | Yes, masked, deleted on close for "saw a secret" or live runs, retention `keep 30 days` per project | Full reports and nested subagent events need it; the masking is the journal's |
+| C3 | Keep `run_event` in the database | **Decided by the coordinator:** yes, masked with the journal's masking; deleted on close for "saw a secret" or live runs and retention `keep 30 days` per project come with PR 5 | Full reports and nested subagent events need it; the masking is the journal's |
 | C4 | Slots and memory | 2 turns at once; 1500 MB free before a turn, both settings; below it the turn queues with its reason and a Start anyway button | Two heavy builds froze a 16 GB machine; 1.8 to 2.4 GB is usually free there, so 3000 would queue everything |
 | C5 | `psutil` for free memory | No; platform code (`GlobalMemoryStatusEx`, `sysctl`, `/proc/meminfo`) | One dependency less in the frozen build |
 | C6 | Default model and effort | Opus, medium; the other model as a card field set by the coordinator or the owner | Today's practice |
@@ -299,7 +306,7 @@ practice go ahead of the plan.
 | 0 | End the wake-up long polls (`/hooks/claude-code/wait`) when the server is told to stop, so a stop no longer waits for the graceful timeout | none | S |
 | 1 | The run: the login check before Start (`claude auth status`, the doctor line, the Settings switch for API keys), task defaults on the project (model, effort, profile, `--chrome`), `run`, `run_worktree` and `run_turn` tables, the runner (cwd a project folder or a repository, worktrees per touched repository with `--add-dir`, first turn, `--resume`, stop, end, process tree), the user layer loaded and relaybay's hooks from one source, hooks link turns by `RELAYBAY_RUN_ID` in the environment, the Agent block on the card, `run_start` / `run_status` over MCP | 0030 `project_run_defaults`, 0031 `run`, 0032 `run_worktree` (run, repository, path, branch, created by the run, removed at), 0033 `run_turn` | L (4.5) |
 | 1c | Open a run's session in the Claude desktop app (`claude --desktop --resume`, probe 14 of 0012) with the run held "with the owner" and **Back to the program**; permission mode, model and effort between turns (the owner any, a coordinator only lower with MCP `run_settings`), journaled | 0034 `run_with_owner` (columns on `run`) | S (1) |
-| 2 | `run_event` stored masked, the full turn report on the card with nested subagent events and refusals of `auto` mode, `verified: <where>` marks and the rules warning | 0034 `run_event`, 0035 `report_check` | M (2) |
+| 2 | `run_event` stored masked, the full turn report on the card with nested subagent events and refusals of `auto` mode, `verified: <where>` marks and the rules warning | 0035 `run_event`, 0036 `report_check` | M (2) |
 | 3 | Questions as objects ([0022](0022-questions-and-approvals.md)): `question_ask` with the "look at this" kind, the Inbox, the answer as a new turn, defaults by deadline | 0036 `question` | M (2) |
 | 4 | Approvals as objects ([0022](0022-questions-and-approvals.md)): `approval_request`, policy rules, the guard check, the decision as a new turn | 0037 `approval`, policy keys (data, no migration) | M (2.5) |
 | 5 | Slots and memory as settings, queueing with a reason and Start anyway, the brake and budgets on runs, lifecycle (worktree removal) and retention | 0038 `run_lifecycle` (`secret_seen_at`, `touched_live_at`, `transcript_path`, `deleted_at`, `project.run_retention`) | M (2) |

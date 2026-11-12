@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from relaybay.domain.errors import ValidationError
+from relaybay.domain.reports import parse_report
 
 RUN_STATUSES = ("queued", "running", "waiting", "idle", "stopped", "ended", "lost")
 OPEN_STATUSES = tuple(s for s in RUN_STATUSES if s != "ended")
@@ -251,6 +252,11 @@ class RunTurn:
     cache_write_tokens: int
     denials: int
     denied_tools: list[str] = field(default_factory=list)
+    report_id: int | None = None  # the report the turn's result became
+    report_summary: str | None = None
+    report_state: str | None = None
+    report_size: str | None = None
+    events: int = 0  # stored stream-json lines
 
     @property
     def state(self) -> str:
@@ -309,6 +315,26 @@ class RunView:
     turns: list[RunTurn]
     totals: RunTotals
     worktrees: list[RunWorktree] = field(default_factory=list)
+    last_report: str | None = None  # the first line of the last turn's report
+    last_counts: dict[str, int] = field(default_factory=dict)  # its lines by type
+
+
+def turn_report(
+    run_id: int, seq: int, outcome: str, text: str, refusals: list[tuple[str, str]]
+) -> str:
+    """The report a turn's result becomes on the card: the final text in full, after a neutral
+    first line when the agent wrote no `state · size · gist` one, then the refusals."""
+    text = text.strip()
+    state, size, _ = parse_report(text) if text else (None, None, "")
+    parts = []
+    if state is None or size is None:
+        parts.append(f"Run {run_id}, turn {seq}: {outcome.replace('_', ' ')}")
+    parts.append(text or "(the turn ended without a final text)")
+    if refusals:
+        lines = [f"**Refusals** ({len(refusals)}, permission denials of the turn):"]
+        lines += [f"- {tool}: `` {shown.replace('`', "'")} ``" for tool, shown in refusals]
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
 
 
 def totals(turns: list[RunTurn]) -> RunTotals:

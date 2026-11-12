@@ -103,6 +103,8 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               autonomy (project|on|off), answer_received_at, answer_message_id,
               rank   -- the owner's order within the stage column, lower first; INDEX (project_id, stage, rank)
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
+report_check  id, report_id, line, location (the `where` of `verified: <where>`), claim
+              -- INDEX (report_id, line); parsed when the report is written
 decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
               valid_to, recorded_at, superseded_at, superseded_by (decision.id)
@@ -149,8 +151,11 @@ run           id, task_id, project_id, session_id (kind 'run'), cwd, cwd_repo_id
               -- one open run per task (UNIQUE index WHERE ended_at IS NULL)
 run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, queued_at,
               started_at, ended_at, pid, outcome, result_subtype, exit_code, num_turns,
-              duration_ms, input/output/cache_read/cache_write_tokens, denials, denied_tools
+              duration_ms, input/output/cache_read/cache_write_tokens, denials, denied_tools,
+              report_id (the report its result became)
               -- one running turn per run (UNIQUE index)
+run_event     id, turn_id, seq (UNIQUE per turn), type, subtype, parent_tool_use_id (nests a
+              subagent's lines), ts, size, truncated (0|1), data (zlib of the masked line)
 run_worktree  id, run_id, project_repo_id, repo_name, source_path, path, path_key, branch,
               created_by_run (0|1), copied (JSON names), created_at, removed_at
               -- one open run per path_key, checked by the service

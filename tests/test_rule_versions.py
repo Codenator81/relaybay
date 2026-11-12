@@ -602,7 +602,7 @@ async def test_a_report_without_the_format_warns_and_strict_refuses(tmp_path: Pa
     assert len(notes) == 1 and notes[0].startswith("Warning (rules): the first line of a report")
     assert "state · size · gist" in notes[0]
     with collect_notes() as notes:
-        await service.add_report(task.key, "verified locally · M · ok")
+        await service.add_report(task.key, "verified locally · M · ok (verified: pytest)")
     assert notes == []
     await service.close()
 

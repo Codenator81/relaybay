@@ -4,6 +4,7 @@ its hooks report back through the real forwarder."""
 import os
 import sqlite3
 import sys
+import zlib
 from pathlib import Path
 
 from relaybay import doctor
@@ -270,3 +271,64 @@ def test_stop_while_the_process_ends_after_its_result_cancels_the_waiting_text(
     assert (stopped["status"], stopped["status_reason"]) == ("stopped", "stopped by owner")
     assert [t["outcome"] for t in runs.turns(run["id"])] == ["success", "cancelled"]
     assert len(runs.trace("argv")) == 1  # no second process
+
+
+# Built at run time so no token shape sits in the source.
+GITHUB_TOKEN = "ghp_" + "Fa1Ke2To3Ke4" * 3
+ANTHROPIC_KEY = "sk-ant-" + "api03-" + "nOtArEaLkEy0" * 4
+
+
+def test_a_turn_with_a_subagent_lands_in_full_masked_with_nested_lines(runs: Runs) -> None:
+    final = "verified · M · the scan is done\n\n- the index holds (verified: grep in the fake)"
+    runs.scenario(
+        {
+            "turn": [
+                {
+                    "tool": "Agent",
+                    "input": {"description": "scan", "prompt": "look"},
+                    "steps": [
+                        {"tool": "Grep", "input": {"pattern": "x"}, "result": "3 hits"},
+                        {"text": "The subagent found 3 hits."},
+                    ],
+                    "result": "subagent finished",
+                },
+                {"tool": "Read", "input": {"file_path": "a.env"}, "result": f"T={GITHUB_TOKEN}"},
+                {"text": f"Key seen: {ANTHROPIC_KEY}"},
+                {"tool": "Bash", "input": {"command": f"git push --token {GITHUB_TOKEN}"}},
+                {"text": final},
+            ]
+        }
+    )
+    with runs.stand.board() as board:
+        runs.start(board)
+        run = runs.wait_run(lambda r: r["status"] == "idle")
+        [turn] = runs.turns(run["id"])
+        panel = board.get(f"/p/acme-shop/t/acme-shop-1/run/{run['id']}/turns/1").text
+    assert turn["report_id"] and turn["denials"] == 1
+    [report] = runs.rows("SELECT * FROM report WHERE id = ?", turn["report_id"])
+    assert report["body_md"].startswith(final) and report["size"] == "M"
+    assert "**Refusals** (1, permission denials of the turn):" in report["body_md"]
+    assert "- Bash: `` git push --token *** ``" in report["body_md"]
+    [check] = runs.rows("SELECT * FROM report_check WHERE report_id = ?", report["id"])
+    assert check["location"] == "grep in the fake"
+    events = runs.rows("SELECT * FROM run_event WHERE turn_id = ? ORDER BY seq", turn["id"])
+    assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+    assert {e["type"] for e in events} >= {"system", "assistant", "user", "result"}
+    nested = [e for e in events if e["parent_tool_use_id"]]
+    assert len(nested) >= 3  # the subagent's Grep call, its result and its text
+    lines = [zlib.decompress(e["data"]).decode("utf-8") for e in events]
+    assert all(GITHUB_TOKEN not in x and ANTHROPIC_KEY not in x for x in lines)
+    assert any("ghp_***" in x for x in lines) and any("sk-***" in x for x in lines)
+    assert "Grep" in panel and "3 hits" in panel and "Refused" in panel
+    assert GITHUB_TOKEN not in panel
+    # Nowhere in the database file, in any table, compressed or not.
+    runs.stand.mcp("task_get", task="acme-shop-1")  # a write-free call; then read the files
+    for path in (Path(runs.stand.settings.db_path), Path(f"{runs.stand.settings.db_path}-wal")):
+        if path.exists():
+            data = path.read_bytes()
+            assert GITHUB_TOKEN.encode() not in data and ANTHROPIC_KEY.encode() not in data
+    listed = runs.stand.mcp("run_events", run=run["id"], limit=200)
+    assert f"Run {run['id']} turn 1 (success)" in listed and GITHUB_TOKEN not in listed
+    assert "  #" in listed  # subagent lines indented under their call
+    status = runs.stand.mcp("run_status", task="acme-shop-1")
+    assert "Last turn's report: verified · M · the scan is done" in status

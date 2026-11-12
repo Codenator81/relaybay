@@ -46,7 +46,7 @@ from relaybay.domain.errors import (
 from relaybay.domain.intake import autonomy_reason
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
-from relaybay.domain.rules import rules_markdown
+from relaybay.domain.rules import rules_markdown, verified_marks_problem
 from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage, parse_stage
 from relaybay.domain.tasks import is_archived
 from relaybay.domain.usage import UsageReport
@@ -1516,6 +1516,25 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/p/{slug}/t/{key}/run", response_class=HTMLResponse)
     async def run_fragment(request: Request, slug: str, key: str):
         return await run_panel(request, await find_task(slug, key))
+
+    @router.get("/p/{slug}/t/{key}/run/{run_id}/turns/{seq}", response_class=HTMLResponse)
+    async def run_turn_fragment(request: Request, slug: str, key: str, run_id: int, seq: int):
+        """A turn's report and its stored lines, loaded when the owner opens the turn."""
+        task = await find_task(slug, key)
+        run, turn, report, checks, items = await service.run_turn_detail(
+            await run_of(task, run_id), seq
+        )
+        problem = verified_marks_problem(report.size, len(checks)) if report else None
+        return render(
+            request,
+            "_run_turn.html",
+            run=run,
+            turn=turn,
+            report=report,
+            checks=checks,
+            warning=f"Warning (rules): {problem}" if problem else None,
+            items=items,
+        )
 
     async def run_write(
         request: Request,

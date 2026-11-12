@@ -14,13 +14,14 @@ import pytest
 
 from relaybay.db import repo
 from relaybay.domain.errors import ConflictError, NotFoundError, ValidationError
+from relaybay.domain.reports import parse_checks
 from relaybay.mcp_server import format as fmt
 from relaybay.runner.auth import LoginState
 from relaybay.runner.claude_cli import TurnSpec
 from relaybay.runner.layers import LayerState
 from relaybay.runner.manager import RunnerConfig
-from relaybay.runner.stream import Result
-from relaybay.service import Service
+from relaybay.runner.stream import Refusal, Result, read_line
+from relaybay.service import _NOTES, Service
 from tests.e2e.conftest import make_git_repo
 
 SUBSCRIPTION = LoginState(True, "claude.ai", "max", 0, readable=True)
@@ -684,3 +685,209 @@ async def test_back_waits_for_the_launch_and_end_meanwhile_records_no_event(
     assert refusals and run.id not in svc.desktop_launching
     assert after.status == "ended" and not after.with_owner and after.desktop_opened_at
     assert await run_events(svc, "run.opened_in_desktop") == []
+
+
+# --- a turn's report, its lines and the verified marks --------------------------------------
+
+MARKS_WARNING = "Warning (rules): an M or L report has no verified marks"
+
+
+def result(text: str, refusals: list[Refusal] | None = None) -> Result:
+    refusals = refusals or []
+    return Result(
+        "success",
+        False,
+        1,
+        10,
+        1,
+        2,
+        3,
+        4,
+        len(refusals),
+        [r.tool for r in refusals],
+        text,
+        refusals,
+    )
+
+
+async def finish(svc: Service, run_id: int, res: Result, lines: list[dict[str, Any]] = ()) -> int:
+    turn_id = stub(svc).active.pop(run_id)
+    await svc.turn_init(turn_id, CC_A)
+    events = [read_line(json.dumps(line), n)[0] for n, line in enumerate(lines, start=1)]
+    if events:
+        await svc.turn_events(turn_id, events)
+    await svc.turn_done(turn_id, "success", res, 0, None)
+    return turn_id
+
+
+async def report_events(svc: Service) -> list[dict[str, Any]]:
+    async with svc._r.execute(
+        "SELECT payload FROM event WHERE kind = 'report.added' ORDER BY id"
+    ) as cur:
+        return [json.loads(r[0]) for r in await cur.fetchall()]
+
+
+async def test_the_turns_result_lands_in_full_with_its_lines_nested(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    text = "verified · M · checkout fixed\n\n" + "\n".join(f"line {n}" for n in range(300))
+    text += "\n- tests pass (verified: pytest on Windows)"
+    lines = [
+        {"type": "system", "subtype": "init", "session_id": CC_A, "model": "demo"},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "toolu_A", "name": "Agent", "input": {"x": 1}}
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_A",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "toolu_B", "name": "Grep", "input": {"q": "x"}}
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "parent_tool_use_id": "toolu_A",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_B", "content": "hit"}]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_A", "content": "done"}]
+            },
+        },
+        {"type": "result", "subtype": "success", "result": text},
+    ]
+    turn_id = await finish(svc, run.id, result(text), lines)
+    task = await svc.get_task("acme-shop-1")
+    detail = await svc.task_detail(task.key)
+    [report] = detail.reports
+    assert report.body_md == text  # in full, the agent's own first line kept
+    assert (report.state, report.size, report.summary) == ("verified", "M", "checkout fixed")
+    assert report.author == f"acme-shop-1 run {run.id}"
+    assert [(c.line, c.where) for c in detail.checks[report.id]] == [(303, "pytest on Windows")]
+    assert detail.marks_warning(report) is None
+    _, turn, shown, checks, items = await svc.run_turn_detail(run.id, 1)
+    assert turn.id == turn_id and turn.report_id == report.id and turn.events == 6
+    assert shown is not None and shown.id == report.id and len(checks) == 1
+    [init, agent, final] = items
+    assert (init.kind, agent.kind, agent.name, agent.result) == ("init", "tool", "Agent", "done")
+    [grep] = agent.children
+    assert (grep.name, grep.result, grep.parent) == ("Grep", "hit", "toolu_A")
+    assert final.kind == "result"
+    view = await svc.run_view(task)
+    assert view is not None and view.last_report == "verified · M · checkout fixed"
+    assert view.last_counts == {
+        "all": 6,
+        "assistant": 2,
+        "result": 1,
+        "subagent": 2,
+        "system": 1,
+        "user": 2,
+    }
+    status = fmt.run_status(task, view)
+    assert "Last turn's report: verified · M · checkout fixed" in status
+    assert "Lines of the latest turn: 6 (" in status and "2 from subagents" in status
+
+
+async def test_refusals_show_in_the_report_and_a_neutral_first_line_without_one(
+    svc: Service,
+) -> None:
+    run = await svc.start_run("acme-shop-1")
+    refusals = [Refusal("Bash", "git push origin `main`"), Refusal("Write", "x")]
+    await finish(svc, run.id, result("Pushed nothing.", refusals))
+    [report] = (await svc.task_detail("acme-shop-1")).reports
+    first, rest = report.body_md.split("\n\n", 1)
+    assert first == f"Run {run.id}, turn 1: success" and report.state is None
+    assert rest.startswith("Pushed nothing.")
+    assert "**Refusals** (2, permission denials of the turn):" in rest
+    assert "- Bash: `` git push origin 'main' ``" in rest
+    await svc.send_to_run(run.id, "Again")
+    await finish(svc, run.id, result(""))
+    latest = (await svc.task_detail("acme-shop-1")).reports[0]
+    assert (
+        latest.body_md == f"Run {run.id}, turn 2: success\n\n(the turn ended without a final text)"
+    )
+
+
+async def test_marks_warning_for_m_and_l_never_for_s(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    await finish(svc, run.id, result("changed · M · half done\n\n- the form works"))
+    await svc.send_to_run(run.id, "Again")
+    await finish(svc, run.id, result("changed · L · done\n\n- form works `verified: browser`"))
+    await svc.send_to_run(run.id, "Again")
+    await finish(svc, run.id, result("changed · S · typo\n\n- fixed"))
+    payloads = await report_events(svc)
+    assert [any(MARKS_WARNING in w for w in p.get("warnings", [])) for p in payloads] == [
+        True,
+        False,
+        False,
+    ]
+    detail = await svc.task_detail("acme-shop-1")
+    s_report, l_report, m_report = detail.reports
+    assert detail.marks_warning(m_report).startswith(MARKS_WARNING)
+    assert detail.marks_warning(l_report) is None and detail.marks_warning(s_report) is None
+    assert [c.where for c in detail.checks[l_report.id]] == ["browser"]
+
+
+async def test_report_add_parses_marks_and_warns_over_mcp(svc: Service) -> None:
+    notes: list[str] = []
+    token = _NOTES.set(notes)
+    try:
+        await svc.add_report("acme-shop-1", "verified · M · login\n\n- works")
+        assert any(n.startswith(MARKS_WARNING) for n in notes)
+        notes.clear()
+        body = "verified · M · login\n\n- works (verified: pytest on Windows)\n- page ok"
+        body += " verified: browser at /p/acme-shop; and more"
+        _, report = await svc.add_report("acme-shop-1", body)
+        assert not [n for n in notes if MARKS_WARNING in n]
+    finally:
+        _NOTES.reset(token)
+    checks = (await repo.report_checks(svc._r, [report.id]))[report.id]
+    assert [(c.line, c.where) for c in checks] == [
+        (3, "pytest on Windows"),
+        (4, "browser at /p/acme-shop"),
+    ]
+    assert checks[0].claim == "works"
+
+
+def test_parse_checks_takes_the_where_up_to_a_bracket_or_the_line_end() -> None:
+    body = "x · M · y\n- a (verified: pytest)\n- b [verified: CI on 3 OSes]\n- c verified:"
+    body += "\nverified: d."
+    assert [(c.line, c.where) for c in parse_checks(body)] == [
+        (2, "pytest"),
+        (3, "CI on 3 OSes"),
+        (5, "d"),
+    ]
+
+
+async def test_run_events_is_short_masked_and_bounded(svc: Service) -> None:
+    secret = "ghp_" + "Q1w2E3r4T5y6" * 3
+    run = await svc.start_run("acme-shop-1")
+    lines = [
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": f"step {n} {secret} " + "z" * 500}]},
+        }
+        for n in range(150)
+    ]
+    await finish(svc, run.id, result("done"), lines)
+    found, turn, items = await svc.run_events(run.id, None, limit=40)
+    assert [i.seq for i in items] == list(range(111, 151))
+    assert all(len(i.text) <= 160 for i in items)
+    text = fmt.run_events(found, turn, items)
+    assert secret not in text and "ghp_***" in text
+    assert text.startswith(f"Run {run.id} turn 1 (success): 150 lines stored, 40 item(s)")
+    _, _, first = await svc.run_events(run.id, 1, limit=200, from_seq=1)
+    assert len(first) == 150
+    assert len(fmt.run_events(found, turn, first)) <= fmt.RUN_EVENTS_OUTPUT_MAX + 200
+    async with svc._r.execute("SELECT data FROM run_event") as cur:
+        blobs = [r[0] for r in await cur.fetchall()]
+    assert all(secret.encode() not in b for b in blobs)

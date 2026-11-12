@@ -167,7 +167,7 @@ async def test_closed_plan_warning_on_reports_and_progress(service: Service) -> 
     for n in (1, 2):
         await service.update_plan_step(key, n, "done", conformance="as planned")
     with collect_notes() as notes:
-        await service.add_report(key, "changed · M · step 3 still open")
+        await service.add_report(key, "changed · S · step 3 still open")
         await service.update_task(key, {"progress": "Two steps"})
     assert notes == []  # a step is still open
 
@@ -176,7 +176,7 @@ async def test_closed_plan_warning_on_reports_and_progress(service: Service) -> 
         await service.update_task(key, {"progress": "All three steps"})
     assert notes == []  # progress right after closing is the closing itself
     with collect_notes() as notes:
-        await service.add_report(key, "verified · M · all three steps")
+        await service.add_report(key, "verified · S · all three steps")
     assert notes == []  # the report that closes the plan never warns
     for state, warned in (
         ("changed", True),
@@ -185,7 +185,7 @@ async def test_closed_plan_warning_on_reports_and_progress(service: Service) -> 
         ("blocked", False),
     ):
         with collect_notes() as notes:
-            await service.add_report(key, f"{state} · M · more work")
+            await service.add_report(key, f"{state} · S · more work")
         assert (notes == [CLOSED]) is warned, state
     with collect_notes() as notes:
         saved = await service.update_task_checked(key, {"progress": "Rework of the form"})
@@ -205,9 +205,9 @@ async def test_closed_plan_warning_on_reports_and_progress(service: Service) -> 
 async def test_closed_plan_warning_outside_dev(service: Service) -> None:
     review = await planned(service, stage="review")
     await all_done(service, review)
-    await service.add_report(review, "verified · M · ready for review")
+    await service.add_report(review, "verified · S · ready for review")
     with collect_notes() as notes:
-        await service.add_report(review, "changed · M · fixed after the owner's comment")
+        await service.add_report(review, "changed · S · fixed after the owner's comment")
     assert notes == [CLOSED]  # code changed after the plan closed (any open stage)
     with collect_notes() as notes:
         await service.update_task(review, {"progress": "Fixed the comment"})
@@ -215,30 +215,30 @@ async def test_closed_plan_warning_outside_dev(service: Service) -> None:
 
     test = await planned(service, stage="test")
     await all_done(service, test)
-    await service.add_report(test, "verified · M · on test")
+    await service.add_report(test, "verified · S · on test")
     with collect_notes() as notes:
-        await service.add_report(test, "verified · M · checked again on test")
+        await service.add_report(test, "verified · S · checked again on test")
     assert notes == []  # verifying in test is not new work
 
 
 async def test_a_plan_closed_by_plan_set_counts_from_that_write(service: Service) -> None:
     key = await planned(service, stage="dev")
-    await service.add_report(key, "changed · M · step 1")
+    await service.add_report(key, "changed · S · step 1")
     for n in (1, 2):
         await service.update_plan_step(key, n, "done", conformance="as planned")
-    await service.add_report(key, "changed · M · step 2")
+    await service.add_report(key, "changed · S · step 2")
     await service.set_plan(key, STEPS[:2], reason="step 3 is not needed")  # closes the plan
     with collect_notes() as notes:
-        await service.add_report(key, "changed · M · both steps done")
+        await service.add_report(key, "changed · S · both steps done")
     assert notes == []  # the closing report, although reports exist after the last done step
     with collect_notes() as notes:
-        await service.add_report(key, "changed · M · more work")
+        await service.add_report(key, "changed · S · more work")
     assert notes == [CLOSED.replace("3/3", "2/2")]
 
 
 async def test_a_report_in_the_same_millisecond_is_not_after(service: Service) -> None:
     key = await planned(service, stage="dev")
-    _, report = await service.add_report(key, "changed · M · first")
+    _, report = await service.add_report(key, "changed · S · first")
     task = await service.get_task(key)
     assert not await repo.has_report_after(service._r, task.id, report.created_at)
     assert await repo.has_report_after(service._r, task.id, "2000-01-01T00:00:00.000+00:00")
@@ -250,9 +250,9 @@ async def test_closed_plan_is_a_warning_in_strict_mode_too(tmp_path: Path) -> No
     try:
         key = await planned(svc)
         await all_done(svc, key)
-        await svc.add_report(key, "verified · M · all done")
+        await svc.add_report(key, "verified · S · all done")
         with collect_notes() as notes:
-            _, report = await svc.add_report(key, "changed · M · more work")
+            _, report = await svc.add_report(key, "changed · S · more work")
         assert report.id and notes == [CLOSED]
     finally:
         await svc.close()
@@ -278,10 +278,10 @@ async def test_mcp_task_update_and_patch_carry_the_closed_plan_warning(
                 status="done",
                 conformance="as planned",
             )
-        assert CLOSED not in await call(session, "report_add", task=key, body="verified · M · done")
+        assert CLOSED not in await call(session, "report_add", task=key, body="verified · S · done")
         assert CLOSED in await call(session, "task_update", task=key, progress="More")
         assert CLOSED in await call(session, "task_patch", task=key, fields={"progress": "Again"})
-        assert CLOSED in await call(session, "report_add", task=key, body="verified · M · again")
+        assert CLOSED in await call(session, "report_add", task=key, body="verified · S · again")
 
 
 def test_reminder_says_the_plan_is_closed_only_in_dev() -> None:

@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from relaybay.domain.errors import ValidationError
+from relaybay.domain.run_events import unpack
 from relaybay.runner import desktop, proctree
 from relaybay.runner.auth import LoginState
 from relaybay.runner.claude_cli import (
@@ -22,9 +23,18 @@ from relaybay.runner.claude_cli import (
     find_claude,
     is_batch,
 )
-from relaybay.runner.manager import RunManager, RunnerConfig
+from relaybay.runner.manager import EVENT_BATCH, RunManager, RunnerConfig
 from relaybay.runner.proctree import ProcessTree
-from relaybay.runner.stream import LINE_MAX, Init, Result, parse_line
+from relaybay.runner.stream import (
+    HEAD_MAX,
+    LINE_MAX,
+    Init,
+    Refusal,
+    Result,
+    parse_line,
+    read_line,
+    truncated_event,
+)
 from tests.e2e.conftest import alive, poll
 
 ENV = dict(os.environ)
@@ -156,8 +166,9 @@ def test_parse_line_reads_init_and_result_only() -> None:
         ],
     }
     parsed = parse_line(json.dumps(result))
-    assert parsed == Result("success", False, 3, 1200, 1, 2, 3, 4, 1, ["Bash"])
-    assert "git push" not in repr(parsed)
+    assert parsed == Result(
+        "success", False, 3, 1200, 1, 2, 3, 4, 1, ["Bash"], "", [Refusal("Bash", "git push")]
+    )
     assert parse_line(json.dumps({"type": "assistant", "message": {}})) is None
     assert parse_line("not json") is None
     assert parse_line(" " * (LINE_MAX + 1)) is None
@@ -261,12 +272,20 @@ def test_closing_the_job_kills_what_is_left(tmp_path: Path) -> None:
 class Sink:
     def __init__(self) -> None:
         self.done: list[tuple[str, str | None, bool]] = []
+        self.batches: list[tuple[float, list]] = []
+        self.ended_at: float | None = None
+        self.result: Result | None = None
 
     async def turn_init(self, turn_id: int, claude_session_id: str) -> None:
         return None
 
+    async def turn_events(self, turn_id: int, events: list) -> None:
+        self.batches.append((time.monotonic(), events))
+
     async def turn_done(self, turn_id, outcome, result, code, reason, stopped) -> None:
         self.done.append((outcome, reason, stopped))
+        self.ended_at = time.monotonic()
+        self.result = result
 
 
 def manager(sink: Sink, monkeypatch: pytest.MonkeyPatch, child: str) -> RunManager:
@@ -380,3 +399,120 @@ def test_desktop_command_line_refuses_what_cmd_would_read_and_reads_the_reason(
     assert text.startswith("first second x") and len(text) == desktop.REASON_MAX
     assert text.endswith("…") and not reason.exists()
     assert desktop.take_reason(reason) == ""
+
+
+# Built at run time so no token shape sits in the source.
+GITHUB_TOKEN = "ghp_" + "a1B2c3D4e5F6" * 3
+ANTHROPIC_KEY = "sk-ant-" + "api03-" + "Zx9Yw8Vu7Ts6" * 4
+
+
+def stored(raw: str) -> str:
+    event, _ = read_line(raw, 1)
+    assert event is not None
+    return json.dumps(unpack(event.data))
+
+
+def test_every_line_is_stored_masked_also_behind_json_escapes() -> None:
+    line = {
+        "type": "user",
+        "parent_tool_use_id": "toolu_1",
+        "message": {
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_2", "content": f"x\n{GITHUB_TOKEN}"},
+                {"type": "text", "text": f"key {ANTHROPIC_KEY}"},
+            ]
+        },
+    }
+    raw = json.dumps(line)
+    assert "\\n" + GITHUB_TOKEN in raw  # the escape sits right before the token in the line
+    event, item = read_line(raw + "\n", 7)
+    assert item is None and event is not None
+    assert (event.seq, event.type, event.parent_tool_use_id) == (7, "user", "toolu_1")
+    text = json.dumps(unpack(event.data))
+    assert GITHUB_TOKEN not in text and ANTHROPIC_KEY not in text
+    assert "ghp_***" in text and "sk-***" in text
+    escaped = "".join(f"\\u{ord(c):04x}" for c in GITHUB_TOKEN)
+    assert GITHUB_TOKEN not in stored('{"type": "assistant", "x": "' + escaped + '"}')
+    assert GITHUB_TOKEN not in stored(f"not json {GITHUB_TOKEN}")
+    deep = "[" * 200_000 + f'"{GITHUB_TOKEN}"' + "]" * 200_000
+    event, item = read_line(deep, 2)  # deeper than Python follows: stored as text, masked
+    assert item is None and event is not None and event.type == "invalid"
+    assert GITHUB_TOKEN not in json.dumps(unpack(event.data))
+
+
+def test_the_result_text_and_refusal_inputs_are_masked() -> None:
+    result = {
+        "type": "result",
+        "subtype": "success",
+        "result": f"verified · M · done\nused {GITHUB_TOKEN}",
+        "permission_denials": [
+            {"tool_name": "Bash", "tool_input": {"command": f"curl -H 'token {GITHUB_TOKEN}'"}},
+            {"tool_name": "Write", "tool_input": {"content": "x" * 1000}},
+        ],
+    }
+    parsed = parse_line(json.dumps(result))
+    assert isinstance(parsed, Result)
+    assert GITHUB_TOKEN not in repr(parsed)
+    assert parsed.text.startswith("verified · M · done")
+    assert [r.tool for r in parsed.refusals] == ["Bash", "Write"]
+    assert len(parsed.refusals[1].input) <= 300
+
+
+def test_a_line_over_the_limit_keeps_only_its_masked_head() -> None:
+    head = '{"type": "user", "x": "' + "a " * 100 + GITHUB_TOKEN + " " + "b" * 50
+    cut_token = '{"type": "assistant", "x": "' + "c" * (HEAD_MAX - 40) + " " + GITHUB_TOKEN
+    event = truncated_event(head, LINE_MAX + 10, 3)
+    data = unpack(event.data)
+    assert event.truncated and event.type == "user" and event.size == LINE_MAX + 10
+    assert data["note"] == "[relaybay: line truncated]"
+    assert GITHUB_TOKEN not in data["head"] and "ghp_***" in data["head"]
+    # The token is cut by the head's limit: what is left of it is dropped, not kept in half.
+    half = unpack(truncated_event(cut_token, LINE_MAX + 1, 4).data)["head"]
+    assert "ghp_" not in half and half.endswith("c" * 10)
+
+
+async def test_lines_reach_the_sink_in_batches_and_before_the_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    count = 1000
+    child = (
+        "import json, sys\n"
+        f"for n in range({count}):\n"
+        "    sys.stdout.write(json.dumps({'type': 'assistant', 'n': n}) + '\\n')\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ok'}), flush=True)\n"
+    )
+    sink = Sink()
+    runs = manager(sink, monkeypatch, child)
+    await runs.start_turn(1, 1, spec(cwd=str(tmp_path)))
+    await poll_async(lambda: sink.done)
+    seqs = [e.seq for _, batch in sink.batches for e in batch]
+    assert seqs == list(range(1, count + 2))
+    assert len(sink.batches) <= count // EVENT_BATCH + 3  # writes per batch, not per line
+    assert sink.ended_at is not None and all(at <= sink.ended_at for at, _ in sink.batches)
+    assert sink.done == [("success", None, False)] and sink.result.text == "ok"
+
+
+async def test_a_slow_turn_flushes_its_lines_by_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = (
+        "import json, time\n"
+        "print(json.dumps({'type': 'assistant'}), flush=True)\n"
+        "time.sleep(2.5)\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success'}), flush=True)\n"
+    )
+    sink = Sink()
+    runs = manager(sink, monkeypatch, child)
+    started = time.monotonic()
+    await runs.start_turn(1, 1, spec(cwd=str(tmp_path)))
+    await poll_async(lambda: sink.done)
+    first_at, first = sink.batches[0]
+    assert [e.seq for e in first] == [1]
+    assert first_at - started < 2.0 < sink.ended_at - started  # stored while the turn ran
+
+
+async def poll_async(check, seconds: float = 30) -> None:
+    deadline = time.monotonic() + seconds
+    while not check():
+        assert time.monotonic() < deadline, "timed out"
+        await asyncio.sleep(0.05)

@@ -1712,3 +1712,12 @@ body:has(.task-dialog[open]) { overflow: hidden; }
   .switcher { margin-top: 16px; max-height: calc(100vh - 32px); }
   .board-filter { flex: 1 1 130px; }
 }
+.report-checks { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 0; padding: 0; font-size: 12px; }
+.report-check-mark { color: var(--ok); font-weight: 600; }
+.run-turn-more td { padding-top: 0; }
+.run-turn-detail > summary { cursor: pointer; font-size: 13px; }
+.run-events { list-style: none; margin: 4px 0; padding-left: 0; font-size: 12px; }
+.run-events .run-events { padding-left: 16px; border-left: 2px solid var(--border); }
+.run-event { margin: 2px 0; overflow-wrap: anywhere; }
+.run-event pre { white-space: pre-wrap; margin: 2px 0; }
+.run-event.is-error > summary, .run-event-refusal { color: var(--bad); }

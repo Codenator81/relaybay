@@ -209,6 +209,10 @@ async def run[T](awaitable: Awaitable[T]) -> T:
         raise ToolError(str(exc)) from exc
 
 
+_run = run  # for a tool whose argument is named `run`
+RUN_EVENTS_LIMIT_MAX = 200
+
+
 def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServer:
     mcp = MCPServer(
         name="relaybay", version=__version__, instructions=instructions(service.global_rules)
@@ -739,6 +743,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 description="Markdown report. Its first line is the summary; a first line"
                 " 'state · size · gist' (e.g. 'verified · M · login fixed') also sets state"
                 " (inspected, changed, verified, committed, pushed, blocked) and size (S, M, L)."
+                " Mark each claim you checked with 'verified: <where>' (e.g. 'verified: pytest"
+                " on Windows'); an M or L report without any mark gets a rules warning."
             ),
         ],
         progress: Annotated[
@@ -1139,6 +1145,33 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         tokens and the latest turns. Open to every session."""
         found, view = await run(service.run_status(task))
         return fmt.run_status(found, view)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def run_events(
+        run: Annotated[int, Field(description="The run's number, as run_status shows it.")],
+        turn: Annotated[
+            int | None, Field(description="The turn's number. Default: the latest that started.")
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=RUN_EVENTS_LIMIT_MAX,
+                description=f"How many lines, at most {RUN_EVENTS_LIMIT_MAX}. Default 50.",
+            ),
+        ] = 50,
+        from_seq: Annotated[
+            int | None,
+            Field(ge=1, description="Lines from this number on. Default: the last `limit`."),
+        ] = None,
+    ) -> str:
+        """A turn's stream-json lines as short, masked items: tool calls with how they ended,
+        texts, refusals, subagent lines indented under their call, the result. Open to every
+        session; it changes nothing."""
+        found, shown, items = await _run(
+            service.run_events(run, turn, limit=limit, from_seq=from_seq)
+        )
+        return fmt.run_events(found, shown, items)
 
     @write
     async def run_settings(

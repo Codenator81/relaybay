@@ -46,6 +46,7 @@ Deprecations: none.
 | [`brake_set`](#brake_set) | write |
 | [`run_start`](#run_start) | write |
 | [`run_status`](#run_status) | read |
+| [`run_events`](#run_events) | read |
 | [`run_settings`](#run_settings) | write |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
@@ -301,7 +302,7 @@ Add a report to a task. Call it at the end of every stage with your final report
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
-| `body` | string | yes | Markdown report. Its first line is the summary; a first line 'state · size · gist' (e.g. 'verified · M · login fixed') also sets state (inspected, changed, verified, committed, pushed, blocked) and size (S, M, L). |
+| `body` | string | yes | Markdown report. Its first line is the summary; a first line 'state · size · gist' (e.g. 'verified · M · login fixed') also sets state (inspected, changed, verified, committed, pushed, blocked) and size (S, M, L). Mark each claim you checked with 'verified: <where>' (e.g. 'verified: pytest on Windows'); an M or L report without any mark gets a rules warning. |
 | `progress` | string or null | no | Markdown summary of everything done so far on the task (not just the last step). Rewrite it as the work goes on and keep it current with every report. Saved together with the report; omit to keep it; '-' or '' clears it. |
 | `next_step` | string or null | no | What happens next, one line; saved in the same write. A next step set before the last stage change shows as stale. Omit to keep it; '-' or '' clears it. |
 | `waiting_on` | string or null | no | Only who acts next: a name or role, no text after it; what happens goes to next_step. Saved in the same write. Omit to keep it; '-' or '' clears it. |
@@ -455,6 +456,17 @@ The card's run (the open one, else the latest): status, folders, Claude session 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+
+### `run_events`
+
+A turn's stream-json lines as short, masked items: tool calls with how they ended, texts, refusals, subagent lines indented under their call, the result. Open to every session; it changes nothing.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `run` | integer | yes | The run's number, as run_status shows it. |
+| `turn` | integer or null | no | The turn's number. Default: the latest that started. |
+| `limit` | integer | no | How many lines, at most 200. Default 50. Default: `50`. |
+| `from_seq` | integer or null | no | Lines from this number on. Default: the last `limit`. |
 
 ### `run_settings`
 

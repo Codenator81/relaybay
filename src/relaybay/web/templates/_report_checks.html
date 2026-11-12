@@ -1,0 +1,9 @@
+{#- The `verified: <where>` marks of a report, and the rules warning of an M or L report without
+    any. Expects: checks (its marks), warning (the warning, or None). -#}
+{% if checks %}
+<ul class="report-checks" aria-label="Verified marks">
+  {% for c in checks %}<li class="report-check" title="line {{ c.line }}: {{ c.claim }}"><span class="report-check-mark" aria-hidden="true">&#10003;</span> {{ c.where }}</li>{% endfor %}
+</ul>
+{% elif warning %}
+<p class="form-warning report-marks-warning" role="status">{{ warning }}</p>
+{% endif %}

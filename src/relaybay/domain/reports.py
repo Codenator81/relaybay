@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 
 REPORT_STATES = ("inspected", "changed", "verified", "committed", "pushed", "blocked")
 REPORT_SIZES = ("S", "M", "L")
@@ -51,3 +52,40 @@ def parse_report(body: str) -> tuple[str | None, str | None, str]:
     if len(first) > SUMMARY_MAX:
         first = first[: SUMMARY_MAX - 1].rstrip() + "…"
     return state, size, first
+
+
+CHECK_WHERE_MAX = 200
+CHECK_CLAIM_MAX = 300
+CHECKS_MAX = 100
+# `verified: <where>` on a claim line; the `where` runs to the end of the line or to a closing
+# bracket, a semicolon or a backtick, so "(verified: pytest on Windows)" reads "pytest on Windows".
+_CHECK = re.compile(r"\bverified:\s*(?P<where>[^)\]\n;`]+)", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class ReportCheck:
+    line: int  # 1-based line of the body
+    where: str
+    claim: str
+
+
+def parse_checks(body: str) -> list[ReportCheck]:
+    """The `verified: <where>` marks of a report body, in order; an empty `where` is no mark."""
+    found: list[ReportCheck] = []
+    for number, line in enumerate(body.splitlines(), start=1):
+        for match in _CHECK.finditer(line):
+            where = match.group("where").strip().rstrip(".,")
+            if not where:
+                continue
+            claim = (line[: match.start()] + line[match.end() :]).strip()
+            claim = claim.strip("-*()[]`;:, ").strip() or line.strip()
+            found.append(
+                ReportCheck(number, _cut(where, CHECK_WHERE_MAX), _cut(claim, CHECK_CLAIM_MAX))
+            )
+            if len(found) >= CHECKS_MAX:
+                return found
+    return found
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
