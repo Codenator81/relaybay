@@ -48,6 +48,9 @@ Deprecations: none.
 | [`run_status`](#run_status) | read |
 | [`run_events`](#run_events) | read |
 | [`run_settings`](#run_settings) | write |
+| [`question_ask`](#question_ask) | write |
+| [`question_list`](#question_list) | read |
+| [`question_withdraw`](#question_withdraw) | write |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -478,6 +481,45 @@ Change the permission mode, model or effort of the card's open run from its next
 | `permission_mode` | string or null | no | A mode that does not raise the run's current one: plan, then manual / default / dontAsk, then acceptEdits, then auto. Raising it and bypassPermissions are the owner's, on the card. Default: unchanged. |
 | `model` | string or null | no | opus, sonnet or haiku. Default: unchanged. |
 | `effort` | string or null | no | low, medium, high, xhigh or max. Default: unchanged. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `question_ask`
+
+Ask the owner a question on a card; it shows in the owner's Inbox and on the card, and only the owner answers it, on the board. Every question carries a default; at most 5 are open per card. A blocking one: end your turn, the answer comes as your next turn (a run) or as an owner comment (a desktop session). kind look: bring up the screen first, pass its url and the test account's name.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `text` | string | yes | The question, or for kind look what to check on the screen. Never a password or token. |
+| `default` | string | yes | What you do when the owner does not answer: required, a question without a default is refused. |
+| `options` | list of string or null | no | Short answers the owner picks from (at most 8). Optional. |
+| `blocking` | boolean or null | no | true: you end your turn and wait for the answer. Default false: you go on with the default. A look question is always blocking. |
+| `default_after` | string or null | no | For a non-blocking question: when it closes with its default, a time with its zone (2026-12-01T15:00:00Z) or a duration (30m, 2h, 1d). Default 1h. |
+| `kind` | string or null | no | question (default) or look: the owner looks at a screen you brought up and answers fine or remarks. |
+| `url` | string or null | no | For kind look: the http(s) address the owner opens. |
+| `account` | string or null | no | For kind look: the name of the test account to sign in with, never its password. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `question_list`
+
+Questions to the owner, newest first: open ones of all cards by default, with their state, options, default and the owner's answer verbatim. Changes nothing but closes questions past their deadline with their default.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string or null | no | Task key: only this card's questions. Optional. |
+| `status` | string or null | no | open (default), answered, defaulted, withdrawn or all. |
+
+### `question_withdraw`
+
+Withdraw an open question you asked (a coordinator may withdraw any): it leaves the Inbox, and a run waiting only for it goes idle.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `question` | integer | yes | The question's number, e.g. 7 for '#7'. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

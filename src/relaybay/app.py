@@ -69,7 +69,10 @@ def create_app(settings: Settings) -> FastAPI:
         backup_before_upgrade(settings)
         await service.start()
         record_version(settings.home)
-        loops = [asyncio.create_task(service.usage_loop(settings.usage_interval_seconds))]
+        loops = [
+            asyncio.create_task(service.usage_loop(settings.usage_interval_seconds)),
+            asyncio.create_task(service.question_loop()),
+        ]
         if settings.update_check:
             loops.append(asyncio.create_task(service.update_loop(settings.update_check_hours)))
         try:

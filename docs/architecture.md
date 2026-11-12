@@ -65,7 +65,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, `record_hook`, …): validation, rules checks, transaction, event append, publish |
 | `events.py` | `EventBus`: one bounded `asyncio.Queue` (256) per subscriber, optional project filter; a full queue drops the subscriber, which then resyncs |
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
-| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), the brake and token budgets (`limits.py`: thresholds and the texts sessions read), errors |
+| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), the brake and token budgets (`limits.py`: thresholds and the texts sessions read), questions to the owner (`questions.py`: the rules of asking, the answer's text), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
 | `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `api.py` (`GET /api/notifications` for the tray), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
@@ -159,6 +159,13 @@ run_event     id, turn_id, seq (UNIQUE per turn), type, subtype, parent_tool_use
 run_worktree  id, run_id, project_repo_id, repo_name, source_path, path, path_key, branch,
               created_by_run (0|1), copied (JSON names), created_at, removed_at
               -- one open run per path_key, checked by the service
+question      id, task_id, run_id, session_id (who asked), asked_by, kind (question|look), text,
+              options (JSON), default_answer, blocking (0|1), look_url, look_account,
+              default_after, asked_at, status (open|answered|defaulted|withdrawn), answer,
+              answered_by (owner|default), answered_at, defaulted_at, withdrawn_at, withdrawn_by,
+              turn_id (the run turn carrying the answer), comment_id (the owner comment carrying
+              it), told_at, delivered_at
+              -- a look question blocks and has its URL; a blocking one has no default_after
 session_message id, sender_session_id, sender_name, sender_verified, recipient_session_id,
               recipient_name, task_id, body_md, in_reply_to, depth, created_at, delivered_at,
               read_at, stop_blocks, loop_stopped_at, loop_seen_at

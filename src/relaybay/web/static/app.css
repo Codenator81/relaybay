@@ -1721,3 +1721,16 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .run-event { margin: 2px 0; overflow-wrap: anywhere; }
 .run-event pre { white-space: pre-wrap; margin: 2px 0; }
 .run-event.is-error > summary, .run-event-refusal { color: var(--bad); }
+
+/* --- questions to the owner -------------------------------------------------------- */
+.question-list { list-style: none; margin: 0; padding-left: 0; }
+.question-row { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.question-row.question-open { border-left: 3px solid var(--warn); }
+.question-row > p { margin: 4px 0; }
+.question-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.question-number { font-weight: 600; }
+.question-text, .question-answer-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.question-look { overflow-wrap: anywhere; }
+.question-blocks { border: 1px solid var(--warn); }
+.question-answer textarea { width: 100%; }
+.question-closed > summary { cursor: pointer; font-size: 13px; }

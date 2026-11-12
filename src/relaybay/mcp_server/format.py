@@ -2,6 +2,7 @@
 
 import json
 
+from relaybay.domain import questions as qrules
 from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskCode
@@ -40,6 +41,7 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.plan import Plan, PlanStep, TodoItem
+from relaybay.domain.questions import Question
 from relaybay.domain.review import Attachment, Review, ReviewStep
 from relaybay.domain.rules import (
     RuleProposal,
@@ -1094,6 +1096,13 @@ def event_detail(e: Event) -> str:
     if e.kind.startswith("run."):
         reason = f": {p['reason']}" if p.get("reason") else ""
         return f"run {p.get('run_id')}{reason}"
+    if e.kind.startswith("question."):
+        what = f"#{p.get('question_id')}: {qrules.quoted(str(p.get('text') or ''))[:120]}"
+        if e.kind == "question.answered" and p.get("answer") is not None:
+            return f"{what} -> {qrules.quoted(str(p['answer']))[:120]}"
+        if e.kind == "question.defaulted":
+            return f"{what} -> default {qrules.quoted(str(p.get('default') or ''))[:120]}"
+        return what
     if e.kind == "concurrency.over":
         return f"{p.get('running')} sessions running, cap {p.get('max_sessions')}"
     if e.kind == "rules.notice_read":
@@ -1480,3 +1489,53 @@ def backlog_items(items: list[BacklogItem]) -> str:
 def backlog_saved(item: BacklogItem, verb: str) -> str:
     state = ", ".join([item.status, *_backlog_queue(item)])
     return f"{verb} backlog item #{item.id} in {item.project_slug}: {item.title} ({state})."
+
+
+def _question_state(q: Question) -> str:
+    if q.status == "open":
+        if q.blocking:
+            return "open, blocks the run" if q.run_id else "open, blocking"
+        return f"open, goes on with the default at {(q.default_after or '')[:16]}Z"
+    if q.status == "withdrawn":
+        return f"withdrawn by {q.withdrawn_by} {(q.withdrawn_at or '')[:16]}Z"
+    if q.status == "defaulted":
+        return f"closed with the default {(q.defaulted_at or '')[:16]}Z"
+    delivered = f", delivered {q.delivered_at[:16]}Z" if q.delivered_at else ", not delivered yet"
+    return f"answered by the owner {(q.answered_at or '')[:16]}Z{delivered}"
+
+
+def question_line(q: Question) -> str:
+    """One question as question_list shows it; the answer verbatim when there is one."""
+    where = f"run {q.run_id}" if q.run_id else "desktop session"
+    head = (
+        f"- #{q.id} {q.task_key} ({q.kind}, {where}, asked by {q.asked_by}"
+        f" {q.asked_at[:16]}Z): {_question_state(q)}"
+    )
+    lines = [head, f"  {qrules.quoted(q.text)}"]
+    if q.choices:
+        lines.append(f"  Options: {', '.join(q.choices)}; default: {qrules.quoted(q.default)}")
+    else:
+        lines.append(f"  Default: {qrules.quoted(q.default)}")
+    if q.look_url:
+        account = f"; test account {q.look_account}" if q.look_account else ""
+        lines.append(f"  Look at: {q.look_url}{account}")
+    if q.answer is not None:
+        lines.append(f"  Answer: {q.answer}")
+    return "\n".join(lines)
+
+
+def questions(task: Task | None, items: list[Question], status: str | None) -> str:
+    where = task.key if task else "all cards"
+    what = (status or "open").strip().lower() or "open"
+    if not items:
+        return f"No {what} questions on {where}." if what != "all" else f"No questions on {where}."
+    head = f"{len(items)} question(s) on {where} ({what}), newest first:"
+    return "\n".join([head, *map(question_line, items)])
+
+
+def question_asked(task: Task, q: Question, hint: str) -> str:
+    return f"Question #{q.id} asked on **{task.key}** ({q.kind}). {hint}"
+
+
+def question_withdrawn(q: Question) -> str:
+    return f"Question #{q.id} on {q.task_key} withdrawn."

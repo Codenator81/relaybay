@@ -166,7 +166,7 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | A run over a project folder with a worktree per touched repository (`--add-dir`, the untracked Claude Code files copied in), relaybay's hooks and MCP server added per run when setup did not install them, `run_start` / `run_status` over MCP | in progress (PR 1b) | [0021](design/0021-agents-inside.md#the-run) |
 | A run's session opened in the Claude desktop app and handed back; permission mode, model and effort between turns (`run_settings` over MCP lowers only) | in progress (PR 1c) | [0021](design/0021-agents-inside.md#plan-of-09-by-pull-request) |
 | Full turn reports with `verified` marks: every stream-json line stored masked (`run_event`), the turn's report and refusals on the card with nested subagent events, the rules warning on an M or L report without marks, `run_events` over MCP | in progress (PR 2) | [0021](design/0021-agents-inside.md#the-run) |
-| Questions (with "look at this" for visual acceptance) and approvals as objects on the card and in the Inbox | next | [0022](design/0022-questions-and-approvals.md) |
+| Questions (with "look at this" for visual acceptance) and approvals as objects on the card and in the Inbox | in progress (questions: PR 3; approvals next) | [0022](design/0022-questions-and-approvals.md) |
 | Slots and free memory per machine, queueing with a reason; the brake and budgets on runs; lifecycle and retention | next | [0021](design/0021-agents-inside.md#the-run) |
 
 ## 0.10 — the terminal

@@ -1281,6 +1281,7 @@ async def test_a_stale_hash_does_not_migrate(
             conn.execute(f"DROP TABLE {table}")
         conn.execute("DROP INDEX task_session_open_session")
         for table in (
+            "question",
             "report_check",
             "run_event",
             "run_worktree",

@@ -180,6 +180,12 @@ program as its client:
   runs with `run_start` and lower a run's mode with `run_settings`; project
   defaults (model, effort, permission mode, allowed tools, project folder) are on Stands & access,
   the sign-in switch in Settings → Agents. relaybay runs `git worktree add`, never a commit or push.
+- **Questions to you** — an agent asks with `question_ask`, always with a default; the question
+  shows in your Inbox and on the card (a blocking one also in the tray), and only your answer on
+  the board closes it. A run waits on a blocking question and your answer starts its next turn,
+  verbatim; a desktop session gets it as an owner comment. A non-blocking question closes with its
+  default at its deadline. "Look at this" questions carry the URL of a screen the agent brought up
+  and the test account's name, never a password.
 - **Desktop program** — an installer per OS puts relaybay in the tray with the board in its own
   window (on Linux in the browser) and the server inside: start at login, Restart server and Logs
   in the tray menu, a daily update check with **Update to X.Y.Z** that downloads and checks the
