@@ -2397,6 +2397,11 @@ class Service:
         now = datetime.now(UTC)
         waiting, warned, not_logged = [], [], []
         for task in tasks:
+            unlogged = task.stage == Stage.DONE and require_tracker_log and not task.tracker_logged
+            if unlogged and task.archived_at is not None:
+                # Archived by hand before its work log was marked: it still waits for the mark.
+                not_logged.append(task)
+                continue
             if is_archived(task, now, done_window_days, require_tracker_log):
                 continue
             if task.stage == Stage.DONE:

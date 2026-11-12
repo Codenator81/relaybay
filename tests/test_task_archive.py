@@ -251,3 +251,13 @@ def test_the_window_counts_from_back_from_the_archive(
     shown_until = datetime.fromisoformat(saved.unarchived_at) + timedelta(days=6)
     monkeypatch.setattr(routes, "utcnow", lambda: shown_until)
     assert f'id="card-{task.key}"' in done_column(board)
+
+
+async def test_an_unlogged_task_archived_by_hand_stays_in_the_inbox_not_logged(
+    svc: Service,
+) -> None:
+    task = await svc.create_task("acme-shop", "Unlogged", stage="done")
+    await svc.set_archived(task.key, True, actor="owner")
+    inbox = await svc.inbox([], require_tracker_log=True)
+    assert [t.key for t in inbox.not_logged] == [task.key]
+    assert (await svc.inbox([])).not_logged == []

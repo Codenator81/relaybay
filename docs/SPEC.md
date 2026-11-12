@@ -1051,7 +1051,8 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
 **Archive by hand.** A done card's menu and its task view have **Archive**: the card leaves the done
 column at once (`task.archived`, the done column refetched live) and stays findable with "Show
 archived" and in search. The mark (`task.archived_at`, `archived_by`) archives the task whatever
-`require_tracker_log` says. On an archived card (by hand or by age) the same places offer **Back
+`require_tracker_log` says; an unlogged task archived by hand stays in the Inbox "not logged" list
+until its work log is marked. On an archived card (by hand or by age) the same places offer **Back
 from the archive** (`task.unarchived`, with `archived_by` of the hand mark, none when the window had
 archived it): the hand mark is cleared and `task.unarchived_at` is set, and the done window counts
 from the later of `closed_at` and `unarchived_at`, so the card shows in done for another full
