@@ -9,9 +9,11 @@ from starlette.testclient import TestClient
 
 from relaybay.app import create_app
 from relaybay.config import Settings
+from relaybay.runner.layers import LayerState
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, run_in_app
+from tests.test_runs_service import CC_A, StubRuns
 
 
 @pytest.fixture
@@ -98,3 +100,55 @@ def test_settings_agents_and_the_sign_in_switch(board: TestClient, token: str) -
         "/settings/agents/login-methods", data=form(token, allow="0"), headers={"Origin": BASE}
     )
     assert run_in_app(board, service.run_login_any) is False
+
+
+def test_open_in_desktop_back_and_the_settings_between_turns(
+    board: TestClient, token: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ok = LayerState("command", True, "command hooks from your user settings", "registered")
+    monkeypatch.setattr("relaybay.service.user_layer_state", lambda *_: ok)
+    service: Service = board.app.state.service
+    stub = StubRuns(service, tmp_path)
+    service.runs = stub  # type: ignore[assignment]
+    htmx = {"Origin": BASE, "HX-Request": "true"}
+    base = "/p/acme-shop/t/acme-shop-1/run"
+    run = run_in_app(board, service.start_run, "acme-shop-1", brief="Build it")
+    running = board.get(base).text
+    assert "Open in the desktop app" not in running
+    assert '<fieldset class="field-row" disabled>' in running
+    refused = board.post(f"{base}/{run.id}/settings", data=form(token, model="haiku"), headers=htmx)
+    assert "is running" in refused.text
+    run_in_app(board, stub.finish, run.id)
+    idle = board.get(base).text
+    assert "Open in the desktop app" in idle and "disabled>" not in idle
+    bearer = board.post(
+        f"{base}/{run.id}/desktop",
+        data=form(token),
+        headers={"Origin": BASE, "Authorization": f"Bearer {token}"},
+    )
+    assert bearer.status_code == 403 and stub.desktop_calls == []  # board only
+    opened = board.post(f"{base}/{run.id}/desktop", data=form(token), headers=htmx)
+    assert opened.status_code == 200 and "Back to the program" in opened.text
+    assert f'href="claude://claude.ai/epitaxy/local_{CC_A}"' in opened.text
+    assert "waits until Back to the program" in opened.text
+    saved = board.post(
+        f"{base}/{run.id}/settings",
+        data=form(token, model="sonnet", effort="high", permission_mode="plan"),
+        headers=htmx,
+    )
+    assert "form-error" not in saved.text
+    changed = run_in_app(board, service.get_run, run.id)
+    assert (changed.model, changed.effort, changed.permission_mode) == ("sonnet", "high", "plan")
+    assert "Close or leave the session in the desktop app" in opened.text
+    service.desktop_launching.add(run.id)
+    launching = board.get(base).text
+    assert "Opening the desktop app" in launching and "/back" not in launching
+    service.desktop_launching.discard(run.id)
+    back = board.post(f"{base}/{run.id}/back", data=form(token), headers=htmx)
+    assert "Back to the program" not in back.text and "Open in the desktop app" in back.text
+    assert '<a class="btn primary" href="claude://' in back.text  # the link leads now
+    assert "--add-dir" not in back.text  # one folder: no line about the others
+    stub.desktop_launcher = None
+    terminal = board.get(base).text
+    assert "Open in the desktop app" not in terminal and "claude --resume" not in terminal
+    assert "Go to the session in the desktop app" in terminal  # opened once: the link, not a CLI

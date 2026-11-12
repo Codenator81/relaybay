@@ -8,11 +8,12 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from relaybay.domain.errors import ValidationError
-from relaybay.runner import proctree
+from relaybay.runner import desktop, proctree
 from relaybay.runner.auth import LoginState
 from relaybay.runner.claude_cli import (
     TurnSpec,
@@ -315,3 +316,67 @@ async def test_one_sign_in_check_at_a_time(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(calls) == 1 and all(s.is_subscription for s in states)
     await runs.login(force=True)  # asked after the last check: runs again
     assert len(calls) == 2
+
+
+def test_desktop_launch_gets_a_console_of_its_own_and_no_pipes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Info:
+        dwFlags = 0
+        wShowWindow = 0
+
+    class Proc:
+        def __init__(self, argv: str, **kwargs: Any) -> None:
+            calls.append({"argv": argv, **kwargs})
+            self.pid = 4321
+
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is not None and calls[-1]["argv"].endswith("slow"):
+                raise desktop.subprocess.TimeoutExpired("claude", timeout)
+            return 0
+
+        def kill(self) -> None:
+            calls[-1]["killed"] = True
+
+    killed: list[int] = []
+    monkeypatch.setattr(desktop.subprocess, "STARTUPINFO", Info, raising=False)
+    monkeypatch.setattr(desktop.subprocess, "Popen", Proc)
+    monkeypatch.setattr(desktop, "_kill_tree", killed.append)
+    err = Path("C:/data/err.txt")
+    line = desktop.desktop_command_line("C:/bin/claude.cmd", "abc", err)
+    assert line == f'cmd.exe /d /c ""C:/bin/claude.cmd" --desktop --resume abc 2> "{err}""'
+    assert desktop.launch_in_console(line, "C:/w", {"A": "1"}, 60) == 0
+    [call] = calls
+    assert call["creationflags"] == desktop.CREATE_NEW_CONSOLE and call["cwd"] == "C:/w"
+    assert call["startupinfo"].dwFlags & desktop.STARTF_USESHOWWINDOW
+    assert call["startupinfo"].wShowWindow == 7  # minimized, not focused
+    assert not {"stdin", "stdout", "stderr"} & set(call)
+    with pytest.raises(desktop.subprocess.TimeoutExpired):
+        desktop.launch_in_console("claude slow", "C:/w", {}, 1)
+    assert calls[-1]["killed"] and killed == [4321]  # the whole tree, cmd.exe in front
+
+
+def test_desktop_launcher_only_on_windows_and_env_without_the_host() -> None:
+    assert desktop.default_launcher("win32") is desktop.launch_in_console
+    assert desktop.default_launcher("linux") is None
+    assert desktop.default_launcher("darwin") is None
+    env = desktop.desktop_env({"CLAUDECODE": "1", "PATH": "/bin", "RELAYBAY_RUN_ID": "3"})
+    assert env == {"PATH": "/bin"}
+    assert desktop.terminal_command("abc") == "claude --resume abc"
+
+
+def test_desktop_command_line_refuses_what_cmd_would_read_and_reads_the_reason(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValidationError, match="would read as a command"):
+        desktop.desktop_command_line('C:/a"b/claude.exe', "abc", tmp_path / "e.txt")
+    with pytest.raises(ValidationError, match="the data folder"):
+        desktop.desktop_command_line("claude.exe", "abc", tmp_path / "100%" / "e.txt")
+    reason = tmp_path / "e.txt"
+    reason.write_text("\x1b[1mfirst\x1b[0m\n  second " + "x" * 600, encoding="utf-8")
+    text = desktop.take_reason(reason)
+    assert text.startswith("first second x") and len(text) == desktop.REASON_MAX
+    assert text.endswith("…") and not reason.exists()
+    assert desktop.take_reason(reason) == ""

@@ -215,6 +215,9 @@ EVENT_KINDS = (
     "run.stopped",
     "run.ended",
     "run.lost",
+    "run.opened_in_desktop",
+    "run.returned",
+    "run.settings_changed",
     "run.defaults_set",
     "settings.run_login_any",
 )
@@ -1506,6 +1509,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             error=error,
             choices=RUN_CHOICES,
             owner_modes=run_rules.PERMISSION_MODES + run_rules.OWNER_ONLY_MODES,
+            desktop_ok=runs is not None and runs.desktop_launcher is not None,
+            launching=view is not None and view.run.id in service.desktop_launching,
         )
 
     @router.get("/p/{slug}/t/{key}/run", response_class=HTMLResponse)
@@ -1581,7 +1586,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         action: str,
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ):
-        if action not in ("send", "stop", "end"):
+        if action not in ("send", "stop", "end", "desktop", "back", "settings"):
             raise HTTPException(status_code=404)
 
         async def write(task: Task, form: Any) -> None:
@@ -1590,6 +1595,18 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 await service.send_to_run(own, str(form.get("text") or ""), actor="owner")
             elif action == "stop":
                 await service.stop_run(own, actor="owner")
+            elif action == "desktop":
+                await service.open_in_desktop(own, actor="owner")
+            elif action == "back":
+                await service.return_run(own, actor="owner")
+            elif action == "settings":
+                await service.set_run_settings(
+                    own,
+                    mode=str(form.get("permission_mode") or ""),
+                    model=str(form.get("model") or ""),
+                    effort=str(form.get("effort") or ""),
+                    actor="owner",
+                )
             else:
                 await service.end_run(own, actor="owner")
 

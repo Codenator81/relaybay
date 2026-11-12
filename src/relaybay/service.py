@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import tempfile
 import threading
 import time
@@ -218,6 +219,7 @@ from relaybay.policy import (
     widened_on_live,
 )
 from relaybay.runner import auth as run_auth
+from relaybay.runner import desktop as run_desktop
 from relaybay.runner import worktrees
 from relaybay.runner.claude_cli import TurnSpec, build_command
 from relaybay.runner.layers import LayerState, run_files, user_layer_state, write_run_files
@@ -256,6 +258,7 @@ AUDIT_CHANGE_KINDS = (
     "environment.proposal_rejected",
     NO_LIVE_ON,
     NO_LIVE_OFF,
+    "run.settings_changed",
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -969,6 +972,11 @@ RUN_START_NOT_COORDINATOR = (
     "run_start is only for the coordinator sessions named in the server's config; a side task"
     " goes to backlog_add. Nothing started."
 )
+RUN_SETTINGS_NOT_COORDINATOR = (
+    "run_settings is only for the coordinator sessions named in the server's config; the owner"
+    " changes a run on the card. Nothing changed."
+)
+CLAUDE_SESSION_RE = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 
 @dataclass(slots=True)
@@ -1143,6 +1151,8 @@ class Service:
         self._config_table_hash = rules_hash(table)
         self.rules_mode = rules_mode
         self.coordinators = [c.strip() for c in coordinators or [] if c.strip()]
+        # Runs whose `claude --desktop` is being launched now (Back waits for it).
+        self.desktop_launching: set[int] = set()
         self.rules_changed: Callable[[], None] | None = None
         self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
@@ -10395,29 +10405,15 @@ class Service:
                 "run_start takes no permission mode: a run started over MCP uses the project's"
                 " agent defaults, which only the owner changes on the board. Nothing started."
             )
-        caller_row = await self._known_session((session or "").strip(), self._r)
-        caller_brake = await self._brake_for(caller_row, None)
-        if caller_brake is not None:
-            raise ValidationError(
-                f"You are under the brake ({caller_brake.target}): no run starts until the owner"
-                " releases it on the board. Nothing started."
-            )
+        stopped = ("no run starts", "Nothing started.")
+        await self._refuse_braked_caller(session, *stopped)
         task = await self.get_task(ref)
         if task.stage.value not in RUN_START_STAGES:
             raise ValidationError(
                 f"run_start works on cards in plan or dev; {task.key} is in {task.stage.value}."
                 " Nothing started."
             )
-        for brake in await repo.open_brakes(self._r):
-            if (
-                brake.scope == "all"
-                or (brake.scope == "project" and brake.project_id == task.project_id)
-                or (brake.scope == "task" and brake.task_id == task.id)
-            ):
-                raise ValidationError(
-                    f"{task.key} is under the brake ({brake.target}): no run starts until the"
-                    " owner releases it on the board. Nothing started."
-                )
+        await self._refuse_braked_task(task, *stopped)
         bound_id = await repo.open_binding(self._r, task.id)
         bound = await repo.get_session_by_id(self._r, bound_id) if bound_id else None
         if bound is not None and bound.kind != "run" and bound.status != "ended":
@@ -10462,6 +10458,265 @@ class Service:
             brief=brief,
             caller_kind="coordinator",
         )
+
+    async def _refuse_braked_caller(self, session: str | None, what: str, nothing: str) -> None:
+        """A coordinator's run tool: refused while a brake covers the caller."""
+        caller_row = await self._known_session((session or "").strip(), self._r)
+        brake = await self._brake_for(caller_row, None)
+        if brake is not None:
+            raise ValidationError(
+                f"You are under the brake ({brake.target}): {what} until the owner releases it"
+                f" on the board. {nothing}"
+            )
+
+    async def _refuse_braked_task(self, task: Task, what: str, nothing: str) -> None:
+        """A coordinator's run tool: refused while a brake of scope all, the card's project or
+        the card is open."""
+        for brake in await repo.open_brakes(self._r):
+            if (
+                brake.scope == "all"
+                or (brake.scope == "project" and brake.project_id == task.project_id)
+                or (brake.scope == "task" and brake.task_id == task.id)
+            ):
+                raise ValidationError(
+                    f"{task.key} is under the brake ({brake.target}): {what} until the owner"
+                    f" releases it on the board. {nothing}"
+                )
+
+    async def set_run_settings(
+        self,
+        run_id: int,
+        *,
+        mode: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        actor: str = "owner",
+        caller_kind: str = "owner",
+    ) -> Run:
+        """The permission mode, model and effort of the run's next turns, passed to `claude -p
+        --resume` from the next turn on; never while a turn runs. The owner may pick any mode; a
+        coordinator only one that does not raise it (`domain.runs.MODE_RANK`) and never
+        `bypassPermissions`. Empty or "-" keeps a value. A change is a `run.settings_changed`
+        event with the old and the new values."""
+        owner = caller_kind == "owner"
+        runs = self._run_manager()
+
+        def keep(value: str | None) -> bool:
+            return (value or "").strip() in ("", "-")
+
+        if not owner and (mode or "").strip() in run_rules.OWNER_ONLY_MODES:
+            raise ValidationError(
+                f"{mode} is the owner's alone, picked on the card. Nothing changed."
+            )
+
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            if not run.is_open:
+                raise ValidationError(f"Run {run.id} has ended. Nothing changed.")
+            if (
+                run.status == "running"
+                or runs.is_running(run.id)
+                or await repo.active_turn(tx.conn, run.id) is not None
+            ):
+                raise ValidationError(
+                    f"A turn of run {run.id} is running: the mode, model and effort change"
+                    " between turns. Wait until it ends or stop it. Nothing changed."
+                )
+            new = {
+                "permission_mode": (
+                    run.permission_mode if keep(mode) else run_rules.clean_mode(mode, owner=owner)
+                ),
+                "model": run.model if keep(model) else run_rules.clean_model(model),
+                "effort": run.effort if keep(effort) else run_rules.clean_effort(effort),
+            }
+            if not owner and run_rules.raises_mode(run.permission_mode, new["permission_mode"]):
+                raise ValidationError(
+                    f"{run.permission_mode} to {new['permission_mode']} raises the permission"
+                    " mode, which only the owner does on the card. Nothing changed."
+                )
+            old = {
+                "permission_mode": run.permission_mode,
+                "model": run.model,
+                "effort": run.effort,
+            }
+            changed = {k: {"from": old[k], "to": v} for k, v in new.items() if old[k] != v}
+            if changed:
+                task = await self.get_task(run.task_id, tx.conn)
+                await repo.update_run(tx.conn, run.id, {k: new[k] for k in changed}, tx.now)
+                await self._run_event(
+                    tx, "run.settings_changed", actor, task, run.id, changed=changed
+                )
+        return await self.get_run(run_id)
+
+    async def run_settings_mcp(
+        self,
+        ref: str,
+        *,
+        permission_mode: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> Run:
+        """`run_settings`: a coordinator changes the mode (never raising it), model or effort of
+        the card's open run between turns, under the brake rules of `run_start`."""
+        if not await self._is_coordinator(self._r, session, hook_session):
+            raise ValidationError(RUN_SETTINGS_NOT_COORDINATOR)
+        stopped = ("no run changes", "Nothing changed.")
+        await self._refuse_braked_caller(session, *stopped)
+        task = await self.get_task(ref)
+        await self._refuse_braked_task(task, *stopped)
+        run = await repo.open_run_of_task(self._r, task.id)
+        if run is None:
+            raise NotFoundError(f"{task.key} has no open run. Nothing changed.")
+        async with self._tx() as tx:
+            caller = await self._session(tx, session, session_title, hook_session)
+            assert caller is not None
+        return await self.set_run_settings(
+            run.id,
+            mode=permission_mode,
+            model=model,
+            effort=effort,
+            actor=caller.name,
+            caller_kind="coordinator",
+        )
+
+    async def open_in_desktop(self, run_id: int, *, actor: str = "owner") -> Run:
+        """Hand the run's session to the owner in the Claude desktop app (the board only):
+        `claude --desktop --resume <id>` in the run's cwd, in a console of its own, its stderr in
+        a file of the run's folder so a refusal is shown. The run is with the owner from before
+        the launch, so no turn starts meanwhile; a failed launch hands it back and starts a
+        waiting text. A run handed back or ended while the launch ran keeps only the time."""
+        runs = self._run_manager()
+        run = await self.get_run(run_id)
+        self._check_hand_over(run, runs.is_running(run.id))
+        cc_id = run.claude_session_id
+        if cc_id is None or not CLAUDE_SESSION_RE.fullmatch(cc_id):
+            raise ValidationError(
+                f"Run {run.id} has no Claude session yet: its first turn has not started."
+            )
+        launcher = runs.desktop_launcher
+        if launcher is None:
+            raise ValidationError(
+                "relaybay opens the desktop app only on Windows, where it can give the command a"
+                f" console of its own. {self._desktop_hint(run, cc_id)}"
+            )
+        claude = runs.claude()
+        if claude is None:
+            raise ValidationError(self._claude_missing())
+        stderr_file = self._run_folder(run.id) / "desktop-stderr.txt"
+        command = run_desktop.desktop_command_line(claude, cc_id, stderr_file)
+        if run.id in self.desktop_launching:
+            raise ValidationError(f"The desktop app is being opened for run {run.id} already.")
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            self._check_hand_over(run, runs.is_running(run.id))
+            if await repo.active_turn(tx.conn, run.id) is not None:
+                raise ValidationError(f"A turn of run {run.id} is running; wait or stop it.")
+            await repo.update_run(
+                tx.conn, run.id, {"with_owner_at": tx.now, "with_owner_by": actor}, tx.now
+            )
+        self.desktop_launching.add(run.id)  # no await since the commit
+        why: str | None = None
+        try:
+            await asyncio.to_thread(stderr_file.parent.mkdir, parents=True, exist_ok=True)
+            env = run_desktop.desktop_env(os.environ)
+            code = await asyncio.to_thread(
+                launcher, command, run.cwd, env, run_desktop.DESKTOP_TIMEOUT_SECONDS
+            )
+            if code != 0:
+                why = f"claude --desktop exited with code {code}"
+        except subprocess.TimeoutExpired:
+            why = f"claude --desktop did not finish in {run_desktop.DESKTOP_TIMEOUT_SECONDS:.0f} s"
+        except OSError as exc:
+            why = f"claude --desktop did not start: {exc}"
+        finally:
+            self.desktop_launching.discard(run.id)
+            reason = await asyncio.to_thread(run_desktop.take_reason, stderr_file)
+        if why is not None:
+            if reason:
+                why = f"{why}: {reason}"
+            try:
+                await self._hand_back(run.id, actor, event=False)
+                stays = "the run stays with relaybay"
+            except ValidationError as exc:  # the check before a waiting text refused
+                stays = f"the run stays with the owner until Back to the program ({exc})"
+            raise ValidationError(f"{why}; {stays}. {self._desktop_hint(run, cc_id)}")
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            await repo.update_run(tx.conn, run.id, {"desktop_opened_at": tx.now}, tx.now)
+            if run.is_open and run.with_owner:
+                task = await self.get_task(run.task_id, tx.conn)
+                await self._run_event(
+                    tx, "run.opened_in_desktop", actor, task, run.id, claude_session_id=cc_id
+                )
+        return await self.get_run(run_id)
+
+    @staticmethod
+    def _desktop_hint(run: Run, cc_id: str) -> str:
+        """Where else the session opens: the desktop app's link once it was opened there (a
+        terminal would meet the same refusal), else the terminal command."""
+        if run.desktop_link:
+            return f"Open it in the desktop app: {run.desktop_link}"
+        return f"Open the session in a terminal in {run.cwd}: {run_desktop.terminal_command(cc_id)}"
+
+    @staticmethod
+    def _check_hand_over(run: Run, running: bool) -> None:
+        if not run.is_open:
+            raise ValidationError(f"Run {run.id} has ended.")
+        if run.with_owner:
+            raise ValidationError(f"Run {run.id} is already with the owner in the desktop app.")
+        if running or run.status == "running":
+            raise ValidationError(f"A turn of run {run.id} is running; wait or stop it.")
+
+    async def return_run(self, run_id: int, *, actor: str = "owner") -> Run:
+        """Back to the program: the run is relaybay's again; the first waiting text starts. Not
+        while the desktop app is still being opened (that launch would end on a run handed back)."""
+        run = await self.get_run(run_id)
+        if not run.with_owner:
+            raise ValidationError(f"Run {run.id} is not with the owner.")
+        if run.id in self.desktop_launching:
+            raise ValidationError(
+                f"The desktop app is still being opened for run {run.id}; try again in a moment."
+            )
+        await self._hand_back(run.id, actor, event=True)
+        return await self.get_run(run_id)
+
+    async def _hand_back(self, run_id: int, actor: str, *, event: bool) -> None:
+        """Clear the owner's hold and start the first waiting text, if any. `event`: a
+        `run.returned` in the journal (not after a launch that failed)."""
+        runs = self._run_manager()
+        queued = await repo.next_queued_turn(self._r, run_id)
+        if queued is not None and run_id not in runs.checked_since_start:
+            await self._run_preflight(runs)  # the first turn after a restart checks again
+        follow: int | None = None
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            if not run.with_owner:
+                return
+            task = await self.get_task(run.task_id, tx.conn)
+            await repo.update_run(
+                tx.conn, run.id, {"with_owner_at": None, "with_owner_by": None}, tx.now
+            )
+            run.with_owner_at = None
+            if event:
+                await self._run_event(tx, "run.returned", actor, task, run.id)
+            if run.is_open and run.status != "running":
+                follow = await self._start_next_queued(tx, run, task, actor)
+        if follow is not None:
+            await self._spawn_turn(run_id, follow)
+
+    async def _start_next_queued(self, tx: _Tx, run: Run, task: Task, actor: str) -> int | None:
+        """Mark the first waiting text started and the run running; its id, None if none waits.
+        The caller spawns it after the commit."""
+        queued = await repo.next_queued_turn(tx.conn, run.id)
+        if queued is None or await repo.active_turn(tx.conn, run.id) is not None:
+            return None
+        await repo.start_turn(tx.conn, queued.id, tx.now)
+        await self._set_run_status(tx, run, "running", None)
+        await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=queued.seq)
+        return queued.id
 
     async def _run_event(
         self, tx: _Tx, kind: str, actor: str, task: Task, run_id: int, **payload: Any
@@ -10618,14 +10873,10 @@ class Service:
                 subtype = result.subtype if result is not None else "unknown"
                 why = None if outcome == "success" else f"the turn ended with an error ({subtype})"
                 await self._set_run_status(tx, run, "idle", why)
-                queued = await repo.next_queued_turn(tx.conn, run.id)
-                if queued is not None:
-                    await repo.start_turn(tx.conn, queued.id, tx.now)
-                    await self._set_run_status(tx, run, "running", None)
-                    await self._run_event(
-                        tx, "run.turn_started", "relaybay", task, run.id, seq=queued.seq
-                    )
-                    follow = (run.id, queued.id)
+                if not run.with_owner:
+                    queued_id = await self._start_next_queued(tx, run, task, "relaybay")
+                    if queued_id is not None:
+                        follow = (run.id, queued_id)
             else:
                 new = "lost" if outcome == "lost" else "stopped"
                 await self._set_run_status(tx, run, new, reason)
@@ -10658,7 +10909,11 @@ class Service:
         run = await self.get_run(run_id)
         if not run.is_open:
             raise ValidationError(f"Run {run.id} has ended; start a new run on {run.task_key}.")
-        if not runs.is_running(run.id) and run.id not in runs.checked_since_start:
+        if (
+            not run.with_owner
+            and not runs.is_running(run.id)
+            and run.id not in runs.checked_since_start
+        ):
             await self._run_preflight(runs)  # the first turn after a restart checks again
         launch = False
         async with self._tx() as tx:
@@ -10672,7 +10927,12 @@ class Service:
             turn_id = await repo.insert_turn(tx.conn, run.id, prompt, actor, "owner", tx.now)
             turn = await repo.get_turn(tx.conn, turn_id)
             assert turn is not None
-            if run.status != "running" and await repo.active_turn(tx.conn, run.id) is None:
+            # With the owner in the desktop app: the text waits for Back to the program.
+            if (
+                not run.with_owner
+                and run.status != "running"
+                and await repo.active_turn(tx.conn, run.id) is None
+            ):
                 await repo.start_turn(tx.conn, turn_id, tx.now)
                 await self._set_run_status(tx, run, "running", None)
                 await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
@@ -10748,7 +11008,15 @@ class Service:
             run = await self.get_run(run_id, tx.conn)
             task = await self.get_task(run.task_id, tx.conn)
             await repo.cancel_queued(tx.conn, run.id, tx.now)
-            await self._set_run_status(tx, run, "ended", f"ended by {actor}", ended_by=actor)
+            await self._set_run_status(
+                tx,
+                run,
+                "ended",
+                f"ended by {actor}",
+                ended_by=actor,
+                with_owner_at=None,
+                with_owner_by=None,
+            )
             await self._run_event(tx, "run.ended", actor, task, run.id)
         return await self.get_run(run_id)
 

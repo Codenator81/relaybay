@@ -4629,6 +4629,9 @@ def _run(row: aiosqlite.Row) -> Run:
         task_key=row["task_key"],
         project_slug=row["project_slug"],
         session_name=row["session_name"],
+        with_owner_at=row["with_owner_at"],
+        with_owner_by=row["with_owner_by"],
+        desktop_opened_at=row["desktop_opened_at"],
     )
 
 

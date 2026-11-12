@@ -21,6 +21,7 @@ from typing import Any, Protocol
 
 from relaybay.runner import auth
 from relaybay.runner.claude_cli import TurnSpec, build_command, child_env, find_claude
+from relaybay.runner.desktop import Launcher, default_launcher
 from relaybay.runner.proctree import ProcessTree
 from relaybay.runner.stream import LINE_MAX, Init, Result, parse_line
 
@@ -116,6 +117,9 @@ class RunManager:
         self.closing = False  # the server stops: no new turn starts
         # Runs whose sign-in was checked since this server started; a restart checks again.
         self.checked_since_start: set[int] = set()
+        # `claude --desktop` in a console of its own; None where relaybay cannot open one.
+        # Tests put their own here, so no console opens.
+        self.desktop_launcher: Launcher | None = default_launcher()
 
     def claude(self) -> str | None:
         return find_claude(self.config.claude_path)

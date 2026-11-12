@@ -33,7 +33,7 @@
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
     "budget.exceeded", "concurrency.over",
     "run.started", "run.turn_started", "run.turn_queued", "run.turn_ended", "run.stopped",
-    "run.ended", "run.lost"
+    "run.ended", "run.lost", "run.opened_in_desktop", "run.returned", "run.settings_changed"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [

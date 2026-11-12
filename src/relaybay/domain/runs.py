@@ -37,6 +37,20 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_MODEL = "opus"
 DEFAULT_EFFORT = "medium"
 DEFAULT_MODE = "auto"
+# How much each mode lets a turn do without asking, for "raise" and "lower" between turns. Under
+# `claude -p` nobody answers a prompt: `default` (Manual; `manual` is the CLI's alias) runs reads
+# and the allowed tools and denies the rest, as `dontAsk` does, so the two rank alike. `plan`
+# blocks edits; `acceptEdits` adds edits in the working folder; `auto` lets a classifier approve
+# everything else; `bypassPermissions` skips the checks.
+MODE_RANK = {
+    "plan": 0,
+    "manual": 1,
+    "default": 1,
+    "dontAsk": 1,
+    "acceptEdits": 2,
+    "auto": 3,
+    "bypassPermissions": 4,
+}
 DEFAULT_ALLOWED_TOOLS = "mcp__relaybay"
 BRIEF_MAX = 20000
 FOLDER_MAX = 500
@@ -54,6 +68,13 @@ def check_transition(current: str | None, new: str) -> None:
         raise ValidationError(f"Unknown run status {new!r}.")
     if new not in TRANSITIONS.get(current, frozenset()):
         raise ValidationError(f"A run cannot go from {current or 'new'} to {new}.")
+
+
+def raises_mode(current: str, new: str) -> bool:
+    """True when `new` lets a turn do more without asking than `current`. An unknown mode ranks
+    highest, so a change to it counts as a raise."""
+    top = max(MODE_RANK.values()) + 1
+    return MODE_RANK.get(new, top) > MODE_RANK.get(current, top)
 
 
 def split_rules(text: str) -> list[str]:
@@ -183,10 +204,24 @@ class Run:
     task_key: str = ""
     project_slug: str = ""
     session_name: str | None = None
+    with_owner_at: str | None = None  # handed to the owner in the Claude desktop app
+    with_owner_by: str | None = None
+    desktop_opened_at: str | None = None
 
     @property
     def is_open(self) -> bool:
         return self.ended_at is None
+
+    @property
+    def with_owner(self) -> bool:
+        return self.with_owner_at is not None
+
+    @property
+    def desktop_link(self) -> str | None:
+        """The desktop app's link to the session, once it was opened there."""
+        if self.desktop_opened_at is None or self.claude_session_id is None:
+            return None
+        return f"claude://claude.ai/epitaxy/local_{self.claude_session_id}"
 
     @property
     def allowed_rules(self) -> list[str]:

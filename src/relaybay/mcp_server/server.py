@@ -1140,6 +1140,45 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         found, view = await run(service.run_status(task))
         return fmt.run_status(found, view)
 
+    @write
+    async def run_settings(
+        task: TaskRef,
+        permission_mode: Annotated[
+            str | None,
+            Field(
+                description="A mode that does not raise the run's current one: plan, then"
+                " manual / default / dontAsk, then acceptEdits, then auto. Raising it and"
+                " bypassPermissions are the owner's, on the card. Default: unchanged."
+            ),
+        ] = None,
+        model: Annotated[
+            str | None, Field(description="opus, sonnet or haiku. Default: unchanged.")
+        ] = None,
+        effort: Annotated[
+            str | None,
+            Field(description="low, medium, high, xhigh or max. Default: unchanged."),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Change the permission mode, model or effort of the card's open run from its next
+        turn on, for coordinator sessions only, never while a turn runs and never under a brake.
+        The mode may only stay or go down; the owner raises it on the card."""
+        changed = await run(
+            service.run_settings_mcp(
+                task,
+                permission_mode=permission_mode or None,
+                model=model or None,
+                effort=effort or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        found = await run(service.get_task(changed.task_id))
+        return fmt.run_settings_saved(found, changed)
+
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(
         query: Annotated[str, Field(description="Words to look for (word forms match).")],
