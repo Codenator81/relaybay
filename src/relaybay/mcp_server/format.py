@@ -48,10 +48,12 @@ from relaybay.domain.rules import (
     rules_line,
     rules_markdown,
 )
+from relaybay.domain.runs import Run, RunView
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, LINK_FIELDS, LINK_NAMES, TASK_FIELDS
 from relaybay.domain.usage import UsageReport, UsageTotal
 from relaybay.policy import EffectivePolicy
+from relaybay.runner.worktrees import summary
 from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
 
 
@@ -1175,6 +1177,60 @@ def brake_saved(brake: Brake) -> str:
     return (
         f"Brake #{brake.id} on for {brake.target}: agents stop at their next tool call. A running"
         " command or a background process goes on. Only the owner releases it, on the board."
+    )
+
+
+RUN_TURNS_SHOWN = 5
+
+
+def run_status(task: Task, view: RunView | None) -> str:
+    """A card's run: status, folders, Claude session id, tokens and the latest turns. Never a
+    prompt's text: the card's digest has the work."""
+    if view is None:
+        return (
+            f"{task.key} has no run. The owner starts one on the card, a coordinator with"
+            " run_start."
+        )
+    r = view.run
+    reason = f" ({r.status_reason})" if r.status_reason else ""
+    lines = [
+        f"Run {r.id} on {task.key}: {r.status}{reason}. {r.model}, effort {r.effort},"
+        f" {r.permission_mode}; started by {r.started_by} ({r.started_by_kind})"
+        f" {r.created_at[:19]}Z.",
+        f"Folder: {r.cwd}",
+    ]
+    for w in view.worktrees:
+        if w.created_by_run:
+            copied = summary(w.copied)
+            lines.append(
+                f"- {w.repo_name}: {w.path} (new worktree, branch {w.branch}; copied: {copied})"
+            )
+        else:
+            lines.append(f"- {w.repo_name}: {w.path} (the repository itself)")
+    lines.append(
+        f"Claude session: {r.claude_session_id or 'not known yet'};"
+        f" session {r.session_name or '-'}; hooks from {r.hooks_source},"
+        f" MCP from {r.mcp_source}."
+    )
+    t = view.totals
+    lines.append(
+        f"Tokens: {t.tokens:,} (input {t.input_tokens:,}, output {t.output_tokens:,}, cache read"
+        f" {t.cache_read_tokens:,}, cache write {t.cache_write_tokens:,}); denials {t.denials}."
+    )
+    if view.turns:
+        lines.append(f"Turns ({len(view.turns)}, the latest {RUN_TURNS_SHOWN} shown):")
+        for turn in view.turns[-RUN_TURNS_SHOWN:]:
+            lines.append(
+                f"- #{turn.seq} {turn.state} by {turn.sent_by}, queued {turn.queued_at[:19]}Z,"
+                f" {turn.tokens:,} tokens"
+            )
+    return "\n".join(lines)
+
+
+def run_started(task: Task, run: Run) -> str:
+    return (
+        f"Run {run.id} started on {task.key} ({run.status}); its session is"
+        f" {run.session_name}. Follow it with run_status; the owner steers it on the card."
     )
 
 

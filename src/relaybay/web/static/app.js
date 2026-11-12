@@ -416,7 +416,10 @@
     return projectPath() + (query ? "?" + query : "");
   }
 
-  function editForm() { return dialog.querySelector("form.task-form"); }
+  // The dialog's edit form only: other forms there (the Agent block's Start form) share the
+  // .task-form layout class but are no edit form and sit in no .task-form-box.
+  var EDIT_FORM = ".task-form-box > form.task-form";
+  function editForm() { return dialog.querySelector(EDIT_FORM); }
 
   function openTask(key, push, tab) {
     if (dialog.dataset.key !== key) {
@@ -473,7 +476,8 @@
       var note = form.querySelector(".form-stale");
       if (note) note.hidden = false;
     } else {
-      refreshForm(form.closest(".task-form-box"));
+      var box = form.closest(".task-form-box");
+      if (box) refreshForm(box);
     }
   }
 
@@ -488,7 +492,7 @@
     if (box.dataset.refreshDeferred) return;
     box.dataset.refreshDeferred = "1";
     window.setTimeout(function () {
-      var form = box.querySelector("form.task-form");
+      var form = box.querySelector(EDIT_FORM);
       if (!document.body.contains(box) || !form) return;
       if (form.dataset.dirty) {
         var note = form.querySelector(".form-stale");
@@ -552,7 +556,7 @@
         event.detail.xhr.status + "). Close this and reload the board."));
     });
     dialog.addEventListener("input", function (event) {
-      var form = event.target.closest("form.task-form");
+      var form = event.target.closest(EDIT_FORM);
       if (form) form.dataset.dirty = "1";
     });
 

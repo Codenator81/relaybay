@@ -1071,6 +1071,75 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return fmt.brake_saved(brake)
 
+    @write
+    async def run_start(
+        task: TaskRef,
+        repos: Annotated[
+            list[str] | None,
+            Field(
+                description="Names of the project's repositories the run works in (case"
+                " ignored), each in a new git worktree. Default: the repositories linked to the"
+                " card, else the project's first."
+            ),
+        ] = None,
+        cwd: Annotated[
+            str | None,
+            Field(
+                description="The run's working folder: 'folder' (the project folder of the agent"
+                " defaults) or a repository name (case ignored). Default: the project folder"
+                " when set, else the first of the run's repositories (the first one linked to"
+                " the card, else the project's first)."
+            ),
+        ] = None,
+        model: Annotated[
+            str | None, Field(description="opus, sonnet or haiku. Default: the project's.")
+        ] = None,
+        effort: Annotated[
+            str | None,
+            Field(description="low, medium, high, xhigh or max. Default: the project's."),
+        ] = None,
+        brief: Annotated[
+            str | None,
+            Field(description="The first turn's text. Default: the card's digest and report line."),
+        ] = None,
+        permission_mode: Annotated[
+            str | None,
+            Field(
+                description="Not accepted: a run started here uses the project's permission"
+                " mode and allowed tools, which only the owner sets. Leave it out."
+            ),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Start the user's own claude on a card, for coordinator sessions only: cards in plan or
+        dev with no brake on them, each repository in a new worktree, the project's permission
+        profile. Anyone else is refused; a side task goes to backlog_add."""
+        started = await run(
+            service.start_run_mcp(
+                task,
+                repos=repos or None,
+                cwd=cwd or None,
+                model=model or None,
+                effort=effort or None,
+                brief=brief or None,
+                permission_mode=permission_mode or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        found = await run(service.get_task(started.task_id))
+        return fmt.run_started(found, started)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def run_status(task: TaskRef) -> str:
+        """The card's run (the open one, else the latest): status, folders, Claude session id,
+        tokens and the latest turns. Open to every session."""
+        found, view = await run(service.run_status(task))
+        return fmt.run_status(found, view)
+
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(
         query: Annotated[str, Field(description="Words to look for (word forms match).")],

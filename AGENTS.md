@@ -30,7 +30,9 @@ Installers per OS: `packaging/README.md`. The desktop program, `desktop.toml`, t
 change to what a session sees (hooks, MCP answers) gets a scenario there. For runs on cards the
 server starts the fake itself (`runs` fixture): `FAKE_CLAUDE_SCENARIO`, `FAKE_CLAUDE_TRACE` and
 `FAKE_CLAUDE_AUTH` (the `claude auth status` answer) come from the environment; scenarios may use
-`turns` (steps per turn of a session), `spawn_child` and `exit`; argv and turn ends are traced. The real CLI is never
+`turns` (steps per turn of a session), `spawn_child` and `exit`; argv, turn ends, each hook run
+(`kind: hook`; user layer plus `--settings`, an identical command once) and the loaded memory
+(`kind: memory`: user, cwd and `--add-dir` `CLAUDE.md`) are traced. The real CLI is never
 run by tests unless `RELAYBAY_E2E_REAL_CLAUDE=1` is set, and `scripts/probe_claude.py` never in CI.
 
 All three checks must pass before you report a change as done; after changing a command, a

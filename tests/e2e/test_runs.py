@@ -253,20 +253,6 @@ def test_server_stop_stops_the_turn_and_its_process(runs: Runs) -> None:
     assert runs.runs()[-1]["status"] == "stopped"  # a clean stop leaves nothing to recover
 
 
-def test_start_refuses_without_relaybay_in_the_user_settings(runs: Runs) -> None:
-    config = runs.stand.claude_home / ".claude.json"
-    config.write_text("{}", encoding="utf-8")
-    with runs.stand.board() as board:
-        html = runs.start(board)
-        assert "MCP server is not registered for Claude Code" in html
-        assert "run relaybay setup" in html
-        settings_file = runs.stand.claude_home / ".claude" / "settings.json"
-        settings_file.write_text("{}", encoding="utf-8")
-        html = runs.start(board)
-        assert "hooks are not in your Claude Code user settings" in html
-    assert runs.rows("SELECT * FROM run") == []
-
-
 def test_stop_while_the_process_ends_after_its_result_cancels_the_waiting_text(
     runs: Runs,
 ) -> None:

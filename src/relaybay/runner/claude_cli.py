@@ -11,6 +11,7 @@ from relaybay.domain.errors import ValidationError
 from relaybay.domain.hooks import RUN_ID_ENV
 
 BATCH_SUFFIXES = (".cmd", ".bat")
+ADD_DIRS_CLAUDE_MD_ENV = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"
 # cmd.exe parses a batch file's command line again ("BatBadBut"): an argument with one of these
 # could run something else, so such a turn is refused. The prompt goes on stdin there.
 UNSAFE_BATCH_CHARS = frozenset('"%^&|<>!\r\n')
@@ -76,13 +77,16 @@ class TurnSpec:
     allowed: tuple[str, ...] = field(default_factory=tuple)
     resume: str | None = None
     chrome: bool = False
+    add_dirs: tuple[str, ...] = field(default_factory=tuple)
+    settings_file: str | None = None  # relaybay's hooks, when the user's settings lack them
+    mcp_file: str | None = None  # relaybay's MCP server, likewise
 
 
 def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
     """argv and the text for stdin (None: nothing). The prompt follows `-p` in argv, or goes on
-    stdin for a batch shim; each allowed-tools rule gets its own flag, and no positional comes
-    after a flag. Never --bare, --setting-sources, --strict-mcp-config or a skip of permissions:
-    the turn loads what a manual session loads."""
+    stdin for a batch shim; each allowed-tools rule, extra folder and config file gets its own
+    flag with one value, and no positional comes after a flag. Never --bare, --setting-sources,
+    --strict-mcp-config or a skip of permissions: the turn loads what a manual session loads."""
     batch = is_batch(spec.claude)
     argv = [spec.claude, "-p"]
     if not batch:
@@ -101,6 +105,12 @@ def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
     ]
     for rule in spec.allowed:
         argv += ["--allowedTools", rule]
+    for folder in spec.add_dirs:
+        argv += ["--add-dir", folder]
+    if spec.settings_file:
+        argv += ["--settings", spec.settings_file]
+    if spec.mcp_file:
+        argv += ["--mcp-config", spec.mcp_file]
     if spec.chrome:
         argv.append("--chrome")
     if spec.resume:
@@ -119,8 +129,10 @@ def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
 
 
 def child_env(base: Mapping[str, str], run_id: int) -> dict[str, str]:
-    """The server's environment, without the host session's variables, with the run's id. The
-    Claude Code config folder and any key variable stay as the user has them."""
+    """The server's environment, without the host session's variables, with the run's id and
+    the switch that loads the `CLAUDE.md` of each --add-dir folder (the cwd alone gives only its
+    own). The Claude Code config folder and any key variable stay as the user has them."""
     env = {k: v for k, v in base.items() if k not in HOST_VARIABLES}
     env[RUN_ID_ENV] = str(run_id)
+    env[ADD_DIRS_CLAUDE_MD_ENV] = "1"
     return env

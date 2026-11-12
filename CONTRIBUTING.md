@@ -51,7 +51,13 @@ subscription sign-in) into the environment the server passes on. The fake takes 
 stdin when it is missing (a `claude.cmd` shim), `--model`, `--effort`, `--chrome` and the `manual`
 mode; a scenario may give `turns` (one list of steps per turn of a session) and the steps
 `spawn_child` (a sleeping grandchild that writes its pid) and `exit` (no result); each run traces
-its argv, prompt and `RELAYBAY_RUN_ID` (`kind: argv`) and its end (`kind: turn_end`). Against the real CLI, by hand and never in CI:
+its argv, prompt and `RELAYBAY_RUN_ID` (`kind: argv`) and its end (`kind: turn_end`). Hooks come
+from the user layer (`$CLAUDE_CONFIG_DIR/settings.json`, when `user` is in `--setting-sources`) and
+each `--settings`; an identical command handler runs once; each hook run is traced (`kind: hook`).
+The memory it loads is traced (`kind: memory`): the user `CLAUDE.md` of the config folder, the cwd's
+`CLAUDE.md` and `CLAUDE.local.md`, and those of each `--add-dir` with
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`. `make_git_repo` in `tests/e2e/conftest.py` makes a
+repository with untracked files for worktree tests. Against the real CLI, by hand and never in CI:
 `RELAYBAY_E2E_REAL_CLAUDE=1 uv run pytest tests/e2e/test_real_claude.py` and
 `uv run python scripts/probe_claude.py` (both use your login and spend a little quota).
 

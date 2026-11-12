@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 32
+LATEST = 33
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -426,6 +426,7 @@ async def test_upgrade_from_0029_adds_the_run_tables(tmp_path: Path) -> None:
         for table, wanted in (
             ("run", {"run_open_task", "run_claude_session", "run_project"}),
             ("run_turn", {"run_turn_active", "run_turn_queued"}),
+            ("run_worktree", {"run_worktree_run", "run_worktree_path"}),
         ):
             async with conn.execute(f"PRAGMA index_list({table})") as cur:
                 assert wanted <= {row[1] for row in await cur.fetchall()}

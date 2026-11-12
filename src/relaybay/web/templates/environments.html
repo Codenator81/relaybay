@@ -185,6 +185,9 @@
           <select name="permission_mode">{% for m in run_choices.modes %}<option value="{{ m }}"{% if m == run_defaults.permission_mode %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
         </label>
       </div>
+      <label class="field"><span>Project folder (optional: an absolute path holding the project's repositories; a run may use it as its folder, with each repository as a worktree passed with --add-dir)</span>
+        <input name="folder" maxlength="500" value="{{ run_defaults.folder or '' }}" spellcheck="false" placeholder="/code/acme-shop">
+      </label>
       <label class="field"><span>Allowed tools (comma-separated rules, each passed with its own --allowedTools)</span>
         <input name="allowed_tools" maxlength="2000" value="{{ run_defaults.allowed_tools }}" spellcheck="false">
       </label>
