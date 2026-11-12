@@ -10098,15 +10098,28 @@ class Service:
         run.status = new
 
     async def _spawn_turn(self, run_id: int, turn_id: int) -> None:
-        """Start the process of a turn already marked started; a failure ends it visibly."""
+        """Start the process of a turn already marked started; a failure ends it visibly.
+        Callers await it right after the commit that marked the turn started, so the reservation
+        below is taken before anything else can run."""
         runs = self._run_manager()
-        run = await self.get_run(run_id)
-        turn = await repo.get_turn(self._r, turn_id)
+        reserved = runs.reserve(run_id)
+        try:
+            run = await self.get_run(run_id)
+            turn = await repo.get_turn(self._r, turn_id)
+        except BaseException:
+            runs.release(run_id)
+            raise
         assert turn is not None
+        if run.status != "running" or turn.ended_at is not None:
+            # Stopped, ended or lost before the process existed: nothing to start.
+            runs.release(run_id)
+            return
         claude = runs.claude()
         error = self._claude_missing() if claude is None else None
+        if not reserved:
+            error = "the server is stopping" if runs.closing else "a turn of this run is running"
         pid = None
-        if claude is not None:
+        if claude is not None and reserved:
             spec = TurnSpec(
                 claude,
                 turn.prompt,
@@ -10119,9 +10132,11 @@ class Service:
                 run.chrome,
             )
             try:
-                pid = await runs.start_turn(run.id, turn.id, spec)
+                pid = await runs.start_turn(run.id, turn.id, spec, reserved=True)
             except (OSError, ValidationError, RuntimeError) as exc:
                 error = f"claude did not start: {exc}"
+        if pid is None and reserved:
+            runs.release(run_id)
         async with self._tx() as tx:
             if pid is not None:
                 runs.checked_since_start.add(run.id)
@@ -10272,7 +10287,15 @@ class Service:
         click), so the second send adds nothing."""
         turns = await repo.list_turns(tx.conn, run_id)
         last = turns[-1] if turns else None
-        if last is None or (last.prompt, last.sent_by) != (prompt, actor):
+        if (
+            last is None
+            or last.ended_at is not None
+            or (last.prompt, last.sent_by)
+            != (
+                prompt,
+                actor,
+            )
+        ):
             return None
         queued = datetime.fromisoformat(last.queued_at)
         age = datetime.fromisoformat(tx.now) - queued

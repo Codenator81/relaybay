@@ -33,6 +33,7 @@ class StubRuns:
         self.active: dict[int, int] = {}
         self.checked_since_start: set[int] = set()
         self.fail: Exception | None = None
+        self.reserved: set[int] = set()
 
     def claude(self) -> str:
         return "/usr/local/bin/claude"
@@ -40,10 +41,24 @@ class StubRuns:
     async def login(self, force: bool = False) -> LoginState:
         return self.state
 
-    def is_running(self, run_id: int) -> bool:
-        return run_id in self.active
+    closing = False
 
-    async def start_turn(self, run_id: int, turn_id: int, spec: TurnSpec) -> int:
+    def is_running(self, run_id: int) -> bool:
+        return run_id in self.active or run_id in self.reserved
+
+    def reserve(self, run_id: int) -> bool:
+        if self.closing or self.is_running(run_id):
+            return False
+        self.reserved = self.reserved | {run_id}
+        return True
+
+    def release(self, run_id: int) -> None:
+        self.reserved = self.reserved - {run_id}
+
+    async def start_turn(
+        self, run_id: int, turn_id: int, spec: TurnSpec, *, reserved: bool = False
+    ) -> int:
+        self.release(run_id)
         if self.fail is not None:
             raise self.fail
         self.started.append((run_id, turn_id, spec))
@@ -326,3 +341,33 @@ async def test_a_missing_claude_path_is_named(svc: Service, tmp_path: Path) -> N
     stub(svc).claude = lambda: None  # type: ignore[method-assign]
     with pytest.raises(ValidationError, match=r"claude_path is .*claude, which is not a file"):
         await svc.start_run("acme-shop-1")
+
+
+async def test_a_send_again_after_a_failed_turn_is_a_new_turn(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    await stub(svc).finish(run.id)
+    stub(svc).fail = OSError("spawn failed")
+    first = await svc.send_to_run(run.id, "continue")
+    assert (await svc.get_run(run.id)).status == "stopped"
+    stub(svc).fail = None
+    again = await svc.send_to_run(run.id, "continue")
+    assert again.id != first.id and (await svc.get_run(run.id)).status == "running"
+
+
+async def test_a_turn_stopped_before_its_process_exists_never_starts(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    await stub(svc).finish(run.id)
+    spawn = svc._spawn_turn
+    lost: list[str] = []
+
+    async def stop_first(run_id: int, turn_id: int) -> None:
+        # Stop arrives between the commit of the started turn and the spawn.
+        await svc.stop_run(run_id)
+        lost.append((await svc.get_run(run_id)).status)
+        await spawn(run_id, turn_id)
+
+    svc._spawn_turn = stop_first  # type: ignore[method-assign]
+    started = len(stub(svc).started)
+    await svc.send_to_run(run.id, "Then the tests")
+    assert lost == ["lost"]
+    assert len(stub(svc).started) == started and not stub(svc).is_running(run.id)

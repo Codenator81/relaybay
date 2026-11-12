@@ -142,17 +142,39 @@ class RunManager:
             self._login = (time.monotonic(), state)
             return state
 
-    async def start_turn(self, run_id: int, turn_id: int, spec: TurnSpec) -> int:
-        """Spawn the turn and return its pid; the sink hears the session id and the end."""
-        if self.closing:
-            raise RuntimeError("the server is stopping")
-        if self.is_running(run_id):
+    def reserve(self, run_id: int) -> bool:
+        """Hold the run's slot from the moment its turn is marked started in the database, so a
+        Stop or End before the process exists waits for it instead of seeing no process. Called
+        with no await between the commit and it. False: closing, or a turn already holds it."""
+        if self.closing or self.is_running(run_id):
+            return False
+        self._starting[run_id] = asyncio.Event()
+        return True
+
+    def release(self, run_id: int) -> None:
+        """Give back a reservation that did not become a process."""
+        event = self._starting.pop(run_id, None)
+        if event is not None:
+            event.set()
+
+    async def start_turn(
+        self, run_id: int, turn_id: int, spec: TurnSpec, *, reserved: bool = False
+    ) -> int:
+        """Spawn the turn and return its pid; the sink hears the session id and the end.
+        `reserved`: the caller holds the run's slot from `reserve`; it is used up here."""
+        if reserved and run_id not in self._starting:
+            raise RuntimeError(f"run {run_id} has no reservation")
+        if not reserved and self.is_running(run_id):
             raise RuntimeError(f"run {run_id} already has a turn running")
-        argv, stdin_text = build_command(spec)
-        tree = ProcessTree()
-        env = child_env(os.environ, run_id)
-        spawned = self._starting[run_id] = asyncio.Event()
+        if not reserved:
+            self._starting[run_id] = asyncio.Event()
+        spawned = self._starting[run_id]
         try:
+            if self.closing:
+                raise RuntimeError("the server is stopping")
+            argv, stdin_text = build_command(spec)
+            tree = ProcessTree()
+            env = child_env(os.environ, run_id)
             proc = await asyncio.to_thread(tree.spawn, argv, spec.cwd, env, stdin_text)
         finally:
             del self._starting[run_id]
@@ -253,6 +275,6 @@ class RunManager:
         await asyncio.gather(
             *(
                 self.stop(run_id, "server stopped", grace=CLOSE_GRACE_SECONDS)
-                for run_id in list(self._active)
+                for run_id in set(self._active) | set(self._starting)
             )
         )
