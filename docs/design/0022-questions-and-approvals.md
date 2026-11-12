@@ -5,8 +5,8 @@
   ([0005](0005-comments-to-agents.md)), the guard and access map ([0006](0006-environments-and-access.md)),
   policy as data ([0013](0013-policy-as-data.md)) and the Inbox and tray
   ([0020](0020-tray-notifications.md)).
-- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0037 `question`, 0038
-  `approval` (0036 went to `report_check` in PR 2; numbers as in 0021's plan).
+- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0037 `question`, 0039
+  `approval` (0036 went to `report_check` in PR 2 and 0038 to the manual archive).
 - PR 3 shipped: migration 0037 `question`; MCP `question_ask` (default required, at most 5 open
   per card, the policy's secret check on every field, kind `look` always blocking with the URL and
   the test account's name), `question_list`, `question_withdraw` (the asker or a coordinator); the
@@ -16,6 +16,15 @@
   non-blocking question closed `defaulted` at its deadline by a 15-second server check and on
   reads; the tray kind `question`; `question.withdrawn` and `run.waiting` besides the events
   below. Behaviour: [SPEC](../SPEC.md#spec-questions).
+- PR 4 shipped: migration 0039 `approval`; the policy key `approvals` (`push`, `merge`, `test`
+  true and `commit` false by default, `live` true and not droppable, `disable` and `ignore` to
+  narrow the patterns); the guard's check after the level (`git push` with its branch, `gh pr
+  merge`, the stand changes of the access map), denying with a request opened, and answering
+  `allow` for a covered call while marking its approval used in the same transaction; requests from
+  a turn's `permission_denials`; MCP `approval_request` and `approval_list`; the Inbox's Approvals
+  group and the card's fold, decided with `POST /approvals/{id}/decide` (board only); delivery and
+  `waiting` as for questions; the tray kind `approval`. "Inside a turn" stays the upgrade; the denial
+  plus a new turn is the default. Behaviour: [SPEC](../SPEC.md#spec-approvals).
 
 ## Problem
 

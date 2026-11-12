@@ -228,6 +228,9 @@ EVENT_KINDS = (
     "question.defaulted",
     "question.delivered",
     "question.withdrawn",
+    "approval.requested",
+    "approval.decided",
+    "approval.used",
     "settings.run_login_any",
 )
 CSRF_HEADER = "x-relaybay-csrf"
@@ -1705,6 +1708,68 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 message=None if error else f"Question {question_id} answered.",
             )
         return await questions_panel(request, task, error=error)
+
+    # --- Approvals: decided only here, on the board ---------------------------------------
+
+    async def approvals_panel(
+        request: Request, task: Task, error: str | None = None
+    ) -> HTMLResponse:
+        fresh = await service.get_task(task.key)
+        return render(
+            request,
+            "_approvals.html",
+            t=fresh,
+            approvals=await service.card_approvals(fresh),
+            error=error,
+        )
+
+    @router.get("/p/{slug}/t/{key}/approvals", response_class=HTMLResponse)
+    async def approvals_fragment(request: Request, slug: str, key: str):
+        return await approvals_panel(request, await find_task(slug, key))
+
+    @router.post("/approvals/{approval_id}/decide", response_class=HTMLResponse)
+    async def approval_decide(
+        request: Request,
+        approval_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+        decision: Annotated[str, Form()] = "",
+        text: Annotated[str, Form()] = "",
+        place: Annotated[str, Form(alias="from")] = "card",
+    ):
+        """The owner's Approve or Refuse, from the card or the Inbox: an htmx swap of that panel
+        (with the reason on a refusal), or a redirect back for a plain form post."""
+        board_only(request, csrf)
+        approval = await service.get_approval(approval_id)
+        task = await service.get_task(approval.task_id)
+        htmx = "hx-request" in request.headers
+        inbox_side = place == "inbox"
+        back = "/inbox" if inbox_side else f"/p/{task.project_slug}?task={task.key}"
+        error = None
+        done = f"Approval {approval_id} {'approved' if decision == 'approve' else 'refused'}."
+        try:
+            if decision not in ("approve", "refuse"):
+                raise ValidationError("Pick Approve or Refuse.")
+            await service.decide_approval(
+                approval_id, decision == "approve", text=text or None, actor="owner"
+            )
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            if not htmx:
+                return flash_redirect(request, back, error=str(exc))
+            error = str(exc)
+        if not htmx:
+            return flash_redirect(request, back, message=done)
+        if inbox_side:
+            return render(
+                request,
+                "_inbox.html",
+                inbox=await inbox(),
+                inbox_projects=await project_rows(),
+                error=error,
+                message=None if error else done,
+            )
+        return await approvals_panel(request, task, error=error)
 
     @router.get("/files/{attachment_id}")
     async def attachment_file(attachment_id: int) -> Response:

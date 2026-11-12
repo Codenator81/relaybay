@@ -372,7 +372,8 @@ folder or a key variable.
   `ended` (End; a running turn is stopped first). `ended` is final. `running` → `waiting` when a
   turn's `result` comes while a blocking question of the run is open and no text waits
   ([questions](#spec-questions)); `waiting` → `running` (the owner's answer, or a text) or `idle`
-  (the question withdrawn). `queued` is allowed by the table but not produced yet. Stop, lost and End cancel the texts that waited,
+  (the question withdrawn); an open approval request of the run at the `result` does the same
+  ([approvals](#spec-approvals)). `queued` is allowed by the table but not produced yet. Stop, lost and End cancel the texts that waited,
   also when Stop comes after the turn's `result` while the process still ends (its `SessionEnd`
   hooks run then): the turn keeps its outcome, the run goes `stopped`. A run left `running` with no
   process behind it (its end could not be stored) is marked `lost` by Stop or End, which then
@@ -578,6 +579,95 @@ default, deadline, URL and account), `question.answered` (the answer, and `chang
 a default), `question.defaulted`, `question.delivered` (to which session), `question.withdrawn`;
 all on the Activity page and, with the changes, on the Audit page.
 
+<a id="spec-approvals"></a>
+
+**Approvals.** A push, a merge, a commit or a change on a stand that needs the owner's word is an
+object on its card (`approval`, [§11](#spec-data); [design
+0022](design/0022-questions-and-approvals.md#approvals)): only the owner's button on the board
+decides it, and the guard reads only that row. A coordinator's or another session's message, a
+text in a turn, a file or a tool result that says "approved" changes nothing.
+
+- **What needs one** is policy data, the `approvals` key ([§7](#spec-policy)): `push` (default
+  true: `git push` needs an approval that names its branch), `merge` (default true: `gh pr merge`,
+  naming the pull request), `commit` (default false: `git commit`, naming its branch), `test`
+  (default true: a change on a `test` stand, as the guard's mutating rules see it: a deploy, a
+  kubectl or ssh write, an SQL change), `live` (always true: a change on a `live` stand; a layer
+  with `live: false` is refused when it is validated, so neither a save nor a proposal can drop
+  it). `approvals.disable` switches off a built-in action pattern by id (`git-push`,
+  `gh-pr-merge`, `git-commit`); `approvals.ignore` lists regular expressions (checked like
+  `secrets.allow`): a command segment one of them matches is never an action. Both take `+` and
+  `-`. The approval check does not depend on `guard.mode`.
+- **The action and its target**, read from a `Bash` call's command segments (after `VAR=…`,
+  `sudo`, `env` …): `git [-C dir] push [options] [remote [refspec…]]` pushes each refspec's
+  destination branch (`HEAD:feat/x` → `feat/x`, `+a:refs/heads/b` → `b`, `--delete x` → `x`), the
+  current branch of the folder (read with `git rev-parse`, a read) when it names none or `HEAD`;
+  `--dry-run` and `-n` are not a push. `gh pr merge [<number> | <URL> | <branch>]` merges that pull
+  request (the number), or the current branch's. A name the guard cannot read (a `$VAR`, a
+  substitution, a glob) is denied with "could not tell which branch" and opens nothing. The
+  repository is the one whose folder holds the call's folder (the run's worktrees, then the
+  project's repositories). A change on a stand counts first: a call that touches a test or live
+  environment with a mutating rule needs a `deploy` approval for that environment (`sql` for a
+  database rule), and its git actions need no separate one.
+- **Enforcement** ([guard](#spec-guard)): after the level check, a `PreToolUse` call of a session
+  that works on a card (a run's session: the run's card; a desktop session: the cards bound to it,
+  the request opens on the most recently bound) whose actions need approvals is checked against the
+  approved, unused approvals of those cards. Each action needs its own covering approval (same
+  action; the same branch, pull request or environment; the repository when both name one). All
+  covered: each approval is marked `used` (when, by which call: the tool and its masked input, and
+  by which session) in the same transaction as the answer `allow` with "the owner approved this on
+  the board: approval N (…)", so one approval allows exactly one matching call, also under Claude
+  Code's Manual mode. Not covered: `deny` with "<action> needs the owner's approval: waiting for the
+  owner's approval on the board (approval N). End your turn; the decision comes as your next turn"
+  (a desktop session: "as an owner comment through your hooks"), and a request opens (`requested_via`
+  `guard`, summary "The agent ran: …") unless one is open for that action and target. A call whose
+  level denies or asks is answered by the level, and uses no approval. A session on no card is not
+  checked. A failure of the check is logged and the call goes on, as for the guard.
+- **From a denial.** At a turn's `result`, each entry of `permission_denials` (Bash, or another
+  server's MCP tool) whose call needs an approval, whose level does not block it, and for which no
+  request of the card is open opens one (`requested_via` `denial`, summary "From a permission denial
+  in turn N: …"): Manual mode denies such a call without the hooks' help when they could not run. A
+  denial no approval rule covers (Claude Code's own auto mode classifier, a `Write` outside the
+  allowed tools) stays a refusal in the turn's report and opens nothing.
+- **MCP.** `approval_request(task, action, target, summary, rollback?, session, hook_session?)`:
+  `action` one of `push`, `merge`, `commit`, `deploy`, `sql`; `target` the branch (`feat/x`, or
+  `backend:feat/x` with a repository of the project), the pull request (`12`, `#12`, its URL, or a
+  branch; `backend#12`) or an environment of the card's project; `summary` required (up to 2,000
+  characters: the commits, the files, the CI state); `rollback` (up to 1,000) required for a
+  deploy. `session` is required; a run's session asks for its open run, on its card only; refused
+  on a card in `done` and at 10 open requests per card. The summary, the rollback and the target go
+  through the policy's secret check. An open request for the same action and target is updated
+  (summary, rollback, who asked) instead of opening a second. `approval_list(task?, status?)`:
+  newest first, open ones of all cards by default (`approved`, `refused`, `used` or `all`), with the
+  summary, the rollback, the owner's line verbatim and the call that used it. **No MCP tool
+  decides.**
+- **The owner's decision.** `POST /approvals/{id}/decide` with `decision` (`approve` or `refuse`), an
+  optional line `text` (up to 1,000 characters, one line) and `from` (`card` or `inbox`), board only
+  (cookie and CSRF; a Bearer request is refused, `403`). Only an open request is decided; a deploy
+  without its rollback cannot be approved (Approve is disabled; the agent asks again with
+  `rollback`). The agent gets one line: `The owner approved <what> (approval N): one matching call
+  may go through now.` (plus ` The owner's note: <line>`), or `The owner refused <what> (approval N):
+  <line, or "no reason given">`, where `<what>` is `push of feat/x in backend`, `merge of PR 12`,
+  `commit on feat/x`, `deploy on acme-shop/live` or `SQL change on acme-shop/live`. Delivery is the
+  one of [questions](#spec-questions): the next turn of an open run (at once when no turn runs; a
+  turn that waits while one runs, whose hooks say once `The owner's decision on approval N (…) is
+  waiting: it comes as your next turn when this one ends.`; after Back to the program for a run
+  with the owner), an owner comment for a desktop session or an ended run, and a decision whose
+  turn never started goes with the run's next turn. The card goes back to the requester when
+  nothing else of it waits on the owner. **Only the owner's decision carries that line:** a
+  coordinator's `run_start` brief with a line starting `The owner approved` or `The owner refused`
+  is refused, like a forged answer line.
+- **Waiting.** At a turn's `result` an open request of the run (no text waiting) sets the run to
+  `waiting` ("waiting for the owner's decision on approval N", with questions first when both wait)
+  and the card's `waiting_on` to the owner with `next_step` "Decide approval N on the board: …"; a
+  desktop session's request does the same to the card when it opens.
+- **Events** `approval.requested` (the action, the target, the summary, the rollback, `via`;
+  `updated` when an open request was filled in), `approval.decided` (the decision and the line),
+  `approval.used` (the call); all on the Activity page and, with the changes, on the Audit page.
+
+The check is a seat belt, not access control: an agent with a shell can push another way (a
+script, another git, an alias), and the patterns read text only; live access stays read-only by
+level. An approval used by a call that another hook then denies is spent.
+
 <a id="spec-run-login"></a>
 
 **Login check.** relaybay never signs in for the user and never touches credentials: it runs
@@ -680,7 +770,8 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 value `from` and `to`), `run.waiting` (all with `project`, `key` and `run_id`), `run.defaults_set`,
 `settings.run_login_any`, `question.asked`, `question.answered`, `question.defaulted`,
 `question.delivered`, `question.withdrawn` (with `question_id`, `run_id` and the text,
-[§1](#spec-questions))
+[§1](#spec-questions)), `approval.requested`, `approval.decided`, `approval.used` (with
+`approval_id`, `run_id`, `action`, `target` and `what`, [§1](#spec-approvals))
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
@@ -866,6 +957,15 @@ with its default still takes an answer, which the agent gets as a change of cour
 `POST /questions/{id}/answer` with `choice` and/or `text` and `from` (`card` or `inbox`, the panel
 an htmx post swaps; a plain form post is redirected back with a flash), board only (cookie and
 CSRF; a Bearer request is refused, `403`).
+
+<a id="spec-board-approvals"></a>
+
+**Approvals fold.** Below Questions, an **Approvals** fold loaded from
+`/p/<slug>/t/<key>/approvals` and refetched on the card's `approval.*` events (not while a line is
+being typed): the card's open requests, the oldest first, as in the Inbox, then the decided ones
+folded: refused, approved "not used yet", or used with when and by which call (`Bash: git push
+origin feat/x`), each with when it was delivered ("waits as turn N", "waits as owner comment #N").
+Approve and Refuse post `/approvals/{id}/decide` ([§1](#spec-approvals)).
 
 <a id="spec-board-run-defaults"></a>
 
@@ -1080,6 +1180,12 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
   counted again under Waiting on you. While an answer is being typed (in the Inbox, the task
   page or the task dialog), live refreshes that would swap it away wait until it is sent or
   emptied, then run once.
+- **Approvals:** the open approval requests of all cards, the oldest first
+  ([§1](#spec-approvals)): the card, the run (or "desktop session"), who asked and how (by the
+  agent, opened by the guard, from a permission denial), its age, what and where (`push of feat/x
+  in backend`), the summary, the rollback (a deploy without one says so), a line for the agent and
+  **Approve** / **Refuse**. A decision swaps the Inbox. Each request counts as one row; its card is
+  not counted again under Waiting on you. A half-typed line is held like an answer.
 - **Answers:** open tasks with the "answer received" mark ([§12](#spec-intake-answer)).
 - **Intake:** new messages that match no task, with Tie to a task, Propose a task, Dismiss and
   Trust this source ([§12](#spec-intake-board)).
@@ -1116,7 +1222,8 @@ Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?tas
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
 `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
-`policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `intake.*` except `intake.wake` and `intake.forwarded`, `backlog.*`, `brake.*`, `budget.*`, `concurrency.over`, `question.*` except `question.delivered`), at most once per 2 s. With
+`policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `intake.*` except `intake.wake` and `intake.forwarded`, `backlog.*`, `brake.*`, `budget.*`, `concurrency.over`, `question.*` except `question.delivered`, `approval.requested`,
+`approval.decided`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -1341,6 +1448,7 @@ keep a thread going for its own sake.
 | Brake | `brake_status`, `brake_set` ([§2](#spec-brake)) |
 | Runs | `run_start`, `run_settings` (coordinators only), `run_status`, `run_events` ([§1](#spec-run)) |
 | Questions | `question_ask`, `question_list`, `question_withdraw` (the asker or a coordinator); none answers ([§1](#spec-questions)) |
+| Approvals | `approval_request`, `approval_list`; none decides ([§1](#spec-approvals)) |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Intake | `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources` ([§12](#spec-intake-mcp)) |
@@ -2010,7 +2118,7 @@ effective policy of an environment is merged from these layers, a later one winn
    (`policy_layer`).
 
 Objects merge key by key; scalars and lists replace. The lists `guard.disable`, `guard.patterns`,
-`secrets.disable` and `secrets.allow` may also be written `key+` (add; a pattern with an existing
+`secrets.disable`, `secrets.allow`, `approvals.disable` and `approvals.ignore` may also be written `key+` (add; a pattern with an existing
 `id` replaces it) and `key-` (remove by value or `id`), applied after `key`. `preset` counts only
 in the global layer; `$schema` and `description` are ignored. Every value knows the layer that set
 it (`preset:<name>`, `config`, `global`, `project:<slug>`, `environment:<slug>/<name>`). Without a
@@ -2023,9 +2131,13 @@ relaybay before policies.
 | `strict` | local `full`, test `ask`, live `none` | `block`, all rules | all detectors, no test secrets |
 | `trusted` | `full` everywhere | `log` | all detectors; test secrets on local and test, not shown to agents |
 
+Every preset has the same `approvals`: `push`, `merge` and `test` true, `commit` false, `live`
+true ([approvals](#spec-approvals)).
+
 Validation: JSON Schema 2020-12 plus checks the schema cannot express — `preset` only in the global
-layer, custom pattern ids unique and not a built-in id, custom regular expressions (`command`,
-`change`, `secrets.allow`) at most 200 characters, without back-references, without a quantified
+layer, custom pattern ids unique and not a built-in id, `approvals.live` only `true` ("anything
+touching a live stand needs the owner's approval; a policy cannot drop it"), custom regular
+expressions (`command`, `change`, `secrets.allow`, `approvals.ignore`) at most 200 characters, without back-references, without a quantified
 group that holds a quantifier (`(a+)+`) or an alternation (`(a|aa)*`), with at most two
 unbounded quantifiers (`*`, `+`, `{n,}`), and fast on hostile 4 KB inputs (all probes of one
 pattern together within 50 ms). They run case-insensitively on the `regex` engine with a hard time
@@ -2200,8 +2312,10 @@ Decisions per touched environment: `full` → nothing; `read` → nothing unless
 read-only for agents; this looks like a remote change over ssh (matched 'prod-alias'). Ask the
 owner, or propose a change with environment_propose.`) is shown to Claude for `deny` and to the user
 in the permission prompt for `ask`. In `warn` mode the call goes on and `additionalContext` carries
-the same reason ending `(warn mode: not blocked)`. relaybay never answers `allow`, which would skip
-Claude Code's own permission prompt. Owner comments for an exactly linked session are added to
+the same reason ending `(warn mode: not blocked)`. relaybay answers `allow` only for a call the
+owner approved on the board, which uses that approval ([approvals](#spec-approvals)); otherwise
+never, since it would skip Claude Code's own permission prompt. When the level lets a call through,
+the approval check follows: a push, a merge or a stand change without an unused approval is denied. Owner comments for an exactly linked session are added to
 `additionalContext` of the same answer. A guard error is logged and the call goes on; relaybay down
 or slow means no answer at all ([§4](#spec-hooks-down)).
 
@@ -2858,6 +2972,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0036_report_check` | `report_check` (report, line, `where` as `location`, claim); an index on report and line ([§1](#spec-report-marks)). Additive only, no backfill: older reports have no marks |
 | `0037_question` | `question` (task, run or session, asked by, kind `question` / `look`, text, options JSON, default, blocking, look URL and account, `default_after`, asked at, status `open` / `answered` / `defaulted` / `withdrawn`, answer, answered by `owner` / `default`, answered / defaulted / withdrawn at, withdrawn by, the turn or owner comment that carries the answer, told / delivered at); checks that a look question blocks and has its URL and that a blocking one has no deadline; indexes per task, run, comment and on the open ones by deadline ([§1](#spec-questions)). Additive only |
 | `0038_task_archive` | `task.archived_at`, `task.archived_by` (archived by hand), `task.unarchived_at` (the last "Back from the archive") ([§2](#spec-board-archive)). Additive only, no backfill |
+| `0039_approval` | `approval` (task, run or session, requested by and via `agent` / `guard` / `denial`, action `commit` / `push` / `merge` / `deploy` / `sql`, repository, branch, PR, environment, summary, rollback, requested at, status `open` / `approved` / `refused` / `used`, decision, decided by and at, the owner's line, used at / by / session, the turn or owner comment that carries the decision, told / delivered at); checks that a push or commit names its branch, a merge its PR, a deploy or SQL change its environment, an approved deploy its rollback, and that the status matches the decision and the use; indexes per task, run, comment and on the open and approved ones ([§1](#spec-approvals)). Additive only |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).
@@ -3094,6 +3209,7 @@ this version or newer). What becomes a notice:
 | `reply` | `comment.added` by an agent | `Reply on <key> from <session>` | the comment's first 200 characters |
 | `answer` | `intake.answer_received` | `Answer received: <key>` | `From <source>: <task title>` |
 | `question` | `question.asked` of a blocking question (a look question always is); a non-blocking one goes on with its default and is in the Inbox only | `Question on <key> from <session>`, or `Look at this on <key> from <session>` | the question's text |
+| `approval` | `approval.requested` of a new request (not when an open one is filled in) | `Approval on <key> from <session>` | what and where, e.g. `push of feat/x in backend` |
 | `permission` | `session.status_changed` to `waiting` (the `Notification` hook, which an idle prompt raises too); off by default | `<session> is waiting` | the session's activity |
 | `brake` | `brake.set` not by the owner and not a budget's own (`budget` tells that one) | `Brake on <target>` | the reason |
 | `budget` | `budget.warned`, `budget.exceeded` | `Budget nearly spent: <target>`, `Budget spent: <target>`, or with the `stop` action `Budget spent, agents stopped: <target>` | `<used> of <limit> tokens` |
@@ -3106,8 +3222,9 @@ start and on Restart server. The "keeps failing" notification of the watchdog do
 
 *Grouping.* At most one toast per 20 s window, the first at once. One item shows its title and text;
 several show the title `relaybay` and `3 need you: 2 reviews, 1 reply`. The same task and kind count
-once in a window, with the newest text; a `review` or a `question` absorbs a `waiting` of the same
-task, since a move to review and a blocking question usually set both. Everything new is read before anything is shown, so a downtime ends in one
+once in a window, with the newest text; a `review`, a `question` or an `approval` absorbs a
+`waiting` of the same task, since a move to review, a blocking question and a request usually set
+both. Everything new is read before anything is shown, so a downtime ends in one
 toast. A balloon's title stops at 63 and its text at 255 UTF-16 units, ending in `...`.
 
 *Quiet mode.* The tray's **Quiet notifications** (`notify_quiet`): no toast, an accent-coloured dot in

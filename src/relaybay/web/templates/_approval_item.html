@@ -1,0 +1,40 @@
+{#- One approval request, on the card (place "card") and in the Inbox (place "inbox", with its
+    card). The owner approves or refuses it with an optional line; an approved one shows when and
+    by which call it was used. -#}
+{%- macro approval_item(a, place) -%}
+<li class="approval-row approval-{{ a.status }}" id="approval-{{ a.id }}" data-approval="{{ a.id }}">
+  <p class="approval-head">
+    {% if place == "inbox" %}<a class="inbox-link" href="/p/{{ a.project_slug }}?task={{ a.task_key }}"><span class="card-key">{{ a.task_key }}</span> <span class="inbox-title">{{ a.task_title }}</span></a>{% endif %}
+    <span class="approval-number">#{{ a.id }}</span>
+    <span class="chip approval-action">{{ a.action }}</span>
+    <span class="muted">{% if a.run_id %}run {{ a.run_id }}{% else %}desktop session{% endif %} · {{ a.requested_by }}{% if a.requested_via == "guard" %} · opened by the guard{% elif a.requested_via == "denial" %} · from a permission denial{% endif %} · requested <time datetime="{{ a.requested_at }}" data-age>{{ a.requested_at|age }}</time></span>
+  </p>
+  <p class="approval-state">
+    {%- if a.is_open -%}<span class="chip approval-waits">waits for you</span>
+    {%- elif a.status == "refused" -%}<span class="chip approval-refused">refused <time datetime="{{ a.decided_at }}" data-age>{{ a.decided_at|age }}</time></span>
+    {%- elif a.status == "used" -%}<span class="chip approval-used">approved, used <time datetime="{{ a.used_at }}" data-age>{{ a.used_at|age }}</time></span> <span class="muted">by <code>{{ a.used_by }}</code></span>
+    {%- else -%}<span class="chip approval-approved">approved <time datetime="{{ a.decided_at }}" data-age>{{ a.decided_at|age }}</time>, not used yet</span>
+    {%- endif -%}
+    {%- if not a.is_open %} <span class="muted">{% if a.delivered_at %}delivered <time datetime="{{ a.delivered_at }}" data-age>{{ a.delivered_at|age }}</time>{% elif a.comment_id %}waits as owner comment #{{ a.comment_id }}{% elif a.turn_seq and a.turn_outcome in ("cancelled", "failed_to_start", "lost") %}not delivered: turn {{ a.turn_seq }} {{ a.turn_outcome|replace("_", " ") }}; it goes with the run's next turn{% elif a.turn_seq %}waits as turn {{ a.turn_seq }}{% else %}not delivered yet{% endif %}</span>{% endif %}
+  </p>
+  <p class="approval-what"><strong>{{ a.what }}</strong></p>
+  <p class="approval-summary">{{ a.summary }}</p>
+  {% if a.rollback %}<p class="approval-rollback"><span class="muted">Rollback:</span> <code>{{ a.rollback }}</code></p>
+  {% elif a.action == "deploy" %}<p class="approval-rollback form-error">No rollback command given: a deploy is approved only with one. Refuse it, or wait for the agent to ask again with approval_request.</p>{% endif %}
+  {% if a.decision_text %}<p class="approval-line"><span class="muted">Your line:</span> {{ a.decision_text }}</p>{% endif %}
+  {% if a.is_open %}
+  <form class="approval-decide" method="post" action="/approvals/{{ a.id }}/decide"
+        hx-post="/approvals/{{ a.id }}/decide" hx-target="{{ '#inbox' if place == 'inbox' else '#approvals-' ~ a.task_key }}" hx-swap="outerHTML" hx-disabled-elt="find button">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="from" value="{{ place }}">
+    <label class="field"><span>A line for the agent (optional)</span>
+      <input type="text" name="text" maxlength="1000" autocomplete="off">
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary" name="decision" value="approve"{% if a.needs_rollback %} disabled title="A deploy needs its rollback command"{% endif %}>Approve</button>
+      <button type="submit" class="btn" name="decision" value="refuse">Refuse</button>
+    </div>
+  </form>
+  {% endif %}
+</li>
+{%- endmacro %}

@@ -1372,6 +1372,75 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return fmt.question_withdrawn(gone)
 
+    # --- approvals: the owner decides on the board ----------------------------------------
+
+    @write
+    async def approval_request(
+        task: TaskRef,
+        action: Annotated[
+            str,
+            Field(description="push, merge, commit, deploy or sql: what you want to do."),
+        ],
+        target: Annotated[
+            str,
+            Field(
+                description="Where: for push and commit the branch (feat/x, or backend:feat/x"
+                " with the repository); for merge the PR (12, #12 or its URL); for deploy and"
+                " sql the environment's name (test, live)."
+            ),
+        ],
+        summary: Annotated[
+            str,
+            Field(
+                description="What goes where: the commits, the files, the CI state. Never a"
+                " password or token."
+            ),
+        ],
+        rollback: Annotated[
+            str | None,
+            Field(description="The command that undoes it: required for a deploy."),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Ask the owner to approve one action on a card: it shows in the owner's Inbox and on
+        the card, and only the owner decides, on the board. The guard denies a call that needs
+        an approval until one is given; one approval allows exactly one matching call (a push
+        approval names its branch). End your turn after asking: the decision comes as your next
+        turn (a run) or as an owner comment (a desktop session). An open request for the same
+        action and target is updated instead of a second one."""
+        asked, hint, updated = await run(
+            service.request_approval(
+                task,
+                action,
+                target,
+                summary,
+                rollback=rollback or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        found = await run(service.get_task(asked.task_id))
+        return fmt.approval_requested(found, asked, hint, updated)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def approval_list(
+        task: Annotated[
+            str | None, Field(description="Task key: only this card's approvals. Optional.")
+        ] = None,
+        status: Annotated[
+            str | None,
+            Field(description="open (default), approved, refused, used or all."),
+        ] = None,
+    ) -> str:
+        """Approval requests and the owner's decisions, newest first: open ones of all cards by
+        default, with the target, the summary, the decision with the owner's line verbatim, and
+        which call used an approval. Read-only: no MCP tool decides."""
+        found, items = await run(service.list_approval_requests(task or None, status or None))
+        return fmt.approvals(found, items, status)
+
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(
         query: Annotated[str, Field(description="Words to look for (word forms match).")],

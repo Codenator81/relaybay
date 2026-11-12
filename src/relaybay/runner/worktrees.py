@@ -433,3 +433,17 @@ def remove_created(specs: Sequence[WorktreeSpec], git: str | None, run: Runner =
 
 def find_git(which: Callable[..., Any] = shutil.which) -> str | None:
     return which("git")
+
+
+BRANCH_TIMEOUT_SECONDS = 5.0
+
+
+def current_branch(git: str, folder: str, run: Runner = run_quiet) -> str | None:
+    """The branch checked out in `folder` (a read); None when it is not a repository, the HEAD
+    is detached or git does not answer in time."""
+    try:
+        done = _git(git, folder, ["rev-parse", "--abbrev-ref", "HEAD"], run, BRANCH_TIMEOUT_SECONDS)
+    except (ValidationError, OSError):
+        return None
+    name = (done.stdout or "").strip()
+    return name if done.returncode == 0 and name and name != "HEAD" else None

@@ -18,6 +18,7 @@ from typing import Any
 import regex
 from jsonschema import Draft202012Validator
 
+from relaybay.domain import approvals as approval_rules
 from relaybay.domain import guard
 from relaybay.domain.environments import (
     CAPABILITIES,
@@ -34,7 +35,14 @@ PRESETS = ("default", "strict", "trusted")
 DEFAULT_PRESET = "default"
 SCOPES = ("preset", "config", "global", "project", "environment")
 # List keys a layer may also write as `key+` (add) and `key-` (remove).
-LIST_KEYS = ("guard.disable", "guard.patterns", "secrets.disable", "secrets.allow")
+LIST_KEYS = (
+    "guard.disable",
+    "guard.patterns",
+    "secrets.disable",
+    "secrets.allow",
+    "approvals.disable",
+    "approvals.ignore",
+)
 IGNORED_KEYS = ("$schema", "description", "preset")  # top level: not policy values
 LAYER_MAX = 64 * 1024  # characters of one layer's JSON
 REGEX_MAX = 200
@@ -284,6 +292,15 @@ def validate_layer(body: Any, source: str, scope: str) -> dict[str, Any]:
     for key in ("allow", "allow+"):
         for i, text in enumerate(body.get("secrets", {}).get(key, [])):
             compile_pattern(text, f"{source}: secrets.{key}[{i}]")
+    approvals = body.get("approvals", {})
+    if approvals.get("live", True) is not True:
+        raise PolicyError(
+            f"{source}: approvals.live: anything touching a live stand needs the owner's"
+            " approval; a policy cannot drop it."
+        )
+    for key in ("ignore", "ignore+"):
+        for i, text in enumerate(approvals.get(key, [])):
+            compile_pattern(text, f"{source}: approvals.{key}[{i}]")
     return body
 
 
@@ -432,6 +449,18 @@ class EffectivePolicy:
         )
         self.expose_test_secrets = bool(secrets.get("expose_test_secrets_to_agents", False))
         self._test_secrets = secrets.get("test_secrets", {})
+        approvals = self.data.get("approvals", {})
+        required = {
+            key: bool(approvals.get(key, default))
+            for key, default in approval_rules.DEFAULT_REQUIRED.items()
+        }
+        required["live"] = True  # never off, whatever a broken layer says
+        ignore = (_pattern_or_none(p) for p in approvals.get("ignore", []))
+        self.approvals = approval_rules.ApprovalRules(
+            required,
+            frozenset(approvals.get("disable", [])),
+            tuple(p for p in ignore if p is not None),
+        )
 
     @property
     def preset(self) -> str:

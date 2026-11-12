@@ -6,6 +6,15 @@
     "live": {"default": "none"}
   },
   "guard": {"mode": "block", "disable": [], "patterns": []},
+  "approvals": {
+    "commit": false,
+    "push": true,
+    "merge": true,
+    "test": true,
+    "live": true,
+    "disable": [],
+    "ignore": []
+  },
   "secrets": {
     "disable": [],
     "allow": [],

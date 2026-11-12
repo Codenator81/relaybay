@@ -29,13 +29,20 @@
   block's folded report and nested events per turn, `verified: <where>` marks from runs and
   `report_add` with the rules warning on an M or L report without any, MCP `run_events` and the
   report line and event counts in `run_status`. Retention and deletes stay with PR 5 (C3).
-- PR 3 shipped: migration 0037 `question` (0036 went to `report_check`, so approvals take 0038
-  and the lifecycle 0039); questions and "look at this" as objects on the card and in the Inbox,
+- PR 3 shipped: migration 0037 `question` (0036 went to `report_check`; 0038 then went to the
+  manual archive, so approvals took 0039 and the lifecycle takes 0040); questions and "look at this" as objects on the card and in the Inbox,
   MCP `question_ask` / `question_list` / `question_withdraw` (no tool answers), the answer on the
   board as the run's next turn or a desktop session's owner comment, a run `waiting` on a blocking
   question, non-blocking questions closed with their default at the deadline, the tray kind
   `question` ([0022](0022-questions-and-approvals.md#questions); behaviour:
   [SPEC](../SPEC.md#spec-questions)).
+- PR 4 shipped: migration 0039 `approval`; approvals as objects with the policy key `approvals`
+  (live never droppable), the guard's check of `git push` (with its branch), `gh pr merge` and
+  stand changes, one approval per call marked used with the allow, requests from a turn's
+  `permission_denials`, MCP `approval_request` / `approval_list` (no tool decides), the Inbox and
+  the card, the decision as the next turn or an owner comment, the tray kind `approval`
+  ([0022](0022-questions-and-approvals.md#approvals); behaviour:
+  [SPEC](../SPEC.md#spec-approvals)).
 - The probes of 0012 were run on 2026-11-10 and the design relies on them
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
   accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).
@@ -315,8 +322,8 @@ practice go ahead of the plan.
 | 1c | Open a run's session in the Claude desktop app (`claude --desktop --resume`, probe 14 of 0012) with the run held "with the owner" and **Back to the program**; permission mode, model and effort between turns (the owner any, a coordinator only lower with MCP `run_settings`), journaled | 0034 `run_with_owner` (columns on `run`) | S (1) |
 | 2 | `run_event` stored masked, the full turn report on the card with nested subagent events and refusals of `auto` mode, `verified: <where>` marks and the rules warning | 0035 `run_event`, 0036 `report_check` | M (2) |
 | 3 | Questions as objects ([0022](0022-questions-and-approvals.md)): `question_ask` with the "look at this" kind, the Inbox, the answer as a new turn, defaults by deadline | 0037 `question` | M (2) |
-| 4 | Approvals as objects ([0022](0022-questions-and-approvals.md)): `approval_request`, policy rules, the guard check, the decision as a new turn | 0038 `approval`, policy keys (data, no migration) | M (2.5) |
-| 5 | Slots and memory as settings, queueing with a reason and Start anyway, the brake and budgets on runs, lifecycle (worktree removal) and retention | 0039 `run_lifecycle` (`secret_seen_at`, `touched_live_at`, `transcript_path`, `deleted_at`, `project.run_retention`) | M (2) |
+| 4 | Approvals as objects ([0022](0022-questions-and-approvals.md)): `approval_request`, policy rules, the guard check, the decision as a new turn | 0039 `approval` (0038 went to the manual archive), policy keys (data, no migration) | M (2.5) |
+| 5 | Slots and memory as settings, queueing with a reason and Start anyway, the brake and budgets on runs, lifecycle (worktree removal) and retention | 0040 `run_lifecycle` (`secret_seen_at`, `touched_live_at`, `transcript_path`, `deleted_at`, `project.run_retention`) | M (2) |
 | 6 | Docs, SPEC, CHANGELOG, release | none | S |
 
 Numbers follow 0029 and move if other migrations land first.

@@ -19,12 +19,16 @@ Scenario keys, all optional:
                       turns that session had before (counted in $CLAUDE_CONFIG_DIR/fake-turns);
                       the last list serves every later turn. Used instead of `turn`.
   on_stop_block       steps run when a Stop hook blocks; a later block continues with nothing
+  auto_classifier     true: under --permission-mode auto a classifier approves every call a hook
+                      did not deny, except a step marked "classifier": "deny" (refused as
+                      Claude Code's own auto mode does). Without it auto acts like Manual.
   end_wait_file       after the result, wait for this file before the SessionEnd hooks (slow
                       hooks while the process ends); traced as {"kind": "result"} first
 A step is one of:
   {"text": "..."}                                 an assistant message
   {"tool": "Bash", "input": {...}, "result": "..."}  a tool call; its command never runs.
       "tries": n repeats the call until it is denied (the hook fails open when it is slow).
+      "classifier": "deny" has the auto mode classifier refuse it (with auto_classifier).
       "steps": [...] runs them as a subagent's messages under this call's id.
   {"mcp": "task_create", "arguments": {...}, "capture": {"key": "regex"}}
       a real MCP call; a failed one ends the run with exit code 1 so that no test passes over it.
@@ -421,7 +425,13 @@ class Run:
         )
         self.tool_result(tool_use_id, why, is_error=True)
 
-    def pre_tool(self, tool: str, tool_use_id: str, tool_input: dict[str, Any]) -> bool:
+    def pre_tool(
+        self,
+        tool: str,
+        tool_use_id: str,
+        tool_input: dict[str, Any],
+        classifier_denies: bool = False,
+    ) -> bool:
         """True when the call may go on; a denial has then been reported."""
         approved = False
         answers = self.run_hooks(
@@ -441,6 +451,16 @@ class Run:
                 self.deny(tool, tool_use_id, tool_input, "hook", why)
                 return False
             approved = approved or decision == "allow"
+        if (
+            not approved
+            and self.args.permission_mode == "auto"
+            and self.scenario.get("auto_classifier")
+        ):
+            if not classifier_denies:
+                return True
+            why = f"Permission for {tool} was denied by the auto mode classifier."
+            self.deny(tool, tool_use_id, tool_input, "classifier", why)
+            return False
         if not approved and self.needs_approval(tool, tool_input):
             why = f"Claude requested permissions to use {tool}, but it has not been granted."
             self.deny(tool, tool_use_id, tool_input, "mode", why)
@@ -569,7 +589,7 @@ class Run:
         tool_input = self.fill(step.get("input", {}))
         tool_use_id = f"toolu_{uuid.uuid4().hex}"
         self.assistant([{"type": "tool_use", "id": tool_use_id, "name": tool, "input": tool_input}])
-        if not self.pre_tool(tool, tool_use_id, tool_input):
+        if not self.pre_tool(tool, tool_use_id, tool_input, step.get("classifier") == "deny"):
             return
         if step.get("steps"):
             outer, self.parent = self.parent, tool_use_id

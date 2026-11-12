@@ -1,0 +1,22 @@
+{#- A card's approval requests. Expects: t (the task), approvals (ApprovalView), error.
+    Refetched on live approval events. -#}
+{%- from "_approval_item.html" import approval_item -%}
+<div class="approvals" id="approvals-{{ t.key }}" data-key="{{ t.key }}"
+     hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/approvals" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {% if approvals.open %}
+  <ul class="approval-list">
+    {% for a in approvals.open %}{{ approval_item(a, "card") }}{% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No open request. A push, a merge or a change on a stand waits here for your Approve; agents ask with approval_request, and the guard opens one when it denies a call.</p>
+  {% endif %}
+  {% if approvals.closed %}
+  <details class="approval-closed">
+    <summary>Decided <span class="muted">({{ approvals.closed|length }})</span></summary>
+    <ul class="approval-list">
+      {% for a in approvals.closed %}{{ approval_item(a, "card") }}{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>

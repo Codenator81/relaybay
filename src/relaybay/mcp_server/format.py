@@ -2,8 +2,10 @@
 
 import json
 
+from relaybay.domain import approvals as arules
 from relaybay.domain import questions as qrules
 from relaybay.domain.annotations import Annotation, pin_line, shape_line
+from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskCode
 from relaybay.domain.digest import age
@@ -1116,6 +1118,14 @@ def event_detail(e: Event) -> str:
         if e.kind == "question.defaulted":
             return f"{what} -> default {qrules.quoted(str(p.get('default') or ''))[:120]}"
         return what
+    if e.kind.startswith("approval."):
+        what = f"#{p.get('approval_id')}: {p.get('what') or p.get('action')}"
+        if e.kind == "approval.decided":
+            line = f": {arules.quoted(str(p['text']))}" if p.get("text") else ""
+            return f"{what} -> {p.get('decision')}{line}"
+        if e.kind == "approval.used":
+            return f"{what} used by {arules.quoted(str(p.get('used_by') or ''))}"
+        return f"{what} ({p.get('via') or 'agent'})"
     if e.kind == "concurrency.over":
         return f"{p.get('running')} sessions running, cap {p.get('max_sessions')}"
     if e.kind == "rules.notice_read":
@@ -1552,3 +1562,43 @@ def question_asked(task: Task, q: Question, hint: str) -> str:
 
 def question_withdrawn(q: Question) -> str:
     return f"Question #{q.id} on {q.task_key} withdrawn."
+
+
+def _approval_state(a: Approval) -> str:
+    if a.status == "open":
+        return "open, waits for the owner"
+    when = (a.decided_at or "")[:16]
+    if a.status == "refused":
+        return f"refused by the owner {when}Z"
+    if a.status == "used":
+        return f"approved {when}Z, used {(a.used_at or '')[:16]}Z by {a.used_by}"
+    return f"approved by the owner {when}Z, not used yet"
+
+
+def approval_line(a: Approval) -> str:
+    """One approval as approval_list shows it; the owner's line verbatim when there is one."""
+    where = f"run {a.run_id}" if a.run_id else "desktop session"
+    head = (
+        f"- #{a.id} {a.task_key}: {a.what} ({where}, requested by {a.requested_by} via"
+        f" {a.requested_via} {a.requested_at[:16]}Z): {_approval_state(a)}"
+    )
+    lines = [head, f"  Summary: {arules.quoted(a.summary, 300)}"]
+    if a.rollback:
+        lines.append(f"  Rollback: {arules.quoted(a.rollback, 300)}")
+    if a.decision_text:
+        lines.append(f"  The owner's line: {a.decision_text}")
+    return "\n".join(lines)
+
+
+def approvals(task: Task | None, items: list[Approval], status: str | None) -> str:
+    where = task.key if task else "all cards"
+    what = (status or "open").strip().lower() or "open"
+    if not items:
+        return f"No {what} approvals on {where}." if what != "all" else f"No approvals on {where}."
+    head = f"{len(items)} approval(s) on {where} ({what}), newest first:"
+    return "\n".join([head, *map(approval_line, items)])
+
+
+def approval_requested(task: Task, a: Approval, hint: str, updated: bool) -> str:
+    verb = "updated" if updated else "requested"
+    return f"Approval #{a.id} {verb} on **{task.key}**: {a.what}. {hint}"

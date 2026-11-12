@@ -65,7 +65,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, `record_hook`, …): validation, rules checks, transaction, event append, publish |
 | `events.py` | `EventBus`: one bounded `asyncio.Queue` (256) per subscriber, optional project filter; a full queue drops the subscriber, which then resyncs |
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
-| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), the brake and token budgets (`limits.py`: thresholds and the texts sessions read), questions to the owner (`questions.py`: the rules of asking, the answer's text), errors |
+| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), the brake and token budgets (`limits.py`: thresholds and the texts sessions read), questions to the owner (`questions.py`: the rules of asking, the answer's text), approvals (`approvals.py`: what a tool call does as an action and its target, which approval covers it, the decision's text), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
 | `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `api.py` (`GET /api/notifications` for the tray), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
@@ -167,6 +167,14 @@ question      id, task_id, run_id, session_id (who asked), asked_by, kind (quest
               turn_id (the run turn carrying the answer), comment_id (the owner comment carrying
               it), told_at, delivered_at
               -- a look question blocks and has its URL; a blocking one has no default_after
+approval      id, task_id, run_id, session_id (who asked), requested_by, requested_via
+              (agent|guard|denial), action (commit|push|merge|deploy|sql), repository, branch, pr,
+              environment_id, environment, summary, rollback, requested_at,
+              status (open|approved|refused|used), decision, decided_by, decided_at,
+              decision_text, used_at, used_by (the call: tool and masked input), used_session,
+              turn_id (the run turn carrying the decision), comment_id (the owner comment carrying
+              it), told_at, delivered_at
+              -- one approval allows one call: used_at is set with the guard's allow, in one tx
 session_message id, sender_session_id, sender_name, sender_verified, recipient_session_id,
               recipient_name, task_id, body_md, in_reply_to, depth, created_at, delivered_at,
               read_at, stop_blocks, loop_stopped_at, loop_seen_at

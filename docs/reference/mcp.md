@@ -53,6 +53,8 @@ Deprecations: none.
 | [`question_ask`](#question_ask) | write |
 | [`question_list`](#question_list) | read |
 | [`question_withdraw`](#question_withdraw) | write |
+| [`approval_request`](#approval_request) | write |
+| [`approval_list`](#approval_list) | read |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -547,6 +549,30 @@ Withdraw an open question you asked (a coordinator may withdraw any): it leaves 
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `approval_request`
+
+Ask the owner to approve one action on a card: it shows in the owner's Inbox and on the card, and only the owner decides, on the board. The guard denies a call that needs an approval until one is given; one approval allows exactly one matching call (a push approval names its branch). End your turn after asking: the decision comes as your next turn (a run) or as an owner comment (a desktop session). An open request for the same action and target is updated instead of a second one.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `action` | string | yes | push, merge, commit, deploy or sql: what you want to do. |
+| `target` | string | yes | Where: for push and commit the branch (feat/x, or backend:feat/x with the repository); for merge the PR (12, #12 or its URL); for deploy and sql the environment's name (test, live). |
+| `summary` | string | yes | What goes where: the commits, the files, the CI state. Never a password or token. |
+| `rollback` | string or null | no | The command that undoes it: required for a deploy. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `approval_list`
+
+Approval requests and the owner's decisions, newest first: open ones of all cards by default, with the target, the summary, the decision with the owner's line verbatim, and which call used an approval. Read-only: no MCP tool decides.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string or null | no | Task key: only this card's approvals. Optional. |
+| `status` | string or null | no | open (default), approved, refused, used or all. |
 
 ### `memory_search`
 

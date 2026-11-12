@@ -37,7 +37,8 @@
     "run.ended", "run.lost", "run.opened_in_desktop", "run.returned", "run.settings_changed",
     "run.waiting",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
-    "question.withdrawn"
+    "question.withdrawn",
+    "approval.requested", "approval.decided", "approval.used"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -57,7 +58,8 @@
     "backlog.added", "backlog.updated", "backlog.planned",
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
     "budget.exceeded", "concurrency.over",
-    "question.asked", "question.answered", "question.defaulted", "question.withdrawn"
+    "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
+    "approval.requested", "approval.decided"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -196,8 +198,12 @@
   // Question events refetch the card's questions, unless an answer is being typed, and its
   // Agent block (a withdrawn question ends a run's wait).
   function isQuestion(kind) { return kind.indexOf("question.") === 0; }
+  // Approval events refetch the card's approvals the same way: a half-typed line is held.
+  function isApproval(kind) { return kind.indexOf("approval.") === 0; }
+  var DRAFT_FIELDS = ".question-answer textarea, .approval-decide input[name=text]";
+  var DRAFT_FORMS = ".question-answer, .approval-decide";
   function answerDraft(root) {
-    return Array.prototype.some.call(root.querySelectorAll(".question-answer textarea"),
+    return Array.prototype.some.call(root.querySelectorAll(DRAFT_FIELDS),
       function (f) { return f.value.trim(); });
   }
   // Refreshes that would swap away a half-typed answer wait, by name, until it is sent or
@@ -213,15 +219,15 @@
     held.forEach(function (refresh) { refresh(); });
   }
   document.addEventListener("focusout", function (event) {
-    if (event.target.closest && event.target.closest(".question-answer")) releaseHeld();
+    if (event.target.closest && event.target.closest(DRAFT_FORMS)) releaseHeld();
   });
   document.addEventListener("input", function (event) {
     var field = event.target;
-    if (field.closest && field.closest(".question-answer") && !field.value.trim()) releaseHeld();
+    if (field.closest && field.closest(DRAFT_FORMS) && !field.value.trim()) releaseHeld();
   });
   document.addEventListener("htmx:afterSettle", function (event) {
     if (heldForAnswer.size && event.target.closest &&
-        (event.target.closest(".questions") || event.target.id === "inbox")) {
+        (event.target.closest(".questions, .approvals") || event.target.id === "inbox")) {
       releaseHeld();
     }
   });
@@ -230,6 +236,15 @@
     if (panel) {
       unlessAnswering(panel, "questions-" + key, function () {
         queue(document.getElementById("questions-" + key));
+      });
+    }
+    queueRun(key);
+  }
+  function queueApprovals(key) {
+    var panel = key ? document.getElementById("approvals-" + key) : null;
+    if (panel) {
+      unlessAnswering(panel, "approvals-" + key, function () {
+        queue(document.getElementById("approvals-" + key));
       });
     }
     queueRun(key);
@@ -309,6 +324,8 @@
         queueRun(data.key);
       } else if (isQuestion(data.kind)) {
         queueQuestions(data.key);
+      } else if (isApproval(data.kind)) {
+        queueApprovals(data.key);
       } else {
         unlessAnswering(document, "task-page", function () {
           if (commentDraft(document)) {
@@ -370,7 +387,7 @@
     var audit = document.getElementById("audit");
     if (audit) {
       if (audit.dataset.live && (data.kind === "live.action" || (audit.dataset.changes &&
-          /^(policy\.|environment\.|session\.no_live_|question\.|task\.(un)?archived$)/.test(data.kind)))) {
+          /^(policy\.|environment\.|session\.no_live_|question\.|approval\.|task\.(un)?archived$)/.test(data.kind)))) {
         prependActivity(audit);
       }
       return;
@@ -389,9 +406,10 @@
       else if (isPlan(data.kind)) queue(planPanel(data.key));
       else if (isRun(data.kind)) queueRun(data.key);
       else if (isQuestion(data.kind)) queueQuestions(data.key);
+      else if (isApproval(data.kind)) queueApprovals(data.key);
       else refreshDialog();
     }
-    if (isRun(data.kind) || isQuestion(data.kind)) return;
+    if (isRun(data.kind) || isQuestion(data.kind) || isApproval(data.kind)) return;
     if (isReview(data.kind) || isPlan(data.kind)) {
       // The card shows the plan's steps, not the agent's todo.
       if (data.kind !== "session.todo_updated") queue(card(data.key) || column(data.stage));

@@ -79,6 +79,57 @@
         }
       }
     },
+    "approvals": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Which agent actions need the owner's approval on the board (one approval allows one matching call). Independent of the guard's mode.",
+      "properties": {
+        "commit": {
+          "type": "boolean",
+          "description": "git commit needs an approval naming its branch (default false)."
+        },
+        "push": {
+          "type": "boolean",
+          "description": "git push needs an approval naming its branch (default true)."
+        },
+        "merge": {
+          "type": "boolean",
+          "description": "gh pr merge needs an approval naming the pull request (default true)."
+        },
+        "test": {
+          "type": "boolean",
+          "description": "A change on a test stand (deploy, SQL, kubectl, ssh with a write) needs an approval (default true)."
+        },
+        "live": {
+          "type": "boolean",
+          "description": "A change on a live stand always needs an approval: only true is accepted, a policy cannot drop it."
+        },
+        "disable": {
+          "$ref": "#/$defs/approvalRuleIds",
+          "description": "Built-in action patterns to switch off, by id (replaces the list)."
+        },
+        "disable+": {
+          "$ref": "#/$defs/approvalRuleIds",
+          "description": "Pattern ids to add to the inherited list."
+        },
+        "disable-": {
+          "$ref": "#/$defs/approvalRuleIds",
+          "description": "Pattern ids to remove from the inherited list."
+        },
+        "ignore": {
+          "$ref": "#/$defs/allowPatterns",
+          "description": "Regular expressions: a command segment that matches one is never an action that needs an approval (replaces the list)."
+        },
+        "ignore+": {
+          "$ref": "#/$defs/allowPatterns",
+          "description": "Ignore patterns to add."
+        },
+        "ignore-": {
+          "$ref": "#/$defs/allowPatterns",
+          "description": "Ignore patterns to remove."
+        }
+      }
+    },
     "secrets": {
       "type": "object",
       "additionalProperties": false,
@@ -185,6 +236,18 @@
           "git-push",
           "terraform-change",
           "mcp-tool-name"
+        ]
+      }
+    },
+    "approvalRuleIds": {
+      "type": "array",
+      "maxItems": 10,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "git-push",
+          "gh-pr-merge",
+          "git-commit"
         ]
       }
     },

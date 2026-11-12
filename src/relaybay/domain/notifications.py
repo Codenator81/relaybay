@@ -14,13 +14,24 @@ LABELS = {
     "reply": ("reply", "replies"),
     "answer": ("answer", "answers"),
     "question": ("question", "questions"),
+    "approval": ("approval request", "approval requests"),
     "permission": ("permission request", "permission requests"),
     "brake": ("brake", "brakes"),
     "budget": ("budget notice", "budget notices"),
     "server": ("server notice", "server notices"),
 }
 KINDS = tuple(LABELS)
-DEFAULT_KINDS = ("waiting", "review", "reply", "answer", "question", "brake", "budget", "server")
+DEFAULT_KINDS = (
+    "waiting",
+    "review",
+    "reply",
+    "answer",
+    "question",
+    "approval",
+    "brake",
+    "budget",
+    "server",
+)
 # The events `classify` may answer for: the API reads only these.
 EVENT_KINDS = (
     "task.updated",
@@ -28,6 +39,7 @@ EVENT_KINDS = (
     "comment.added",
     "intake.answer_received",
     "question.asked",
+    "approval.requested",
     "session.status_changed",
     "brake.set",
     "budget.warned",
@@ -127,6 +139,16 @@ def classify(
             f"{what} on {key} from {p.get('asked_by') or event.actor}",
             str(p.get("text") or title),
             "/inbox#inbox-questions",
+            key,
+        )
+    if event.kind == "approval.requested":
+        if p.get("updated"):
+            return None  # the agent filled in a request the tray already told
+        return Notice(
+            "approval",
+            f"Approval on {key} from {p.get('requested_by') or event.actor}",
+            str(p.get("what") or title),
+            "/inbox#inbox-approvals",
             key,
         )
     if event.kind == "intake.answer_received":
