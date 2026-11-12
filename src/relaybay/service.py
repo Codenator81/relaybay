@@ -106,6 +106,7 @@ from relaybay.domain.notifications import BOARD_ACTORS, Notice
 from relaybay.domain.notifications import EVENT_KINDS as NOTICE_EVENT_KINDS
 from relaybay.domain.notifications import classify as classify_notice
 from relaybay.domain.plan import (
+    ACCEPTANCE_ROOM,
     ACCEPTANCE_TELL_HOURS,
     ACCEPTANCE_TOLD,
     CLOSED_PLAN,
@@ -124,6 +125,7 @@ from relaybay.domain.plan import (
     acceptance_line,
     clean_conformance,
     clean_outcome,
+    coordinator_acceptance_line,
     parse_todo,
     plan_body,
     reminder_line,
@@ -1826,36 +1828,62 @@ class Service:
             )
 
     async def _take_undelivered(
-        self, session: Session, budget: int = CONTEXT_MAX
+        self, session: Session, budget: int = CONTEXT_MAX, *, alone: bool = True
     ) -> tuple[list[Comment], int]:
         """Mark the oldest undelivered owner comments that fit in one hook answer as delivered
-        to `session`; returns them and how many were waiting."""
+        to `session`; returns them and how many were waiting. Not `alone`: other lines are in
+        the answer, so a comment that does not fit waits instead of overflowing it."""
         if not await repo.undelivered_owner_comments(self._r, session.id):
             return [], 0  # the common case: no write transaction per tool call
         async with self._tx() as tx:
             waiting = await repo.undelivered_owner_comments(tx.conn, session.id)
-            shown = comment_text.fit(waiting, budget)
+            shown = comment_text.fit(waiting, budget, alone=alone)
             if shown:
                 await self._deliver(tx, session, shown)
         return shown, len(waiting)
 
-    async def _take_plan_acceptances(self, session: Session) -> list[str]:
-        """The owner's plan acceptances on the board for tasks bound to `session`, each told
-        once and only within ACCEPTANCE_TELL_HOURS; an acceptance over MCP (a coordinator's) is
-        not news to tell."""
+    async def _take_plan_acceptances(
+        self, session: Session, budget: int = CONTEXT_MAX
+    ) -> list[str]:
+        """The owner's plan acceptances on the board for tasks bound to `session` and, for a
+        session named in `coordinators`, for every task; each told once per session and only
+        within ACCEPTANCE_TELL_HOURS. An acceptance over MCP (a coordinator's) is not news.
+        The lines take at most ACCEPTANCE_ROOM of `budget`; the rest stays untold until the
+        next hook."""
         since = (datetime.now(UTC) - timedelta(hours=ACCEPTANCE_TELL_HOURS)).isoformat(
             timespec="milliseconds"
         )
         args = (session.id, BOARD_ACTORS, ACCEPTANCE_TOLD, since)
-        if not await repo.untold_plan_acceptances(self._r, *args):
+        bound = await repo.untold_plan_acceptances(self._r, *args)
+        others = await repo.untold_board_acceptances(self._r, *args) if self.coordinators else []
+        # Asked only when there is something to tell: the check reads several rows.
+        coordinator = bool(others) and await self._is_coordinator(
+            self._r, session.external_id or session.name, session.cc_session_id
+        )
+        if not bound and not coordinator:
             return []  # the common case: no write transaction per tool call
-        lines = []
+        room = min(budget, ACCEPTANCE_ROOM)
+        lines: list[str] = []
         async with self._tx() as tx:
-            for task in await repo.untold_plan_acceptances(tx.conn, *args):
+            bound = await repo.untold_plan_acceptances(tx.conn, *args)
+            told = [(t, acceptance_line(t.key, await self._load_plan(tx.conn, t))) for t in bound]
+            if coordinator:
+                # A task bound to it since before the acceptance gets the line above only.
+                skip = {t.id for t in bound}
+                for task in await repo.untold_board_acceptances(tx.conn, *args):
+                    if task.id not in skip:
+                        plan = await self._load_plan(tx.conn, task)
+                        line = coordinator_acceptance_line(task.key, plan, task.session_name)
+                        told.append((task, line))
+            used = 0
+            for task, line in told:
+                used += len(line) + 1
+                if used > room:
+                    break
                 await self._plan_event(
                     tx, ACCEPTANCE_TOLD, task, session.name, session.id, session=session.name
                 )
-                lines.append(acceptance_line(task.key, await self._load_plan(tx.conn, task)))
+                lines.append(line)
         return lines
 
     async def _unread_messages_line(self, session: Session) -> str:
@@ -1903,10 +1931,11 @@ class Service:
             due = self._reminder_due(session, payload) if hook.event == "PostToolUse" else None
             if due is not None:
                 reminder = await self._plan_reminder(session, repeat=due == "periodic")
-            accepted = await self._take_plan_acceptances(session)
             budget = CONTEXT_MAX - (len(reminder) + 1 if reminder else 0)
-            budget -= sum(len(line) + 1 for line in [*lines, *accepted])
-            shown, total = await self._take_undelivered(session, budget)
+            budget -= sum(len(line) + 1 for line in lines)
+            accepted = await self._take_plan_acceptances(session, budget)
+            budget -= sum(len(line) + 1 for line in accepted)
+            shown, total = await self._take_undelivered(session, budget, alone=not accepted)
             parts = [*accepted]
             if shown:
                 parts.append(comment_text.delivery_text(shown, total))
@@ -1938,8 +1967,11 @@ class Service:
             touch, warnings = None, []
         contexts = list(warnings)
         if exact is not None:
-            contexts += await self._take_plan_acceptances(exact)
-            shown, total = await self._take_undelivered(exact)
+            budget = CONTEXT_MAX - sum(len(line) + 1 for line in contexts)
+            accepted = await self._take_plan_acceptances(exact, budget)
+            contexts += accepted
+            budget -= sum(len(line) + 1 for line in accepted)
+            shown, total = await self._take_undelivered(exact, budget, alone=not accepted)
             if shown:
                 contexts.append(comment_text.delivery_text(shown, total))
             contexts += await self._message_parts(exact, *contexts)
@@ -2074,8 +2106,8 @@ class Service:
         poll: float = 1.0,
         gone: Callable[[], Awaitable[bool]] | None = None,
     ) -> str | None:
-        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment or a
-        session message arrives
+        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment, a
+        session message or the owner's acceptance of a plan (as the tool hooks tell it) arrives
         for the idle, exactly linked session of `payload`, mark it delivered and return the
         text for the agent. None when the time is up, the session is not idle (its own hooks
         deliver then), a newer wait for the same session started, or `gone()` says the hook
@@ -2104,8 +2136,11 @@ class Service:
                 # Not while a turn goes on: a Stop block of this turn means it continues.
                 if current.status != "idle" or session.id in self._stop_blocks:
                     continue
-                shown, total = await self._take_undelivered(current)
-                parts = [comment_text.delivery_text(shown, total)] if shown else []
+                parts = await self._take_plan_acceptances(current)
+                budget = CONTEXT_MAX - sum(len(line) + 1 for line in parts)
+                shown, total = await self._take_undelivered(current, budget, alone=not parts)
+                if shown:
+                    parts.append(comment_text.delivery_text(shown, total))
                 parts += await self._message_parts(current, *parts)
                 if parts:
                     return "\n".join(parts)

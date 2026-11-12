@@ -49,18 +49,46 @@
     return a.stage === b.stage && a.before === b.before && a.after === b.after;
   }
 
-  function flash(lines, kind) {
+  // `key`: the task the lines are about. They stay until the owner closes them or the next move.
+  function flash(lines, kind, key) {
     var box = document.getElementById("board-flash");
-    if (!box) return;
-    box.replaceChildren();
+    var list = document.getElementById("board-flash-lines");
+    if (!box || !list) return;
+    list.replaceChildren();
     box.hidden = !lines.length;
+    box.dataset.key = lines.length && key ? key : "";
     lines.forEach(function (text) {
       var p = document.createElement("p");
       p.className = kind === "error" ? "form-error" : "form-warning";
       p.setAttribute("role", kind === "error" ? "alert" : "status");
       p.textContent = text;
-      box.appendChild(p);
+      list.appendChild(p);
     });
+  }
+
+  // The button goes away with the notice: the focus moves to the moved card's menu button.
+  document.addEventListener("click", function (event) {
+    if (!event.target.closest("#board-flash-close")) return;
+    var box = document.getElementById("board-flash");
+    var card = document.getElementById("card-" + (box.dataset.key || ""));
+    var target = card && card.querySelector(".card-menu-button");
+    if (!target) {
+      target = boardEl();
+      if (target) target.tabIndex = -1;
+    }
+    flash([]);
+    if (target) target.focus();
+  });
+
+  // The plan of the moved task was accepted: its "needs an accepted plan" warning is answered.
+  // The text is rules.requirement_label's for plan_accepted.
+  function planAccepted(key) {
+    var box = document.getElementById("board-flash");
+    if (!box || box.hidden || box.dataset.key !== key) return;
+    var rest = Array.prototype.filter.call(box.querySelectorAll(".form-warning"), function (p) {
+      return p.textContent.indexOf("an accepted plan") === -1;
+    }).map(function (p) { return p.textContent; });
+    flash(rest, "warning", key);
   }
 
   function refresh(col) {
@@ -94,7 +122,7 @@
         return JSON.parse(text);
       });
     }).then(function (answer) {
-      flash(answer.warnings || [], "warning");
+      flash(answer.warnings || [], "warning", card.dataset.key);
     }).catch(function (error) {
       putBack(card, home);
       flash(["Not moved: " + error.message], "error");
@@ -375,6 +403,7 @@
   });
 
   window.relaybayBoard = {
-    busy: function () { return !!drag || saving > 0; }
+    busy: function () { return !!drag || saving > 0; },
+    planAccepted: planAccepted
   };
 })();

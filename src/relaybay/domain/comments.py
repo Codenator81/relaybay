@@ -30,12 +30,13 @@ def comment_line(comment: Comment) -> str:
     return f"Owner comment on {comment.task_key} (#{comment.id}): {comment.body_md}"
 
 
-def fit(comments: list[Comment], budget: int = CONTEXT_MAX) -> list[Comment]:
-    """The oldest comments whose lines fit in `budget` characters; always at least one."""
+def fit(comments: list[Comment], budget: int = CONTEXT_MAX, *, alone: bool = True) -> list[Comment]:
+    """The oldest comments whose lines fit in `budget` characters. `alone`: nothing else is in
+    this answer, so at least one goes; otherwise the rest waits for the next hook."""
     chosen, used = [], 0
     for comment in comments:
         size = len(comment_line(comment)) + 1
-        if chosen and used + size > budget:
+        if (chosen or not alone) and used + size > budget:
             break
         chosen.append(comment)
         used += size

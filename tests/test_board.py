@@ -603,4 +603,9 @@ def test_card_menu_offers_the_keyboard_and_phone_way(
     assert stages == [(s, s) for s in ("plan", "review", "test", "live", "done")]
     page = board.get("/p/acme-shop").text
     assert 'id="board-flash" hidden' in page and "board.js" in page
+    # A move's warnings stay until the owner closes them: a real button, so the keyboard works.
+    assert (
+        '<button type="button" class="board-flash-close" id="board-flash-close"'
+        ' aria-label="Dismiss this notice" title="Dismiss">' in page
+    )
     assert f'data-csrf="{csrf_token(token)}"' in page

@@ -34,7 +34,10 @@
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   {#- What a drag or a card's menu answered: rule warnings of a stage move, or why nothing moved. #}
-  <div class="board-flash" id="board-flash" hidden></div>
+  <div class="board-flash" id="board-flash" hidden>
+    <div class="board-flash-lines" id="board-flash-lines"></div>
+    <button type="button" class="board-flash-close" id="board-flash-close" aria-label="Dismiss this notice" title="Dismiss">×</button>
+  </div>
   {% if saved_filters or filter_query %}
   <div class="saved-filters">
     {% for f in saved_filters %}

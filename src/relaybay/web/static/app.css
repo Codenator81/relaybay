@@ -544,8 +544,11 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
 }
 .drop-marker { height: 3px; margin: -2px 0; border-radius: 2px; background: var(--accent); }
 :root.is-dragging-card, :root.is-dragging-card * { cursor: grabbing; user-select: none; -webkit-user-select: none; }
-.board-flash { display: grid; gap: 6px; margin: 0 0 10px; }
+.board-flash { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 6px; margin: 0 0 10px; }
 .board-flash[hidden] { display: none; }
+.board-flash-lines { display: grid; gap: 6px; }
+.board-flash-close { padding: 2px 8px; border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.board-flash-close:hover, .board-flash-close:focus-visible { color: var(--text); }
 /* Live session status from the hooks: a dot in the icon's corner. */
 .status-dot {
   position: absolute;

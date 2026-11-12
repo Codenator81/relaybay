@@ -200,6 +200,9 @@
       queue(document.getElementById("budgets"));
     }
     if (data.kind === "task.stage_changed") notifyAcceptance(data);
+    if (data.kind === "plan.accepted" && window.relaybayBoard) {
+      window.relaybayBoard.planAccepted(data.key);
+    }
     if (data.kind === "intake.answer_received") notifyAnswer(data);
     // The backlog page: only its list is live; the add form stays as the user left it.
     var backlogList = document.getElementById("backlog");

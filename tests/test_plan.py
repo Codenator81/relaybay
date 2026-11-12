@@ -2,6 +2,7 @@
 agent's Claude Code todo from hooks, plan reminders, MCP tools, the board's Plan tab, migration."""
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -9,9 +10,13 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
+from relaybay.app import create_app
+from relaybay.config import Settings
 from relaybay.db.connection import connect
+from relaybay.domain.comments import COMMENT_MAX, CONTEXT_MAX
 from relaybay.domain.errors import NotFoundError, ValidationError
 from relaybay.domain.plan import (
+    ACCEPTANCE_ROOM,
     TODO_ITEMS_MAX,
     TODO_TEXT_MAX,
     clean_conformance,
@@ -23,7 +28,7 @@ from relaybay.security import csrf_token
 from relaybay.service import Service, collect_notes
 from tests.conftest import BASE, LiveServer, run_in_app
 from tests.test_comments import context_of, fire, linked_task
-from tests.test_hooks import CC_A, CC_B, DESKTOP_A
+from tests.test_hooks import CC_A, CC_B, CWD, DESKTOP_A, hook
 from tests.test_mcp import call
 from tests.test_mcp import connect as mcp_connect
 from tests.test_migrations import NOW, make_old_db
@@ -718,3 +723,135 @@ async def test_acceptance_names_the_first_step_not_done_and_old_ones_are_not_tol
         await tx.conn.execute("UPDATE task_session SET bound_at = '2020-01-01T00:00:00.000+00:00'")
     answer = await fire(service, "PostToolUse", tool_name="Bash")
     assert answer is None or "Owner accepted" not in context_of(answer)
+
+
+def _accept_on_board(board: TestClient, token: str, key: str) -> None:
+    url = f"/p/acme-shop/t/{key}/plan/accept"
+    response = board.post(url, data={"csrf_token": csrf_token(token)}, headers=HTMX)
+    assert response.status_code == 200 and "accepted by owner" in response.text
+
+
+def test_board_acceptance_reaches_the_bound_session_once(board: TestClient, token: str) -> None:
+    service: Service = board.app.state.service
+    task = run_in_app(board, linked_task, service)
+    run_in_app(board, service.set_plan, task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+    auth = {"Authorization": f"Bearer {token}"}
+    _accept_on_board(board, token, task.key)
+    line = f"Owner accepted the plan of {task.key} (3 steps): go on with step 1."
+    first = board.post("/hooks/claude-code", json=hook("PostToolUse"), headers=auth)
+    assert first.status_code == 200 and context_of(first.json()) == line
+    again = board.post("/hooks/claude-code", json=hook("PostToolUse"), headers=auth)
+    assert again.status_code == 204 or line not in context_of(again.json())
+
+
+def test_board_acceptance_wakes_the_idle_bound_session(settings: Settings, token: str) -> None:
+    """The agent asks for acceptance and ends its turn: the wake-up hook's long poll is what
+    reaches it then, as it does for an owner comment."""
+    fast = replace(settings, wake_hold_seconds=5, wake_poll_seconds=0.05)
+    with TestClient(create_app(fast), base_url=BASE) as board:
+        assert board.get(f"/login?token={token}", follow_redirects=False).status_code == 303
+        service: Service = board.app.state.service
+        task = run_in_app(board, linked_task, service)
+        run_in_app(board, service.set_plan, task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+        auth = {"Authorization": f"Bearer {token}"}
+        assert board.post("/hooks/claude-code", json=hook("Stop"), headers=auth).status_code == 204
+        _accept_on_board(board, token, task.key)
+        woke = board.post("/hooks/claude-code/wait", json=hook("Stop"), headers=auth)
+        line = f"Owner accepted the plan of {task.key} (3 steps): go on with step 1."
+        assert woke.status_code == 200 and woke.json() == {"wake": line}
+        after = board.post("/hooks/claude-code", json=hook("UserPromptSubmit"), headers=auth)
+        assert after.status_code == 204 or line not in context_of(after.json())
+
+
+async def test_coordinator_is_told_of_board_acceptances_once(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", coordinators=["lead"])
+    await svc.start()
+    try:
+        task = await linked_task(svc)
+        await svc.set_plan(task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+        own = await svc.create_task("acme-shop", "Coordination", session="lead", hook_session=CC_B)
+        free = await svc.create_task("acme-shop", "Payment", stage="dev")
+        await svc.set_plan(free.key, STEPS[:1])
+        await svc.accept_plan(task.key, actor="owner")
+        await svc.accept_plan(free.key, actor="owner")
+        told = context_of(await fire(svc, "PostToolUse", CC_B, tool_name="Bash")).splitlines()
+        assert told == [
+            f"Owner accepted the plan of {task.key} (3 steps) on the board, bound to Checkout.",
+            f"Owner accepted the plan of {free.key} (1 step) on the board, no session bound.",
+        ]
+        answer = await fire(svc, "PostToolUse", CC_B, tool_name="Bash")
+        assert answer is None or "Owner accepted" not in context_of(answer)  # told once
+        # The bound session still gets its own line; an acceptance over MCP is no news.
+        line = f"Owner accepted the plan of {task.key} (3 steps): go on with step 1."
+        assert context_of(await fire(svc, "PostToolUse", tool_name="Bash")) == line
+        await svc.set_plan(own.key, STEPS[:1], session="lead", hook_session=CC_B)
+        await svc.accept_plan(own.key, actor="mcp", session=DESKTOP_A, hook_session=CC_A)
+        answer = await fire(svc, "PostToolUse", CC_B, tool_name="Bash")
+        assert answer is None or "Owner accepted" not in context_of(answer)
+    finally:
+        await svc.close()
+
+
+async def test_coordinator_bound_to_the_task_gets_one_line(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", coordinators=[DESKTOP_A])
+    await svc.start()
+    try:
+        task = await linked_task(svc)
+        await svc.set_plan(task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+        await svc.accept_plan(task.key, actor="owner")
+        line = f"Owner accepted the plan of {task.key} (3 steps): go on with step 1."
+        assert context_of(await fire(svc, "PostToolUse", tool_name="Bash")) == line
+        answer = await fire(svc, "PreToolUse", tool_name="Bash")
+        assert answer is None or "Owner accepted" not in context_of(answer)
+    finally:
+        await svc.close()
+
+
+async def test_coordinator_is_woken_for_a_board_acceptance(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", coordinators=["lead"])
+    await svc.start()
+    try:
+        task = await linked_task(svc)
+        await svc.create_task("acme-shop", "Coordination", session="lead", hook_session=CC_B)
+        await svc.set_plan(task.key, STEPS, session=DESKTOP_A, hook_session=CC_A)
+        await fire(svc, "Stop", CC_B)  # the coordinator is idle
+        await svc.accept_plan(task.key, actor="owner")
+        text = await svc.wait_for_comments(hook("Stop", CC_B), hold=2, poll=0.02)
+        assert text == (
+            f"Owner accepted the plan of {task.key} (3 steps) on the board, bound to Checkout."
+        )
+    finally:
+        await svc.close()
+
+
+async def test_acceptance_lines_keep_to_their_room_and_comments_wait(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", coordinators=["lead"])
+    await svc.start()
+    try:
+        await svc.upsert_project("acme-shop", repo_path=CWD)
+        own = await svc.create_task("acme-shop", "Coordination", session="lead", hook_session=CC_B)
+        for i in range(120):
+            task = await svc.create_task("acme-shop", f"Bulk task {i}", stage="dev")
+            await svc.set_plan(task.key, STEPS[:1])
+            await svc.accept_plan(task.key, actor="owner")
+        await fire(svc, "Stop", CC_B)  # idle before the comments: no Stop block
+        first = await svc.add_owner_comment(own.key, "a" * COMMENT_MAX)
+        second = await svc.add_owner_comment(own.key, "b" * COMMENT_MAX)
+        text = await svc.wait_for_comments(hook("Stop", CC_B), hold=2, poll=0.02)
+        assert text is not None and len(text) <= CONTEXT_MAX
+        told = [line for line in text.splitlines() if line.startswith("Owner accepted")]
+        assert 0 < len(told) < 120 and sum(len(line) + 1 for line in told) <= ACCEPTANCE_ROOM
+        # The first comment fits next to them; the second waits, not marked delivered.
+        _, comments = await svc.list_comments(own.key)
+        assert [c.id for c in comments if c.delivered_at] == [first.id]
+        # The next hook brings it with the next acceptances; then the rest, room by room.
+        rest = context_of(await fire(svc, "PostToolUse", CC_B, tool_name="Bash"))
+        assert f"(#{second.id})" in rest and len(rest) <= CONTEXT_MAX
+        told += [line for line in rest.splitlines() if line.startswith("Owner accepted")]
+        while answer := await fire(svc, "PostToolUse", CC_B, tool_name="Bash"):
+            told += [x for x in context_of(answer).splitlines() if x.startswith("Owner accept")]
+        assert len(told) == len(set(told)) == 120
+        events = await svc.events_since(0, limit=2000)
+        assert [e.kind for e in events].count("plan.acceptance_delivered") == 120
+    finally:
+        await svc.close()
