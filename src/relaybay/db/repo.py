@@ -5223,7 +5223,8 @@ LEFT JOIN run_turn rt ON rt.id = a.turn_id
 """
 # Decided for a run and not handed to a turn's process yet: as `_PENDING` for answers.
 _PENDING_DECISIONS = (
-    " WHERE a.run_id = ? AND a.decision IS NOT NULL AND a.delivered_at IS NULL"
+    " WHERE a.run_id = ? AND a.decision IS NOT NULL AND a.status != 'expired'"
+    " AND a.delivered_at IS NULL"
     " AND a.comment_id IS NULL AND (a.turn_id IS NULL OR rt.outcome IN ('cancelled',"
     " 'failed_to_start', 'lost'))"
 )
@@ -5252,6 +5253,7 @@ def _approval(row: aiosqlite.Row) -> Approval:
         decided_by=row["decided_by"],
         decided_at=row["decided_at"],
         decision_text=row["decision_text"],
+        valid_until=row["valid_until"],
         used_at=row["used_at"],
         used_by=row["used_by"],
         used_session=row["used_session"],
@@ -5371,6 +5373,39 @@ async def expire_approvals(
     return [_approval(r) for r in rows]
 
 
+async def stale_approvals(conn: aiosqlite.Connection, now: str) -> list[Approval]:
+    """Approved, unused approvals past their `valid_until`."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT
+        + " WHERE a.status = 'approved' AND a.valid_until IS NOT NULL AND a.valid_until <= ?"
+        " ORDER BY a.id",
+        (now,),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def expire_approval(
+    conn: aiosqlite.Connection, approval_id: int, reason: str, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE approval SET status = 'expired', expired_at = ?, expired_reason = ?"
+        " WHERE id = ? AND status IN ('open', 'approved')",
+        (now, reason, approval_id),
+    )
+
+
+async def used_since(conn: aiosqlite.Connection, run_id: int, since: str) -> list[Approval]:
+    """The run's approvals used at or after `since` (a turn's start)."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + " WHERE a.run_id = ? AND a.status = 'used' AND a.used_at >= ?"
+        " ORDER BY a.id",
+        (run_id, since),
+    )
+    return [_approval(r) for r in rows]
+
+
 async def pending_decisions(conn: aiosqlite.Connection, run_id: int) -> list[Approval]:
     rows = await _all(conn, _APPROVAL_SELECT + _PENDING_DECISIONS + " ORDER BY a.id", (run_id,))
     return [_approval(r) for r in rows]
@@ -5413,6 +5448,7 @@ async def untold_decisions(conn: aiosqlite.Connection, session_id: int) -> list[
         conn,
         _APPROVAL_SELECT
         + " WHERE a.session_id = ? AND a.run_id IS NOT NULL AND a.decision IS NOT NULL"
+        " AND a.status != 'expired'"
         " AND a.delivered_at IS NULL AND a.told_at IS NULL AND a.turn_id IS NOT NULL"
         " AND rt.started_at IS NULL AND rt.ended_at IS NULL ORDER BY a.id",
         (session_id,),

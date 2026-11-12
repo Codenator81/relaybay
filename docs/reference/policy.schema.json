@@ -104,6 +104,12 @@
           "type": "boolean",
           "description": "A change on a live stand always needs an approval: only true is accepted, a policy cannot drop it."
         },
+        "valid_minutes": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 1440,
+          "description": "An approved approval not used within this many minutes expires (default 120)."
+        },
         "desktop": {
           "type": "boolean",
           "description": "Check desktop sessions too, not only the program's runs (default false)."

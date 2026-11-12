@@ -56,6 +56,7 @@
         "merge": {"type": "boolean", "description": "gh pr merge needs an approval naming the pull request (default true)."},
         "test": {"type": "boolean", "description": "A change on a test stand (deploy, SQL, kubectl, ssh with a write) needs an approval (default true)."},
         "live": {"type": "boolean", "description": "A change on a live stand always needs an approval: only true is accepted, a policy cannot drop it."},
+        "valid_minutes": {"type": "integer", "minimum": 5, "maximum": 1440, "description": "An approved approval not used within this many minutes expires (default 120)."},
         "desktop": {"type": "boolean", "description": "Check desktop sessions too, not only the program's runs (default false)."},
         "disable": {"$ref": "#/$defs/approvalRuleIds", "description": "Built-in action patterns to switch off, by id (replaces the list)."},
         "disable+": {"$ref": "#/$defs/approvalRuleIds", "description": "Pattern ids to add to the inherited list."},

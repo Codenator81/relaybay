@@ -1126,7 +1126,8 @@ def event_detail(e: Event) -> str:
         if e.kind == "approval.expired":
             return f"{what} expired: {p.get('reason')}"
         if e.kind == "approval.used":
-            return f"{what} used by {arules.quoted(str(p.get('used_by') or ''))}"
+            given = " (allow given)" if p.get("decision") == "allow" else ""
+            return f"{what} used by {arules.quoted(str(p.get('used_by') or ''))}{given}"
         return f"{what} ({p.get('via') or 'agent'})"
     if e.kind == "concurrency.over":
         return f"{p.get('running')} sessions running, cap {p.get('max_sessions')}"

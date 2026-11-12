@@ -321,10 +321,16 @@ class RunView:
 
 
 def turn_report(
-    run_id: int, seq: int, outcome: str, text: str, refusals: list[tuple[str, str]]
+    run_id: int,
+    seq: int,
+    outcome: str,
+    text: str,
+    refusals: list[tuple[str, str]],
+    notes: dict[int, str] | None = None,
 ) -> str:
     """The report a turn's result becomes on the card: the final text in full, after a neutral
-    first line when the agent wrote no `state · size · gist` one, then the refusals."""
+    first line when the agent wrote no `state · size · gist` one, then the refusals, each with
+    its note (by position) when it has one."""
     text = text.strip()
     state, size, _ = parse_report(text) if text else (None, None, "")
     parts = []
@@ -333,7 +339,11 @@ def turn_report(
     parts.append(text or "(the turn ended without a final text)")
     if refusals:
         lines = [f"**Refusals** ({len(refusals)}, permission denials of the turn):"]
-        lines += [f"- {tool}: `` {shown.replace('`', "'")} ``" for tool, shown in refusals]
+        lines += [
+            f"- {tool}: `` {shown.replace('`', "'")} ``"
+            + (f" — {notes[i]}" if notes and i in notes else "")
+            for i, (tool, shown) in enumerate(refusals)
+        ]
         parts.append("\n".join(lines))
     return "\n\n".join(parts)
 

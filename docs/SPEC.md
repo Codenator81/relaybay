@@ -596,7 +596,8 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
   (default true: a change on a `test` stand, as the guard's mutating rules see it: a deploy, a
   kubectl or ssh write, an SQL change), `live` (always true: a change on a `live` stand; a layer
   with `live: false` is refused when it is validated, so neither a save nor a proposal can drop
-  it), `desktop` (above). `approvals.disable` switches off a built-in action pattern by id
+  it), `desktop` (above), `valid_minutes` (default 120, 5 to 1,440: an approved approval not
+  used within it expires). `approvals.disable` switches off a built-in action pattern by id
   (`git-push`, `gh-pr-merge`, `git-commit`); `approvals.ignore` lists regular expressions (checked
   like `secrets.allow`): a command segment one of them matches is never an action. Both take `+`
   and `-`. On live neither narrows anything, and neither do the rules `guard.disable` switches
@@ -622,9 +623,13 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
     current branch and the repository are not read: such a push names its branch, and an
     approval that names a repository does not cover it.
   - Not read: a name the guard cannot read (a `$VAR`, a substitution, a glob, a comment), and for a
-    run a segment that looks like a push or a merge it cannot parse (`bash -c '…'`, `sudo -u`, a
-    subshell, `gh api …/pulls/N/merge`, a script): denied with "could not tell which branch",
-    nothing opened.
+    run a segment where code can hide that mentions `git … push` or `gh … merge`: its command is a
+    shell, an interpreter or a wrapper (`bash`, `sh`, `zsh`, `pwsh`, `powershell`, `cmd`,
+    `python`, `node`, `sudo`, `env`, `xargs`, `nice` …), a subshell (`(…)`, `{…}`, `$(…)`,
+    backticks), `gh api`, or a git alias (`-c alias.…`): denied with "could not tell", nothing
+    opened. Other commands that only mention them (`grep "git push"`, `echo`, `gh pr create
+    --title "… merge …"`, `gh pr view`) are not actions. Here-document bodies are data (a commit
+    message, a file), except when they feed a shell or an interpreter.
 - **Enforcement** ([guard](#spec-guard)): after the level check, a call whose actions need
   approvals is checked against the approved, unused approvals of the session's cards (a run: its
   card; a desktop session: the cards bound to it, the request opening on the most recently
@@ -638,20 +643,30 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
     10 open requests on the card nothing opens and the reason says to end the turn and report.
   - **Covered, but with other commands** (another segment, a pipe, a `cd` before it): `deny` with
     "run the approved action alone, as its own command"; the approval is kept.
-  - **Covered and alone:** each approval is marked `used` (when, by which call: the tool and its
-    masked input, and by which session) in one transaction, so one approval allows exactly one
-    call. A run in Manual mode (`manual`, `default`, `dontAsk`) not with the owner is answered
-    `allow` ("the owner approved this on the board: approval N (…)"), since Claude Code would
-    refuse the call otherwise; in every other mode, and for a desktop session, relaybay gives no
-    decision and Claude Code decides as usual. An approval used by a call another hook then
-    denies is spent.
+  - **Covered and alone** (one segment; for a run, from the run's working folder or a worktree,
+    and for a git action in a repository the run knows): each approval is marked `used` (when, by
+    which call: the tool and its masked input, and by which session) in one transaction, so one
+    approval allows exactly one call. A run not with the owner is answered `allow` ("the owner
+    approved this on the board: approval N (…)") in every mode but `bypassPermissions`: the
+    owner's explicit approval is stronger than Claude Code's own checks (auto mode's classifier,
+    a mode that refuses Bash). A run with the owner in the desktop app, a run in
+    `bypassPermissions` and a desktop session get no decision; Claude Code decides as usual. The
+    `approval.used` event says which (`decision` `allow` or `none`, with the approval's id), on
+    the Audit page.
+  - **Spent, refused anyway:** an approval used by a call that Claude Code (or another hook) then
+    refused is spent; the refusal opens no new request and shows in the turn's report as
+    "approved call refused by Claude Code (approval N, …)".
+  - **On a done card** nothing opens: the call is denied with "<card> is done".
   - A call whose level denies or asks is answered by the level and uses no approval.
-  - **On an internal error** of the check: a run's call that looks like a guarded action (a push
-    or merge by the hints above, or any built-in mutating rule) is denied with "approval check
-    unavailable"; other calls, and desktop sessions, go on as with a guard error.
+  - **On an internal error** of the check: a call that looks like a guarded action (a push or
+    merge by the hints above, or any built-in mutating rule) is denied with "approval check
+    unavailable" when it is a run's (found by the session's Claude Code id, since command hooks
+    send the run's id on `SessionStart` only) or when even that cannot be read; other calls, and
+    desktop sessions, go on as with a guard error.
 - **From a denial.** At a turn's `result`, each entry of `permission_denials` (Bash, or another
   server's MCP tool) whose call needs an approval the guard can read, whose level does not block
-  it, and for which no request of the card is open opens one (`requested_via` `denial`, summary
+  it, for which no approval was used in that turn and no request of the card is open, opens
+  one on a card not in done (`requested_via` `denial`, summary
   "From a permission denial in turn N: …"). The call is read with its lines (masked, up to 8 KB),
   so each line is its own command. A denial no approval rule covers (Claude Code's own auto mode
   classifier, a `Write` outside the allowed tools) stays a refusal in the turn's report.
@@ -672,8 +687,11 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
   optional line `text` (up to 1,000 characters, one line) and `from` (`card` or `inbox`), board only
   (cookie and CSRF; a Bearer request is refused, `403`). Only an open request is decided; a deploy
   without its rollback cannot be approved (Approve is disabled; the agent asks again with
-  `rollback`). The agent gets one line: `The owner approved <what> (approval N): one matching call
-  may go through now; run it alone, as its own command.` (plus ` The owner's note: <line>`), or
+  `rollback`). An approval is valid for the project's `approvals.valid_minutes` from the
+  decision (`valid_until`); not used by then, it expires (`approval.expired`, checked by the
+  server every 15 seconds, by the gate and on reads). The agent gets one line: `The owner approved
+  <what> (approval N): one matching call may go through until <time> UTC; run it alone, as its
+  own command, from your run's folder.` (plus ` The owner's note: <line>`), or
   `The owner refused <what> (approval N): <line, or "no reason given">`, where `<what>` is `push of
   feat/x in backend`, `force push of …`, `push deleting …`, `merge of PR 12`, `commit on feat/x`,
   `deploy on acme-shop/live` or `SQL change on acme-shop/live`. Delivery is the one of
@@ -681,7 +699,7 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
   that waits while one runs, whose hooks say once `The owner's decision on approval N (…) is
   waiting: it comes as your next turn when this one ends.`; after Back to the program for a run
   with the owner), an owner comment for a desktop session or an ended run, and a decision whose
-  turn never started goes with the run's next turn. The card goes back to the requester when
+  turn never started goes with the run's next turn, unless it expired meanwhile. The card goes back to the requester when
   nothing else of it waits on the owner. **Only the owner's decision carries that line:** a
   coordinator's `run_start` brief with a line starting `The owner approved` or `The owner refused`
   is refused, like a forged answer line.
@@ -2168,7 +2186,7 @@ relaybay before policies.
 | `trusted` | `full` everywhere | `log` | all detectors; test secrets on local and test, not shown to agents |
 
 Every preset has the same `approvals`: `push`, `merge` and `test` true, `commit` and `desktop`
-false, `live` true ([approvals](#spec-approvals)).
+false, `live` true, `valid_minutes` 120 ([approvals](#spec-approvals)).
 
 Validation: JSON Schema 2020-12 plus checks the schema cannot express — `preset` only in the global
 layer, custom pattern ids unique and not a built-in id, `approvals.live` only `true` ("anything
@@ -2349,8 +2367,8 @@ read-only for agents; this looks like a remote change over ssh (matched 'prod-al
 owner, or propose a change with environment_propose.`) is shown to Claude for `deny` and to the user
 in the permission prompt for `ask`. In `warn` mode the call goes on and `additionalContext` carries
 the same reason ending `(warn mode: not blocked)`. relaybay answers `allow` only for a run's
-call the owner approved on the board, run alone, in Manual mode and not with the owner, which uses
-that approval ([approvals](#spec-approvals)); otherwise never, since it would skip Claude Code's
+call the owner approved on the board, run alone from the run's folder, not with the owner and not
+in `bypassPermissions`, which uses that approval ([approvals](#spec-approvals)); otherwise never, since it would skip Claude Code's
 own permission prompt. When the level lets a call through, the approval check follows: a push, a
 merge or a stand change of a run without an unused approval is denied. Owner comments for an exactly linked session are added to
 `additionalContext` of the same answer. A guard error is logged and the call goes on; relaybay down
@@ -3009,7 +3027,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0036_report_check` | `report_check` (report, line, `where` as `location`, claim); an index on report and line ([§1](#spec-report-marks)). Additive only, no backfill: older reports have no marks |
 | `0037_question` | `question` (task, run or session, asked by, kind `question` / `look`, text, options JSON, default, blocking, look URL and account, `default_after`, asked at, status `open` / `answered` / `defaulted` / `withdrawn`, answer, answered by `owner` / `default`, answered / defaulted / withdrawn at, withdrawn by, the turn or owner comment that carries the answer, told / delivered at); checks that a look question blocks and has its URL and that a blocking one has no deadline; indexes per task, run, comment and on the open ones by deadline ([§1](#spec-questions)). Additive only |
 | `0038_task_archive` | `task.archived_at`, `task.archived_by` (archived by hand), `task.unarchived_at` (the last "Back from the archive") ([§2](#spec-board-archive)). Additive only, no backfill |
-| `0039_approval` | `approval` (task, run or session, requested by and via `agent` / `guard` / `denial`, action `commit` / `push` / `merge` / `deploy` / `sql`, a push's mode `plain` / `force` / `delete`, repository, branch, PR, environment, summary, rollback, requested at, status `open` / `approved` / `refused` / `used` / `expired`, decision, decided by and at, the owner's line, used at / by / session, expired at and why, the turn or owner comment that carries the decision, told / delivered at); checks that a push or commit names its branch, a merge its PR, a deploy or SQL change its environment, an approved deploy its rollback, and that the status matches the decision and the use; indexes per task, run, comment and on the open and approved ones ([§1](#spec-approvals)). Additive only |
+| `0039_approval` | `approval` (task, run or session, requested by and via `agent` / `guard` / `denial`, action `commit` / `push` / `merge` / `deploy` / `sql`, a push's mode `plain` / `force` / `delete`, repository, branch, PR, environment, summary, rollback, requested at, status `open` / `approved` / `refused` / `used` / `expired`, decision, decided by and at, the owner's line, valid until, used at / by / session, expired at and why, the turn or owner comment that carries the decision, told / delivered at); checks that a push or commit names its branch, a merge its PR, a deploy or SQL change its environment, an approved deploy its rollback, and that the status matches the decision and the use; indexes per task, run, comment and on the open and approved ones ([§1](#spec-approvals)). Additive only |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

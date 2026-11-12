@@ -13,6 +13,7 @@
     "test": true,
     "live": true,
     "desktop": false,
+    "valid_minutes": 120,
     "disable": [],
     "ignore": []
   },

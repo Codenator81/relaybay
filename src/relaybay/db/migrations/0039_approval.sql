@@ -8,7 +8,8 @@
 -- The decision reaches the agent as the run's next turn (`turn_id`) or as an owner comment
 -- (`comment_id`), as a question's answer does. `mode` tells a plain push from a force push or a
 -- delete: an approval covers only its own mode. A request still open, or approved and unused,
--- when its card goes to done is `expired`.
+-- when its card goes to done is `expired`; so is an approval not used by `valid_until` (set at
+-- the decision from the policy's `approvals.valid_minutes`).
 CREATE TABLE approval (
     id             INTEGER PRIMARY KEY,
     task_id        INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
@@ -32,6 +33,7 @@ CREATE TABLE approval (
     decided_by     TEXT,
     decided_at     TEXT,
     decision_text  TEXT,
+    valid_until    TEXT,
     used_at        TEXT,
     used_by        TEXT,
     used_session   TEXT,

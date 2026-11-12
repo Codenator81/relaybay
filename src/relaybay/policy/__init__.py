@@ -460,6 +460,7 @@ class EffectivePolicy:
             required,
             frozenset(approvals.get("disable", [])),
             tuple(p for p in ignore if p is not None),
+            int(approvals.get("valid_minutes", approval_rules.VALID_MINUTES)),
         )
 
     @property

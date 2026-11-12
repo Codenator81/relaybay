@@ -22,9 +22,11 @@
   guard's check after the level (`git push` with its branch and mode: plain, force, delete, and
   `--tags` and the like as targets of their own; `gh pr merge`; the stand changes of the access
   map, together with the git actions of the same call), denying with a request opened; an
-  approved call run alone uses its approval in the same transaction and is answered `allow` only
-  in Manual mode (no decision otherwise), one run with other commands is denied and the approval
-  kept; requests from a turn's `permission_denials`, read line by line; MCP `approval_request`
+  approved call run alone, from the run's folder, uses its approval in the same transaction and
+  is answered `allow` for a run not with the owner in every mode but `bypassPermissions` (the
+  owner's approval is stronger than auto mode's classifier; a refusal after it is spent, opens no
+  request and shows in the report), no decision otherwise; one run with other commands is denied
+  and the approval kept; an approval expires after `approvals.valid_minutes` (120); requests from a turn's `permission_denials`, read line by line; MCP `approval_request`
   and `approval_list`; the Inbox's Approvals group and the card's fold, decided with `POST
   /approvals/{id}/decide` (board only); delivery and `waiting` as for questions; a card that goes
   to done withdraws its open questions and expires its requests; the tray kind `approval`.
@@ -145,12 +147,14 @@ the denial plus a new turn stays the default.
 **Who is checked, and what a failure of the check does** (the coordinator's decision of
 2026-11-12 for 0.9):
 
-| Actor | Action | On a check error |
-|---|---|---|
-| A run of the program | push, PR merge, a change on a test or live stand | denied: "approval check unavailable" |
-| A run of the program | any other call | goes on, as with a guard error |
-| A desktop session (checked only with `approvals.desktop: true`) | any | goes on, as with a guard error |
-| A session on no card | any | not checked |
+| Actor | Action | Approved and run alone | On a check error |
+|---|---|---|---|
+| A run of the program, not with the owner | push, PR merge, a change on a test or live stand | `allow` (no decision in `bypassPermissions`); used once | denied: "approval check unavailable" (the run found by the session's id) |
+| A run held by the owner in the desktop app | the same | used, no decision | denied, as above |
+| A run of the program | any other call | — | goes on, as with a guard error |
+| A desktop session (checked only with `approvals.desktop: true`) | the same guarded actions | used, no decision | goes on, as with a guard error |
+| A session whose kind cannot be read (the database fails too) | a call that looks guarded | — | denied |
+| A session on no card | any | not checked | not checked |
 
 ## Risks
 

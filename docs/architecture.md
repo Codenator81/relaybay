@@ -172,7 +172,7 @@ approval      id, task_id, run_id, session_id (who asked), requested_by, request
               mode (plain|force|delete), repository, branch, pr,
               environment_id, environment, summary, rollback, requested_at,
               status (open|approved|refused|used|expired), decision, decided_by, decided_at,
-              decision_text, used_at, used_by (the call: tool and masked input), used_session,
+              decision_text, valid_until, used_at, used_by (the call: tool and masked input), used_session,
               expired_at, expired_reason,
               turn_id (the run turn carrying the decision), comment_id (the owner comment carrying
               it), told_at, delivered_at

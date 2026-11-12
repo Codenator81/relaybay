@@ -2,8 +2,10 @@
 the board, delivery to a run's next turn or a desktop session's hooks, requests from a turn's
 permission denials, the Inbox and the tray."""
 
+import json
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from relaybay.db import repo
 from relaybay.domain import approvals as arules
 from relaybay.domain import guard
 from relaybay.domain.errors import ValidationError
+from relaybay.domain.hooks import parse_hook
 from relaybay.domain.models import Event
 from relaybay.domain.notifications import classify
 from relaybay.mcp_server.server import build_mcp
@@ -215,10 +218,11 @@ async def test_a_push_without_approval_is_denied_and_one_approval_allows_one_pus
         "owner",
         "CI is green",
     )
-    assert prompts(svc)[-1] == (
+    until = (done.valid_until or "")[:16].replace("T", " ")
+    assert until and prompts(svc)[-1] == (
         f"The owner approved push of feat/checkout in acme-shop (approval {a.id}): one matching"
-        " call may go through now; run it alone, as its own command. The owner's note: CI is"
-        " green"
+        f" call may go through until {until} UTC; run it alone, as its own command, from your"
+        " run's folder. The owner's note: CI is green"
     )
     assert (await svc.get_run(run.id)).status == "running"
     assert (await svc.get_approval(a.id)).delivered_at is not None
@@ -344,8 +348,9 @@ async def test_a_decision_during_a_turn_waits_and_the_hooks_say_so(svc: Service)
     assert f"The owner's decision on approval {a.id} (merge of PR 12) is waiting" in text
     await stub(svc).finish(run.id, cc_id=RUN_CC)
     assert prompts(svc)[-1].startswith(f"The owner approved merge of PR 12 (approval {a.id})")
-    # In auto mode an approved call gets no decision: Claude Code decides as usual.
-    assert await decision(svc, RUN_CC, run.cwd, "gh pr merge 12 --squash --delete-branch") is None
+    # The owner's approval is stronger than auto mode's classifier: `allow`.
+    allowed = await decision(svc, RUN_CC, run.cwd, "gh pr merge 12 --squash --delete-branch")
+    assert allowed is not None and allowed[0] == "allow"
     assert (await svc.get_approval(a.id)).status == "used"
 
 
@@ -386,7 +391,8 @@ async def test_a_change_on_live_needs_an_approval_with_its_rollback(svc: Service
     assert updated and filled.id == a.id and filled.rollback
     await svc.decide_approval(a.id, True)
     await stub(svc).finish(run.id, cc_id=RUN_CC)
-    assert await decision(svc, RUN_CC, run.cwd, command) is None
+    allowed = await decision(svc, RUN_CC, run.cwd, command)
+    assert allowed is not None and allowed[0] == "allow"
     assert (await svc.get_approval(a.id)).status == "used"
 
 
@@ -760,3 +766,143 @@ async def test_at_the_open_limit_the_reason_does_not_send_to_approval_request(
     got = await decision(svc, RUN_CC, run.cwd, "git push origin main")
     assert got is not None and got[0] == "deny" and "10 open requests" in got[1]
     assert "approval_request" not in got[1]
+
+
+# --- review round 2 ------------------------------------------------------------------------
+
+HEREDOC_COMMIT = (
+    "git commit -m \"$(cat <<'EOF'\nfix: the hook no longer pushes\n\n"
+    'git push origin main was wrong\nEOF\n)"'
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'gh pr create --title "feat: merge cards"',
+        'grep -rn "git push" docs',
+        'rg "gh pr merge" src',
+        'echo "git push"',
+        HEREDOC_COMMIT,
+        "cat > notes.md <<'X'\ngit push origin main\nX",
+        "gh pr view 12 --json mergeable",
+        "git stash push -m wip",
+    ],
+)
+def test_normal_work_is_not_read_as_a_hidden_push(command: str) -> None:
+    call = guard.ToolCall("Bash", command, False)
+    assert arules.call_needs(call, arules.ApprovalRules(), strict=True) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -c 'git push origin main'",
+        "python3 - <<'PY'\nimport os; os.system('git push origin main')\nPY",
+        "gh api -X PUT repos/o/r/pulls/12/merge",
+        "sudo -u bob git push origin main",
+    ],
+)
+def test_a_hidden_push_or_merge_is_still_read(command: str) -> None:
+    call = guard.ToolCall("Bash", command, False)
+    [need] = arules.call_needs(call, arules.ApprovalRules(), strict=True)
+    assert not need.known
+
+
+async def test_a_failed_check_finds_the_run_without_the_payloads_run_id(
+    svc: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from relaybay import hook_client
+
+    run = await started_run(svc)
+
+    async def broken(*_: Any) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(svc, "_approval_gate", broken)
+    monkeypatch.setenv("RELAYBAY_RUN_ID", str(run.id))
+    body = json.dumps(pre(RUN_CC, run.cwd, "git push origin main")).encode()
+    forwarded = json.loads(hook_client.with_host_session(body))
+    assert "relaybay_run" not in forwarded  # command hooks send it on SessionStart only
+    answer = await svc.hook_answer(forwarded)
+    assert answer is not None
+    reason = answer["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "approval check unavailable" in reason
+
+    async def no_db(*_: Any) -> None:
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr(repo, "get_session_by_cc", no_db)
+    payload = pre(CC_A, CWD, "git push origin main")
+    hook_event = parse_hook(payload)
+    assert hook_event is not None
+    # Whose call it is cannot be told either: the hint denies.
+    assert await svc._approval_check_failed(payload, hook_event) == (
+        "deny",
+        arules.UNAVAILABLE_REASON,
+    )
+    assert await svc._approval_check_failed(pre(CC_A, CWD, "npm test"), hook_event) is None
+
+
+async def test_an_approved_call_refused_by_claude_code_is_spent_without_a_loop(
+    svc: Service,
+) -> None:
+    run = await started_run(svc)  # auto mode
+    a = await approve(svc, run, "push", "feat/checkout")
+    await svc.send_to_run(run.id, "Push now")
+    allowed = await decision(svc, RUN_CC, run.cwd, "git push origin feat/checkout")
+    assert allowed is not None and allowed[0] == "allow"
+    await finish_with(svc, run.id, [Refusal("Bash", "git push origin feat/checkout")])
+    assert await repo.open_approvals(svc._r, task_id=1) == []  # no new request
+    assert (await svc.get_approval(a.id)).status == "used"
+    report = (await svc.task_detail("acme-shop-1")).reports[0]
+    assert f"approved call refused by Claude Code (approval {a.id}" in report.body_md
+    [used] = [e for e in await svc.events_since(0, limit=500) if e.kind == "approval.used"]
+    assert used.payload["decision"] == "allow" and used.payload["approval_id"] == a.id
+
+
+async def test_no_allow_for_a_run_with_the_owner_or_outside_its_folders(svc: Service) -> None:
+    run = await started_run(svc)
+    await approve(svc, run, "push", "feat/a")
+    outside = await decision(svc, RUN_CC, "/somewhere/else", "git push origin feat/a")
+    assert outside is not None and outside[0] == "deny" and "run's folder" in outside[1]
+    async with svc._tx() as tx:
+        await tx.conn.execute(
+            "UPDATE run SET with_owner_at = ?, with_owner_by = 'owner' WHERE id = ?",
+            (tx.now, run.id),
+        )
+    assert await decision(svc, RUN_CC, run.cwd, "git push origin feat/a") is None
+    [used] = [e for e in await svc.events_since(0, limit=500) if e.kind == "approval.used"]
+    assert used.payload["decision"] == "none"
+
+
+async def test_an_approval_expires_after_its_minutes(svc: Service) -> None:
+    await svc.save_policy_layer("acme-shop", '{"approvals": {"valid_minutes": 30}}')
+    run = await started_run(svc)
+    a = await approve(svc, run, "push", "feat/a")
+    start = datetime.fromisoformat(a.decided_at or "")
+    assert datetime.fromisoformat(a.valid_until or "") - start == timedelta(minutes=30)
+    async with svc._tx() as tx:
+        await repo.update_approval(tx.conn, a.id, {"valid_until": "2020-01-01T00:00:00.000+00:00"})
+    denied = await decision(svc, RUN_CC, run.cwd, "git push origin feat/a")
+    assert denied is not None and denied[0] == "deny"
+    gone = await svc.get_approval(a.id)
+    assert gone.status == "expired" and (gone.expired_reason or "").startswith("not used by")
+    assert "approval.expired" in await kinds(svc)
+
+
+async def test_an_expired_decision_is_not_delivered_and_a_done_card_opens_nothing(
+    svc: Service,
+) -> None:
+    run = await started_run(svc)
+    a, _, _ = await svc.request_approval(
+        "acme-shop-1", "push", "feat/a", "x", session=run.session_name
+    )
+    await svc.decide_approval(a.id, True)  # queued behind the running turn
+    await svc.stop_run(run.id)  # the queued turn is cancelled: the decision is pending
+    await svc.set_stage("acme-shop-1", "done")
+    await svc.send_to_run(run.id, "One more thing")
+    assert "The owner approved" not in prompts(svc)[-1]
+    denied = await decision(svc, RUN_CC, run.cwd, "git push origin feat/b")
+    assert denied is not None and denied[0] == "deny" and "is done" in denied[1]
+    assert [x.status for x in await repo.list_approvals(svc._r, task_id=1)] == ["expired"]

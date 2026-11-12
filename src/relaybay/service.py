@@ -342,9 +342,10 @@ def now_iso() -> str:
 
 # Calls that may be a git action that needs an approval; without environments the rest is free.
 _APPROVAL_HINT_RE = re.compile(r"\b(git|gh)(\.exe)?\b", re.IGNORECASE)
-# Run modes in which Claude Code itself refuses a call nobody allowed: there an approved call is
-# answered `allow`; in the others relaybay gives no decision and Claude Code decides as usual.
-_REFUSING_MODES = ("manual", "default", "dontAsk")
+# The owner's approval on the board is stronger than Claude Code's own checks (a classifier, a
+# mode that refuses Bash): an approved run call is answered `allow` in every other mode.
+# The mode in which an approved call needs no `allow`: Claude Code skips its checks there.
+_SKIPPING_MODES = ("bypassPermissions",)
 
 
 class _ApprovalTaken(Exception):
@@ -2242,7 +2243,7 @@ class Service:
                 gate = await self._approval_gate(payload, hook)
             except Exception:
                 logger.exception("relaybay approval check failed")
-                gate = await self._approval_check_failed(payload)
+                gate = await self._approval_check_failed(payload, hook)
         contexts = list(warnings)
         if exact is not None:
             budget = CONTEXT_MAX - sum(len(line) + 1 for line in contexts)
@@ -11093,7 +11094,14 @@ class Service:
             await repo.insert_run_events(tx.conn, turn_id, events)
 
     async def _turn_report(
-        self, tx: _Tx, task: Task, run: Run, turn: RunTurn, outcome: str, result: Result
+        self,
+        tx: _Tx,
+        task: Task,
+        run: Run,
+        turn: RunTurn,
+        outcome: str,
+        result: Result,
+        notes: dict[int, str] | None = None,
     ) -> None:
         """The turn's result as a report on the card, in the turn's end transaction. A report
         that cannot be written must not keep the turn from ending: its writes are undone to a
@@ -11111,7 +11119,12 @@ class Service:
                 await repo.set_turn_report(tx.conn, turn.id, own.id)
                 return
         body = run_rules.turn_report(
-            run.id, turn.seq, outcome, result.text, [(r.tool, r.input) for r in result.refusals]
+            run.id,
+            turn.seq,
+            outcome,
+            result.text,
+            [(r.tool, r.input) for r in result.refusals],
+            notes,
         )
         await tx.conn.execute("SAVEPOINT turn_report")
         events = len(tx.events)
@@ -11147,12 +11160,14 @@ class Service:
         that waited, otherwise the next one starts."""
         follow: tuple[int, int] | None = None
         denied: list[tuple[arules.Need, str]] = []
+        spent: dict[int, str] = {}
         if result is not None and result.refusals:
             # Read before the transaction: the current branch comes from git.
             ended = await repo.get_turn(self._r, turn_id)
             assert ended is not None
             try:
-                denied = await self._denied_needs(await self.get_run(ended.run_id), result)
+                run = await self.get_run(ended.run_id)
+                denied, spent = await self._denied_needs(run, ended, result)
             except Exception:
                 logger.exception("Reading the denials of turn %d for approvals failed", turn_id)
         async with self._tx() as tx:
@@ -11175,7 +11190,7 @@ class Service:
                 )
             await repo.end_turn(tx.conn, turn.id, changes, tx.now)
             if result is not None:
-                await self._turn_report(tx, task, run, turn, outcome, result)
+                await self._turn_report(tx, task, run, turn, outcome, result, spent)
             await self._requests_from_denials(tx, run, task, turn, denied)
             tokens = sum(
                 changes.get(k, 0)
@@ -11855,6 +11870,7 @@ class Service:
         while True:
             try:
                 await self.close_overdue_questions()
+                await self.expire_stale_approvals()
             except Exception:
                 logger.exception("Closing questions past their deadline failed; trying again")
             await asyncio.sleep(interval)
@@ -11942,6 +11958,23 @@ class Service:
             and not await repo.open_approvals(tx.conn, run_id=run.id)
         ):
             await self._set_run_status(tx, run, "idle", reason)
+
+    async def expire_stale_approvals(self) -> int:
+        """Approved approvals not used by their `valid_until` expire, visibly. Asked by the
+        gate, on reads and by the server's loop."""
+        if not await repo.stale_approvals(self._r, now_iso()):
+            return 0
+        async with self._tx() as tx:
+            stale = await repo.stale_approvals(tx.conn, tx.now)
+            for a in stale:
+                reason = f"not used by {(a.valid_until or '')[:16].replace('T', ' ')} UTC"
+                await repo.expire_approval(tx.conn, a.id, reason, tx.now)
+                task = await self.get_task(a.task_id, tx.conn)
+                expired = await self.get_approval(a.id, tx.conn)
+                await self._approval_event(
+                    tx, "approval.expired", "relaybay", task, expired, reason=reason
+                )
+        return len(stale)
 
     async def _decision_comment(self, tx: _Tx, task: Task, a: Approval, actor: str) -> Comment:
         return await self._insert_comment(
@@ -12114,6 +12147,7 @@ class Service:
         scope = await self._approval_scope(self._r, session)
         if scope is None or (scope.run is None and not scope.policy.approvals.desktop):
             return None
+        await self.expire_stale_approvals()
         per = await self._call_needs(call, scope, hook.cwd)
         needs = [n for segment in per for n in segment]
         if not needs:
@@ -12121,9 +12155,18 @@ class Service:
         unknown = next((n for n in needs if not n.known), None)
         if unknown is not None:
             return "deny", arules.unknown_reason(unknown)
-        alone = all(per)
+        alone = all(per) and len(per) == 1
+        run = scope.run
+        if run is not None and not self._in_run_folders(hook.cwd, scope):
+            alone = False  # the approved command runs from the run's own folders
+        if run is not None:
+            # Exactly the approved call: a git action in a repository the run knows.
+            alone = alone and all(n.repository for n in needs if n.action not in ("deploy", "sql"))
+        allow = (
+            run is not None and not run.with_owner and run.permission_mode not in _SKIPPING_MODES
+        )
         used = arules.used_by(call.tool, guard_command(call))
-        in_run = scope.run is not None
+        in_run = run is not None
         try:
             async with self._tx() as tx:
                 usable = await repo.usable_approvals(tx.conn, [t.id for t in scope.tasks])
@@ -12137,6 +12180,8 @@ class Service:
                         missing.append(need)
                     else:
                         picked.append(match)
+                if missing and scope.tasks[0].stage == Stage.DONE:
+                    return "deny", arules.done_reason(scope.tasks[0].key)
                 if missing:
                     reasons = []
                     for need in missing:
@@ -12160,39 +12205,69 @@ class Service:
                         raise _ApprovalTaken
                     task = await self.get_task(a.task_id, tx.conn)
                     await self._approval_event(
-                        tx, "approval.used", session.name, task, a, used_by=used
+                        tx,
+                        "approval.used",
+                        session.name,
+                        task,
+                        a,
+                        used_by=used,
+                        decision="allow" if allow else "none",
                     )
         except _ApprovalTaken:
             return "deny", (
                 "relaybay guard: another call used this approval at the same moment. Ask again"
                 " with approval_request."
             )
-        run = scope.run
-        if run is not None and not run.with_owner and run.permission_mode in _REFUSING_MODES:
+        if allow:
             named = "; ".join(f"approval {a.id} ({a.what})" for a in picked)
             return "allow", f"relaybay: the owner approved this on the board: {named}."
         return None
 
-    async def _approval_check_failed(self, payload: Any) -> tuple[str, str] | None:
-        """The approval check raised: a run's call that may be a guarded action is denied, so a
-        failure never lets a push through; everything else goes on as with the guard."""
-        call = guard.tool_call(payload)
-        if call is None or run_of_payload(payload) is None:
-            return None
-        return ("deny", arules.UNAVAILABLE_REASON) if arules.guarded_hint(call) else None
+    @staticmethod
+    def _in_run_folders(cwd: str | None, scope: _ApprovalScope) -> bool:
+        """The call's folder is the run's working folder or one of its worktrees."""
+        run = scope.run
+        if run is None or not cwd:
+            return False
+        roots = [("run", run.cwd), *scope.folders]
+        return Service._repository_at(cwd, roots) is not None
 
-    async def _denied_needs(self, run: Run, result: Result) -> list[tuple[arules.Need, str]]:
+    async def _approval_check_failed(self, payload: Any, hook: HookEvent) -> tuple[str, str] | None:
+        """The approval check raised: a run's call that may be a guarded action is denied, so a
+        failure never lets a push through; everything else goes on as with the guard. Whose
+        session it is comes from the database; when that read fails too, the hint decides."""
+        call = guard.tool_call(payload)
+        if call is None or not arules.guarded_hint(call):
+            return None
+        try:
+            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            run = await repo.run_of_session(self._r, session.id) if session else None
+            is_run = run is not None and run.is_open
+        except Exception:
+            logger.exception("relaybay could not tell whose call failed the approval check")
+            is_run = True
+        is_run = is_run or run_of_payload(payload) is not None
+        return ("deny", arules.UNAVAILABLE_REASON) if is_run else None
+
+    async def _denied_needs(
+        self, run: Run, turn: RunTurn, result: Result
+    ) -> tuple[list[tuple[arules.Need, str]], dict[int, str]]:
         """The actions of a turn's permission denials that need an approval, with the call that
-        was denied. A call the guard's level blocks anyway, one the guard cannot read, or one no
-        approval rule covers (a refusal of Claude Code's own mode) gives none."""
+        was denied, and a note per refusal of a call an approval of this turn allowed (Claude
+        Code refused it anyway: the approval is spent, no new request). A call the guard's level
+        blocks, one the guard cannot read, or one no approval rule covers (a refusal of Claude
+        Code's own mode) gives none."""
         session = await repo.get_session_by_id(self._r, run.session_id) if run.session_id else None
         if session is None:
-            return []
+            return [], {}
         scope = await self._approval_scope(self._r, session, run=run)
         if scope is None:
-            return []
+            return [], {}
+        since = turn.started_at or turn.queued_at
+        spent_on = await repo.used_since(self._r, run.id, since)
         found = []
-        for refusal in result.refusals:
+        notes: dict[int, str] = {}
+        for index, refusal in enumerate(result.refusals):
             is_mcp = refusal.tool.startswith("mcp__")
             if refusal.tool != "Bash" and (
                 not is_mcp or refusal.tool.startswith(guard.OWN_TOOL_PREFIX)
@@ -12208,9 +12283,14 @@ class Service:
                 continue
             for segment in await self._call_needs(call, scope, run.cwd):
                 for need in segment:
-                    if need.known:
-                        found.append((need, arules.used_by(refusal.tool, refusal.input)))
-        return found
+                    if not need.known:
+                        continue
+                    used = next((a for a in spent_on if arules.covers(a, need)), None)
+                    if used is not None:
+                        notes[index] = arules.spent_note(used)
+                        continue
+                    found.append((need, arules.used_by(refusal.tool, refusal.input)))
+        return found, notes
 
     async def _requests_from_denials(
         self,
@@ -12222,7 +12302,7 @@ class Service:
     ) -> None:
         """A request per denied call that needs an approval and has none open: the agent did
         not ask for it itself (nor did the guard, which opens one when it denies)."""
-        if not denied or run.session_id is None:
+        if not denied or run.session_id is None or task.stage == Stage.DONE:
             return
         session = await repo.get_session_by_id(tx.conn, run.session_id)
         if session is None:
@@ -12367,11 +12447,13 @@ class Service:
 
     async def open_approval_requests(self) -> list[Approval]:
         """The Inbox's requests: the open ones of all cards, the oldest first."""
+        await self.expire_stale_approvals()
         found = await repo.list_approvals(self._r, statuses=("open",))
         return sorted(found, key=lambda a: a.id)
 
     async def card_approvals(self, task: Task) -> arules.ApprovalView:
         """The card's approvals: the open ones, oldest first, and the decided ones, newest first."""
+        await self.expire_stale_approvals()
         every = await repo.list_approvals(self._r, task_id=task.id, limit=50)
         return arules.ApprovalView(
             open=sorted((a for a in every if a.is_open), key=lambda a: a.id),
@@ -12416,6 +12498,12 @@ class Service:
             if not a.is_open:
                 raise ValidationError(f"Approval {a.id} is {a.status}: it is decided already.")
             task = await self.get_task(a.task_id, tx.conn)
+            until = None
+            if approve:
+                project = await self.get_project(task.project_slug, tx.conn)
+                minutes = (await self._policy_of(tx.conn, project, None)).approvals.valid_minutes
+                at = datetime.fromisoformat(tx.now) + timedelta(minutes=minutes)
+                until = at.isoformat(timespec="milliseconds")
             await repo.update_approval(
                 tx.conn,
                 a.id,
@@ -12425,6 +12513,7 @@ class Service:
                     "decided_by": actor,
                     "decided_at": tx.now,
                     "decision_text": line,
+                    "valid_until": until,
                 },
             )
             a = await self.get_approval(a.id, tx.conn)

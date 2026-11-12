@@ -17,6 +17,7 @@ STATUSES = ("open", "approved", "refused", "used", "expired")
 VIAS = ("agent", "guard", "denial")
 # A push: plain, forced (`-f`, `--force-with-lease`, `+ref`) or deleting a branch.
 PUSH_MODES = ("plain", "force", "delete")
+VALID_MINUTES = 120  # an approval not used within this expires (policy approvals.valid_minutes)
 OPEN_MAX = 10  # open requests per card: the guard stops opening more and only denies
 SUMMARY_MAX = 2000
 ROLLBACK_MAX = 1000
@@ -42,9 +43,46 @@ _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/@+-][A-Za-z0-9._/@+#-]{0,199}$")
 _PR_URL_RE = re.compile(r"/pull/(\d{1,9})(?:[/?#]|$)")
 _NUMBER_RE = re.compile(r"^#?(\d{1,9})$")
 # A run's call that looks like a push or a merge the guard could not read (a wrapper, a
-# subshell, a script): denied as "could not tell".
+# subshell, a script): denied as "could not tell". Only where code can hide: a segment whose
+# command is a shell, an interpreter or a wrapper, a subshell, or `gh api`.
 _PUSH_HINT_RE = re.compile(r"\bgit(\.exe)?\b.*\bpush\b", re.I | re.S)
 _MERGE_HINT_RE = re.compile(r"\bgh(\.exe)?\b.*\b(merge|pulls/\d+/merge)\b", re.I | re.S)
+_HIDES = frozenset(
+    {
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "pwsh",
+        "powershell",
+        "cmd",
+        "python",
+        "python3",
+        "py",
+        "node",
+        "deno",
+        "ruby",
+        "perl",
+        "sudo",
+        "doas",
+        "su",
+        "env",
+        "xargs",
+        "nice",
+        "nohup",
+        "eval",
+        "exec",
+        "command",
+        "wsl",
+        "runas",
+    }
+)
+_SUBSHELL_RE = re.compile(r"\$\(|`|^\s*[({]")
+_FIRST_WORD_RE = re.compile(r"""^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:"([^"]+)"|'([^']+)'|(\S+))""")
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+_COMMAND_START_RE = re.compile(r"\$\(|[|;&(]")
 # A segment that moves the shell elsewhere: the current branch is not the cwd's after it.
 _MOVES = frozenset({"cd", "pushd", "popd", "chdir", "set-location", "sl"})
 _LOCATION_RE = re.compile(r"(^|\s)GIT_(DIR|WORK_TREE)=", re.I)
@@ -110,6 +148,7 @@ class ApprovalRules:
     required: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_REQUIRED))
     disabled: frozenset[str] = frozenset()
     ignore: tuple[Matcher, ...] = ()
+    valid_minutes: int = VALID_MINUTES
 
     def needs(self, action: str) -> bool:
         return bool(self.required.get(action, DEFAULT_REQUIRED.get(action, True)))
@@ -186,6 +225,7 @@ class Approval:
     decided_by: str | None
     decided_at: str | None
     decision_text: str | None
+    valid_until: str | None
     used_at: str | None
     used_by: str | None
     used_session: str | None
@@ -444,12 +484,48 @@ def _gh(words: list[str]) -> list[str] | None:
     return rest + repo
 
 
+def _first_program(text: str) -> str:
+    found = _FIRST_WORD_RE.match(text)
+    return program(next((g for g in found.groups() if g), "")) if found else ""
+
+
+def _may_hide(segment: str) -> bool:
+    """A segment whose command can run code the guard does not read as commands."""
+    return bool(_SUBSHELL_RE.search(segment)) or _first_program(segment) in _HIDES
+
+
+def _without_heredocs(text: str) -> str:
+    """Here-document bodies are data (a commit message, a file), not commands: dropped, except
+    when the command they feed is a shell or an interpreter, whose line then carries them."""
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        found = _HEREDOC_RE.search(line)
+        if found is None:
+            out.append(line)
+            i += 1
+            continue
+        end = i + 1
+        while end < len(lines) and lines[end].strip() != found.group(2):
+            end += 1
+        head = _COMMAND_START_RE.split(line[: found.start()])[-1]
+        if _first_program(head) in _HIDES:
+            # On the interpreter's line, without separators or quotes that would split it.
+            body = re.sub(r"[;|&'\"`]", " ", " ".join(lines[i + 1 : end]))
+            line = f"{line} {body}"
+        out.append(line)
+        i = end + 1
+    return "\n".join(out)
+
+
 def segments(call: guard.ToolCall) -> list[tuple[str, list[str]]]:
-    """The command segments of a call with their words, `2>&1` and `&>` read as redirections;
-    an MCP call is one segment."""
+    """The command segments of a call with their words: `2>&1` and `&>` read as redirections,
+    here-document bodies as data; an MCP call is one segment."""
     if call.is_mcp:
         return [(call.text, [])]
-    return guard.commands(_REDIRECT_AMP_RE.sub(" ", call.text))
+    return guard.commands(_REDIRECT_AMP_RE.sub(" ", _without_heredocs(call.text)))
 
 
 def segment_needs(
@@ -471,12 +547,14 @@ def segment_needs(
             continue
         here = not moved and not _LOCATION_RE.search(segment)
         read = False
+        hides = _may_hide(segment)
         git = _git(words)
         gh = _gh(words)
         if git is not None:
             sub, args, folders, elsewhere = git
             located = here and not elsewhere
             read = sub in _GIT_READ
+            hides = hides or (sub not in ("push", "commit") and not read and "alias." in segment)
             if sub == "push":
                 read = True
                 for branch, mode in _push_targets(args) or []:
@@ -517,10 +595,13 @@ def segment_needs(
                         segment=index,
                     )
                 )
+        elif gh is not None:
+            read = True
+            hides = hides or gh[:1] == ["api"]
         elif words and program(words[0]) in _MOVES:
             moved = True
         found = [n for n in found if rules.needs(n.action)]
-        if strict and not found and not read:
+        if strict and not found and hides:
             if _PUSH_HINT_RE.search(segment) and "git-push" not in rules.disabled:
                 found.append(Need("push", rule="git push", segment=index))
             elif _MERGE_HINT_RE.search(segment) and "gh-pr-merge" not in rules.disabled:
@@ -727,9 +808,10 @@ def decision_line(a: Approval) -> str:
         return (
             f"The owner refused {a.what} (approval {a.id}): {a.decision_text or 'no reason given'}"
         )
+    until = f" until {a.valid_until[:16].replace('T', ' ')} UTC" if a.valid_until else ""
     line = (
-        f"The owner approved {a.what} (approval {a.id}): one matching call may go through now;"
-        " run it alone, as its own command."
+        f"The owner approved {a.what} (approval {a.id}): one matching call may go through"
+        f"{until}; run it alone, as its own command, from your run's folder."
     )
     if a.decision_text:
         line += f" The owner's note: {a.decision_text}"
@@ -765,8 +847,23 @@ def alone_reason(approvals: list[Approval]) -> str:
     named = ", ".join(f"approval {a.id} ({a.what})" for a in approvals)
     return (
         f"relaybay guard: the owner approved {named}, for that action only: run the approved"
-        " action alone, as its own command (no other commands, no cd before it). The approval is"
-        " kept."
+        " action alone, as its own command, from your run's folder or worktree (no other"
+        " commands, no cd before it). The approval is kept."
+    )
+
+
+def done_reason(key: str) -> str:
+    return (
+        f"relaybay guard: {key} is done: nothing is approved on it any more. Ask the owner"
+        " for a new card."
+    )
+
+
+def spent_note(a: Approval) -> str:
+    """A refusal of a call an approval allowed: Claude Code refused it anyway."""
+    return (
+        f"approved call refused by Claude Code (approval {a.id}, {a.what}): the approval is"
+        " spent; ask again if it is still needed"
     )
 
 
