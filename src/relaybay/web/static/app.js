@@ -186,12 +186,37 @@
   // Question events refetch the card's questions, unless an answer is being typed, and its
   // Agent block (a withdrawn question ends a run's wait).
   function isQuestion(kind) { return kind.indexOf("question.") === 0; }
+  function answerDraft(root) {
+    return Array.prototype.some.call(root.querySelectorAll(".question-answer textarea"),
+      function (f) { return f.value.trim(); });
+  }
+  // Refreshes that would swap away a half-typed answer wait, by name, until it is sent or
+  // emptied; then each runs once.
+  var heldForAnswer = new Map();
+  function unlessAnswering(root, name, refresh) {
+    if (answerDraft(root)) heldForAnswer.set(name, refresh); else refresh();
+  }
+  function releaseHeld() {
+    if (answerDraft(document)) return;
+    var held = Array.from(heldForAnswer.values());
+    heldForAnswer.clear();
+    held.forEach(function (refresh) { refresh(); });
+  }
+  document.addEventListener("focusout", function (event) {
+    if (event.target.closest && event.target.closest(".question-answer")) releaseHeld();
+  });
+  document.addEventListener("htmx:afterSettle", function (event) {
+    if (heldForAnswer.size && event.target.closest &&
+        (event.target.closest(".questions") || event.target.id === "inbox")) {
+      releaseHeld();
+    }
+  });
   function queueQuestions(key) {
     var panel = key ? document.getElementById("questions-" + key) : null;
     if (panel) {
-      var typing = Array.prototype.some.call(panel.querySelectorAll("textarea"),
-        function (f) { return f.value.trim(); });
-      if (!typing) queue(panel);
+      unlessAnswering(panel, "questions-" + key, function () {
+        queue(document.getElementById("questions-" + key));
+      });
     }
     queueRun(key);
   }
@@ -220,7 +245,12 @@
 
     if (INBOX_KINDS.indexOf(data.kind) !== -1) {
       queueThrottled(document.getElementById("inbox-badge"));
-      queueThrottled(document.getElementById("inbox"));
+      var inbox = document.getElementById("inbox");
+      if (inbox) {
+        unlessAnswering(inbox, "inbox", function () {
+          queueThrottled(document.getElementById("inbox"));
+        });
+      }
     }
     if (data.kind.indexOf("brake.") === 0) queue(document.getElementById("brake-banner"));
     if (data.kind.indexOf("budget.") === 0 || data.kind.indexOf("brake.") === 0) {
@@ -254,7 +284,9 @@
       if (isComment(data.kind)) {
         queue(thread(data.key));
       } else if (isMessage(data.kind)) {
-        queue(document.querySelector(".task-view"));
+        unlessAnswering(document, "task-view", function () {
+          queue(document.querySelector(".task-view"));
+        });
       } else if (isReview(data.kind)) {
         queueReview(data.key);
       } else if (isPlan(data.kind)) {
@@ -263,11 +295,15 @@
         queueRun(data.key);
       } else if (isQuestion(data.kind)) {
         queueQuestions(data.key);
-      } else if (commentDraft(document)) {
-        queue(document.querySelector(".task-view"));
-        queue(thread(data.key));
       } else {
-        reloadPage();
+        unlessAnswering(document, "task-page", function () {
+          if (commentDraft(document)) {
+            queue(document.querySelector(".task-view"));
+            queue(thread(data.key));
+          } else {
+            reloadPage();
+          }
+        });
       }
       return;
     }
@@ -486,6 +522,10 @@
   }
 
   function refreshDialog() {
+    if (answerDraft(dialog)) {
+      heldForAnswer.set("dialog", function () { if (dialog && dialog.open) refreshDialog(); });
+      return;
+    }
     queue(dialog.querySelector(".task-view"));
     queue(dialog.querySelector(".comment-thread"));
     queueReview(dialog.dataset.key);

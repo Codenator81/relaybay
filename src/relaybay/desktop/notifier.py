@@ -237,11 +237,12 @@ class Notifier:
         for item in items:
             if item.kind not in self.kinds or item.group in shown:
                 continue
-            # A move to review that also sets waiting_on is two events and one thing to do.
-            review = ("review", item.key)
-            if item.kind == "waiting" and (review in self.pending or review in shown):
+            # A move to review, or a blocking question, that also sets waiting_on is two events
+            # and one thing to do.
+            absorbing = [("review", item.key), ("question", item.key)]
+            if item.kind == "waiting" and any(g in self.pending or g in shown for g in absorbing):
                 continue
-            if item.kind == "review":
+            if item.kind in ("review", "question"):
                 self.pending.pop(("waiting", item.key), None)
             self.pending.pop(item.group, None)
             self.pending[item.group] = item  # the newest wording, last in the order

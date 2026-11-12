@@ -555,9 +555,15 @@ course: the question had closed with its default ("<default>") at <time> UTC.` D
 | a desktop session, or a run that has ended | an owner comment on the card with that text, delivered through the hooks and the wake-up poll like any owner comment ([§4](#spec-hooks-comments)) |
 
 A run's answer counts as delivered when the process of the turn that carries it starts; an
-owner comment's when the hooks hand it over (`question.delivered`). An answer whose turn was
-cancelled (Stop, a lost turn, a server restart) goes first in the text of the run's next turn the
-owner sends (or the next answer), so it is never dropped; the card says "not delivered" until then.
+owner comment's when the hooks hand it over (`question.delivered`). An answer whose turn ended
+before its process got it (cancelled by Stop or End, failed to start, or lost when the server
+stopped before the process started) goes first in the text of the run's next turn the owner sends
+(or the next answer), so it is never dropped; the card says "not delivered" until then. When the
+run ends instead, such answers go to the card as owner comments. A double click of the owner's
+next text is recognised after those answer lines too. **Only the owner's answer carries that
+line:** a coordinator's `run_start` brief (given, or built from the card) with a line starting
+`Owner's answer to question` (any case, with or without the apostrophe) is refused, so an agent
+never reads a forged answer as the owner's.
 
 **Waiting.** At a turn's `result`, an open blocking question of the run with no text waiting sets
 the run to `waiting` ("waiting for the owner's answer to question N", event `run.waiting`) and the
@@ -1050,7 +1056,10 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
   owner's own browser (`target="_blank"`, which the desktop program hands to the default browser)
   and the test account's name, the options and default; a button per option and a text field
   ("Send the text" for a free answer). An answer swaps the Inbox; a refusal shows its reason there.
-  Each question counts as one row.
+  Each question counts as one row; a card waiting on the owner for its open question is not
+  counted again under Waiting on you. While an answer is being typed (in the Inbox, the task
+  page or the task dialog), live refreshes that would swap it away wait until it is sent or
+  emptied, then run once.
 - **Answers:** open tasks with the "answer received" mark ([§12](#spec-intake-answer)).
 - **Intake:** new messages that match no task, with Tie to a task, Propose a task, Dismiss and
   Trust this source ([§12](#spec-intake-board)).
@@ -3076,8 +3085,8 @@ start and on Restart server. The "keeps failing" notification of the watchdog do
 
 *Grouping.* At most one toast per 20 s window, the first at once. One item shows its title and text;
 several show the title `relaybay` and `3 need you: 2 reviews, 1 reply`. The same task and kind count
-once in a window, with the newest text; a `review` absorbs a `waiting` of the same task, since a move
-to review usually sets both. Everything new is read before anything is shown, so a downtime ends in one
+once in a window, with the newest text; a `review` or a `question` absorbs a `waiting` of the same
+task, since a move to review and a blocking question usually set both. Everything new is read before anything is shown, so a downtime ends in one
 toast. A balloon's title stops at 63 and its text at 255 UTF-16 units, ending in `...`.
 
 *Quiet mode.* The tray's **Quiet notifications** (`notify_quiet`): no toast, an accent-coloured dot in

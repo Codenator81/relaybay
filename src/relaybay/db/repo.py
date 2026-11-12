@@ -5013,12 +5013,13 @@ JOIN project p ON p.id = t.project_id
 LEFT JOIN run_turn rt ON rt.id = q.turn_id
 """
 # Answered by the owner for a run and not handed to a turn's process: never put on a turn, or put
-# on one that was cancelled or failed to start (Stop, a lost turn, a restart), and not sent on as
-# an owner comment (the run ended).
+# on one that ended before its process got it (cancelled, failed to start, or lost: delivered_at
+# is set with the pid, so a lost turn without it never ran), and not sent on as an owner comment
+# (the run ended).
 _PENDING = (
     " WHERE q.run_id = ? AND q.status = 'answered' AND q.delivered_at IS NULL"
     " AND q.comment_id IS NULL AND (q.turn_id IS NULL OR rt.outcome IN ('cancelled',"
-    " 'failed_to_start'))"
+    " 'failed_to_start', 'lost'))"
 )
 
 
@@ -5077,6 +5078,7 @@ async def list_questions(
     conn: aiosqlite.Connection,
     *,
     task_id: int | None = None,
+    turn_id: int | None = None,
     statuses: tuple[str, ...] | None = None,
     limit: int = 200,
 ) -> list[Question]:
@@ -5085,6 +5087,9 @@ async def list_questions(
     if task_id is not None:
         where.append("q.task_id = ?")
         params.append(task_id)
+    if turn_id is not None:
+        where.append("q.turn_id = ?")
+        params.append(turn_id)
     if statuses:
         where.append(f"q.status IN ({', '.join('?' for _ in statuses)})")
         params.extend(statuses)

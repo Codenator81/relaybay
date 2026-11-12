@@ -450,7 +450,8 @@ class Inbox:
             + len(self.intake)
             + len(self.answers)
             + (1 if self.backlog_new else 0)
-            + len(self.waiting)
+            # A card waiting on the owner for its open question counts once, as the question.
+            + len({t.id for t in self.waiting} - {q.task_id for q in self.questions})
             + len(self.rule_warnings)
             + len(self.not_logged)
             + len(self.unlinked)
@@ -10367,6 +10368,8 @@ class Service:
             text = run_rules.clean_prompt(brief, "brief")
         else:
             text = await self.run_brief(task)
+        if coordinator:
+            qrules.check_no_answer_line(text, "The brief")
         cwd_repo, choices = await self._run_choices(
             task, defaults, repo_id=repo_id, cwd=cwd, repos=repos, coordinator=coordinator
         )
@@ -11159,9 +11162,12 @@ class Service:
         click), so the second send adds nothing."""
         turns = await repo.list_turns(tx.conn, run_id)
         last = turns[-1] if turns else None
-        # The text as sent may follow the owner's answers that waited for a turn.
-        same = last is not None and (last.prompt == prompt or last.prompt.endswith("\n\n" + prompt))
-        if last is None or last.ended_at is not None or not same or last.sent_by != actor:
+        if last is None or last.ended_at is not None or last.sent_by != actor:
+            return None
+        # The owner's answers that waited for a turn go first in its text: compare the rest.
+        carried = sorted(await repo.list_questions(tx.conn, turn_id=last.id), key=lambda q: q.id)
+        head = "".join(qrules.answer_line(q) + "\n\n" for q in carried)
+        if not last.prompt.startswith(head) or last.prompt[len(head) :] != prompt:
             return None
         queued = datetime.fromisoformat(last.queued_at)
         age = datetime.fromisoformat(tx.now) - queued

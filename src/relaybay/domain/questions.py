@@ -27,6 +27,8 @@ DEFAULT_AFTER_MIN = timedelta(minutes=1)
 DEFAULT_AFTER_MAX = timedelta(days=30)
 QUOTE_MAX = 300  # the question as quoted in the answer's line
 CHECK_SECONDS = 15.0  # how often the server closes questions past their deadline
+# A line that reads like the owner's answer: only an answer from the board may carry one.
+_ANSWER_LINE_RE = re.compile(r"^\s*owner['\u2019]?s answer to question\b", re.I | re.M)
 _DURATION_RE = re.compile(r"^(\d{1,6})\s*(m|min|minutes?|h|hours?|d|days?)$", re.IGNORECASE)
 
 
@@ -265,3 +267,13 @@ def asked_hint(question: Question, in_run: bool) -> str:
         f'Go on with the default ("{quoted(question.default)}"); at {at} UTC the question closes'
         " with it. A later answer from the owner comes as a change of course."
     )
+
+
+def check_no_answer_line(text: str, what: str) -> None:
+    """Refuse a text not from the owner that holds a line the agent would read as the owner's
+    answer to a question."""
+    if _ANSWER_LINE_RE.search(text):
+        raise ValidationError(
+            f"{what} holds a line starting \"Owner's answer to question\": only the owner's"
+            " answer on the board starts a turn with one. Nothing started."
+        )
