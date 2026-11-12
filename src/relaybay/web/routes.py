@@ -54,6 +54,7 @@ from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
 from relaybay.runner import auth as run_auth
+from relaybay.runner.worktrees import summary as worktree_summary
 from relaybay.security import (
     COOKIE_NAME,
     CSRF_FIELD,
@@ -334,6 +335,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["event_detail"] = event_detail
     env.filters["event_subject"] = event_subject
     env.filters["change_summary"] = env_domain.change_summary
+    env.filters["copy_summary"] = worktree_summary
     env.globals["fields_text"] = env_domain.fields_text
     env.globals["autonomy_reason"] = autonomy_reason
     env.filters["tojson_compact"] = lambda value: json.dumps(value, ensure_ascii=False)
@@ -1547,10 +1549,21 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     ):
         async def write(task: Task, form: Any) -> None:
             repo_text = str(form.get("repo") or "").strip()
+            cwd = str(form.get("cwd") or "").strip() or None
+            # Per repository `wt_<id>`: "new" (a new worktree), "self" (in place), "" (not used).
+            picks = [
+                (int(name[3:]), str(form.get(name)) == "new")
+                for name in form
+                if name.startswith("wt_")
+                and name[3:].isdigit()
+                and str(form.get(name)) in ("new", "self")
+            ]
             await service.start_run(
                 task.key,
                 actor="owner",
                 repo_id=int(repo_text) if repo_text.isdigit() else None,
+                cwd=cwd,
+                repos=picks if cwd is not None else None,
                 model=str(form.get("model") or "") or None,
                 effort=str(form.get("effort") or "") or None,
                 mode=str(form.get("permission_mode") or "") or None,
@@ -1873,7 +1886,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         async def write(form: Any) -> None:
             values = {
                 name: str(form.get(name) or "")
-                for name in ("model", "effort", "permission_mode", "allowed_tools")
+                for name in ("model", "effort", "permission_mode", "allowed_tools", "folder")
             }
             await service.set_run_defaults(
                 slug, {**values, "chrome": form.getlist("chrome")[-1:] == ["1"]}, actor="owner"

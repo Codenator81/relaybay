@@ -74,6 +74,31 @@ def test_resume_and_chrome_come_last_and_a_dash_prompt_stays_text() -> None:
     assert argv[-3:] == ["--chrome", "--resume", "cc-1"]
 
 
+def test_each_folder_and_config_file_gets_its_own_flag_before_resume() -> None:
+    argv, _ = build_command(
+        spec(
+            add_dirs=("/data/worktrees/acme-shop-1-r1/api", "/data/worktrees/acme-shop-1-r1/web"),
+            settings_file="/data/runs/1/settings.json",
+            mcp_file="/data/runs/1/mcp.json",
+            resume="cc-1",
+        )
+    )
+    tail = argv[argv.index("Bash(git diff *)") + 1 :]
+    assert tail == [
+        "--add-dir",
+        "/data/worktrees/acme-shop-1-r1/api",
+        "--add-dir",
+        "/data/worktrees/acme-shop-1-r1/web",
+        "--settings",
+        "/data/runs/1/settings.json",
+        "--mcp-config",
+        "/data/runs/1/mcp.json",
+        "--resume",
+        "cc-1",
+    ]
+    assert "--strict-mcp-config" not in argv
+
+
 def test_batch_shim_takes_the_prompt_on_stdin() -> None:
     claude = "C:/Users/dev/AppData/Roaming/npm/claude.cmd"
     argv, stdin = build_command(spec(claude, prompt='say "hi" & 100% done', resume="cc-1"))
@@ -106,6 +131,7 @@ def test_child_env_drops_the_host_session_and_sets_the_run() -> None:
         "CLAUDE_CONFIG_DIR": "/home/dev/.claude-alt",
         "RELAYBAY_TOKEN": "t",
         "RELAYBAY_RUN_ID": "7",
+        "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
     }
 
 

@@ -168,13 +168,15 @@ program as its client:
 - **Runs on a card** — relaybay can start your own unmodified `claude` on a card, on your
   machine only, under your own subscription sign-in; it never signs in for you or reads
   credentials, and refuses API-key sign-ins unless you allow them in Settings. The card's Agent
-  block starts the first turn in one of the project's repositories with a brief built from the
-  card, then each Continue resumes the same Claude Code session (`--resume`); a text sent during a
-  turn waits for it, Stop kills the turn's whole process tree, and the card shows the status, the
-  Claude session id and each turn's tokens. The run's hooks report to its own session row on the
-  card. Start needs relaybay's hooks and MCP server in your Claude Code user settings
-  (`relaybay setup`); project defaults (model, effort, permission mode, allowed tools) are on
-  Stands & access, the sign-in switch in Settings → Agents.
+  block starts the first turn in the project folder or one of its repositories, each repository in
+  a new git worktree (with its untracked `CLAUDE.md` and `.claude/` copied in, never added to git)
+  or used in place, with a brief built from the card; then each Continue resumes the same Claude
+  Code session (`--resume`); a text sent during a turn waits for it, Stop kills the turn's whole
+  process tree, and the card shows the status, the Claude session id and each turn's tokens. The
+  run's hooks report to its own session row on the card; when `relaybay setup` did not install
+  them, the run passes them itself. Coordinator sessions may start runs with `run_start`; project
+  defaults (model, effort, permission mode, allowed tools, project folder) are on Stands & access,
+  the sign-in switch in Settings → Agents. relaybay runs `git worktree add`, never a commit or push.
 - **Desktop program** — an installer per OS puts relaybay in the tray with the board in its own
   window (on Linux in the browser) and the server inside: start at login, Restart server and Logs
   in the tray menu, a daily update check with **Update to X.Y.Z** that downloads and checks the

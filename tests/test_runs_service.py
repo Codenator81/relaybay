@@ -1,6 +1,9 @@
 """Runs in the service with a stub runner: no process starts, the test plays the turns."""
 
+import asyncio
 import json
+import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -15,6 +18,7 @@ from relaybay.runner.layers import LayerState
 from relaybay.runner.manager import RunnerConfig
 from relaybay.runner.stream import Result
 from relaybay.service import Service
+from tests.e2e.conftest import make_git_repo
 
 SUBSCRIPTION = LoginState(True, "claude.ai", "max", 0, readable=True)
 DESKTOP = f"local_{uuid.UUID(int=5)}"
@@ -371,3 +375,73 @@ async def test_a_turn_stopped_before_its_process_exists_never_starts(svc: Servic
     await svc.send_to_run(run.id, "Then the tests")
     assert lost == ["lost"]
     assert len(stub(svc).started) == started and not stub(svc).is_running(run.id)
+
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+@needs_git
+async def test_a_repository_inside_an_open_runs_project_folder_is_refused(
+    svc: Service, tmp_path: Path
+) -> None:
+    folder = tmp_path / "acme"
+    api = make_git_repo(folder / "api")
+    await svc.upsert_project("acme-shop", repos=[{"name": "api", "path": str(api)}])
+    await svc.set_run_defaults("acme-shop", {"folder": str(folder)})
+    [api_repo] = await repo.list_project_repos(svc._r, (await svc.get_project("acme-shop")).id)
+    first = await svc.start_run("acme-shop-1", cwd="folder", repos=[(api_repo.id, True)])
+    await svc.create_task("acme-shop", "Payment", stage="dev")
+    with pytest.raises(ConflictError, match=f"in use by run {first.id} on acme-shop-1"):
+        await svc.start_run("acme-shop-2", cwd=str(api_repo.id), repos=[(api_repo.id, False)])
+    # Another run in the same project folder with worktrees of its own: in parallel.
+    second = await svc.start_run("acme-shop-2", cwd="folder", repos=[(api_repo.id, True)])
+    assert second.status == "running" and second.cwd == str(folder)
+
+
+@needs_git
+async def test_worktrees_under_a_data_folder_inside_the_repository_do_not_conflict(
+    svc: Service, tmp_path: Path
+) -> None:
+    api = make_git_repo(tmp_path / "api")
+    stub(svc).config.home = api / ".relaybay-data"
+    await svc.upsert_project("acme-shop", repos=[{"name": "api", "path": str(api)}])
+    [api_repo] = await repo.list_project_repos(svc._r, (await svc.get_project("acme-shop")).id)
+    in_place = await svc.start_run("acme-shop-1", repos=[(api_repo.id, False)])
+    assert in_place.cwd == str(api)
+    await svc.create_task("acme-shop", "Payment", stage="dev")
+    other = await svc.start_run("acme-shop-2", repos=[(api_repo.id, True)])
+    assert Path(other.cwd).parent.parent == api / ".relaybay-data" / "worktrees"
+
+
+async def test_a_cancelled_start_removes_the_worktrees_made_meanwhile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from relaybay import service as service_module
+    from relaybay.runner import worktrees
+    from relaybay.runner.worktrees import WorktreeSpec
+
+    release = threading.Event()
+    removed: list[list[WorktreeSpec]] = []
+    spec = WorktreeSpec(1, "api", "/code/api", str(tmp_path / "wt" / "api"), True, "relaybay/k-1")
+
+    def slow_add(specs: Any, git: Any, key: str, run_id: int, made: list) -> list:
+        made.append(spec)  # the worktree exists from here on
+        release.wait(30)
+        return list(made)
+
+    monkeypatch.setattr(worktrees, "add_all", slow_add)
+    undone = threading.Event()
+
+    def remove(specs: list[WorktreeSpec], git: Any) -> None:
+        removed.append(specs)
+        undone.set()
+
+    monkeypatch.setattr(worktrees, "remove_created", remove)
+    task = asyncio.ensure_future(service_module._make_worktrees([spec], "git", "k-1", 1))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    assert await asyncio.to_thread(undone.wait, 30)
+    assert removed == [[spec]]

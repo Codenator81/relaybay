@@ -346,6 +346,37 @@ def stand(stand_factory: Callable[..., Stand]) -> Stand:
     return stand_factory()
 
 
+GIT_ID = ("-c", "user.name=Demo", "-c", "user.email=demo@example.invalid")
+
+
+def git(path: Path, *args: str) -> str:
+    """A git command in `path` for the test itself (relaybay never commits)."""
+    done = subprocess.run(
+        ["git", "-C", str(path), *GIT_ID, *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def make_git_repo(path: Path, files: dict[str, str] | None = None) -> Path:
+    """A repository with one commit (README.md) and `files` written after it, untracked: the
+    owner's CLAUDE.md and .claude/ kept out of git."""
+    path.mkdir(parents=True)
+    git(path, "init", "-q")
+    (path / "README.md").write_text("# demo\n", encoding="utf-8")
+    git(path, "add", "README.md")
+    git(path, "commit", "-q", "--no-verify", "--no-gpg-sign", "-m", "init")
+    for name, text in (files or {}).items():
+        target = path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return path
+
+
 def alive(pid: int) -> bool:
     """Whether a process still runs (a zombie child counts as gone)."""
     if sys.platform == "win32":
@@ -427,6 +458,27 @@ class Runs:
 
     def start(self, board: httpx.Client, key: str = "acme-shop-1", **fields: str) -> str:
         return self.post(board, f"/p/acme-shop/t/{key}/run/start", **fields)
+
+    def repos(self, *repos: Path, folder: Path | None = None) -> dict[str, int]:
+        """Make `repos` the project's repositories and `folder` its project folder; returns
+        each repository's id by name."""
+        entries = [{"name": r.name, "path": str(r)} for r in repos]
+        self.stand.mcp("project_upsert", slug="acme-shop", repos=entries)
+        if folder is not None:
+            with self.stand.board() as board:
+                self.stand.post_form(
+                    board,
+                    "/p/acme-shop/run-defaults",
+                    model="opus",
+                    effort="medium",
+                    permission_mode="auto",
+                    allowed_tools="mcp__relaybay",
+                    folder=str(folder),
+                )
+        return {r["name"]: r["id"] for r in self.rows("SELECT id, name FROM project_repo")}
+
+    def worktrees(self, run_id: int) -> list[sqlite3.Row]:
+        return self.rows("SELECT * FROM run_worktree WHERE run_id = ? ORDER BY id", run_id)
 
     def act(self, board: httpx.Client, run_id: int, action: str, **fields: str) -> str:
         key = self.rows(

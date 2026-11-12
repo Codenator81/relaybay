@@ -20,8 +20,8 @@
       <dt>claude</dt><dd>{% if claude %}<code>{{ claude }}</code>{% else %}not found on PATH or in the usual install folders{% endif %}{% if claude_setting %} <span class="muted">(claude_path in config.toml)</span>{% endif %}</dd>
       <dt>Sign-in</dt><dd>{{ login_line }}{% if login and not login.logged_in %} <span class="muted">Sign in in a terminal: {{ fix_command }}.</span>{% endif %}</dd>
       {% if layers %}
-      <dt>Hooks</dt><dd>{{ layers.hooks_detail }}</dd>
-      <dt>MCP</dt><dd>{{ layers.mcp_detail }}</dd>
+      <dt>Hooks</dt><dd>{{ layers.hooks_detail }}{% if layers.hooks_source == "run" %} <span class="muted">(each run adds them with --settings)</span>{% endif %}</dd>
+      <dt>MCP</dt><dd>{{ layers.mcp_detail }}{% if layers.mcp_source == "run" %} <span class="muted">(each run adds it with --mcp-config)</span>{% endif %}</dd>
       {% if layers.refusal %}<dd class="form-error">{{ layers.refusal }}</dd>{% endif %}
       {% endif %}
     </dl>

@@ -44,6 +44,8 @@ Deprecations: none.
 | [`budget_get`](#budget_get) | read |
 | [`brake_status`](#brake_status) | read |
 | [`brake_set`](#brake_set) | write |
+| [`run_start`](#run_start) | write |
+| [`run_status`](#run_status) | read |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -427,6 +429,31 @@ Stop agents at their next tool call, for coordinator sessions only. It cannot in
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `run_start`
+
+Start the user's own claude on a card, for coordinator sessions only: cards in plan or dev with no brake on them or on you, each repository in a new worktree, the project's permission profile. Anyone else is refused; a side task goes to backlog_add.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `repos` | list of string or null | no | Names of the project's repositories the run works in (case ignored), each in a new git worktree. Default: the repositories linked to the card, else the project's first. |
+| `cwd` | string or null | no | The run's working folder: 'folder' (the project folder of the agent defaults) or a repository name (case ignored). Default: the project folder when set, else the first of the run's repositories (the first one linked to the card, else the project's first). |
+| `model` | string or null | no | opus, sonnet or haiku. Default: the project's. |
+| `effort` | string or null | no | low, medium, high, xhigh or max. Default: the project's. |
+| `brief` | string or null | no | The first turn's text. Default: the card's digest and report line. |
+| `permission_mode` | string or null | no | Not accepted: a run started here uses the project's permission mode and allowed tools, which only the owner sets. Leave it out. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `run_status`
+
+The card's run (the open one, else the latest): status, folders, Claude session id, tokens and the latest turns. Open to every session.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 
 ### `memory_search`
 

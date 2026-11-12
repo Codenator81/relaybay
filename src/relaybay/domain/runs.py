@@ -6,6 +6,7 @@ live in `relaybay.runner`, the orchestration in the service.
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from relaybay.domain.errors import ValidationError
@@ -38,6 +39,7 @@ DEFAULT_EFFORT = "medium"
 DEFAULT_MODE = "auto"
 DEFAULT_ALLOWED_TOOLS = "mcp__relaybay"
 BRIEF_MAX = 20000
+FOLDER_MAX = 500
 ALLOWED_RULES_MAX = 30
 ALLOWED_RULE_MAX = 200
 # A tool name, an MCP server or tool (`mcp__name`, `mcp__name__tool`, `*`), with an optional
@@ -108,6 +110,21 @@ def clean_mode(value: Any, *, owner: bool) -> str:
     """A project default is never `bypassPermissions`; the owner's Start form may pick it."""
     choices = PERMISSION_MODES + (OWNER_ONLY_MODES if owner else ())
     return _choice(value, "permission mode", choices, DEFAULT_MODE)
+
+
+def clean_folder(value: Any) -> str | None:
+    """The project folder a run may use as its cwd: an absolute path on this machine, kept as
+    written; empty (or "-") clears it. Whether it exists is checked at Start."""
+    text = str(value or "").strip()
+    if text in ("", "-"):
+        return None
+    if len(text) > FOLDER_MAX:
+        raise ValidationError(f"The project folder is longer than {FOLDER_MAX} characters.")
+    if any(c in text for c in "\x00\r\n"):
+        raise ValidationError("The project folder holds a control character.")
+    if not Path(text).is_absolute():
+        raise ValidationError(f"The project folder must be an absolute path; got {text!r}.")
+    return text
 
 
 def clean_prompt(value: Any, name: str = "text") -> str:
@@ -217,6 +234,23 @@ class RunTurn:
 
 
 @dataclass(slots=True)
+class RunWorktree:
+    """A folder of a run: a worktree it created (`created_by_run`) or a repository in place."""
+
+    id: int
+    run_id: int
+    project_repo_id: int | None
+    repo_name: str
+    source_path: str
+    path: str
+    branch: str | None
+    created_by_run: bool
+    copied: list[str] = field(default_factory=list)
+    created_at: str = ""
+    removed_at: str | None = None
+
+
+@dataclass(slots=True)
 class RunTotals:
     input_tokens: int = 0
     output_tokens: int = 0
@@ -239,6 +273,7 @@ class RunView:
     run: Run
     turns: list[RunTurn]
     totals: RunTotals
+    worktrees: list[RunWorktree] = field(default_factory=list)
 
 
 def totals(turns: list[RunTurn]) -> RunTotals:

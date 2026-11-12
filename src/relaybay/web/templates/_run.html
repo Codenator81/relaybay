@@ -15,6 +15,10 @@
   {% if r.status_reason %}<p class="run-reason">{{ r.status_reason }}</p>{% endif %}
   <dl class="run-facts">
     <dt>Folder</dt><dd><code>{{ r.cwd }}</code></dd>
+    {% for w in view.worktrees %}
+    <dt>{{ w.repo_name }}</dt><dd class="run-worktree"><code>{{ w.path }}</code> {% if w.created_by_run %}<span class="muted">new worktree on {{ w.branch }}; copied: {{ w.copied|copy_summary }}</span>{% else %}<span class="muted">the repository itself</span>{% endif %}</dd>
+    {% endfor %}
+    <dt>relaybay</dt><dd class="muted run-sources">hooks {{ "from your user settings" if r.hooks_source == "user" else "added by the run (--settings)" }}; MCP {{ "from your user settings" if r.mcp_source == "user" else "added by the run (--mcp-config)" }}</dd>
     {% if r.session_name %}<dt>Session</dt><dd>{{ r.session_name }}</dd>{% endif %}
     <dt>Claude session</dt><dd class="mono">{{ r.claude_session_id or "not known yet" }}</dd>
     <dt>Tokens</dt><dd>{{ "{:,}".format(view.totals.tokens) }} <span class="muted">(input {{ "{:,}".format(view.totals.input_tokens) }}, output {{ "{:,}".format(view.totals.output_tokens) }}, cache read {{ "{:,}".format(view.totals.cache_read_tokens) }}, cache write {{ "{:,}".format(view.totals.cache_write_tokens) }})</span></dd>
@@ -68,14 +72,30 @@
     {{ hidden_csrf() }}
     <p class="muted">Starts your own <code>claude</code> on this machine under your own sign-in, one turn at a time; its hooks report to this card.</p>
     {% if form.login_line %}<p class="run-login">{{ form.login_line }}</p>{% endif %}
-    {% if form.layers %}<p class="muted">Hooks: {{ form.layers.hooks_detail }}; MCP: {{ form.layers.mcp_detail }}</p>{% endif %}
+    {% if form.layers %}<p class="muted run-layers">{{ form.layers.line }}</p>{% endif %}
     {% for why in form.refusals %}<p class="form-error run-refusal">{{ why }}</p>{% endfor %}
     {% if form.repos %}
-    <label class="field"><span>Folder</span>
-      <select name="repo">
-        {% for repo in form.repos %}<option value="{{ repo.id }}"{% if repo.id in form.task_repo_ids %} selected{% endif %}>{{ repo.name }} — {{ repo.path }} (the repository itself)</option>{% endfor %}
+    {%- set first_linked = (form.repos|selectattr("id", "in", form.task_repo_ids)|first) %}
+    <label class="field"><span>Working folder (the cwd)</span>
+      <select name="cwd">
+        {% if form.defaults.folder %}<option value="folder" selected>Project folder — {{ form.defaults.folder }}</option>{% endif %}
+        {% for repo in form.repos %}<option value="{{ repo.id }}"{% if not form.defaults.folder and first_linked and repo.id == first_linked.id %} selected{% endif %}>{{ repo.name }} (its worktree or the repository itself)</option>{% endfor %}
       </select>
     </label>
+    <fieldset class="field run-repos">
+      <legend>Repositories (each one other than the working folder is passed with --add-dir)</legend>
+      {% for repo in form.repos %}
+      {%- set mode = form.repo_modes.get(repo.id, "self") if repo.id in form.task_repo_ids else "" %}
+      <label class="field field-inline"><span>{{ repo.name }} <span class="muted">{{ repo.path }}</span></span>
+        <select name="wt_{{ repo.id }}">
+          <option value=""{% if not mode %} selected{% endif %}>not used</option>
+          <option value="new"{% if mode == "new" %} selected{% endif %}>a new worktree</option>
+          <option value="self"{% if mode == "self" %} selected{% endif %}>the repository itself</option>
+        </select>
+      </label>
+      {% endfor %}
+    </fieldset>
+    {% if form.copy_line %}<p class="muted run-copy">{{ form.copy_line }}</p>{% endif %}
     {% endif %}
     <div class="field-row">
       <label class="field"><span>Model</span>

@@ -46,7 +46,7 @@ from relaybay.domain.models import (
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
-from relaybay.domain.runs import Run, RunDefaults, RunTurn
+from relaybay.domain.runs import Run, RunDefaults, RunTurn, RunWorktree
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile, UsageLine
 
@@ -4791,3 +4791,57 @@ async def lose_open_turns(conn: aiosqlite.Connection, now: str) -> None:
         " WHERE started_at IS NULL AND ended_at IS NULL",
         (now,),
     )
+
+
+async def next_run_id(conn: aiosqlite.Connection) -> int:
+    """The id the next run gets: its worktree folders are named after it before it is written.
+    The insert passes it explicitly, so a run started meanwhile makes that insert fail."""
+    row = await _one(conn, "SELECT COALESCE(MAX(id), 0) + 1 FROM run", ())
+    return int(row[0]) if row else 1
+
+
+def _worktree(row: aiosqlite.Row) -> RunWorktree:
+    return RunWorktree(
+        id=row["id"],
+        run_id=row["run_id"],
+        project_repo_id=row["project_repo_id"],
+        repo_name=row["repo_name"],
+        source_path=row["source_path"],
+        path=row["path"],
+        branch=row["branch"],
+        created_by_run=bool(row["created_by_run"]),
+        copied=json.loads(row["copied"]) if row["copied"] else [],
+        created_at=row["created_at"],
+        removed_at=row["removed_at"],
+    )
+
+
+async def insert_run_worktree(
+    conn: aiosqlite.Connection, run_id: int, values: dict[str, Any], now: str
+) -> int:
+    row = {**values, "run_id": run_id, "created_at": now}
+    if "copied" in row:
+        row["copied"] = json.dumps(row["copied"]) if row["copied"] else None
+    columns = ", ".join(row)
+    cur = await conn.execute(
+        f"INSERT INTO run_worktree ({columns}) VALUES ({', '.join('?' for _ in row)})",
+        tuple(row.values()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def list_run_worktrees(conn: aiosqlite.Connection, run_id: int) -> list[RunWorktree]:
+    rows = await _all(conn, "SELECT * FROM run_worktree WHERE run_id = ? ORDER BY id", (run_id,))
+    return [_worktree(r) for r in rows]
+
+
+async def open_worktrees(conn: aiosqlite.Connection) -> list[tuple[RunWorktree, str]]:
+    """The folders of the open runs that are not removed, each with its run's card key."""
+    rows = await _all(
+        conn,
+        "SELECT w.*, t.key AS task_key FROM run_worktree w JOIN run r ON r.id = w.run_id"
+        " JOIN task t ON t.id = r.task_id"
+        " WHERE r.ended_at IS NULL AND w.removed_at IS NULL ORDER BY w.id",
+        (),
+    )
+    return [(_worktree(r), r["task_key"]) for r in rows]

@@ -2,8 +2,14 @@
 
 No model is involved: the "model's" work is a JSON scenario (`FAKE_CLAUDE_SCENARIO`). Everything
 around it behaves as documented for Claude Code, and relaybay is only reached the way the real
-CLI reaches it: the hook commands in `$CLAUDE_CONFIG_DIR/settings.json` run as real processes and
-MCP tools are called through the official SDK client.
+CLI reaches it: the hook commands run as real processes and MCP tools are called through the
+official SDK client.
+
+Hooks come from the user layer `$CLAUDE_CONFIG_DIR/settings.json` (when `user` is in
+`--setting-sources`, the default `user,project,local`) and from each `--settings` (a file or JSON
+text); a command handler defined in several of them runs once, as Claude Code does. Memory: the
+user `$CLAUDE_CONFIG_DIR/CLAUDE.md`, the cwd's `CLAUDE.md` and `CLAUDE.local.md`, and those of each
+`--add-dir` folder only with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`.
 
 Scenario keys, all optional:
   session_id, model, usage (per message), tools (names besides the MCP ones)
@@ -35,7 +41,9 @@ and an organization, so a test can check relaybay keeps neither.
 What the session received goes as JSON lines to `FAKE_CLAUDE_TRACE`: `{"kind": "context", "event",
 "text"}`, `{"kind": "stop_block", "reason"}`, `{"kind": "stopped", "event", "reason"}`; each run
 also writes `{"kind": "argv", "argv", "prompt", "run_id", "started"}` first and
-`{"kind": "turn_end", "session_id", "started", "ended"}` when it ends normally.
+`{"kind": "turn_end", "session_id", "started", "ended"}` when it ends normally. Every hook command
+run is `{"kind": "hook", "event", "command"}`; the memory loaded at the start is
+`{"kind": "memory", "files", "lines"}` (the files' paths and their non-empty lines).
 """
 
 import argparse
@@ -123,6 +131,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--model")
     parser.add_argument("--effort", choices=EFFORTS)
     parser.add_argument("--chrome", action="store_true")
+    parser.add_argument("--settings", action="append", default=[])
+    parser.add_argument("--setting-sources", default="user,project,local", dest="setting_sources")
+    parser.add_argument("--add-dir", nargs="+", action="extend", default=[], dest="add_dirs")
     parser.add_argument("--bare", action="store_true")
     parser.add_argument("--version", action="store_true")
     args = parser.parse_args(argv)
@@ -150,13 +161,43 @@ def allowed_by_rule(rule: str, tool: str, tool_input: dict[str, Any]) -> bool:
 
 
 def hook_handlers(settings: dict[str, Any], event: str, tool: str | None) -> list[dict[str, Any]]:
-    handlers = []
+    """The event's handlers; an identical command handler from several sources runs once."""
+    handlers, seen = [], set()
     for group in settings.get("hooks", {}).get(event, []):
         matcher = group.get("matcher") or "*"
         if event in TOOL_EVENTS and matcher != "*" and not re.fullmatch(matcher, tool or ""):
             continue
-        handlers += group.get("hooks", [])
+        for handler in group.get("hooks", []):
+            key = (handler.get("type"), handler.get("command"))
+            if handler.get("type") == "command" and key in seen:
+                continue
+            seen.add(key)
+            handlers.append(handler)
     return handlers
+
+
+def load_settings(args: argparse.Namespace, config_dir: Path) -> dict[str, Any]:
+    """The hooks of the user layer (if its source is on) and of each --settings, in that order."""
+    layers = []
+    user_file = config_dir / "settings.json"
+    if "user" in args.setting_sources.split(",") and user_file.exists():
+        layers.append(json.loads(user_file.read_text(encoding="utf-8")))
+    for value in args.settings:
+        text = value if value.lstrip().startswith("{") else Path(value).read_text("utf-8")
+        layers.append(json.loads(text))
+    hooks: dict[str, list[Any]] = {}
+    for layer in layers:
+        for event, groups in layer.get("hooks", {}).items():
+            hooks.setdefault(event, []).extend(groups)
+    return {"hooks": hooks}
+
+
+def memory_files(args: argparse.Namespace, config_dir: Path) -> list[Path]:
+    files = [config_dir / "CLAUDE.md", Path.cwd() / "CLAUDE.md", Path.cwd() / "CLAUDE.local.md"]
+    if os.environ.get("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD") == "1":
+        for folder in args.add_dirs:
+            files += [Path(folder) / "CLAUDE.md", Path(folder) / "CLAUDE.local.md"]
+    return [f for f in files if f.is_file()]
 
 
 class Run:
@@ -178,10 +219,8 @@ class Run:
         self.stopped: str | None = None  # a hook's `continue: false`
         self.mcp: dict[str, dict[str, Any]] = {}
         self.steps: list[dict[str, Any]] = []
-        settings_file = config_dir / "settings.json"
-        self.settings = (
-            json.loads(settings_file.read_text(encoding="utf-8")) if settings_file.exists() else {}
-        )
+        self.settings = load_settings(args, config_dir)
+        self.memory = memory_files(args, config_dir)
         # The tail only: a temporary folder's whole name passes Windows' path limit.
         slug = re.sub(r"[^A-Za-z0-9]", "-", self.cwd)[-40:]
         self.transcript = config_dir / "projects" / slug / f"{self.session_id}.jsonl"
@@ -296,6 +335,7 @@ class Run:
                 raise ScenarioFailed(f"only command hooks are supported, got {handler}")
             if handler.get("asyncRewake"):
                 continue  # a background wake-up hook: outside a -p run
+            self.trace(kind="hook", event=event, command=handler["command"])
             answer = self._run_hook(handler, payload)
             if answer is not None:
                 answers.append(answer)
@@ -593,6 +633,13 @@ class Run:
         raise ScenarioFailed(f"a Stop hook blocked {STOP_BLOCK_LIMIT} times in a row")
 
     def session(self) -> None:
+        lines = [
+            line.strip()
+            for path in self.memory
+            for line in path.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        self.trace(kind="memory", files=[str(p) for p in self.memory], lines=lines)
         errors = self.load_mcp_config()
         self.run_hooks(
             "SessionStart", source="resume" if self.resuming else "startup", model=self.model

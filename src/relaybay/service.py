@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import tempfile
+import threading
 import time
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -19,7 +20,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, NoReturn
 from urllib.parse import urlencode
 
 import aiosqlite
@@ -217,10 +218,12 @@ from relaybay.policy import (
     widened_on_live,
 )
 from relaybay.runner import auth as run_auth
+from relaybay.runner import worktrees
 from relaybay.runner.claude_cli import TurnSpec, build_command
-from relaybay.runner.layers import LayerState, user_layer_state
+from relaybay.runner.layers import LayerState, run_files, user_layer_state, write_run_files
 from relaybay.runner.manager import RunManager, RunnerConfig
 from relaybay.runner.stream import Result
+from relaybay.runner.worktrees import WorktreeSpec
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -961,6 +964,11 @@ RUN_REPORT_LINE = (
     "At the end of each turn add a report with report_add on this card; its first line is"
     " `state · size · gist`."
 )
+RUN_START_STAGES = ("plan", "dev")
+RUN_START_NOT_COORDINATOR = (
+    "run_start is only for the coordinator sessions named in the server's config; a side task"
+    " goes to backlog_add. Nothing started."
+)
 
 
 @dataclass(slots=True)
@@ -977,6 +985,89 @@ class RunForm:
     layers: LayerState | None
     refusals: list[str]
     fix_command: str
+    repo_modes: dict[int, str] = field(default_factory=dict)  # "new" or "self", the default
+    copy_line: str = ""
+
+
+PREVIEW_TIMEOUT_SECONDS = 10.0
+PREVIEW_CACHE_SECONDS = 15.0
+# The Start form renders on every live event of the card: what a worktree of a repository gets
+# copied is asked of git at most every PREVIEW_CACHE_SECONDS. Start itself always asks again.
+_preview_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _preview_names(path: str, git: str) -> list[str]:
+    now = time.monotonic()
+    cached = _preview_cache.get(path)
+    if cached is not None and now - cached[0] < PREVIEW_CACHE_SECONDS:
+        return cached[1]
+    names = worktrees.copy_list(path, git, timeout=PREVIEW_TIMEOUT_SECONDS)
+    _preview_cache[path] = (now, names)
+    return names
+
+
+def _worktree_preview(repos: list[ProjectRepo], git: str | None) -> tuple[dict[int, str], str]:
+    """Per repository the Start form's default (a new worktree for a git repository, else the
+    repository itself) and one line saying what a new worktree of each gets copied."""
+    if git is None:
+        return {r.id: "self" for r in repos}, "git is not on PATH: runs use the repositories."
+    modes: dict[int, str] = {}
+    parts = []
+    for r in repos:
+        is_git = os.path.lexists(Path(r.path) / ".git")
+        modes[r.id] = "new" if is_git else "self"
+        if not is_git:
+            continue
+        try:
+            names = _preview_names(r.path, git)
+        except ValidationError as exc:
+            parts.append(f"{r.name}: cannot tell ({exc})")
+            continue
+        listed = (Path(r.path) / worktrees.INCLUDE_FILE).is_file()
+        by = f" (by its {worktrees.INCLUDE_FILE})" if listed else ""
+        parts.append(f"{r.name}{by}: {worktrees.summary(names)}")
+    if not parts:
+        return modes, ""
+    return modes, (
+        "Copied into a new worktree, untracked and never added to git (CLAUDE.md,"
+        " CLAUDE.local.md, .claude/, .mcp.json, or the repository's .worktreeinclude): "
+        + "; ".join(parts)
+        + "."
+    )
+
+
+async def _make_worktrees(
+    specs: list[WorktreeSpec], git: str | None, task_key: str, run_id: int
+) -> list[WorktreeSpec]:
+    """`worktrees.add_all` in a thread. A Start cancelled while it works (the request went away,
+    the server stops) does not stop the thread: what it made is removed once it is done."""
+    made: list[WorktreeSpec] = []
+    work = asyncio.ensure_future(
+        asyncio.to_thread(worktrees.add_all, specs, git, task_key, run_id, made=made)
+    )
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+
+        def undo(_: object) -> None:
+            threading.Thread(
+                target=worktrees.remove_created, args=(list(made), git), daemon=True
+            ).start()
+
+        work.add_done_callback(undo)
+        raise
+
+
+def _add_dirs(cwd: str, paths: list[str]) -> tuple[str, ...]:
+    """Every folder of the run other than the cwd, once each."""
+    seen = {worktrees.path_key(cwd)}
+    out = []
+    for path in paths:
+        key = worktrees.path_key(path)
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+    return tuple(out)
 
 
 def _same_folder(a: Path, b: Path) -> bool:
@@ -9853,7 +9944,7 @@ class Service:
                     values.get("allowed_tools", current.allowed_tools)
                 ),
                 chrome=bool(values.get("chrome", current.chrome)),
-                folder=current.folder,
+                folder=run_rules.clean_folder(values.get("folder", current.folder)),
             )
             await repo.upsert_run_defaults(tx.conn, new, tx.now, actor)
             await tx.event(
@@ -9866,6 +9957,7 @@ class Service:
                 permission_mode=new.permission_mode,
                 allowed_tools=new.allowed_tools,
                 chrome=new.chrome,
+                folder=new.folder,
             )
             saved = await repo.get_run_defaults(tx.conn, project.id)
             assert saved is not None
@@ -9895,20 +9987,32 @@ class Service:
         return f"{text}\n\n{RUN_REPORT_LINE}"
 
     @staticmethod
-    def _run_header(task: Task, run_id: int, session_name: str, cwd: str) -> str:
-        return "\n".join(
-            [
-                f"relaybay run {run_id} on card {task.key} ({task.project_slug}).",
-                f'In relaybay writes pass session "{session_name}" and the hook session your'
-                " SessionStart gave you as hook_session.",
-                f"Work only in this folder: {cwd}",
-                "",
-            ]
-        )
+    def _run_header(
+        task: Task, run_id: int, session_name: str, cwd: str, specs: list[WorktreeSpec]
+    ) -> str:
+        lines = [
+            f"relaybay run {run_id} on card {task.key} ({task.project_slug}).",
+            f'In relaybay writes pass session "{session_name}" and the hook session your'
+            " SessionStart gave you as hook_session.",
+            f"Your working folder: {cwd}",
+        ]
+        for spec in specs:
+            how = f"new worktree, branch {spec.branch}" if spec.create else "the repository itself"
+            lines.append(f"- {spec.repo_name}: {spec.path} ({how})")
+        lines += ["Work only in these folders.", ""]
+        return "\n".join(lines)
+
+    def _worktree_root(self) -> Path:
+        return self._run_manager().config.home / "worktrees"
+
+    def _run_folder(self, run_id: int) -> Path:
+        """The run's own files (its --settings and --mcp-config) in the data folder."""
+        return self._run_manager().config.home / "runs" / str(run_id)
 
     async def run_form(self, task: Task) -> RunForm:
-        """What the Start form shows: defaults, repositories, the brief and why Start would be
-        refused (the sign-in, relaybay's hooks and MCP server in the user's settings)."""
+        """What the Start form shows: defaults, the folder and repositories, what a new worktree
+        gets copied, the brief and why Start would be refused (the sign-in, http hooks of an
+        older setup)."""
         defaults = await self.run_defaults(task.project_slug)
         repos = await repo.list_project_repos(self._r, task.project_id)
         linked = {link.repo_id for link in await repo.task_repo_links(self._r, task_id=task.id)}
@@ -9932,10 +10036,12 @@ class Service:
                 refusals.append(layers.refusal)
         if not repos:
             refusals.append(NO_RUN_REPO)
+        git = worktrees.find_git()
+        modes, copy_line = await asyncio.to_thread(_worktree_preview, repos, git)
         return RunForm(
             defaults=defaults,
             repos=repos,
-            task_repo_ids=linked,
+            task_repo_ids=linked or ({repos[0].id} if repos else set()),
             brief=await self.run_brief(task),
             claude=claude,
             login=login,
@@ -9943,6 +10049,8 @@ class Service:
             layers=layers,
             refusals=refusals,
             fix_command=run_auth.FIX_COMMAND,
+            repo_modes=modes,
+            copy_line=copy_line,
         )
 
     async def run_view(self, task: Task) -> RunView | None:
@@ -9951,7 +10059,13 @@ class Service:
         if run is None:
             return None
         turns = await repo.list_turns(self._r, run.id)
-        return RunView(run, turns, run_rules.totals(turns))
+        folders = await repo.list_run_worktrees(self._r, run.id)
+        return RunView(run, turns, run_rules.totals(turns), folders)
+
+    async def run_status(self, ref: str | int) -> tuple[Task, RunView | None]:
+        """run_status over MCP: open to every caller, it changes nothing."""
+        task = await self.get_task(ref)
+        return task, await self.run_view(task)
 
     async def get_run(self, run_id: int, conn: aiosqlite.Connection | None = None) -> Run:
         run = await repo.get_run(conn or self._r, run_id)
@@ -9959,8 +10073,9 @@ class Service:
             raise NotFoundError(f"Run #{run_id} not found.")
         return run
 
-    async def _run_preflight(self, runs: RunManager) -> str:
-        """The sign-in and the user layer, right before a turn; returns the sign-in method."""
+    async def _run_preflight(self, runs: RunManager) -> tuple[str, LayerState | None]:
+        """The sign-in and the user layer, right before a turn; returns the sign-in method and
+        where relaybay's hooks and MCP server come from."""
         if runs.claude() is None:
             raise ValidationError(self._claude_missing())
         state = await runs.login(force=True)
@@ -9973,7 +10088,103 @@ class Service:
         layers = await self.run_layers()
         if layers is not None and layers.refusal:
             raise ValidationError(layers.refusal)
-        return state.method or "unknown"
+        return state.method or "unknown", layers
+
+    async def _run_choices(
+        self,
+        task: Task,
+        defaults: RunDefaults,
+        *,
+        repo_id: int | None,
+        cwd: str | None,
+        repos: list[tuple[int, bool]] | None,
+        coordinator: bool,
+    ) -> tuple[int | None, list[tuple[int | None, str, str, bool]]]:
+        """The cwd (None: the project folder; else the repository id) and, per repository the
+        run works in, (id, name, path, new worktree?). Nothing chosen (the 1a form, an MCP call
+        without repos): the card's linked repositories, else the first one; the owner's default
+        is the repository itself, the coordinator always gets new worktrees."""
+        project_repos = await repo.list_project_repos(self._r, task.project_id)
+        if not project_repos:
+            raise ValidationError(NO_RUN_REPO)
+        by_id = {r.id: r for r in project_repos}
+        first = 0  # not an id: the first repository chosen
+        cwd_repo: int | None
+        if cwd == "folder" or (not cwd and repo_id is None and coordinator and defaults.folder):
+            if not defaults.folder:
+                raise ValidationError(
+                    f"{task.project_slug} has no project folder: set it in the agent defaults on"
+                    " Stands & access, or start in one of its repositories."
+                )
+            cwd_repo = None
+        elif cwd:
+            if not cwd.isdigit() or int(cwd) not in by_id:
+                raise NotFoundError(f"{task.project_slug} has no repository #{cwd}.")
+            cwd_repo = int(cwd)
+        else:
+            cwd_repo = repo_id if repo_id is not None else first
+        if repos is None:
+            if cwd_repo:
+                picked = [cwd_repo]
+            else:
+                linked = await repo.task_repo_links(self._r, task_id=task.id)
+                picked = [x.repo_id for x in linked if x.repo_id in by_id] or [project_repos[0].id]
+            repos = [(rid, coordinator) for rid in picked]
+        for rid, _ in repos:
+            if rid not in by_id:
+                raise NotFoundError(f"{task.project_slug} has no repository #{rid}.")
+        if cwd_repo == first:
+            cwd_repo = repos[0][0] if repos else project_repos[0].id
+        if cwd_repo is not None and cwd_repo not in {rid for rid, _ in repos}:
+            repos = [(cwd_repo, coordinator), *repos]
+        if not repos:
+            raise ValidationError("Choose at least one repository for the run to work in.")
+        choices: list[tuple[int | None, str, str, bool]] = []
+        for rid, create in dict(repos).items():
+            found = by_id[rid]
+            choices.append((found.id, found.name, found.path, create or coordinator))
+        return cwd_repo, choices
+
+    async def _worktree_conflict(
+        self, conn: aiosqlite.Connection, specs: list[WorktreeSpec], cwd_folder: str | None
+    ) -> None:
+        """One open run per folder. A repository used in place conflicts with another one in
+        place (the same folder or one inside the other) and with an open run's project folder
+        it lies in; a worktree a run made only with the same path (it may lie inside a
+        repository when the data folder does). A new run in a project folder conflicts with an
+        open run using a repository in place inside it."""
+        in_use: list[tuple[str, bool, int, str]] = [  # path, made by the run, run, card
+            (w.path, w.created_by_run, w.run_id, key) for w, key in await repo.open_worktrees(conn)
+        ]
+        folders: list[tuple[str, int, str]] = []
+        with_rows = {run_id for _, _, run_id, _ in in_use}
+        for other in await repo.open_runs(conn):
+            if other.cwd_repo_id is None:
+                folders.append((other.cwd, other.id, other.task_key))
+            elif other.id not in with_rows:
+                # Started before its folders were recorded: its cwd is its one repository.
+                in_use.append((other.cwd, False, other.id, other.task_key))
+
+        def refuse(name: str, path: str, run_id: int, key: str) -> NoReturn:
+            raise ConflictError(
+                f"{name} ({path}) is in use by run {run_id} on {key}; end that run first."
+            )
+
+        for spec in specs:
+            for path, made, run_id, key in in_use:
+                if spec.create or made:
+                    if worktrees.path_key(path) == worktrees.path_key(spec.path):
+                        refuse(spec.repo_name, spec.path, run_id, key)
+                elif _paths_overlap(path, spec.path):
+                    refuse(spec.repo_name, spec.path, run_id, key)
+            if not spec.create:
+                for folder, run_id, key in folders:
+                    if _paths_overlap(folder, spec.path):
+                        refuse(spec.repo_name, spec.path, run_id, key)
+        if cwd_folder is not None:
+            for path, made, run_id, key in in_use:
+                if not made and _paths_overlap(cwd_folder, path):
+                    refuse("The project folder", cwd_folder, run_id, key)
 
     async def start_run(
         self,
@@ -9981,76 +10192,158 @@ class Service:
         *,
         actor: str = "owner",
         repo_id: int | None = None,
+        cwd: str | None = None,
+        repos: list[tuple[int, bool]] | None = None,
         model: str | None = None,
         effort: str | None = None,
         mode: str | None = None,
         brief: str | None = None,
+        caller_kind: str = "owner",
     ) -> Run:
-        """Start a run on the card: the owner's board button. Checks come first and run no
-        transaction; one transaction writes the run, its session, the binding and turn 1; the
-        process starts after the commit."""
+        """Start a run on the card: the owner's board button, or `run_start` of a coordinator
+        (`start_run_mcp` checks the caller). Checks come first; then the new worktrees are made
+        (no transaction is open); one transaction writes the run, its folders, its session, the
+        binding and turn 1; the process starts after the commit. When the transaction fails,
+        the worktrees just made are removed again.
+
+        `cwd`: "folder" (the project folder) or a repository id; `repos`: (repository id, new
+        worktree?) per repository the run works in."""
         runs = self._run_manager()
+        coordinator = caller_kind == "coordinator"
         task = await self.get_task(ref)
         defaults = await self.run_defaults(task.project_slug)
         model = run_rules.clean_model(model or defaults.model)
         effort = run_rules.clean_effort(effort or defaults.effort)
-        mode = run_rules.clean_mode(mode or defaults.permission_mode, owner=True)
+        if coordinator:
+            mode = run_rules.clean_mode(defaults.permission_mode, owner=False)
+        else:
+            mode = run_rules.clean_mode(mode or defaults.permission_mode, owner=True)
         if brief and brief.strip():
             text = run_rules.clean_prompt(brief, "brief")
         else:
             text = await self.run_brief(task)
-        repos = await repo.list_project_repos(self._r, task.project_id)
-        if not repos:
-            raise ValidationError(NO_RUN_REPO)
-        chosen = repos[0] if repo_id is None else next((r for r in repos if r.id == repo_id), None)
-        if chosen is None:
-            raise NotFoundError(f"{task.project_slug} has no repository #{repo_id}.")
-        if not await asyncio.to_thread(Path(chosen.path).is_dir):
-            raise ValidationError(f"{chosen.path} is not a folder on this machine ({chosen.name}).")
+        cwd_repo, choices = await self._run_choices(
+            task, defaults, repo_id=repo_id, cwd=cwd, repos=repos, coordinator=coordinator
+        )
+        if cwd_repo is None and not await asyncio.to_thread(Path(defaults.folder or "").is_dir):
+            raise ValidationError(f"The project folder {defaults.folder} is not a folder here.")
         if await repo.open_run_of_task(self._r, task.id) is not None:
             raise ConflictError(f"{task.key} already has an open run; end it first.")
-        method = await self._run_preflight(runs)
+        run_id = await repo.next_run_id(self._r)
+        specs = worktrees.plan_worktrees(task.key, run_id, choices, self._worktree_root())
+        cwd_folder = defaults.folder if cwd_repo is None else None
+        await self._worktree_conflict(self._r, specs, cwd_folder)
+        method, layers = await self._run_preflight(runs)
+        hooks_source = layers.hooks_source if layers is not None else "user"
+        mcp_source = layers.mcp_source if layers is not None else "user"
         claude = runs.claude()
         assert claude is not None
-        # The batch-shim check, before anything is written.
-        build_command(
-            TurnSpec(claude, "", chosen.path, model, effort, mode, tuple(defaults.allowed_rules))
+        settings_file, mcp_file = run_files(
+            self._run_folder(run_id), hooks=hooks_source == "run", mcp=mcp_source == "run"
         )
-        async with self._tx() as tx:
-            task = await self.get_task(task.id, tx.conn)
-            if await repo.open_run_of_task(tx.conn, task.id) is not None:
-                raise ConflictError(f"{task.key} already has an open run; end it first.")
-            for other in await repo.open_runs(tx.conn):
-                if _paths_overlap(other.cwd, chosen.path):
-                    raise ConflictError(
-                        f"{chosen.name} ({chosen.path}) is in use by run {other.id} on"
-                        f" {other.task_key}; end that run first."
-                    )
-            run_id = await repo.insert_run(
-                tx.conn,
-                {
-                    "task_id": task.id,
-                    "project_id": task.project_id,
-                    "cwd": chosen.path,
-                    "cwd_repo_id": chosen.id,
+        # The batch-shim check of the whole command line, before anything is made or written.
+        build_command(
+            TurnSpec(
+                claude,
+                "",
+                defaults.folder or specs[0].path,
+                model,
+                effort,
+                mode,
+                tuple(defaults.allowed_rules),
+                add_dirs=tuple(s.path for s in specs),
+                settings_file=str(settings_file) if settings_file else None,
+                mcp_file=str(mcp_file) if mcp_file else None,
+            )
+        )
+        git = worktrees.find_git()
+        made = await _make_worktrees(specs, git, task.key, run_id)
+        # The paths as made: a taken run folder moves to a numbered one.
+        by_repo = {spec.repo_id: spec for spec in made}
+        cwd_path = (defaults.folder or "") if cwd_repo is None else by_repo[cwd_repo].path
+        try:
+            turn_id = await self._insert_run(
+                task,
+                run_id,
+                made,
+                actor=actor,
+                caller_kind=caller_kind,
+                cwd_path=cwd_path,
+                cwd_repo=cwd_repo,
+                values={
                     "model": model,
                     "effort": effort,
                     "permission_mode": mode,
                     "allowed_tools": defaults.allowed_tools,
                     "chrome": int(defaults.chrome),
-                    "status": "running",
                     "auth_method": method,
-                    "hooks_source": "user",
-                    "mcp_source": "user",
+                    "hooks_source": hooks_source,
+                    "mcp_source": mcp_source,
+                },
+                text=text,
+            )
+        except BaseException:
+            await asyncio.shield(asyncio.to_thread(worktrees.remove_created, made, git))
+            raise
+        await self._spawn_turn(run_id, turn_id)
+        return await self.get_run(run_id)
+
+    async def _insert_run(
+        self,
+        task: Task,
+        run_id: int,
+        made: list[WorktreeSpec],
+        *,
+        actor: str,
+        caller_kind: str,
+        cwd_path: str,
+        cwd_repo: int | None,
+        values: dict[str, Any],
+        text: str,
+    ) -> int:
+        """The one transaction of a Start; returns turn 1's id."""
+        async with self._tx() as tx:
+            task = await self.get_task(task.id, tx.conn)
+            if await repo.open_run_of_task(tx.conn, task.id) is not None:
+                raise ConflictError(f"{task.key} already has an open run; end it first.")
+            await self._worktree_conflict(tx.conn, made, cwd_path if cwd_repo is None else None)
+            if await repo.next_run_id(tx.conn) != run_id:
+                raise ConflictError("Another run started at the same moment; start this one again.")
+            await repo.insert_run(
+                tx.conn,
+                {
+                    "id": run_id,
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "cwd": cwd_path,
+                    "cwd_repo_id": cwd_repo,
+                    **values,
+                    "status": "running",
                     "started_by": actor,
-                    "started_by_kind": "owner",
+                    "started_by_kind": caller_kind,
                 },
                 tx.now,
             )
+            for spec in made:
+                await repo.insert_run_worktree(
+                    tx.conn,
+                    run_id,
+                    {
+                        "project_repo_id": spec.repo_id,
+                        "repo_name": spec.repo_name,
+                        "source_path": spec.source,
+                        "path": spec.path,
+                        "path_key": worktrees.path_key(spec.path),
+                        "branch": spec.branch,
+                        "created_by_run": int(spec.create),
+                        "copied": list(spec.copied),
+                    },
+                    tx.now,
+                )
             name = f"{task.key} run {run_id}"
             session_id = await repo.insert_session(tx.conn, name, tx.now, kind="run")
             await repo.touch_session(
-                tx.conn, session_id, tx.now, {"project_id": task.project_id, "cwd": chosen.path}
+                tx.conn, session_id, tx.now, {"project_id": task.project_id, "cwd": cwd_path}
             )
             await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
             await tx.event(
@@ -10063,13 +10356,112 @@ class Service:
             session = await repo.get_session_by_id(tx.conn, session_id)
             assert session is not None
             await self._bind(tx, task, session, actor)
-            prompt = self._run_header(task, run_id, name, chosen.path) + text
-            turn_id = await repo.insert_turn(tx.conn, run_id, prompt, actor, "owner", tx.now)
+            prompt = self._run_header(task, run_id, name, cwd_path, made) + text
+            turn_id = await repo.insert_turn(tx.conn, run_id, prompt, actor, caller_kind, tx.now)
             await repo.start_turn(tx.conn, turn_id, tx.now)
-            await self._run_event(tx, "run.started", actor, task, run_id, model=model, mode=mode)
+            await self._run_event(
+                tx,
+                "run.started",
+                actor,
+                task,
+                run_id,
+                model=values["model"],
+                mode=values["permission_mode"],
+                worktrees=sum(1 for s in made if s.create),
+            )
             await self._run_event(tx, "run.turn_started", actor, task, run_id, seq=1)
-        await self._spawn_turn(run_id, turn_id)
-        return await self.get_run(run_id)
+        return turn_id
+
+    async def start_run_mcp(
+        self,
+        ref: str,
+        *,
+        repos: list[str] | None = None,
+        cwd: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        brief: str | None = None,
+        permission_mode: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> Run:
+        """`run_start`: a coordinator starts a run on a card in plan or dev with no brake on it,
+        in new worktrees, with the project's permission profile. Anyone else is refused."""
+        if not await self._is_coordinator(self._r, session, hook_session):
+            raise ValidationError(RUN_START_NOT_COORDINATOR)
+        if (permission_mode or "").strip() not in ("", "-"):
+            raise ValidationError(
+                "run_start takes no permission mode: a run started over MCP uses the project's"
+                " agent defaults, which only the owner changes on the board. Nothing started."
+            )
+        caller_row = await self._known_session((session or "").strip(), self._r)
+        caller_brake = await self._brake_for(caller_row, None)
+        if caller_brake is not None:
+            raise ValidationError(
+                f"You are under the brake ({caller_brake.target}): no run starts until the owner"
+                " releases it on the board. Nothing started."
+            )
+        task = await self.get_task(ref)
+        if task.stage.value not in RUN_START_STAGES:
+            raise ValidationError(
+                f"run_start works on cards in plan or dev; {task.key} is in {task.stage.value}."
+                " Nothing started."
+            )
+        for brake in await repo.open_brakes(self._r):
+            if (
+                brake.scope == "all"
+                or (brake.scope == "project" and brake.project_id == task.project_id)
+                or (brake.scope == "task" and brake.task_id == task.id)
+            ):
+                raise ValidationError(
+                    f"{task.key} is under the brake ({brake.target}): no run starts until the"
+                    " owner releases it on the board. Nothing started."
+                )
+        bound_id = await repo.open_binding(self._r, task.id)
+        bound = await repo.get_session_by_id(self._r, bound_id) if bound_id else None
+        if bound is not None and bound.kind != "run" and bound.status != "ended":
+            raise ValidationError(
+                f"{task.key} is bound to {bound.name}, which is not ended: a run would take the"
+                " card from it. Unbind it first or ask the owner. Nothing started."
+            )
+        project_repos = await repo.list_project_repos(self._r, task.project_id)
+        by_name = {r.name.lower(): r.id for r in project_repos}
+        picked: list[tuple[int, bool]] | None = None
+        if repos:
+            unknown = [name for name in repos if name.strip().lower() not in by_name]
+            if unknown:
+                raise NotFoundError(
+                    f"{task.project_slug} has no repository {', '.join(unknown)}; it has"
+                    f" {', '.join(r.name for r in project_repos) or 'none'}."
+                )
+            picked = [(by_name[name.strip().lower()], True) for name in repos]
+        where = (cwd or "").strip()
+        if where.lower() in ("folder", "-"):
+            where = where.lower()
+        elif where:
+            if where.lower() not in by_name:
+                raise NotFoundError(
+                    f"cwd is 'folder' or one of {task.project_slug}'s repositories:"
+                    f" {', '.join(r.name for r in project_repos) or 'none'}."
+                )
+            where = where.lower()
+        cwd_value = (
+            None if where in ("", "-") else "folder" if where == "folder" else str(by_name[where])
+        )
+        async with self._tx() as tx:
+            caller = await self._session(tx, session, session_title, hook_session)
+            assert caller is not None
+        return await self.start_run(
+            task.key,
+            actor=caller.name,
+            cwd=cwd_value,
+            repos=picked,
+            model=model,
+            effort=effort,
+            brief=brief,
+            caller_kind="coordinator",
+        )
 
     async def _run_event(
         self, tx: _Tx, kind: str, actor: str, task: Task, run_id: int, **payload: Any
@@ -10106,6 +10498,7 @@ class Service:
         try:
             run = await self.get_run(run_id)
             turn = await repo.get_turn(self._r, turn_id)
+            folders = await repo.list_run_worktrees(self._r, run_id)
         except BaseException:
             runs.release(run_id)
             raise
@@ -10120,18 +10513,29 @@ class Service:
             error = "the server is stopping" if runs.closing else "a turn of this run is running"
         pid = None
         if claude is not None and reserved:
-            spec = TurnSpec(
-                claude,
-                turn.prompt,
-                run.cwd,
-                run.model,
-                run.effort,
-                run.permission_mode,
-                tuple(run.allowed_rules),
-                run.claude_session_id,
-                run.chrome,
-            )
             try:
+                settings_file, mcp_file = await asyncio.to_thread(
+                    write_run_files,
+                    self._run_folder(run.id),
+                    hooks=run.hooks_source == "run",
+                    mcp=run.mcp_source == "run",
+                    base_url=runs.config.base_url,
+                    token_path=runs.config.token_path,
+                )
+                spec = TurnSpec(
+                    claude,
+                    turn.prompt,
+                    run.cwd,
+                    run.model,
+                    run.effort,
+                    run.permission_mode,
+                    tuple(run.allowed_rules),
+                    run.claude_session_id,
+                    run.chrome,
+                    add_dirs=_add_dirs(run.cwd, [w.path for w in folders if w.removed_at is None]),
+                    settings_file=str(settings_file) if settings_file else None,
+                    mcp_file=str(mcp_file) if mcp_file else None,
+                )
                 pid = await runs.start_turn(run.id, turn.id, spec, reserved=True)
             except (OSError, ValidationError, RuntimeError) as exc:
                 error = f"claude did not start: {exc}"

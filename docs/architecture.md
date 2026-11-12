@@ -78,7 +78,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `install.py` | How this copy was installed (`install_kind()`), its executable and whether its location is stable; used by upgrade hints, the updater, `doctor` and the hook command |
 | `updates.py` | The update check of the latest GitHub release and the installer download, checked against `SHA256SUMS.txt` |
 | `backup.py` | `last_version` and the backup of the database and settings files before a new version migrates, with rotation (`backup_keep`) |
-| `runner/` | Runs on cards, processes only (no database): `claude_cli.py` (find `claude`, a turn's argv and environment, the batch-shim check), `auth.py` (`claude auth status`, the sign-in method only), `layers.py` (relaybay's hooks and MCP server in the user settings, read like `setup --check`), `proctree.py` (a Windows job object, a POSIX process group), `stream.py` (`system/init` and `result` lines), `manager.py` (`RunManager`: one turn per run, stdout and stderr read in threads, the service as the sink). Statuses and cleaners in `domain/runs.py` |
+| `runner/` | Runs on cards, processes only (no database): `claude_cli.py` (find `claude`, a turn's argv and environment, the batch-shim check), `auth.py` (`claude auth status`, the sign-in method only), `layers.py` (relaybay's hooks and MCP server in the user settings, read like `setup --check`, else a run's own `--settings` / `--mcp-config` files), `worktrees.py` (a run's folders: `git worktree add` with rollback, the untracked Claude Code files copied in), `proctree.py` (a Windows job object, a POSIX process group), `stream.py` (`system/init` and `result` lines), `manager.py` (`RunManager`: one turn per run, stdout and stderr read in threads, the service as the sink). Statuses and cleaners in `domain/runs.py` |
 | `desktop/` | The desktop program: GUI loop and window (pywebview), tray (pystray), embedded server thread, `desktop.toml` settings and Settings window, start at login, single instance, window state, tray notifications |
 
 <a id="data-model"></a>
@@ -149,6 +149,9 @@ run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, q
               started_at, ended_at, pid, outcome, result_subtype, exit_code, num_turns,
               duration_ms, input/output/cache_read/cache_write_tokens, denials, denied_tools
               -- one running turn per run (UNIQUE index)
+run_worktree  id, run_id, project_repo_id, repo_name, source_path, path, path_key, branch,
+              created_by_run (0|1), copied (JSON names), created_at, removed_at
+              -- one open run per path_key, checked by the service
 session_message id, sender_session_id, sender_name, sender_verified, recipient_session_id,
               recipient_name, task_id, body_md, in_reply_to, depth, created_at, delivered_at,
               read_at, stop_blocks, loop_stopped_at, loop_seen_at

@@ -15,6 +15,13 @@
   server are not in the user settings. PR 1b brings `run_worktree` (0033), worktrees with
   `--add-dir`, the project folder as cwd, the `--settings` / `--mcp-config` fallback and MCP
   `run_start` / `run_status`. Behaviour: [SPEC](../SPEC.md#spec-run).
+- PR 1b shipped: migration 0033 `run_worktree`; the project folder (agent defaults) as the cwd; a
+  new `git worktree add` per repository by default (or the repository itself), each passed with
+  `--add-dir` and `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`; the worktrees a failed Start
+  made are removed again; the untracked Claude Code files copied into a new worktree (decision Q3
+  below); relaybay's hooks and MCP server passed with `--settings` / `--mcp-config` when the user
+  settings lack them, replacing 1a's refusal; MCP `run_start` for coordinators and `run_status` for
+  everyone; one open run per worktree path. Removing worktrees stays with PR 5.
 - The probes of 0012 were run on 2026-11-10 and the design relies on them
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
   accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).
@@ -206,7 +213,8 @@ not a determined agent.
   retention policy can turn storage off ([question C3](#questions-for-the-coordinator)).
 - **On the owner's machine the program may**: start `claude` from `PATH` in a project's folder, one
   of its repositories or a worktree of one; run `git worktree add`, and `git worktree remove` for
-  the worktrees a run created (by the owner's answer when work is left in one); kill the
+  the worktrees a run created (by the owner's answer when work is left in one); copy a
+  repository's untracked Claude Code files into a worktree it created ([C14](#questions-for-the-coordinator)); kill the
   process trees it started; delete a transcript file of its own run under the Claude Code data
   folder; read free memory. **It may not**: run git commit, push or any other git write itself;
   change the user's Claude Code settings outside `relaybay setup`; read credentials; pass
@@ -268,6 +276,7 @@ Only these stay with the owner; everything else the coordinator decides.
 | C13 | Sign-in methods a run accepts | Subscription only; API keys and others by the owner's switch in Settings | The owner runs on his subscription; a key bills elsewhere |
 | C11 | relaybay's hooks in a run | The user's settings when `setup` installed them there, else the byte-identical command with `--settings` for the run | Claude Code runs an identical handler once (probe 8), so a wrong check fires nothing twice; no dedupe state on relaybay's hook path |
 | C12 | Visual acceptance in 0.9 | A blocking "look at this" question with the URL and the test account's name; `--chrome` by the project's profile | No browser pane in a headless turn; the conversation comes with the terminal in 0.10 |
+| C14 | A repository's `CLAUDE.md` kept out of git, in a new worktree (Q3 of the PR 1 plan) | **Decided 2026-11-12 by the coordinator:** when the runner creates a worktree it copies from the source repository `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` and `.mcp.json` when present and not tracked by git; a repository with `.worktreeinclude` gives the list instead, as Claude Code does. Local copies only, never `git add`; the Start form shows in one line what is copied | A fresh worktree lacks the untracked files, so the project's rules would not load in it; copying them is a local file copy, no git write |
 | C10 | Approval delivery: a new turn, or approval inside a turn | A new turn with the owner's words (probe 3: the agent pushed). `--permission-prompt-tool` (probe 10: works in `-p`) is the upgrade for an approval that must not end the turn ([0022](0022-questions-and-approvals.md#inside-a-turn)) | A turn is the owner's word to the agent; holding a turn open while the owner decides needs the MCP timeout checked first |
 
 ## Releases

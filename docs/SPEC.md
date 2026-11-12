@@ -36,7 +36,8 @@ Contents:
 **Repositories.** A project has any number of repositories (`project_repo`), in order: a name
 (letters, digits, `.`, `_`, `-`; unique per project, case ignored; without one, the path's last
 folder), a path stored exactly as written (the server never lists it; a [run](#spec-run) starts
-`claude` in it, the only time the server opens one) and an optional
+`claude` in it or in a `git worktree add` of it and copies its untracked Claude Code files, the
+only times the server opens one) and an optional
 kind `app`, `web`, `api`, `lib` or `other`. `project_upsert(repos=[{name, path, kind}, …])` writes
 the whole list, matched by name, so a repository that stays keeps its tasks' links; `[]` removes
 them all. The owner edits them on the project's **Stands & access** page ([§2](#spec-board-repos)).
@@ -300,22 +301,68 @@ token is the only authorisation.
 
 **Run.** The user's own unmodified `claude`, started by relaybay on a card, on this machine only,
 under the user's own sign-in ([design 0021](design/0021-agents-inside.md)). One open run per card
-(`run`, [§11](#spec-data)). Its folder (cwd) is one of the project's repositories, used in place
-(no worktree yet); one open run per folder too, so a second run in a repository, or in a folder
-inside it, is refused while another one is open. A run is a list of turns (`run_turn`), one
+(`run`, [§11](#spec-data)). Its folders (`run_worktree`) are one per repository it works in, chosen
+at Start: a new git worktree by default, or the repository itself used in place. Its working folder
+(cwd) is the project folder (the agent defaults' `folder`, a container of the repositories) or one
+of those repositories' folders; every other folder of the run is passed with `--add-dir`, and
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` is set so each repository's `CLAUDE.md` loads
+(the cwd alone gives only its own). One open run per folder: a repository used in place
+conflicts with one in place in an open run (the same folder, or one inside the other) and with an
+open run's project folder it lies in; a worktree a run made conflicts only with the same path (it
+may lie inside a repository when the data folder does); a run in a project folder conflicts with
+an open run using a repository in place inside it. A run is a list of turns (`run_turn`), one
 `claude -p` process each: the first with the brief, every later one with `--resume <Claude Code
 session id>` from the first turn's `system/init`; a text that arrives while a turn runs waits for it,
 so two turns of one run never run at once (also held by a unique index). Each turn's argv is
 `claude -p <text> --output-format stream-json --verbose --model <m> --effort <e>
---permission-mode <mode>`, then one `--allowedTools <rule>` per rule, `--chrome` when the project
-says so, `--resume <id>` last; never `--bare`, `--setting-sources`, `--strict-mcp-config` or
+--permission-mode <mode>`, then one `--allowedTools <rule>` per rule, one `--add-dir <folder>`
+per folder other than the cwd, `--settings <file>` and `--mcp-config <file>` when the run adds
+relaybay's hooks or MCP server (below), `--chrome` when the project says so, `--resume <id>` last;
+each of them one flag with one value; never `--bare`, `--setting-sources`, `--strict-mcp-config` or
 `--dangerously-skip-permissions`, so a turn loads what a manual session loads. When the found
 `claude` is a batch shim (`claude.cmd`, `claude.bat`), the text goes on stdin instead, and a turn
 whose other arguments hold `" % ^ & | < > !` or a line break is refused (cmd.exe would read them).
 A text that starts with `-` gets a leading space, so it is never read as an option. The process gets
 the server's environment without the host session's variables (`CLAUDE_CODE_HOST_SESSION_ID`,
-`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`), plus `RELAYBAY_RUN_ID`;
-relaybay never sets the Claude Code config folder or a key variable.
+`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`), plus `RELAYBAY_RUN_ID`
+and `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`; relaybay never sets the Claude Code config
+folder or a key variable.
+
+- **Worktrees.** A new one is `git -C <repository> worktree add -b <branch> <data folder>/worktrees/
+  <key>-r<run id>/<repository name>`, from the repository's checked-out commit, on branch
+  `relaybay/<key>`, else `relaybay/<key>-r<run id>`, else `relaybay/<key>-r<run id>-2` and on
+  (a failed Start keeps its branch and the next one reuses the run id); when the run's folder is
+  there already (a worktree that could not be removed), `<key>-r<run id>-2` and on. Every check
+  comes before the first `git worktree add`: each repository is the top folder of a git
+  repository, what to copy is within the limits, a branch and the folder are free. They are made in
+  order before the Start's transaction; when one fails, or the transaction does, or the Start is
+  cancelled meanwhile, the worktrees that Start made are removed again (`git worktree remove
+  --force`, since the copied files are untracked) and the reason names the repository with git's
+  first line; the branch stays. Removing a run's
+  worktrees later is not built yet. relaybay runs no other git write: never a commit, a push, an
+  add or a branch delete.
+- **Copied into a new worktree.** A fresh worktree lacks what the repository keeps out of git, so
+  relaybay copies, as local files and never `git add`ed, the untracked `CLAUDE.md`,
+  `CLAUDE.local.md`, `.claude/` (its untracked files) and `.mcp.json` of the source repository; when
+  the repository has a `.worktreeinclude`, its patterns (gitignore syntax) choose instead the
+  untracked files that match and are gitignored too, as Claude Code does. git lists them
+  (`git ls-files --others`, with `--ignored --exclude-from=.worktreeinclude` intersected with
+  `--ignored --exclude-standard` for the list), so a tracked file is never copied. Not
+  copied: a symlink (the file or a folder on its way), a name leaving the repository, a nested
+  repository, a file the worktree already has. More than 2,000 files or 64 MB refuses the Start,
+  naming `.worktreeinclude`. The Start form says in one line what a new worktree of each repository
+  gets (asked of git at most every 15 s per repository, 10 s at most per ask); the run shows per
+  worktree what was copied.
+- **relaybay's hooks and MCP server from one source.** When the user's Claude Code settings carry
+  relaybay's hooks for this server (and `~/.claude.json` its MCP server), read like
+  `relaybay setup --check`, the run adds nothing (`hooks_source` / `mcp_source` `user`). Otherwise
+  it passes them itself (`run`): `--settings <data folder>/runs/<id>/settings.json`, which holds
+  exactly the command hook `relaybay setup` writes, so Claude Code runs it once even if the check
+  was wrong and the user's settings carry it too; and `--mcp-config <data folder>/runs/<id>/mcp.json`
+  with the server's URL and the token. Both files are mode 0600 in a 0700 folder (the token file's
+  protection), written again before every turn so a rotated token reaches it, and never in argv.
+  http hooks without the `X-Relaybay-Run` header still refuse (a re-apply of setup), since they
+  would fire next to the run's command hooks.
 
 - **Statuses**, one writer (`domain.runs.check_transition`): Start → `running`; `running` →
   `idle` (a `result` came; an `is_error` result keeps the reason "the turn ended with an error"),
@@ -333,16 +380,17 @@ relaybay never sets the Claude Code config folder or a key variable.
   number of `permission_denials` and the denied tool names (never a tool's input).
 - **Before a turn** relaybay checks, and refuses with the reason when they fail (nothing is
   written): `claude` is found (`claude_path`, else `PATH`, else the usual install folders); the
-  sign-in ([Login check](#spec-run-login)); relaybay's hooks for this server and its MCP server
-  in the user's Claude Code settings, read like `relaybay setup --check` (http hooks without the
-  `X-Relaybay-Run` header ask for a re-apply of setup); `claude_home` unset or equal to the
-  server's home folder, since the turn's `claude` runs with that home and the check must read what
-  it loads; the folder exists. The check runs before
+  sign-in ([Login check](#spec-run-login)); where relaybay's hooks and MCP server come from (http
+  hooks without the `X-Relaybay-Run` header ask for a re-apply of setup); `claude_home` unset or
+  equal to the server's home folder, since the turn's `claude` runs with that home and the check
+  must read what it loads; the folders exist. The check runs before
   the first turn of a run and again before the first turn after the server restarted.
-- **Start** writes in one transaction: the run, a session row of its own (`kind = 'run'`, named
-  `<key> run <id>`), the card's binding to it (closing the previous binding) and turn 1, whose
-  text is a header (the run id, the session name to pass in relaybay writes, the folder) above the
-  brief. The brief is the task's digest (`task_context` without a reader) and the report line; the
+- **Start** writes in one transaction: the run, its folders, a session row of its own
+  (`kind = 'run'`, named `<key> run <id>`), the card's binding to it (closing the previous binding)
+  and turn 1, whose text is a header (the run id, the session name to pass in relaybay writes, the
+  working folder, each repository's folder with its branch or "the repository itself", "work only
+  in these folders") above the brief. Nothing chosen (an older form, `run_start` without `repos`):
+  the card's repositories, else the first one; the owner's default is the repository itself. The brief is the task's digest (`task_context` without a reader) and the report line; the
   Start form shows it and the owner may edit it for that run. Its digest budget is
   `digest_budget_chars`, at most 19,500 characters, so the brief stays within 20,000. The process starts after the commit.
 - **Process tree.** Windows: a job object with kill-on-close, the process started suspended and
@@ -354,7 +402,14 @@ relaybay never sets the Claude Code config folder or a key variable.
 - **Server stop and start.** Stopping the server stops every running turn (`stopped`, "server
   stopped") and starts no new one. A start finds `running` runs of a server that crashed and marks them `lost`, their
   open turns `lost` and the waiting ones `cancelled`.
-- Who may start: the owner, on the board (cookie and CSRF). Agents have no tool for it yet.
+- **Who may start.** The owner, on the board (cookie and CSRF), any card. A coordinator (a session
+  in the `coordinators` config, checked like `brake_set`) with MCP `run_start`: cards in `plan` or
+  `dev`, no open brake of scope `all`, the card's project or the card, and no brake covers the
+  caller; the card not bound to a session that is live and not a run's; always new worktrees; model and effort may be chosen, the
+  permission mode and allowed tools are the project's (a `permission_mode` argument is refused).
+  Any other caller is refused, with "a side task goes to backlog_add". `run_status` is open to
+  every caller and changes nothing. The caller check is the weak identity of `rules_update` (one
+  shared token): it stops mistakes, not a determined agent.
 
 <a id="spec-run-login"></a>
 
@@ -584,12 +639,16 @@ dialog on its Plan tab.
 **Agent block.** The task dialog and the task page show an **Agent** fold above Session, loaded
 from `/p/<slug>/t/<key>/run` and refetched on the card's `run.*` events (not while a text is being
 typed into it). Without an open run it is the Start form: the sign-in line, where relaybay's
-hooks and MCP server come from, every reason Start would be refused, the folder (one of the
-project's repositories, the ones the task touches first), model, effort and permission mode
+hooks and MCP server come from (the user's settings, or added by each run), every reason Start
+would be refused, the working folder (the project folder when the defaults set one, else one of
+the repositories, the ones the task touches first), per repository "not used", "a new worktree"
+(default for a git repository the task touches) or "the repository itself", one line saying what
+a new worktree of each repository gets copied, model, effort and permission mode
 (the project's defaults preselected; the owner may pick `bypassPermissions` here for one run), the
 allowed tools and `--chrome` as the project sets them, the brief, and **Start**. With a run (the
-open one, else the latest) it shows status and reason, folder, session, the Claude Code session
-id, total tokens and one row per turn (sent by, queued, outcome, tokens, denials with the tool
+open one, else the latest) it shows status and reason, folder, each repository's folder (a new
+worktree with its branch and what was copied, or the repository itself), where relaybay's hooks
+and MCP server come from, session, the Claude Code session id, total tokens and one row per turn (sent by, queued, outcome, tokens, denials with the tool
 names), then **Stop** while a turn runs, a **Send** text box (Continue, or a text that waits for
 the running turn) and **End run** (asks first). The posts are `/p/<slug>/t/<key>/run/start` and
 `/p/<slug>/t/<key>/run/<id>/send|stop|end`, board only (cookie and CSRF; a Bearer request is
@@ -602,8 +661,10 @@ refused, `403`); a refusal comes back inside the block.
 (`low`, `medium`, `high`, `xhigh`, `max`; default `medium`), permission mode (`manual`, `default`,
 `acceptEdits`, `plan`, `auto`, `dontAsk`; default `auto`, never `bypassPermissions`), allowed tools
 (comma-separated rules, each a tool name, `mcp__<server>` or `Tool(pattern)`; default
-`mcp__relaybay`) and `--chrome` (default off). No MCP tool writes them, so an agent never widens
-its own permissions. A save is a `run.defaults_set` event.
+`mcp__relaybay`), `--chrome` (default off) and the project folder (optional, an absolute path,
+kept as written; a run may use it as its cwd, with the repositories as worktrees passed with
+`--add-dir`; empty clears it). No MCP tool writes them, so an agent never widens its own
+permissions. A save is a `run.defaults_set` event.
 
 <a id="spec-board-agents"></a>
 
@@ -1035,6 +1096,7 @@ keep a thread going for its own sake.
 | Catch-up and rules | `events_since`, `rules_get`, `rules_update`, `rules_propose` |
 | Usage | `usage_summary`, `budget_get` |
 | Brake | `brake_status`, `brake_set` ([§2](#spec-brake)) |
+| Runs | `run_start` (coordinators only), `run_status` ([§1](#spec-run)) |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Intake | `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources` ([§12](#spec-intake-mcp)) |
@@ -2419,13 +2481,17 @@ Nothing of this leaves the machine.
 <a id="spec-security-runs"></a>
 
 **Runs on the machine** ([§1](#spec-run)). The program **may**: start the user's own `claude`
-(found as [§1](#spec-run) says) in one of a project's repositories, with the flags listed there;
-run `claude auth status` and read the sign-in method; kill the process trees it started; read the
-user's Claude Code settings and `~/.claude.json` to see whether relaybay's hooks and MCP server are
-there. It **may not**: run git commit, push or any other git write itself; change the user's
-Claude Code settings outside `relaybay setup`; read, store or show credentials, the e-mail or the
-organization of the sign-in; pass `--dangerously-skip-permissions` or `--bare`. Only the owner
-starts, stops, continues or ends a run, on the board (cookie and CSRF). A forged `RELAYBAY_RUN_ID`
+(found as [§1](#spec-run) says) in a project's folder, one of its repositories or a worktree of
+one, with the flags listed there; run `git worktree add`, and `git worktree remove` of the
+worktrees a failed Start just made; copy a repository's untracked Claude Code files into a worktree
+it made; run `claude auth status` and read the sign-in method; kill the process trees it started;
+read the user's Claude Code settings and `~/.claude.json` to see whether relaybay's hooks and MCP
+server are there; write a run's own `--settings` / `--mcp-config` files in the data folder. It
+**may not**: run git commit, push, add or any other git write itself; change the user's Claude Code
+settings outside `relaybay setup`; read, store or show credentials, the e-mail or the organization
+of the sign-in; pass `--dangerously-skip-permissions`, `--bare` or `--strict-mcp-config`. The owner
+starts, stops, continues or ends a run on the board (cookie and CSRF); a coordinator may start one
+with `run_start` under the rules of [§1](#spec-run). A forged `RELAYBAY_RUN_ID`
 can link a hook session only while that run's turn runs and its Claude Code id is unknown or the
 same.
 
@@ -2540,6 +2606,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0030_project_run_defaults` | `project_run_defaults` (project, folder, model, effort, permission mode, allowed tools, chrome, updated at / by), `app_setting` (key, value, updated at / by; `run_login_any`). Additive only, no backfill: a project without a row has the defaults ([§2](#spec-board-run-defaults)) |
 | `0031_run` | `run` (task, project, its session, cwd, cwd repository, model, effort, permission mode, allowed tools, chrome, Claude Code session id, status with all seven values, reason, sign-in method, where hooks and MCP come from, started by and its kind, created / updated / ended at, ended by); one open run per task and one run per Claude Code session (unique indexes) ([§1](#spec-run)). Additive only |
 | `0032_run_turn` | `run_turn` (run, sequence, text, sent by and its kind, queued / started / ended at, pid, outcome, result subtype, exit code, number of turns, duration, four token counts, denials and denied tool names); a unique index allows one running turn per run. Additive only |
+| `0033_run_worktree` | `run_worktree` (run, project repository, repository name, source path, path, path key, branch, created by the run, the copied file names, created / removed at); an index per run and one on the path key of the not removed ([§1](#spec-run)). One open run per path is checked by the service. Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).
