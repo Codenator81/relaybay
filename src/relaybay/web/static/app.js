@@ -125,7 +125,9 @@
           // A card whose column is refetched anyway would be swapped twice.
           var col = target.closest(".col");
           if (col && col !== target && pending.has(col)) return;
-          htmx.trigger(target, "rb:refresh");
+          // Not bubbling: a nested panel's refresh must not reach the `.task-view` around it,
+          // which would refetch the whole view (and a half-typed answer in it) as well.
+          target.dispatchEvent(new CustomEvent("rb:refresh", { bubbles: false }));
         });
         pending.clear();
       }, 50);
@@ -140,7 +142,13 @@
     if (!el || throttled.has(el.id)) return;
     throttled.set(el.id, window.setTimeout(function () {
       throttled.delete(el.id);
-      queue(document.getElementById(el.id));
+      var target = document.getElementById(el.id);
+      // The Inbox may hold an answer begun while this refresh waited.
+      if (target && target.id === "inbox") {
+        unlessAnswering(target, "inbox", function () { queue(document.getElementById("inbox")); });
+      } else {
+        queue(target);
+      }
     }, THROTTLE_MS));
   }
 
@@ -204,6 +212,10 @@
   }
   document.addEventListener("focusout", function (event) {
     if (event.target.closest && event.target.closest(".question-answer")) releaseHeld();
+  });
+  document.addEventListener("input", function (event) {
+    var field = event.target;
+    if (field.closest && field.closest(".question-answer") && !field.value.trim()) releaseHeld();
   });
   document.addEventListener("htmx:afterSettle", function (event) {
     if (heldForAnswer.size && event.target.closest &&
