@@ -667,7 +667,7 @@ not a feature: it uses the same tools as any session.
 **Event.** Every write appends a row to the event log in the same transaction as the state change.
 The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `project.created`,
 `project.updated`, `task.created`, `task.updated`, `task.stage_changed`, `task.reordered`, `task.session_bound`,
-`task.session_unbound`, `task.tracker_unlogged`, `report.added`, `decision.added`, `session.seen`,
+`task.session_unbound`, `task.tracker_unlogged`, `task.archived`, `task.unarchived` ([§2](#spec-board-archive)), `report.added`, `decision.added`, `session.seen`,
 `session.status_changed`, `session.alias_added`, `session.no_live_on`, `session.no_live_off`,
 `comment.added`, `comment.delivered`,
 `comment.read`, `plan.acceptance_delivered`, `environment.created`, `environment.updated`, `environment.deleted`,
@@ -1044,7 +1044,26 @@ changes then refresh the details instead of reloading the page).
 **Done column and archive.** The done column shows tasks closed within `done_window_days` (default
 7), capped at 200 with a note. Older done tasks are archived on the board only: "Show archived"
 (`?archived=1`) and the search box (`?q=`, key or title, also searches the archive) bring them back.
-With `require_tracker_log = true` a done task without the tracker mark is never archived.
+With `require_tracker_log = true` a done task without the tracker mark is never archived by age.
+
+<a id="spec-board-archive"></a>
+
+**Archive by hand.** A done card's menu and its task view have **Archive**: the card leaves the done
+column at once (`task.archived`, the done column refetched live) and stays findable with "Show
+archived" and in search. The mark (`task.archived_at`, `archived_by`) archives the task whatever
+`require_tracker_log` says. On an archived card (by hand or by age) the same places offer **Back
+from the archive** (`task.unarchived`, with `archived_by` of the hand mark, none when the window had
+archived it): the hand mark is cleared and `task.unarchived_at` is set, and the done window counts
+from the later of `closed_at` and `unarchived_at`, so the card shows in done for another full
+window. Only a task in `done` is archived or brought back (otherwise `Only a done task goes to the
+archive; <key> is in <stage>. Nothing changed.`); a repeat changes nothing and records nothing; any
+stage change clears all three columns, so a task moved back to done starts fresh. Nothing is
+deleted, and the marks do not bump the task's version (an open edit form does not conflict). Board
+writes are cookie + CSRF only (`POST /p/<project>/t/<key>/archive` and `/unarchive`; a Bearer client
+gets 403). Over MCP, `task_archive` / `task_unarchive` are for coordinator sessions only; anyone
+else is refused with `<tool> is only for the coordinator sessions named in the server's config; …
+Nothing changed. The owner archives done cards on the board.` Both events are on Activity and, with
+"changes", on the Audit page.
 
 <a id="spec-board-inbox"></a>
 
@@ -1308,7 +1327,7 @@ keep a thread going for its own sake.
 | Group | Tools |
 |---|---|
 | Projects | `project_list`, `project_upsert`, `project_snapshot` |
-| Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage` |
+| Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage`, `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
@@ -2837,8 +2856,9 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0035_run_event` | `run_event` (turn, seq unique per turn, type, subtype, `parent_tool_use_id`, read at, length, truncated, the masked line compressed with zlib); `run_turn.report_id` (the report the turn's result became) ([§1](#spec-run)). Additive only |
 | `0036_report_check` | `report_check` (report, line, `where` as `location`, claim); an index on report and line ([§1](#spec-report-marks)). Additive only, no backfill: older reports have no marks |
 | `0037_question` | `question` (task, run or session, asked by, kind `question` / `look`, text, options JSON, default, blocking, look URL and account, `default_after`, asked at, status `open` / `answered` / `defaulted` / `withdrawn`, answer, answered by `owner` / `default`, answered / defaulted / withdrawn at, withdrawn by, the turn or owner comment that carries the answer, told / delivered at); checks that a look question blocks and has its URL and that a blocking one has no deadline; indexes per task, run, comment and on the open ones by deadline ([§1](#spec-questions)). Additive only |
+| `0038_task_archive` | `task.archived_at`, `task.archived_by` (archived by hand), `task.unarchived_at` (the last "Back from the archive") ([§2](#spec-board-archive)). Additive only, no backfill |
 
-The archive is computed, not stored. Events are kept forever. Table details:
+The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).
 
 <a id="spec-intake"></a>

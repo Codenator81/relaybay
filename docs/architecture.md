@@ -101,6 +101,7 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               next_step_at, stage_changed_at, created_at, updated_at, closed_at, size (S|M|L),
               plan_status (draft|accepted), plan_accepted_at, plan_accepted_by,
               autonomy (project|on|off), answer_received_at, answer_message_id,
+              archived_at, archived_by, unarchived_at (the hand archive of a done task),
               rank   -- the owner's order within the stage column, lower first; INDEX (project_id, stage, rank)
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
 report_check  id, report_id, line, location (the `where` of `verified: <where>`), claim
@@ -237,7 +238,8 @@ reader_cursor reader, level (portfolio|project|task), ref_id (0 = portfolio), la
 - `task.version` grows on every write; `expected_version` turns a write into a compare-and-set.
 - Event payloads carry the changed fields (`{"from": "dev", "to": "test"}`), enough to render a
   feed line and to decide which fragment to refetch.
-- The archive is computed from `closed_at` and `done_window_days`, not stored. Events are kept
+- The archive by age is computed from `closed_at` (or a later `unarchived_at`) and
+  `done_window_days`; only the hand mark `archived_at` is stored. Events are kept
   forever; SSE replays at most the last 5000.
 - Migrations: [SPEC §11](SPEC.md#spec-data).
 

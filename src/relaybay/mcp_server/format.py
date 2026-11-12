@@ -865,6 +865,7 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
         ("tracker", tracker_label(t, require_log)),
         ("size", t.size),
         ("plan", plan_label(t) if t.plan_total else None),
+        ("archived", f"{_minute(t.archived_at)} by {t.archived_by}" if t.archived_at else None),
     ):
         if value:
             lines.append(f"- {label}: {value}")
@@ -918,6 +919,15 @@ def task_saved(task: Task, verb: str) -> str:
 
 def _minute(ts: str) -> str:
     return f"{ts[:16]}Z"
+
+
+def task_archive_saved(task: Task) -> str:
+    if task.archived_at:
+        return (
+            f"**{task.key}** “{task.title}” is in the archive since {_minute(task.archived_at)}"
+            f" (by {task.archived_by}): it is off the done column."
+        )
+    return f"**{task.key}** “{task.title}” is in the done column, not in the archive."
 
 
 def comment_marks(c: Comment) -> str:
@@ -983,6 +993,9 @@ def event_detail(e: Event) -> str:
         return f"{p.get('session')}{carried}{reason}"
     if e.kind == "task.tracker_unlogged":
         return f"{p.get('tracker_ref') or ''} ({p.get('reason')})".strip()
+    if e.kind == "task.unarchived":
+        by = p.get("archived_by")
+        return f"archived by {by}" if by else "archived by the done window"
     if e.kind == "decision.added":
         supersedes = f" (supersedes #{p['supersedes']})" if p.get("supersedes") else ""
         return f"#{p.get('decision_id')} {p.get('text', '')}{supersedes}"

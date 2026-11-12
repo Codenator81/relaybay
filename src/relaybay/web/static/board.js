@@ -192,8 +192,38 @@
   // A fixed menu would stay put while its card scrolls away.
   window.addEventListener("scroll", function () { closeMenus(null); }, true);
 
+  // "Archive" / "Back from the archive" on a done card: the done column is refetched, so the
+  // card leaves it (or stays, with "show archive" on) as the server decides.
+  function archive(card, action) {
+    var board = boardEl();
+    var live = document.getElementById("live");
+    var body = new FormData();
+    body.set("csrf_token", board.dataset.csrf || "");
+    var url = "/p/" + encodeURIComponent(live.dataset.project) + "/t/" +
+      encodeURIComponent(card.dataset.key) + "/" + action;
+    var col = column(card);
+    flash([]);
+    fetch(url, { method: "POST", credentials: "same-origin", body: body }).then(function (response) {
+      return response.text().then(function (text) {
+        if (response.ok) return;
+        var json = (response.headers.get("content-type") || "").indexOf("json") !== -1;
+        var detail = json ? JSON.parse(text).detail : text;
+        throw new Error((typeof detail === "string" && detail) || "HTTP " + response.status);
+      });
+    }).catch(function (error) {
+      flash([(action === "archive" ? "Not archived: " : "Not brought back: ") + error.message],
+        "error");
+    }).finally(function () { refresh(col); });
+  }
+
   document.addEventListener("click", function (event) {
     if (!event.target.closest) return;
+    var choice = event.target.closest(".card-menu [data-archive]");
+    if (choice) {
+      choice.closest(".card-menu").open = false;
+      archive(choice.closest(".card[data-key]"), choice.dataset.archive);
+      return;
+    }
     var item = event.target.closest(".card-menu [data-move], .card-menu [data-move-stage]");
     if (!item) {
       if (!event.target.closest(".card-menu")) closeMenus(null);

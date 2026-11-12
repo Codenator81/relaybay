@@ -94,6 +94,9 @@ class Task:
     project_autonomy: bool = False
     answer_received_at: str | None = None  # an external message answered `waiting_on`
     answer_message_id: int | None = None
+    archived_at: str | None = None  # sent to the archive by hand (done only)
+    archived_by: str | None = None
+    unarchived_at: str | None = None  # the last "Back from the archive"
 
     @property
     def autonomy_on(self) -> bool:

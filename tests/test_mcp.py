@@ -24,6 +24,8 @@ EXPECTED_TOOLS = {
     "task_update",
     "task_patch",
     "task_set_stage",
+    "task_archive",
+    "task_unarchive",
     "task_bind_session",
     "task_unbind_session",
     "report_add",

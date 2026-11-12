@@ -18,6 +18,7 @@
         <button type="button" data-move="up">Move up</button>
         <button type="button" data-move="down">Move down</button>
         {% for s in stages if s != t.stage %}<button type="button" data-move-stage="{{ s }}">Move to {{ label(s) }}</button>{% endfor %}
+        {% if t.stage.value == "done" %}{% if task_archived(t) %}<button type="button" data-archive="unarchive">Back from the archive</button>{% else %}<button type="button" data-archive="archive">Archive</button>{% endif %}{% endif %}
       </div>
     </details>
   </div>

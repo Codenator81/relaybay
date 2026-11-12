@@ -128,6 +128,8 @@ EVENT_KINDS = (
     "task.session_bound",
     "task.session_unbound",
     "task.tracker_unlogged",
+    "task.archived",
+    "task.unarchived",
     "report.added",
     "decision.added",
     "session.seen",
@@ -324,6 +326,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         csrf_field=CSRF_FIELD,
         csrf_token=csrf_token(token),
         require_tracker_log=settings.require_tracker_log,
+        done_window_days=settings.done_window_days,
         comment_max=COMMENT_MAX,
         annotation_colours=COLOURS,
         annotation_body_max=ANNOTATION_BODY_MAX,
@@ -337,6 +340,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return f"/static/{name}?v={versions[name]}"
 
     env.globals["static_url"] = static_url
+    env.globals["task_archived"] = lambda t: is_archived(
+        t, utcnow(), settings.done_window_days, settings.require_tracker_log
+    )
     env.filters["age"] = age
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
@@ -2996,6 +3002,48 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return render(request, "_card.html", t=task, slug=slug, code=code)
         detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
         return render(request, "_task_view.html", detail=detail)
+
+    async def archive_answer(
+        request: Request, slug: str, key: str, archived: bool, target: str, csrf: str
+    ) -> Response:
+        """The done card's Archive / Back from the archive: from the card menu (board.js, JSON)
+        or the task view (htmx, `target=view`). A refusal is the plain-text error of every board
+        write."""
+        board_only(request, csrf)
+        task = await find_task(slug, key)
+        error = None
+        try:
+            task = await service.set_archived(task.key, archived, actor="owner")
+        except DomainError as exc:
+            if target != "view" or "hx-request" not in request.headers:
+                raise
+            error = str(exc)  # htmx swaps only a 200: the view shows why
+        if target == "view" and "hx-request" not in request.headers:
+            return RedirectResponse(f"/t/{task.key}", status_code=303)
+        if target == "view":
+            detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+            return render(request, "_task_view.html", detail=detail, error=error)
+        return JSONResponse({"archived": task.archived_at is not None})
+
+    @router.post("/p/{slug}/t/{key}/archive")
+    async def archive_task(
+        request: Request,
+        slug: str,
+        key: str,
+        target: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        return await archive_answer(request, slug, key, True, target, csrf)
+
+    @router.post("/p/{slug}/t/{key}/unarchive")
+    async def unarchive_task(
+        request: Request,
+        slug: str,
+        key: str,
+        target: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        return await archive_answer(request, slug, key, False, target, csrf)
 
     @router.get("/settings/intake", response_class=HTMLResponse)
     async def intake_settings(request: Request):
