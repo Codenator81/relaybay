@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Runs on macOS: stopping a turn whose process group holds only exited processes no longer fails with "Operation not permitted" (macOS answers EPERM there).
+
 ### Added
 
 - Runs on a card: the card's Agent block starts your own unmodified `claude` on this machine, under your own sign-in, in one of the project's repositories. The first turn gets a brief built from the card; Continue resumes the same Claude Code session (`--resume`), a text sent during a turn waits for it, Stop kills the turn's whole process tree (a job object on Windows, a process group on macOS and Linux), End closes the run. The card shows the status, the Claude session id and each turn's tokens and denials. Start is refused with the reason while relaybay's hooks or MCP server are missing from the Claude Code user settings (`relaybay setup`), and a second open run on the card or in the same repository is refused.
