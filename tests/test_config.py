@@ -98,3 +98,14 @@ def test_require_tracker_log(tmp_path: Path) -> None:
         config.write_text(f"require_tracker_log = {bad}\n", encoding="utf-8")
         with pytest.raises(ValueError, match="require_tracker_log"):
             load_settings(home=tmp_path, environ={})
+
+
+def test_claude_path_from_file_and_env(tmp_path: Path) -> None:
+    assert load_settings(home=tmp_path, environ={}).claude_path is None
+    (tmp_path / "config.toml").write_text('claude_path = "/opt/claude/bin/claude"\n', "utf-8")
+    assert load_settings(home=tmp_path, environ={}).claude_path == Path("/opt/claude/bin/claude")
+    env = {"RELAYBAY_CLAUDE_PATH": "/usr/local/bin/claude"}
+    assert load_settings(home=tmp_path, environ=env).claude_path == Path("/usr/local/bin/claude")
+    (tmp_path / "config.toml").write_text('claude_path = " "\n', "utf-8")
+    with pytest.raises(ValueError, match="claude_path"):
+        load_settings(home=tmp_path, environ={})

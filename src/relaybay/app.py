@@ -15,6 +15,7 @@ from relaybay.config import Settings, load_settings
 from relaybay.domain.errors import DomainError, NotFoundError
 from relaybay.domain.review import MB
 from relaybay.mcp_server.server import build_mcp, mcp_routes
+from relaybay.runner.manager import RunnerConfig
 from relaybay.security import SecurityMiddleware, load_or_create_token
 from relaybay.service import Service
 from relaybay.web.api import build_api_router
@@ -50,6 +51,13 @@ def create_app(settings: Settings) -> FastAPI:
         usage_enabled=settings.usage_enabled,
         coordinators=settings.coordinators,
         max_concurrent_sessions=settings.max_concurrent_sessions,
+        runner=RunnerConfig(
+            home=settings.home,
+            base_url=settings.base_url,
+            token_path=settings.token_path,
+            claude_path=settings.claude_path,
+            claude_home=settings.claude_home,
+        ),
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 

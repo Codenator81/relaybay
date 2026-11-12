@@ -31,7 +31,9 @@
     "intake.source_trusted", "intake.source_untrusted",
     "backlog.added", "backlog.updated", "backlog.planned",
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
-    "budget.exceeded", "concurrency.over"
+    "budget.exceeded", "concurrency.over",
+    "run.started", "run.turn_started", "run.turn_queued", "run.turn_ended", "run.stopped",
+    "run.ended", "run.lost"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -168,6 +170,15 @@
   // Plan events and the bound agent's todo changes refetch the Plan panel.
   function isPlan(kind) { return kind.indexOf("plan.") === 0 || kind === "session.todo_updated"; }
   function planPanel(key) { return key ? document.getElementById("plan-" + key) : null; }
+  // Run events refetch the card's Agent block, unless a text is being typed into it.
+  function isRun(kind) { return kind.indexOf("run.") === 0; }
+  function queueRun(key) {
+    var panel = key ? document.getElementById("run-" + key) : null;
+    if (!panel) return;
+    var typing = Array.prototype.some.call(panel.querySelectorAll("textarea[name=text]"),
+      function (f) { return f.value.trim(); });
+    if (!typing) queue(panel);
+  }
   // A review panel is refetched only while none of its comment boxes holds text.
   function queueReview(key) {
     var panel = reviewPanel(key);
@@ -232,6 +243,8 @@
         queueReview(data.key);
       } else if (isPlan(data.kind)) {
         queue(planPanel(data.key));
+      } else if (isRun(data.kind)) {
+        queueRun(data.key);
       } else if (commentDraft(document)) {
         queue(document.querySelector(".task-view"));
         queue(thread(data.key));
@@ -306,8 +319,10 @@
       if (isComment(data.kind)) queue(thread(data.key));
       else if (isReview(data.kind)) queueReview(data.key);
       else if (isPlan(data.kind)) queue(planPanel(data.key));
+      else if (isRun(data.kind)) queueRun(data.key);
       else refreshDialog();
     }
+    if (isRun(data.kind)) return;
     if (isReview(data.kind) || isPlan(data.kind)) {
       // The card shows the plan's steps, not the agent's todo.
       if (data.kind !== "session.todo_updated") queue(card(data.key) || column(data.stage));

@@ -610,3 +610,33 @@ async def test_held_back_activity_is_stored_when_the_event_window_ends(tmp_path:
         ]
     finally:
         await svc.close()
+
+
+def test_hook_client_adds_the_run_id_to_session_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+    monkeypatch.setenv("RELAYBAY_RUN_ID", "12")
+    start = json.dumps(RECORDED["SessionStart"]).encode()
+    sent = json.loads(hook_client.with_host_session(start))
+    assert sent["relaybay_run"] == "12" and "relaybay_host_session" not in sent
+    assert parse_hook(sent).run_id == 12
+    stop = json.dumps(RECORDED["Stop"]).encode()
+    assert hook_client.with_host_session(stop) is stop
+    assert parse_hook(RECORDED["Stop"] | {"relaybay_run": "12"}).run_id is None
+    for bad in ("x1", "1" * 13, 7):
+        assert parse_hook(RECORDED["SessionStart"] | {"relaybay_run": bad}).run_id is None
+
+
+def test_http_hook_sends_the_run_id_as_a_header(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    token = board.app.state.settings.token_path.read_text(encoding="utf-8").strip()
+    seen: list[Any] = []
+    original = service.record_hook
+
+    async def record(payload: Any) -> Any:
+        seen.append(payload)
+        return await original(payload)
+
+    service.record_hook = record  # type: ignore[method-assign]
+    headers = {"Authorization": f"Bearer {token}", "X-Relaybay-Run": "3"}
+    board.post("/hooks/claude-code", json=hook("SessionStart", CC_B), headers=headers)
+    assert seen[0]["relaybay_run"] == "3"

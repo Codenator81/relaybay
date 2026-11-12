@@ -78,6 +78,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `install.py` | How this copy was installed (`install_kind()`), its executable and whether its location is stable; used by upgrade hints, the updater, `doctor` and the hook command |
 | `updates.py` | The update check of the latest GitHub release and the installer download, checked against `SHA256SUMS.txt` |
 | `backup.py` | `last_version` and the backup of the database and settings files before a new version migrates, with rotation (`backup_keep`) |
+| `runner/` | Runs on cards, processes only (no database): `claude_cli.py` (find `claude`, a turn's argv and environment, the batch-shim check), `auth.py` (`claude auth status`, the sign-in method only), `layers.py` (relaybay's hooks and MCP server in the user settings, read like `setup --check`), `proctree.py` (a Windows job object, a POSIX process group), `stream.py` (`system/init` and `result` lines), `manager.py` (`RunManager`: one turn per run, stdout and stderr read in threads, the service as the sink). Statuses and cleaners in `domain/runs.py` |
 | `desktop/` | The desktop program: GUI loop and window (pywebview), tray (pystray), embedded server thread, `desktop.toml` settings and Settings window, start at login, single instance, window state, tray notifications |
 
 <a id="data-model"></a>
@@ -88,7 +89,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 project       id, slug UNIQUE, name, repo_path, description, task_seq, created_at, updated_at,
               archived_at, pulse, pulse_at, pulse_by, autonomy (0|1)
               -- repo_path: always the path of the first project_repo (kept for older readers)
-project_repo  id, project_id, name (UNIQUE per project), path (as written, never opened),
+project_repo  id, project_id, name (UNIQUE per project), path (as written; a run's cwd),
               kind (app|web|api|lib|other, optional), position, created_at, updated_at
 task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), added_at
               -- UNIQUE (task_id, project_repo_id)
@@ -135,6 +136,19 @@ budget_mark   budget_id, period_key (UTC day or total), level (warned|exceeded),
 brake         id, scope (all|project|session|task), project_id, session_id, task_id, reason,
               source (owner|coordinator|budget), budget_id, created_at, created_by, released_at,
               released_by   -- a released row stays as history
+project_run_defaults project_id PK, folder, model, effort, permission_mode, allowed_tools,
+              chrome (0|1), updated_at, updated_by   -- no row: the defaults
+app_setting   key PK, value, updated_at, updated_by   -- run_login_any
+run           id, task_id, project_id, session_id (kind 'run'), cwd, cwd_repo_id, model, effort,
+              permission_mode, allowed_tools, chrome, claude_session_id (UNIQUE),
+              status (queued|running|waiting|idle|stopped|ended|lost), status_reason,
+              auth_method (the method only), hooks_source, mcp_source (user|run), started_by,
+              started_by_kind (owner|coordinator), created_at, updated_at, ended_at, ended_by
+              -- one open run per task (UNIQUE index WHERE ended_at IS NULL)
+run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, queued_at,
+              started_at, ended_at, pid, outcome, result_subtype, exit_code, num_turns,
+              duration_ms, input/output/cache_read/cache_write_tokens, denials, denied_tools
+              -- one running turn per run (UNIQUE index)
 session_message id, sender_session_id, sender_name, sender_verified, recipient_session_id,
               recipient_name, task_id, body_md, in_reply_to, depth, created_at, delivered_at,
               read_at, stop_blocks, loop_stopped_at, loop_seen_at
@@ -312,11 +326,11 @@ CODE_OF_CONDUCT.md  SECURITY.md  GOVERNANCE.md
 pyproject.toml  uv.lock  .github/workflows/{ci.yml, desktop.yml, docs.yml, release.yml}
 .github/ISSUE_TEMPLATE/
 scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py
-                hook_timing.py probe_claude.py record_gif.md
+                hook_timing.py probe_claude.py probe_layers.py record_gif.md
 src/relaybay/   cli.py config.py app.py security.py service.py events.py machine_setup.py
                 doctor.py demo.py markdown_import.py markdown_export.py hook_client.py logs.py
                 install.py updates.py backup.py
-                db/  desktop/  domain/  mcp_server/  policy/  web/
+                db/  desktop/  domain/  mcp_server/  policy/  runner/  web/
 packaging/      relaybay.spec  launchers/  icons/  windows/  macos/  linux/
 examples/       intake/ (watchers)  compose.yaml (Docker server for the desktop client)
 tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/,

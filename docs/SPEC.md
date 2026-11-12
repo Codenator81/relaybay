@@ -35,7 +35,8 @@ Contents:
 
 **Repositories.** A project has any number of repositories (`project_repo`), in order: a name
 (letters, digits, `.`, `_`, `-`; unique per project, case ignored; without one, the path's last
-folder), a path stored exactly as written (never opened or listed by the server) and an optional
+folder), a path stored exactly as written (the server never lists it; a [run](#spec-run) starts
+`claude` in it, the only time the server opens one) and an optional
 kind `app`, `web`, `api`, `lib` or `other`. `project_upsert(repos=[{name, path, kind}, …])` writes
 the whole list, matched by name, so a repository that stays keeps its tasks' links; `[]` removes
 them all. The owner edits them on the project's **Stands & access** page ([§2](#spec-board-repos)).
@@ -295,6 +296,80 @@ session at a time; every binding is kept in the task's binding history. A plain 
 that name exists (the call warns and changes nothing). The session identity is for display only; the
 token is the only authorisation.
 
+<a id="spec-run"></a>
+
+**Run.** The user's own unmodified `claude`, started by relaybay on a card, on this machine only,
+under the user's own sign-in ([design 0021](design/0021-agents-inside.md)). One open run per card
+(`run`, [§11](#spec-data)). Its folder (cwd) is one of the project's repositories, used in place
+(no worktree yet); one open run per folder too, so a second run in a repository, or in a folder
+inside it, is refused while another one is open. A run is a list of turns (`run_turn`), one
+`claude -p` process each: the first with the brief, every later one with `--resume <Claude Code
+session id>` from the first turn's `system/init`; a text that arrives while a turn runs waits for it,
+so two turns of one run never run at once (also held by a unique index). Each turn's argv is
+`claude -p <text> --output-format stream-json --verbose --model <m> --effort <e>
+--permission-mode <mode>`, then one `--allowedTools <rule>` per rule, `--chrome` when the project
+says so, `--resume <id>` last; never `--bare`, `--setting-sources`, `--strict-mcp-config` or
+`--dangerously-skip-permissions`, so a turn loads what a manual session loads. When the found
+`claude` is a batch shim (`claude.cmd`, `claude.bat`), the text goes on stdin instead, and a turn
+whose other arguments hold `" % ^ & | < > !` or a line break is refused (cmd.exe would read them).
+A text that starts with `-` gets a leading space, so it is never read as an option. The process gets
+the server's environment without the host session's variables (`CLAUDE_CODE_HOST_SESSION_ID`,
+`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`), plus `RELAYBAY_RUN_ID`;
+relaybay never sets the Claude Code config folder or a key variable.
+
+- **Statuses**, one writer (`domain.runs.check_transition`): Start → `running`; `running` →
+  `idle` (a `result` came; an `is_error` result keeps the reason "the turn ended with an error"),
+  `stopped` (Stop, the server stopping, or the process failing to start) or `lost` (the process
+  exited without a `result`, not by Stop; or a `running` row found when the server starts);
+  `idle`, `stopped`, `lost` → `running` (Continue, or the next waiting text); any of those →
+  `ended` (End; a running turn is stopped first). `ended` is final. `queued` and `waiting` are
+  allowed by the table but not produced yet. Stop, lost and End cancel the texts that waited,
+  also when Stop comes after the turn's `result` while the process still ends (its `SessionEnd`
+  hooks run then): the turn keeps its outcome, the run goes `stopped`. A run left `running` with no
+  process behind it (its end could not be stored) is marked `lost` by Stop or End, which then
+  work. The same text from the same sender within 5 s is one turn (a double click).
+- **Turn outcomes:** `success`, `error`, `stopped`, `lost`, `cancelled`, `failed_to_start`, with
+  the `result`'s subtype, number of turns, duration, the four token counts of `result.usage`, the
+  number of `permission_denials` and the denied tool names (never a tool's input).
+- **Before a turn** relaybay checks, and refuses with the reason when they fail (nothing is
+  written): `claude` is found (`claude_path`, else `PATH`, else the usual install folders); the
+  sign-in ([Login check](#spec-run-login)); relaybay's hooks for this server and its MCP server
+  in the user's Claude Code settings, read like `relaybay setup --check` (http hooks without the
+  `X-Relaybay-Run` header ask for a re-apply of setup); `claude_home` unset or equal to the
+  server's home folder, since the turn's `claude` runs with that home and the check must read what
+  it loads; the folder exists. The check runs before
+  the first turn of a run and again before the first turn after the server restarted.
+- **Start** writes in one transaction: the run, a session row of its own (`kind = 'run'`, named
+  `<key> run <id>`), the card's binding to it (closing the previous binding) and turn 1, whose
+  text is a header (the run id, the session name to pass in relaybay writes, the folder) above the
+  brief. The brief is the task's digest (`task_context` without a reader) and the report line; the
+  Start form shows it and the owner may edit it for that run. Its digest budget is
+  `digest_budget_chars`, at most 19,500 characters, so the brief stays within 20,000. The process starts after the commit.
+- **Process tree.** Windows: a job object with kill-on-close, the process started suspended and
+  resumed once it is in the job; Stop terminates the job, so every child dies with it, and the
+  job's handle is closed when the turn ends, which also kills what the turn left running.
+  macOS and Linux: the turn is its own process group; Stop sends SIGTERM to the group and SIGKILL
+  10 s later (a grandchild that starts its own session escapes). A killed turn sends no
+  `SessionEnd` on Windows, so relaybay ends the run's session row itself.
+- **Server stop and start.** Stopping the server stops every running turn (`stopped`, "server
+  stopped") and starts no new one. A start finds `running` runs of a server that crashed and marks them `lost`, their
+  open turns `lost` and the waiting ones `cancelled`.
+- Who may start: the owner, on the board (cookie and CSRF). Agents have no tool for it yet.
+
+<a id="spec-run-login"></a>
+
+**Login check.** relaybay never signs in for the user and never touches credentials: it runs
+`claude auth status` and reads exactly `loggedIn`, `authMethod` and `subscriptionType`; the
+answer's other fields (an e-mail, an organization) are dropped at once, never stored, shown or
+logged, and stderr is not read. Exit code 0 with `loggedIn` true and `authMethod` `claude.ai`:
+"claude: signed in with a subscription", Start goes on. Exit 1 or `loggedIn` false: "claude: not
+signed in", never a turn. `api_key` or `api_key_helper` ("signed in with an API key (usage is billed
+to the key)"), `third_party` ("third-party provider"), `oauth_token` or an answer relaybay cannot
+read: no turn unless the owner allowed other sign-ins in Settings → Agents. A refusal shows the
+reason and the fix for a terminal: `claude`, then `/login` inside it. The run keeps the sign-in
+method only (`run.auth_method`). The same line is `relaybay doctor`'s "claude sign-in" item
+([§5](#spec-doctor)).
+
 <a id="spec-report"></a>
 
 **Report.** Markdown appended to a task, usually at the end of a stage. Its first non-empty line is
@@ -357,7 +432,9 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `environment.access_added`, `environment.access_updated`, `environment.access_removed`,
 `environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`,
 `live.action`, `document.updated`, `memory.added`, `memory.updated`, `block.updated`,
-`project.pulse_set`, the `intake.*` and `backlog.*` events ([§12](#spec-intake))
+`project.pulse_set`, the `intake.*` and `backlog.*` events ([§12](#spec-intake)),
+`run.started`, `run.turn_started`, `run.turn_queued`, `run.turn_ended`, `run.stopped`, `run.ended`,
+`run.lost` (with `project`, `key` and `run_id`), `run.defaults_set`, `settings.run_login_any`
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
@@ -471,6 +548,7 @@ posts; events `filter.saved`, `filter.deleted`.
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Backlog | `/p/<slug>/backlog`, `/backlog` | Backlog items of a project or of all projects ([§12](#spec-backlog)). |
 | Intake | `/settings/intake` | Intake sources and their trust, autonomy per project ([§12](#spec-intake-board)). |
+| Agents | `/settings/agents` | The `claude` runs start, its sign-in, relaybay's hooks and MCP server in the user settings, and the switch for sign-ins that are not a subscription ([below](#spec-board-agents)). |
 | Notifications | `/settings/notifications` | Browser notifications: state and the button that asks for the permission ([below](#spec-board-notify)). |
 | Screenshot | `/files/<id>` | One stored image behind the board cookie ([§9](#spec-security)). |
 | Annotated screenshot | `/files/<id>/annotated` | The latest flattened PNG with the owner's markup ([Annotations](#spec-annotations-flatten)). |
@@ -500,6 +578,39 @@ red-tinted while one is rejected), which opens the dialog on its Review tab. A t
 shows **Plan 2/5** (done / all) with `· draft` while it is not accepted, the number of deviations
 highlighted and `· now: <step in progress>` (one line, cut with an ellipsis), which opens the
 dialog on its Plan tab.
+
+<a id="spec-board-agent"></a>
+
+**Agent block.** The task dialog and the task page show an **Agent** fold above Session, loaded
+from `/p/<slug>/t/<key>/run` and refetched on the card's `run.*` events (not while a text is being
+typed into it). Without an open run it is the Start form: the sign-in line, where relaybay's
+hooks and MCP server come from, every reason Start would be refused, the folder (one of the
+project's repositories, the ones the task touches first), model, effort and permission mode
+(the project's defaults preselected; the owner may pick `bypassPermissions` here for one run), the
+allowed tools and `--chrome` as the project sets them, the brief, and **Start**. With a run (the
+open one, else the latest) it shows status and reason, folder, session, the Claude Code session
+id, total tokens and one row per turn (sent by, queued, outcome, tokens, denials with the tool
+names), then **Stop** while a turn runs, a **Send** text box (Continue, or a text that waits for
+the running turn) and **End run** (asks first). The posts are `/p/<slug>/t/<key>/run/start` and
+`/p/<slug>/t/<key>/run/<id>/send|stop|end`, board only (cookie and CSRF; a Bearer request is
+refused, `403`); a refusal comes back inside the block.
+
+<a id="spec-board-run-defaults"></a>
+
+**Agent defaults.** The Stands & access page has an **Agent defaults** form per project (posted to
+`/p/<slug>/run-defaults`, board only): model (`opus`, `sonnet`, `haiku`; default `opus`), effort
+(`low`, `medium`, `high`, `xhigh`, `max`; default `medium`), permission mode (`manual`, `default`,
+`acceptEdits`, `plan`, `auto`, `dontAsk`; default `auto`, never `bypassPermissions`), allowed tools
+(comma-separated rules, each a tool name, `mcp__<server>` or `Tool(pattern)`; default
+`mcp__relaybay`) and `--chrome` (default off). No MCP tool writes them, so an agent never widens
+its own permissions. A save is a `run.defaults_set` event.
+
+<a id="spec-board-agents"></a>
+
+**Settings → Agents** (`/settings/agents`) shows the `claude` runs start (and whether
+`claude_path` set it), the sign-in line, where relaybay's hooks and MCP server stand in the user
+settings, and a switch that lets runs start under an API key or another sign-in that is not a
+subscription (off by default; board only, a `settings.run_login_any` event).
 
 <a id="spec-board-repos"></a>
 
@@ -1082,6 +1193,15 @@ budget's line, once per session and threshold until the next `SessionStart`.
 
 **Linking a hook session to a relaybay session**, in this order:
 
+00. A run's turn: a run's `claude` has `RELAYBAY_RUN_ID` in its environment; the command hook adds
+    it to `SessionStart` as `relaybay_run`, an http hook sends it as `X-Relaybay-Run`. When that
+    run is open, one of its turns is running and the Claude Code id is the run's own (none known
+    yet, or the same one), the id is linked exactly to the run's session row. Any other
+    `SessionStart` with a run id (a `claude` started inside the turn inherits the variable, or a
+    forged id) gets a plain hook session of its own and is never guessed onto a desktop session.
+    A run's session keeps its card at every turn's `SessionEnd`, like a desktop session. The
+    wake-up long poll never holds a run's session: its process ends with the turn, so owner
+    comments, plan acceptances and messages wait for the next turn's hooks.
 0. Desktop session from the environment: the Claude desktop app runs Claude Code with its own
    session id in `CLAUDE_CODE_HOST_SESSION_ID`. The command hook adds it to `SessionStart` as
    `relaybay_host_session`, with `CLAUDE_CODE_SESSION_ATTENDED` as `relaybay_host_attended`; an
@@ -1316,8 +1436,11 @@ check until apply runs again. With `--wake`, one more group in `Stop` for the wa
   Linux for paths with spaces, `$` or backticks; double quotes on Windows, where a path with `$` or a
   backtick makes the plan an error (nothing is written): both shells would expand it.
 - `http` mode: Claude Code posts itself to `<base>/hooks/claude-code` with
-  `Authorization: Bearer ${RELAYBAY_TOKEN}` and `allowedEnvVars`, 2 s timeout; `RELAYBAY_TOKEN` must
-  be set in Claude Code's environment.
+  `Authorization: Bearer ${RELAYBAY_TOKEN}`, the host session headers and
+  `X-Relaybay-Run: ${RELAYBAY_RUN_ID}` ([§4](#spec-hooks-linking)) and `allowedEnvVars`, 2 s
+  timeout; `RELAYBAY_TOKEN` must be set in Claude Code's environment. http hooks written before
+  the run header shows up still pass `--check`; a run refuses to start until setup is applied
+  again.
 - **Marker:** an entry is relaybay's only when it is a command hook running `-m
   relaybay.hook_client`, `relaybay-hook` (`relaybay-hook.exe`) or `relaybay hook` with `--url <scheme>://<host>:<port>/hooks/claude-code`,
   or an http hook whose URL path is exactly `/hooks/claude-code` on a loopback address or the
@@ -1371,7 +1494,8 @@ away), `Python` (at least 3.12), `OS`,
 folder; it fails when the oldest event waits more than 10 minutes, [§4](#spec-hooks-spool)),
 `token file` (present, not empty,
 on POSIX not readable by others), `Claude Code` (on `PATH`, version at least the minimum supported),
-`desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
+`claude sign-in` (the [login check](#spec-run-login) line; red when not signed in, green with "runs
+need Settings → Agents to allow it" for an API key or another method), `desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
 (the hash of the global rules from the settings; fails when the running server started with another
 one, reported in `/healthz`, i.e. it needs a restart; versions accepted since do not count), then the Claude Code items of the check (`hooks in user
@@ -2292,6 +2416,19 @@ Nothing of this leaves the machine.
     authenticity, since nothing is signed; downloads come only from the project's GitHub release
     URLs over HTTPS ([§13](#spec-updates)).
 
+<a id="spec-security-runs"></a>
+
+**Runs on the machine** ([§1](#spec-run)). The program **may**: start the user's own `claude`
+(found as [§1](#spec-run) says) in one of a project's repositories, with the flags listed there;
+run `claude auth status` and read the sign-in method; kill the process trees it started; read the
+user's Claude Code settings and `~/.claude.json` to see whether relaybay's hooks and MCP server are
+there. It **may not**: run git commit, push or any other git write itself; change the user's
+Claude Code settings outside `relaybay setup`; read, store or show credentials, the e-mail or the
+organization of the sign-in; pass `--dangerously-skip-permissions` or `--bare`. Only the owner
+starts, stops, continues or ends a run, on the board (cookie and CSRF). A forged `RELAYBAY_RUN_ID`
+can link a hook session only while that run's turn runs and its Claude Code id is unknown or the
+same.
+
 <a id="spec-security-forms"></a>
 
 **Full-page forms** (Stands & access, Settings → Policy, Settings → Integrations without htmx)
@@ -2341,6 +2478,11 @@ flags: [configuration reference](reference/configuration.md); policy keys:
 
 The data directory itself is `--home`, else `RELAYBAY_HOME`, else `data_dir` in `desktop.toml`
 ([§13](#spec-desktop-settings)), else the per-user data dir; `relaybay doctor` names which one.
+
+`claude_path` (`RELAYBAY_CLAUDE_PATH`) names the `claude` a run starts; without it relaybay takes
+`claude` on `PATH`, then the usual install folders (`~/.local/bin`, `~/.claude/local`,
+`/opt/homebrew/bin`, `/usr/local/bin`; on Windows `%USERPROFILE%\.local\bin\claude.exe` and
+`%APPDATA%\npm\claude.cmd`), which a program started from the desktop may miss on `PATH`.
 
 **Distribution.** The version lives only in `pyproject.toml`; `relaybay --version`, `/healthz` and
 the MCP server info read it from the installed package (the frozen program carries the package
@@ -2395,6 +2537,9 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0027_session_messages` | `session_message` (sender session, name and whether a hook proved it; recipient session and name; task; body; `in_reply_to`, depth; created, delivered and read at, whether a hook proved who read; Stop blocks; loop stopped and seen at) ([§1](#spec-session-messages)). Additive only |
 | `0028_task_rank` | `task.rank` (default 0) and an index on project, stage and rank; existing tasks ranked 1..n per project and stage in the order the board showed (`priority` desc, `updated_at` desc, `id` desc), so no card moves ([§2](#spec-board-order)). Additive only |
 | `0029_project_repos` | `project_repo` (project, name unique per project, path, kind, position, created / updated at), `task_repo` (task, repository, added by, how `auto` / `agent` / `owner`, added at; unique per task and repository), `task_pr` (task, optional repository, url unique per task, number, title, added by / at), an index on open `task_session` rows by session; seeded one repository per project with a `repo_path` ([§1](#spec-project-repos)). Additive only |
+| `0030_project_run_defaults` | `project_run_defaults` (project, folder, model, effort, permission mode, allowed tools, chrome, updated at / by), `app_setting` (key, value, updated at / by; `run_login_any`). Additive only, no backfill: a project without a row has the defaults ([§2](#spec-board-run-defaults)) |
+| `0031_run` | `run` (task, project, its session, cwd, cwd repository, model, effort, permission mode, allowed tools, chrome, Claude Code session id, status with all seven values, reason, sign-in method, where hooks and MCP come from, started by and its kind, created / updated / ended at, ended by); one open run per task and one run per Claude Code session (unique indexes) ([§1](#spec-run)). Additive only |
+| `0032_run_turn` | `run_turn` (run, sequence, text, sent by and its kind, queued / started / ended at, pid, outcome, result subtype, exit code, number of turns, duration, four token counts, denials and denied tool names); a unique index allows one running turn per run. Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

@@ -121,8 +121,8 @@ def test_flags_the_real_cli_is_called_with(local: Local) -> None:
     assert bare.returncode != 0 and "--bare" in bare.stderr
     no_verbose = local.cli("-p", "x", "--output-format", "stream-json")
     assert no_verbose.returncode != 0 and "requires --verbose" in no_verbose.stderr
-    unknown = local.cli("-p", "x", "--chrome")
-    assert unknown.returncode != 0 and "--chrome" in unknown.stderr
+    unknown = local.cli("-p", "x", "--no-such-flag")
+    assert unknown.returncode != 0 and "--no-such-flag" in unknown.stderr
     assert local.cli("-p", "x").returncode == 2  # no scenario: it never falls back to anything
 
 
@@ -312,7 +312,8 @@ def test_probe_reads_the_servers_of_both_runs(local: Local) -> None:
     )
     assert done.returncode == 0, done.stderr
     assert "claude.ai Demo: connected" in done.stdout
-    assert "--chrome" in done.stdout and "exit 1" in done.stdout  # the fake refuses --chrome
+    # The fake takes --chrome and connects no browser server for it.
+    assert "--- only with --chrome: \n" in done.stdout
     refused = subprocess.run(
         [sys.executable, str(REPO / "scripts" / "probe_claude.py")],
         env={**env, "CI": "true"},

@@ -15,15 +15,20 @@ from relaybay.machine_setup import (
     plan_apply,
     write_change,
 )
+from relaybay.runner.auth import LoginState, check_login
 
 NEW = Detection(claude_path="/usr/local/bin/claude", claude_version="2.1.300 (Claude Code)")
 TOO_OLD = Detection(claude_path="/usr/local/bin/claude", claude_version="1.0.90 (Claude Code)")
+
+
+SIGNED_IN = LoginState(True, "claude.ai", "max", 0, readable=True)
 
 
 @pytest.fixture(autouse=True)
 def fake_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test runs the real `claude` binary."""
     monkeypatch.setattr(doctor, "detect", lambda **_: NEW)
+    monkeypatch.setattr(doctor, "check_login", lambda *_: SIGNED_IN)
 
 
 @pytest.fixture
@@ -158,3 +163,35 @@ def test_cli_reports_broken_settings_as_json(
         {"ok": False, "name": "settings", "detail": results[0]["detail"]},
     ]
     assert "port must be an integer" in results[0]["detail"]
+
+
+def test_claude_sign_in_line_per_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def answering(code: int, **fields: object):
+        body = json.dumps({**fields, "email": "owner@example.invalid", "orgName": "Acme Org"})
+
+        def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            assert argv[1:] == ["auth", "status"]
+            return subprocess.CompletedProcess(argv, code, body, "")
+
+        return run
+
+    monkeypatch.setattr(doctor, "check_login", check_login)  # the real one, a fake process
+    cases = [
+        (answering(0, loggedIn=True, authMethod="claude.ai", subscriptionType="max"), True),
+        (answering(1, loggedIn=False, authMethod="none"), False),
+        (answering(0, loggedIn=True, authMethod="api_key"), True),
+        (answering(0, loggedIn=True, authMethod="third_party"), True),
+    ]
+    details = []
+    for run, ok in cases:
+        item = doctor._login_check(NEW, run)
+        assert item.name == "claude sign-in" and item.ok is ok
+        details.append(item.detail)
+    assert details[0] == "claude: signed in with a subscription (max)"
+    assert "not signed in" in details[1] and "/login" in details[1]
+    assert details[2].endswith("runs need Settings → Agents to allow it")
+    assert "third-party provider" in details[3]
+    assert not any("example.invalid" in d or "Acme Org" in d for d in details)
+    assert not doctor._login_check(Detection(), answering(0)).ok

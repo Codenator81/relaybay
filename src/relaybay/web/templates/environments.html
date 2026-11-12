@@ -136,7 +136,7 @@
 
   <section class="panel" id="repos">
     <h2>Repositories</h2>
-    <p class="muted">The project's code: tasks link the ones they touch and show them with "Open in VS Code". A path is stored as written; relaybay never opens it. The first one is the project's repository path.</p>
+    <p class="muted">The project's code: tasks link the ones they touch and show them with "Open in VS Code". A path is stored as written; a run on a card starts <code>claude</code> in one of them. The first one is the project's repository path.</p>
     {% if repos %}
     <ul class="repo-list">
       {% for r in repos %}
@@ -166,6 +166,32 @@
       {{ error_for("repo-new") }}
       {{ repo_form(None, "/p/" ~ project.slug ~ "/repos") }}
     </details>
+  </section>
+
+  <section class="panel" id="run-defaults">
+    <h2>Agent defaults</h2>
+    <p class="muted">What a run on a card of this project starts with: your own <code>claude</code>, one turn at a time. The Start form may change model, effort and mode for one run; only this page changes the defaults.</p>
+    {{ error_for("run-defaults") }}
+    <form class="task-form" method="post" action="/p/{{ project.slug }}/run-defaults">
+      {{ hidden_csrf() }}
+      <div class="field-row">
+        <label class="field"><span>Model</span>
+          <select name="model">{% for m in run_choices.models %}<option value="{{ m }}"{% if m == run_defaults.model %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        </label>
+        <label class="field"><span>Effort</span>
+          <select name="effort">{% for e in run_choices.efforts %}<option value="{{ e }}"{% if e == run_defaults.effort %} selected{% endif %}>{{ e }}</option>{% endfor %}</select>
+        </label>
+        <label class="field"><span>Permission mode</span>
+          <select name="permission_mode">{% for m in run_choices.modes %}<option value="{{ m }}"{% if m == run_defaults.permission_mode %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        </label>
+      </div>
+      <label class="field"><span>Allowed tools (comma-separated rules, each passed with its own --allowedTools)</span>
+        <input name="allowed_tools" maxlength="2000" value="{{ run_defaults.allowed_tools }}" spellcheck="false">
+      </label>
+      <input type="hidden" name="chrome" value="0">
+      <label class="field field-check"><input type="checkbox" name="chrome" value="1"{% if run_defaults.chrome %} checked{% endif %}> <span>Pass --chrome (the browser extension's tools)</span></label>
+      <button type="submit" class="btn primary">Save</button>
+    </form>
   </section>
 
   {% for e in environments %}

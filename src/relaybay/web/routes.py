@@ -30,6 +30,7 @@ from relaybay.config import Settings
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
+from relaybay.domain import runs as run_rules
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
 from relaybay.domain.backlog import ASSIGNEE_MAX
@@ -52,6 +53,7 @@ from relaybay.domain.usage import UsageReport
 from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
+from relaybay.runner import auth as run_auth
 from relaybay.security import (
     COOKIE_NAME,
     CSRF_FIELD,
@@ -205,6 +207,15 @@ EVENT_KINDS = (
     "budget.warned",
     "budget.exceeded",
     "concurrency.over",
+    "run.started",
+    "run.turn_started",
+    "run.turn_queued",
+    "run.turn_ended",
+    "run.stopped",
+    "run.ended",
+    "run.lost",
+    "run.defaults_set",
+    "settings.run_login_any",
 )
 CSRF_HEADER = "x-relaybay-csrf"
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
@@ -216,6 +227,11 @@ ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "lev
 JOURNAL_LIMIT = 20
 DOCS_DECISIONS = 200
 DOC_NEW_FIELDS = ("doc", "title", "kind", "source_url", "body", "reason")
+RUN_CHOICES = {
+    "models": run_rules.MODELS,
+    "efforts": run_rules.EFFORTS,
+    "modes": run_rules.PERMISSION_MODES,
+}
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
@@ -1470,6 +1486,102 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return RedirectResponse(f"/p/{slug}?task={task.key}&tab=plan", status_code=303)
         return await plan_panel(request, task)
 
+    # --- Agent: a run of the user's own claude on the card ---------------------------------
+
+    async def run_panel(request: Request, task: Task, error: str | None = None) -> HTMLResponse:
+        fresh = await service.get_task(task.key)
+        view = await service.run_view(fresh)
+        form = await service.run_form(fresh) if view is None or not view.run.is_open else None
+        runs = service.runs
+        running = view is not None and runs is not None and runs.is_running(view.run.id)
+        return render(
+            request,
+            "_run.html",
+            t=fresh,
+            view=view,
+            form=form,
+            running=running,
+            error=error,
+            choices=RUN_CHOICES,
+            owner_modes=run_rules.PERMISSION_MODES + run_rules.OWNER_ONLY_MODES,
+        )
+
+    @router.get("/p/{slug}/t/{key}/run", response_class=HTMLResponse)
+    async def run_fragment(request: Request, slug: str, key: str):
+        return await run_panel(request, await find_task(slug, key))
+
+    async def run_write(
+        request: Request,
+        slug: str,
+        key: str,
+        csrf: str,
+        write: Callable[[Task, Any], Awaitable[Any]],
+    ) -> Response:
+        """A board act on the card's run: an htmx swap of the panel with the reason in it on a
+        refusal (200, so htmx swaps it), or a redirect for a plain form post."""
+        board_only(request, csrf)
+        task = await find_task(slug, key)
+        form = await request.form()
+        htmx = "hx-request" in request.headers
+        try:
+            await write(task, form)
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            if not htmx:
+                raise
+            return await run_panel(request, task, error=str(exc))
+        if not htmx:
+            return RedirectResponse(f"/p/{slug}?task={task.key}", status_code=303)
+        return await run_panel(request, task)
+
+    async def run_of(task: Task, run_id: int) -> int:
+        run = await service.get_run(run_id)
+        if run.task_id != task.id:
+            raise NotFoundError(f"Run #{run_id} is not on {task.key}.")
+        return run.id
+
+    @router.post("/p/{slug}/t/{key}/run/start", response_class=HTMLResponse)
+    async def run_start(
+        request: Request, slug: str, key: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        async def write(task: Task, form: Any) -> None:
+            repo_text = str(form.get("repo") or "").strip()
+            await service.start_run(
+                task.key,
+                actor="owner",
+                repo_id=int(repo_text) if repo_text.isdigit() else None,
+                model=str(form.get("model") or "") or None,
+                effort=str(form.get("effort") or "") or None,
+                mode=str(form.get("permission_mode") or "") or None,
+                brief=str(form.get("brief") or ""),
+            )
+
+        return await run_write(request, slug, key, csrf, write)
+
+    @router.post("/p/{slug}/t/{key}/run/{run_id}/{action}", response_class=HTMLResponse)
+    async def run_action(
+        request: Request,
+        slug: str,
+        key: str,
+        run_id: int,
+        action: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if action not in ("send", "stop", "end"):
+            raise HTTPException(status_code=404)
+
+        async def write(task: Task, form: Any) -> None:
+            own = await run_of(task, run_id)
+            if action == "send":
+                await service.send_to_run(own, str(form.get("text") or ""), actor="owner")
+            elif action == "stop":
+                await service.stop_run(own, actor="owner")
+            else:
+                await service.end_run(own, actor="owner")
+
+        return await run_write(request, slug, key, csrf, write)
+
     @router.get("/files/{attachment_id}")
     async def attachment_file(attachment_id: int) -> Response:
         """A stored screenshot, behind the board cookie, with its checked type; nosniff and the
@@ -1625,6 +1737,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             environments=items,
             repos=(await service.project_repos(project.slug))[1],
             repo_kinds=REPO_KINDS,
+            run_defaults=await service.run_defaults(project.slug),
+            run_choices=RUN_CHOICES,
             proposals=await service.proposals(project.slug),
             policies=await service.environment_policies(items),
             project_policy=await service.effective_policy(project.slug),
@@ -1750,6 +1864,23 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await environment_write(
             request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}", "Environment saved."
+        )
+
+    @router.post("/p/{slug}/run-defaults")
+    async def save_run_defaults(
+        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        async def write(form: Any) -> None:
+            values = {
+                name: str(form.get(name) or "")
+                for name in ("model", "effort", "permission_mode", "allowed_tools")
+            }
+            await service.set_run_defaults(
+                slug, {**values, "chrome": form.getlist("chrome")[-1:] == ["1"]}, actor="owner"
+            )
+
+        return await environment_write(
+            request, slug, csrf, "run-defaults", write, "#run-defaults", "Agent defaults saved."
         )
 
     @router.post("/p/{slug}/repos")
@@ -2273,6 +2404,39 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/settings")
     async def settings_index() -> Response:
         return RedirectResponse("/settings/integrations", status_code=303)
+
+    @router.get("/settings/agents", response_class=HTMLResponse)
+    async def agents_settings(request: Request):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        flash = take_flash(request)
+        runs = service.runs
+        login = await runs.login() if runs is not None else None
+        response = await page(
+            request,
+            "agents.html",
+            "settings",
+            available=runs is not None,
+            claude=runs.claude() if runs is not None else None,
+            claude_setting=settings.claude_path,
+            login=login,
+            login_line=run_auth.login_line(login) if login is not None else "",
+            layers=await service.run_layers(),
+            login_any=await service.run_login_any(),
+            fix_command=run_auth.FIX_COMMAND,
+            message=flash.get("message"),
+            last_event_id=last_event_id,
+        )
+        return shown_once(request, response)
+
+    @router.post("/settings/agents/login-methods", response_class=HTMLResponse)
+    async def agents_login_methods(
+        request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        board_only(request, csrf)
+        # A hidden "0" comes before the checkbox, so the last value is the state.
+        allow = (await request.form()).getlist("allow")[-1:] == ["1"]
+        await service.set_run_login_any(allow, actor="owner")
+        return flash_redirect(request, "/settings/agents", message="Saved.")
 
     @router.get("/settings/notifications", response_class=HTMLResponse)
     async def notifications(request: Request):

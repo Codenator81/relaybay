@@ -330,11 +330,20 @@ class Settings:
         default=None,  # None: the real home directory
         metadata=_doc(
             "Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor,"
-            " Integrations).",
+            " Integrations). Runs on cards start only when it is unset or the home folder.",
             key="claude_home",
             env="RELAYBAY_CLAUDE_HOME",
             flag="--claude-home",
             default="your home directory",
+        ),
+    )
+    claude_path: Path | None = field(
+        default=None,  # None: found on PATH, then in the usual install folders
+        metadata=_doc(
+            "The `claude` a run on a card starts (the user's own, unmodified CLI).",
+            key="claude_path",
+            env="RELAYBAY_CLAUDE_PATH",
+            default="`claude` on PATH, then the usual install folders",
         ),
     )
     update_check: bool = field(
@@ -579,6 +588,11 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         settings.desktop_link_template = template
     if "claude_home" in data:
         settings.claude_home = Path(str(data["claude_home"])).expanduser()
+    if "claude_path" in data:
+        value = str(data["claude_path"]).strip()
+        if not value:
+            raise ValueError(f"{source}: claude_path must be the path of the claude program")
+        settings.claude_path = Path(value).expanduser()
     if "policy_file" in data:
         settings.policy_file = Path(str(data["policy_file"])).expanduser()
     if "allowed_hosts" in data:

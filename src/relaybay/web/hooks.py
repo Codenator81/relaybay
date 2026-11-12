@@ -14,6 +14,8 @@ from relaybay.domain.hooks import (
     HOOK_PATH,
     HOST_SESSION_FIELD,
     HOST_SESSION_HEADER,
+    RUN_FIELD,
+    RUN_HEADER,
     SPOOLED_FIELD,
     WAKE_HOLD_SECONDS,
     WAKE_PATH,
@@ -75,6 +77,9 @@ def build_hooks_router(
             # http hooks: the desktop session id comes as a header (command hooks: in the body).
             payload.setdefault(HOST_SESSION_FIELD, host)
             payload.setdefault(ATTENDED_FIELD, request.headers.get(ATTENDED_HEADER, ""))
+        run_id = request.headers.get(RUN_HEADER)
+        if run_id and isinstance(payload, dict):
+            payload.setdefault(RUN_FIELD, run_id)
         if not (isinstance(payload, dict) and SPOOLED_FIELD in payload):
             stopped = await service.brake_stop(payload)
             if stopped is not None:

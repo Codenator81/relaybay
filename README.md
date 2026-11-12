@@ -165,6 +165,16 @@ program as its client:
   rules version. Rules are versioned: agents change them with `rules_propose` and the owner accepts or
   rolls back in Settings → Rules. A stage move that misses a rule succeeds with a warning (or is refused with
   `rules_mode = "strict"`), in MCP responses and on the board.
+- **Runs on a card** — relaybay can start your own unmodified `claude` on a card, on your
+  machine only, under your own subscription sign-in; it never signs in for you or reads
+  credentials, and refuses API-key sign-ins unless you allow them in Settings. The card's Agent
+  block starts the first turn in one of the project's repositories with a brief built from the
+  card, then each Continue resumes the same Claude Code session (`--resume`); a text sent during a
+  turn waits for it, Stop kills the turn's whole process tree, and the card shows the status, the
+  Claude session id and each turn's tokens. The run's hooks report to its own session row on the
+  card. Start needs relaybay's hooks and MCP server in your Claude Code user settings
+  (`relaybay setup`); project defaults (model, effort, permission mode, allowed tools) are on
+  Stands & access, the sign-in switch in Settings → Agents.
 - **Desktop program** — an installer per OS puts relaybay in the tray with the board in its own
   window (on Linux in the browser) and the server inside: start at login, Restart server and Logs
   in the tray menu, a daily update check with **Update to X.Y.Z** that downloads and checks the
@@ -246,6 +256,7 @@ variables, then command-line flags.
 | legacy: the guard mode (`off`, `log`, `warn`, `block`), a layer under the policy file | from the policy (`warn`) | `RELAYBAY_GUARD_MODE` | — |
 | legacy: agents' level per environment kind (`[permission_defaults]`), a layer under the policy file | from the policy (local `full`, test `full`, live `read`) | — | — |
 | folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
+| the `claude` a run on a card starts (`claude_path`) | `claude` on PATH, then the usual install folders | `RELAYBAY_CLAUDE_PATH` | — |
 | extra folders `attach_file` may read screenshots from (besides the project repository and the temp folder) | none | `RELAYBAY_ATTACHMENT_ROOTS` (comma-separated) | — |
 | largest screenshot / screenshots per task, MB | `10` / `200` | `RELAYBAY_ATTACHMENTS_MAX_MB` / `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — |
 | the server's update check of the latest GitHub release (`update_check`) | `true` | `RELAYBAY_UPDATE_CHECK` | — |
@@ -318,8 +329,9 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.5.0** — intake from chats and e-mail with an autonomy switch, the backlog.
 - **0.6.0** — the desktop program: installers, tray, window, autostart, updates.
 - **0.6.1** — desktop fixes: the program follows the machine's theme, the window keeps its state.
-- **0.7+, agents inside** — a runner and embedded terminal with your own `claude`, role profiles,
-  coordinator and manager pages.
+- **0.9, agents inside** — runs on a card with your own `claude` (the first part is in), then
+  questions and approvals on the board, slots and memory limits; the embedded terminal in 0.10,
+  the coordinator and schedules in 0.11.
 - **0.7+, workers** — scheduled workers per project.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.

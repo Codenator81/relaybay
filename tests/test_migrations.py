@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 29
+LATEST = 32
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -385,6 +385,52 @@ async def test_upgrade_from_0027_ranks_tasks_in_the_order_the_board_showed(
     try:
         async with conn.execute("PRAGMA index_list(task)") as cur:
             assert "task_board_order" in {row[1] for row in await cur.fetchall()}
+        assert await migrate(conn) == LATEST
+    finally:
+        await conn.close()
+
+
+async def test_upgrade_from_0029_adds_the_run_tables(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    folder = resources.files("relaybay.db").joinpath("migrations")
+    names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0030")
+    sql = "\n".join(folder.joinpath(n).read_text(encoding="utf-8") for n in names)
+    conn = await connect(db)
+    try:
+        await conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = 29;\nCOMMIT;")
+        await conn.execute(
+            "INSERT INTO project (slug, name, task_seq, created_at, updated_at)"
+            " VALUES ('acme-shop', 'Acme Shop', 1, ?, ?)",
+            (NOW, NOW),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    svc = Service(db)
+    await svc.start()
+    try:
+        defaults = await svc.run_defaults("acme-shop")
+        assert (defaults.model, defaults.effort, defaults.permission_mode) == (
+            "opus",
+            "medium",
+            "auto",
+        )
+        assert defaults.allowed_tools == "mcp__relaybay" and not defaults.chrome
+        assert await svc.run_login_any() is False  # no row: off
+    finally:
+        await svc.close()
+
+    conn = await connect(db)
+    try:
+        for table, wanted in (
+            ("run", {"run_open_task", "run_claude_session", "run_project"}),
+            ("run_turn", {"run_turn_active", "run_turn_queued"}),
+        ):
+            async with conn.execute(f"PRAGMA index_list({table})") as cur:
+                assert wanted <= {row[1] for row in await cur.fetchall()}
+        async with conn.execute("SELECT COUNT(*) FROM project_run_defaults") as cur:
+            assert (await cur.fetchone())[0] == 0  # no backfill
         assert await migrate(conn) == LATEST
     finally:
         await conn.close()

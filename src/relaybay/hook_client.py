@@ -33,6 +33,8 @@ from relaybay.domain.hooks import (
     HOST_SESSION_ENV,
     HOST_SESSION_FIELD,
     LAUNCH_TOOLS,
+    RUN_FIELD,
+    RUN_ID_ENV,
     SPOOLED_FIELD,
     WAKE_HOLD_SECONDS,
 )
@@ -83,16 +85,20 @@ def post(url: str, token: str, body: bytes, timeout: float) -> bytes:
 
 
 def with_host_session(body: bytes) -> bytes:
-    """SessionStart gets the desktop session id from the environment Claude Code runs hooks in;
-    any other body is forwarded as it is (it is not even parsed)."""
+    """SessionStart gets the desktop session id and the relaybay run id from the environment
+    Claude Code runs hooks in; any other body is forwarded as it is (it is not even parsed)."""
     host = os.environ.get(HOST_SESSION_ENV)
-    if not host or b'"SessionStart"' not in body:
+    run_id = os.environ.get(RUN_ID_ENV)
+    if not (host or run_id) or b'"SessionStart"' not in body:
         return body
     payload = json.loads(body)
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
         return body
-    payload[HOST_SESSION_FIELD] = host
-    payload[ATTENDED_FIELD] = os.environ.get(ATTENDED_ENV, "")
+    if host:
+        payload[HOST_SESSION_FIELD] = host
+        payload[ATTENDED_FIELD] = os.environ.get(ATTENDED_ENV, "")
+    if run_id:
+        payload[RUN_FIELD] = run_id
     return json.dumps(payload).encode("utf-8")
 
 

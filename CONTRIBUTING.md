@@ -44,7 +44,14 @@ comes with a test.
 `claude -p` (a JSON scenario instead of a model), found on PATH through a shim in a temporary folder.
 It runs the hook commands from a temporary Claude home as real processes and calls MCP through the
 SDK client. Assert by polling, never by a fixed wait; keep the folder under 60 s. A feature that
-changes what a session sees gets a scenario there. Against the real CLI, by hand and never in CI:
+changes what a session sees gets a scenario there. Runs on cards (`tests/e2e/test_runs.py`) let the
+server start the fake itself: the `runs` fixture puts `FAKE_CLAUDE_SCENARIO`, `FAKE_CLAUDE_TRACE`
+and `FAKE_CLAUDE_AUTH` (the JSON answer and exit code of `claude auth status`; without it, a
+subscription sign-in) into the environment the server passes on. The fake takes the prompt from
+stdin when it is missing (a `claude.cmd` shim), `--model`, `--effort`, `--chrome` and the `manual`
+mode; a scenario may give `turns` (one list of steps per turn of a session) and the steps
+`spawn_child` (a sleeping grandchild that writes its pid) and `exit` (no result); each run traces
+its argv, prompt and `RELAYBAY_RUN_ID` (`kind: argv`) and its end (`kind: turn_end`). Against the real CLI, by hand and never in CI:
 `RELAYBAY_E2E_REAL_CLAUDE=1 uv run pytest tests/e2e/test_real_claude.py` and
 `uv run python scripts/probe_claude.py` (both use your login and spend a little quota).
 

@@ -29,6 +29,7 @@ from relaybay.machine_setup import (
     run_quiet,
     server_checks,
 )
+from relaybay.runner.auth import check_login, login_line
 
 MIN_PYTHON = (3, 12)
 SPOOL_LATE = timedelta(minutes=10)  # spooled events older than this: the server stays away
@@ -49,6 +50,20 @@ def _claude_check(found: Detection) -> Check:
         return Check(False, name, f"{found.claude_path}: version unknown ({reason})")
     detail = f"{_version_text(version)} at {found.claude_path} (minimum supported {minimum})"
     return Check(version >= MIN_CLAUDE_CODE_VERSION, name, detail)
+
+
+def _login_check(found: Detection, run: Callable[..., Any]) -> Check:
+    """`claude auth status`, read for the sign-in method only (never the account fields)."""
+    name = "claude sign-in"
+    if not found.claude_path:
+        return Check(False, name, "not checked: claude not found")
+    state = check_login(found.claude_path, run)
+    line = login_line(state)
+    if state.error is not None or not state.logged_in:
+        return Check(False, name, f"{line}; sign in in a terminal: claude, then /login inside it")
+    if state.is_subscription:
+        return Check(True, name, line)
+    return Check(True, name, f"{line}; runs need Settings → Agents to allow it")
 
 
 def _data_dir_check(settings: Settings) -> Check:
@@ -248,6 +263,7 @@ def doctor_checks(
     token_item, token = _token_check(settings)
     checks.append(token_item)
     checks.append(_claude_check(found))
+    checks.append(_login_check(found, run))
     checks.append(Check(True, "desktop app", found.desktop_app or "not found (optional)"))
 
     if token is None:
