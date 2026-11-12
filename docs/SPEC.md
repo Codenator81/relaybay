@@ -526,7 +526,8 @@ Back to the program) the queue decides, in the transaction that would mark it st
   run or one with the owner holds none). The count is read in the same write transaction that
   marks a turn started, so two starts can never both take the last slot.
 - **Memory.** This machine's free memory, read just before that transaction, must be at least
-  `min_free_memory_mb` (default 1500; 0 turns the check off). Read by platform code, no `psutil`:
+  `min_free_memory_mb` (default 1500; 0 turns the check off). Each turn started on one reading
+  takes the need off it, so one reading never starts several turns that together need more. Read by platform code, no `psutil`:
   Windows `GlobalMemoryStatusEx` (`ullAvailPhys`), Linux `MemAvailable` of `/proc/meminfo`, macOS
   `vm_stat` (free, speculative and inactive pages times its page size; not yet seen on a Mac). When
   it cannot be read (an older kernel, `vm_stat` missing), the check lets the turn start and the
@@ -540,7 +541,9 @@ memory: 1.2 GB free, 1.5 GB needed` or `braked (<target>): <reason>`; a `run.tur
 with the reason when the reason changes (the Audit page lists it). Turns that wait start by
 themselves, first queued first over all runs (by when their first waiting text was queued), when
 a turn ends (its slot frees), when the owner changes a limit, and at the server's re-check every
-15 s (memory that recovered, a brake released). Nothing is refused silently.
+15 s (memory that recovered, a brake released). While the server stops nothing starts: the turns
+that end then free no slot for another run, and a turn that would have started stays queued
+("waiting for the server to start again") for the next server. Nothing is refused silently.
 
 **Start anyway** (the board only, cookie and CSRF: the card's Agent block and the Inbox) starts a
 queued run's waiting turn past both the slot limit and the memory check; it does not go past a
@@ -570,32 +573,41 @@ worktree neither removed nor kept, or traces still to delete):
 - **The run ends** as End does: a running turn is stopped first, waiting texts are cancelled; the
   reason is "the card went to done".
 - **Worktrees.** Each worktree a run of the card created (`created_by_run`; never a repository used
-  in place, never anything else) is looked at: `git status --porcelain --untracked-files=all` (the
-  files relaybay copied in count only when they differ from the source now) and the commits of its
-  `HEAD` on no remote and on no other local branch (`git rev-list --count HEAD --not --remotes
-  --exclude=<the run's branch> --exclude=<its current branch> --branches`; the branch stays when the
-  worktree goes, so its commits are not lost either way). Nothing left: the copied files are deleted
-  and `git -C <repository> worktree remove <path>` runs without `--force`, so git itself refuses a
-  worktree with changes; files git ignores (build output, `node_modules`) go with it, as git does;
-  the run's folder goes too once empty. Work left, or git refusing: the worktree stays,
+  in place, never anything else) is looked at. Work left is: a tracked change, an untracked file,
+  an ignored file or folder the run made (`git status --porcelain --untracked-files=all
+  --ignored=matching`: build output such as `dist/` or `node_modules/` counts, since git would
+  delete it; an ignored folder that holds copies is looked into file by file), a copied file that
+  differs from the source now or is gone (each file relaybay copied in is compared with the source
+  directly, ignored or not), and commits of its `HEAD` on no remote and on no other local branch
+  (`git rev-list --count HEAD --not --remotes --exclude=<the run's branch> --exclude=<its current
+  branch> --branches`; the branch stays when the worktree goes, so its commits are not lost either
+  way). Nothing left: the copies, all still equal to the source, are moved to
+  `<data folder>/runs/<run>/copies-<worktree>/` and `git -C <repository> worktree remove <path>`
+  runs without `--force`; when git refuses (a locked worktree, a busy file), the copies are moved
+  back. The run's folder goes too once empty. Work left, or git refusing: the worktree stays,
   `run_worktree.kept_reason` says why ("uncommitted changes (a.txt, b.txt)", "1 commit not on any
   remote", git's first line), the card lists it, and relaybay asks the owner a blocking question on
   the card (asked by `relaybay`, options `remove` and `keep`, default `keep`). **remove**:
   `git worktree remove --force` (the owner decided, so what was left goes; the branch stays);
-  **keep**: it stays (`kept_at`) and is not asked about again. A worktree already gone from disk is
-  marked removed. A card reopened and closed again asks again about a kept worktree whose question
-  was withdrawn. Events `run.worktree_removed` (with `forced` on the owner's remove) and
+  **keep**: it stays (`kept_at`) and is not asked about again. **remove** is not carried out (an
+  event says why) when the card is no longer in done or an open run works in that path. A card
+  that leaves done withdraws relaybay's open questions about its worktrees; closed again, it asks
+  anew. A worktree already gone from disk is marked removed. Events `run.worktree_removed` (with `forced` on the owner's remove) and
   `run.worktree_kept`, on the Audit page.
 - **Traces.** A run that saw a secret (above) or touched a live stand (the guard saw one of its
   calls on a live environment, allowed or not: `run.touched_live_at`, a `run.touched_live` event)
-  loses its stored lines and its Claude Code transcript. The transcript is only a file named
-  `<the run's Claude Code session id>.jsonl` directly in a folder of `projects` under Claude
-  Code's data folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`), a regular file and not a link: the
-  path computed when the session id came (`projects/<cwd with every character but letters and
-  digits as ->/<id>.jsonl`, `run.transcript_path`), the path the run's hooks reported, or found by
-  that name; the subagent transcripts in the session's own folder stay. One `run.traces_deleted`
-  event names the reason, the number of lines and the files deleted (and any that could not be);
-  `run.deleted_at` is set.
+  loses its stored lines and what Claude Code keeps of its session under its data folder
+  (`CLAUDE_CONFIG_DIR`, else `~/.claude`), for the run's own session id only (a UUID): the
+  transcript `projects/<encoded cwd>/<id>.jsonl` (the path computed when the session id came,
+  `run.transcript_path`, with every character of the cwd but letters and digits as `-`; the path
+  the run's hooks reported; or found by that name), the session's folder next to it
+  (`projects/<encoded cwd>/<id>/`: subagent transcripts, tool results, its title),
+  `file-history/<id>/` and `session-env/<id>/`. Each must sit exactly there once links are
+  resolved, with no link or junction from `projects`, `file-history` or `session-env` (included)
+  down to it; a folder is deleted without following links inside it. One `run.traces_deleted`
+  event names the reason, the number of lines and what was deleted (and what could not be).
+  `run.deleted_at` is set only when everything went; otherwise the server's re-check tries again,
+  with a new event only when what failed changes.
 - **Retention.** A project keeps its runs' lines `run_retention` days (default 30; Stands & access →
   Agent defaults), or `off`: no line is stored and those stored go. The server deletes older lines
   hourly, with one `run.events_expired` event per project that lost some.

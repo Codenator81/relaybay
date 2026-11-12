@@ -6,6 +6,7 @@ import base64
 import binascii
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -1075,6 +1076,7 @@ RETENTION_SECONDS = 3600.0  # how often old run lines are deleted
 # The options of relaybay's question about a worktree a card's close kept.
 WORKTREE_REMOVE = "remove"
 WORKTREE_KEEP = "keep"
+SERVER_STOPPING = "waiting for the server to start again"
 
 
 @dataclass(slots=True)
@@ -1329,6 +1331,7 @@ class Service:
         self._closings: dict[int, asyncio.Task[None]] = {}
         self._brake_stops: set[asyncio.Task[None]] = set()
         self._braked_runs: set[int] = set()  # a brake stop of these is under way
+        self._trace_failures: dict[int, list[str]] = {}  # per run: what its last delete left
         self._retention_at: float | None = None  # monotonic time of the last retention pass
 
     async def start(self) -> None:
@@ -4129,6 +4132,8 @@ class Service:
             )
             if diff["stage"] == Stage.DONE:
                 await self._close_owner_items(tx, task, actor)
+            elif task.stage == Stage.DONE:
+                await self._withdraw_worktree_questions(tx, task, actor)
         # An automatic unlog has its own event; a new issue's reset is an ordinary change.
         others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
         others |= linked
@@ -11145,7 +11150,15 @@ class Service:
         on the run, a free slot (turns running over all runs, counted in this transaction, so
         two starts cannot both take the last one) and `free_mb` (read before the transaction;
         None: not readable, no check) at least the need. A turn that may not start stays queued
-        with its reason on the run. Returns (run, turn) to spawn after the commit."""
+        with its reason on the run. Each start takes the need off the reading, so one reading
+        does not start several turns that together need more. While the server stops nothing
+        starts: a turn that would have stays queued for the next server. Returns (run, turn) to
+        spawn after the commit."""
+        if self.runs is not None and self.runs.closing:
+            for run, turn_id in await repo.queued_runs(tx.conn):
+                if run.status != "queued":
+                    await self._hold_turn(tx, run, turn_id, SERVER_STOPPING)
+            return []
         top, need = await self.run_limits(tx.conn)
         running = await repo.count_running_turns(tx.conn)
         launches: list[tuple[int, int]] = []
@@ -11161,6 +11174,8 @@ class Service:
                 task = await self.get_task(run.task_id, tx.conn)
                 await self._start_queued_turn(tx, run, task, turn_id, actor)
                 running += 1
+                if free_mb is not None:
+                    free_mb -= need
                 launches.append((run.id, turn_id))
                 continue
             await self._hold_turn(tx, run, turn_id, reason)
@@ -11794,8 +11809,8 @@ class Service:
     async def close_done_cards(self) -> None:
         """The sweep: cards in done whose close did not finish (the server stopped meanwhile)."""
         for task_id in await repo.done_cards_to_close(self._r):
-            if task_id not in self._closings:
-                await self.close_card(task_id)
+            self._schedule_close(task_id, "relaybay")
+        await self.settle_closings()
 
     async def _worktree_event(
         self, tx: _Tx, kind: str, actor: str, run_id: int, w: RunWorktree, **payload: Any
@@ -11840,7 +11855,15 @@ class Service:
                 )
                 if reason is None:
                     refused = await asyncio.to_thread(
-                        worktrees.remove_worktree, w.path, w.source_path, w.copied, git, force=False
+                        functools.partial(
+                            worktrees.remove_worktree,
+                            w.path,
+                            w.source_path,
+                            w.copied,
+                            git,
+                            force=False,
+                            stash=self._stash(w),
+                        )
                     )
                     reason = f"git worktree remove refused: {refused}" if refused else None
             except ValidationError as exc:  # git did not answer in time
@@ -11851,6 +11874,26 @@ class Service:
             async with self._tx() as tx:
                 await repo.update_run_worktree(tx.conn, w.id, {"removed_at": tx.now})
                 await self._worktree_event(tx, "run.worktree_removed", "relaybay", run_id, w)
+
+    def _stash(self, w: RunWorktree) -> Path:
+        """Where the copies of a worktree wait while git removes it: the run's own folder in the
+        data folder (the same disk as the worktrees)."""
+        home = self.runs.config.home if self.runs is not None else self.db_path.parent
+        return home / "runs" / str(w.run_id) / f"copies-{w.id}"
+
+    async def _withdraw_worktree_questions(self, tx: _Tx, task: Task, actor: str) -> None:
+        """A card that leaves done: relaybay's open questions about its kept worktrees go (a
+        "remove" would act on a card that is worked on again); the next close asks anew."""
+        for question_id in await repo.open_worktree_questions(tx.conn, task.id):
+            await repo.update_question(
+                tx.conn,
+                question_id,
+                {"status": "withdrawn", "withdrawn_at": tx.now, "withdrawn_by": "relaybay"},
+            )
+            q = await self.get_question(question_id, tx.conn)
+            await self._question_event(
+                tx, "question.withdrawn", actor, task, q, reason="the card left done"
+            )
 
     async def _asked(self, w: RunWorktree, conn: aiosqlite.Connection | None = None) -> bool:
         """The question about a kept worktree waits for the owner. A card that went back and
@@ -11921,12 +11964,36 @@ class Service:
         w = await repo.get_run_worktree(self._r, worktree_id)
         if w is None or w.removed_at is not None or not w.created_by_run:
             return
+        run = await self.get_run(w.run_id)
+        task = await self.get_task(run.task_id)
+        in_use = [
+            key
+            for other, key in await repo.open_worktrees(self._r)
+            if other.id != w.id and worktrees.path_key(other.path) == worktrees.path_key(w.path)
+        ]
+        hold = None  # not removed, and not the owner's keep either: the next close asks again
+        if task.stage != Stage.DONE:
+            hold = f"not removed: {task.key} is no longer done"
+        elif in_use:
+            hold = f"not removed: an open run on {in_use[0]} works in it"
+        if hold is not None:
+            async with self._tx() as tx:
+                await self._worktree_event(tx, "run.worktree_kept", actor, w.run_id, w, reason=hold)
+            return
         git = worktrees.find_git()
         refused: str | None = "git is not on PATH"
         if git is not None:
             try:
                 refused = await asyncio.to_thread(
-                    worktrees.remove_worktree, w.path, w.source_path, w.copied, git, force=True
+                    functools.partial(
+                        worktrees.remove_worktree,
+                        w.path,
+                        w.source_path,
+                        w.copied,
+                        git,
+                        force=True,
+                        stash=self._stash(w),
+                    )
                 )
             except ValidationError as exc:
                 refused = str(exc)
@@ -11944,9 +12011,12 @@ class Service:
                 await self._worktree_event(tx, "run.worktree_kept", actor, w.run_id, w, reason=why)
 
     async def _delete_traces(self, run_id: int) -> None:
-        """A run that saw a secret or touched a live stand: its stored lines and its Claude Code
-        transcript (only the file named after its own session id under Claude Code's data
-        folder) are deleted, with one event naming what went."""
+        """A run that saw a secret or touched a live stand: its stored lines and what Claude Code
+        keeps of its session (`transcripts.find`: the transcript, the session's folder,
+        `file-history/<id>/`, `session-env/<id>/`, only under Claude Code's data folder) are
+        deleted, with one event naming what went. While a file or folder could not be deleted
+        `deleted_at` stays unset, so the sweep tries again; the event repeats only when what
+        failed changes."""
         run = await self.get_run(run_id)
         if run.deleted_at is not None or not (run.secret_seen_at or run.touched_live_at):
             return
@@ -11971,7 +12041,13 @@ class Service:
             deleted, failed = await asyncio.to_thread(transcripts.delete, found)
         async with self._tx() as tx:
             lines = await repo.delete_run_events(tx.conn, run.id)
-            await repo.update_run(tx.conn, run.id, {"deleted_at": tx.now}, tx.now)
+            if not failed:
+                await repo.update_run(tx.conn, run.id, {"deleted_at": tx.now}, tx.now)
+                self._trace_failures.pop(run.id, None)
+            elif self._trace_failures.get(run.id) == failed and not (lines or deleted):
+                return  # the same files still refuse: the last event says so
+            else:
+                self._trace_failures[run.id] = failed
             task = await self.get_task(run.task_id, tx.conn)
             await self._run_event(
                 tx,

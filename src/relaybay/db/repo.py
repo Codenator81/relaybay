@@ -5167,6 +5167,17 @@ async def worktree_of_question(conn: aiosqlite.Connection, question_id: int) -> 
     return _worktree(row) if row else None
 
 
+async def open_worktree_questions(conn: aiosqlite.Connection, task_id: int) -> list[int]:
+    """relaybay's open questions about the kept worktrees of the card's runs."""
+    rows = await _all(
+        conn,
+        "SELECT q.id FROM question q JOIN run_worktree w ON w.question_id = q.id"
+        " JOIN run r ON r.id = w.run_id WHERE r.task_id = ? AND q.status = 'open' ORDER BY q.id",
+        (task_id,),
+    )
+    return [int(r[0]) for r in rows]
+
+
 async def update_run_worktree(
     conn: aiosqlite.Connection, worktree_id: int, changes: dict[str, Any]
 ) -> None:

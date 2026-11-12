@@ -400,6 +400,17 @@ async def test_a_run_that_saw_a_secret_loses_its_lines_and_transcript_when_the_c
     other.write_text("{}\n", encoding="utf-8")
     note = path.with_name("notes.txt")
     note.write_text("mine\n", encoding="utf-8")
+    session_dirs = [
+        path.with_name(CC_A) / "subagents",
+        data / "file-history" / CC_A,
+        data / "session-env" / CC_A,
+    ]
+    for folder in session_dirs:
+        folder.mkdir(parents=True)
+        (folder / "x.jsonl").write_text("{}\n", encoding="utf-8")
+    kept_dirs = [data / "file-history" / CC_B, data / "todos"]
+    for folder in kept_dirs:
+        folder.mkdir(parents=True)
     plain = read_line(json.dumps({"type": "assistant", "text": "hello"}), 1)[0]
     leaked = read_line(json.dumps({"type": "user", "text": f"token {SECRET}"}), 2)[0]
     assert (plain.secret, leaked.secret) == (False, True)
@@ -418,7 +429,10 @@ async def test_a_run_that_saw_a_secret_loses_its_lines_and_transcript_when_the_c
     assert not path.exists() and other.is_file() and note.is_file()
     [deleted] = await events(svc, "run.traces_deleted")
     assert deleted["reason"] == "saw a secret" and deleted["lines"] == 3
-    assert deleted["transcripts"] == [str(path)] and deleted["failed"] == []
+    gone = [str(path), str(path.with_name(CC_A)), *(str(d) for d in session_dirs[1:])]
+    assert sorted(deleted["transcripts"]) == sorted(gone) and deleted["failed"] == []
+    assert not path.with_name(CC_A).exists()
+    assert not any(d.exists() for d in session_dirs) and all(d.is_dir() for d in kept_dirs)
     assert await repo.done_cards_to_close(svc._r) == []
 
 
@@ -523,3 +537,199 @@ def test_linux_reader_reads_a_meminfo_file(tmp_path: Path) -> None:
 def test_windows_reader_answers_on_windows() -> None:
     free = memory.windows_free_mb()
     assert isinstance(free, int) and free > 0
+
+
+# --- review fixes: work left in ignored files, git refusing, the server stopping, traces ------
+
+
+def global_excludes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The owner keeps `.claude/` and `CLAUDE.local.md` out of git with a global excludes file,
+    so the copies are ignored files in the worktree."""
+    excludes = tmp_path / "excludes"
+    excludes.write_text(".claude/\nCLAUDE.local.md\n", encoding="utf-8")
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[core]\n\texcludesFile = {excludes.as_posix()}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+
+async def ignored_copy_run(svc: Service, tmp_path: Path) -> tuple[Any, Path, Any]:
+    api = make_git_repo(
+        tmp_path / "acme" / "api", {".claude/STATUS.md": "owner notes\n", "CLAUDE.local.md": "x\n"}
+    )
+    await svc.upsert_project("acme-shop", repos=[{"name": "api", "path": str(api)}])
+    [api_repo] = await repo.list_project_repos(svc._r, (await svc.get_project("acme-shop")).id)
+    run = await svc.start_run("acme-shop-1", repos=[(api_repo.id, True)])
+    [w] = await repo.list_run_worktrees(svc._r, run.id)
+    assert sorted(w.copied) == [".claude/STATUS.md", "CLAUDE.local.md"]
+    return run, api, w
+
+
+@needs_git
+async def test_an_edited_or_new_ignored_file_keeps_the_worktree(
+    svc: Service, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_excludes(tmp_path, monkeypatch)
+    _, _, w = await ignored_copy_run(svc, tmp_path)
+    write(Path(w.path) / ".claude" / "STATUS.md", "AGENT WORK: where we stopped\n")
+    write(Path(w.path) / ".claude" / "notes.md", "AGENT NEW NOTE\n")
+    await svc.set_stage("acme-shop-1", "done", actor="owner")
+    await svc.settle_closings()
+    kept = await repo.get_run_worktree(svc._r, w.id)
+    assert kept.removed_at is None
+    assert kept.kept_reason == "uncommitted changes (.claude/notes.md, .claude/STATUS.md)"
+    assert on_disk(w.path, ".claude", "notes.md") and on_disk(w.path, "CLAUDE.local.md")
+
+
+@needs_git
+async def test_unchanged_ignored_copies_do_not_keep_a_worktree_but_build_output_does(
+    svc: Service, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_excludes(tmp_path, monkeypatch)
+    _, api, w = await ignored_copy_run(svc, tmp_path)
+    await svc.create_task("acme-shop", "Second", stage="dev")
+    await svc.set_stage("acme-shop-1", "done", actor="owner")
+    await svc.settle_closings()
+    assert (await repo.get_run_worktree(svc._r, w.id)).removed_at is not None
+    assert on_disk(str(api), ".claude", "STATUS.md")  # the source keeps its own
+    # A second run whose worktree holds ignored build output: work left, git would delete it.
+    write(api / ".gitignore", "dist/\n")
+    git(api, "add", ".gitignore")
+    git(api, "commit", "-q", "--no-verify", "--no-gpg-sign", "-m", "ignore dist")
+    [api_repo] = await repo.list_project_repos(svc._r, (await svc.get_project("acme-shop")).id)
+    second = await svc.start_run("acme-shop-2", repos=[(api_repo.id, True)])
+    [w2] = await repo.list_run_worktrees(svc._r, second.id)
+    (Path(w2.path) / "dist").mkdir()
+    write(Path(w2.path) / "dist" / "app.js", "built\n")
+    await svc.set_stage("acme-shop-2", "done", actor="owner")
+    await svc.settle_closings()
+    assert (await repo.get_run_worktree(svc._r, w2.id)).kept_reason == "uncommitted changes (dist/)"
+
+
+@needs_git
+async def test_copies_come_back_when_git_refuses_the_removal(svc: Service, tmp_path: Path) -> None:
+    api = make_git_repo(tmp_path / "acme" / "api", {"CLAUDE.md": "rules\n", ".mcp.json": "{}"})
+    await svc.upsert_project("acme-shop", repos=[{"name": "api", "path": str(api)}])
+    [api_repo] = await repo.list_project_repos(svc._r, (await svc.get_project("acme-shop")).id)
+    run = await svc.start_run("acme-shop-1", repos=[(api_repo.id, True)])
+    [w] = await repo.list_run_worktrees(svc._r, run.id)
+    git(api, "worktree", "lock", w.path)  # git refuses to remove a locked worktree
+    await svc.set_stage("acme-shop-1", "done", actor="owner")
+    await svc.settle_closings()
+    kept = await repo.get_run_worktree(svc._r, w.id)
+    assert kept.removed_at is None and kept.kept_reason.startswith("git worktree remove refused")
+    assert on_disk(w.path, "CLAUDE.md") and on_disk(w.path, ".mcp.json")
+    assert not on_disk(str(stub(svc).config.home), "runs", str(run.id), f"copies-{w.id}")
+
+
+@needs_git
+async def test_remove_is_not_done_for_a_card_that_left_done(svc: Service, tmp_path: Path) -> None:
+    run, _ = await three_repo_run(svc, tmp_path)
+    docs = next(w for w in await repo.list_run_worktrees(svc._r, run.id) if w.repo_name == "docs")
+    write(Path(docs.path) / "draft.md", "draft\n")
+    await svc.set_stage("acme-shop-1", "done", actor="owner")
+    await svc.settle_closings()
+    kept = await repo.get_run_worktree(svc._r, docs.id)
+    await svc.set_stage("acme-shop-1", "dev", actor="owner")
+    assert (await svc.get_question(kept.question_id)).status == "withdrawn"
+    with pytest.raises(ValidationError, match="withdrawn"):
+        await svc.answer_question(kept.question_id, choice="remove")
+    await svc._remove_on_answer(docs.id, "owner")  # straight past the question: still refused
+    assert on_disk(docs.path, "draft.md")
+    refused = (await events(svc, "run.worktree_kept"))[-1]
+    assert refused["reason"] == "not removed: acme-shop-1 is no longer done"
+    # Done again: asked anew.
+    await svc.set_stage("acme-shop-1", "done", actor="owner")
+    await svc.settle_closings()
+    again = await repo.get_run_worktree(svc._r, docs.id)
+    assert (await svc.get_question(again.question_id)).status == "open"
+
+
+class ClosingStub(StubRuns):
+    async def close(self) -> None:
+        # RunManager.close: closing first, then every running turn is stopped (turn_done runs).
+        self.closing = True
+        for run_id in list(self.active):
+            await self.stop(run_id, "server stopped")
+
+
+async def test_a_server_stop_keeps_the_queued_turn_for_the_next_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ok = LayerState("command", True, "command hooks from your user settings", "registered")
+    monkeypatch.setattr("relaybay.service.user_layer_state", lambda *_: ok)
+    service = Service(tmp_path / "relaybay.sqlite")
+    await service.start()
+    service.runs = ClosingStub(service, tmp_path)  # type: ignore[assignment]
+    await service.set_run_limits(1, 0)
+    for slug in ("acme-shop", "demo-api"):
+        (tmp_path / slug).mkdir()
+        await service.upsert_project(slug, repo_path=str(tmp_path / slug))
+        await service.create_task(slug, "Card", stage="dev")
+    first = await service.start_run("acme-shop-1")
+    second = await service.start_run("demo-api-1")
+    assert (first.status, second.status) == ("running", "queued")
+    await service.close()
+    again = Service(tmp_path / "relaybay.sqlite")
+    await again.start()
+    try:
+        kept = await again.get_run(second.id)
+        assert kept.status == "queued" and kept.status_reason.startswith("waiting for a slot")
+        assert await repo.next_queued_turn(again._r, second.id) is not None
+        assert (await again.get_run(first.id)).status == "stopped"
+    finally:
+        await again.close()
+
+
+async def test_one_memory_reading_does_not_start_more_than_it_holds(svc: Service) -> None:
+    await svc.set_run_limits(1, 0)
+    keys = await cards(svc, 4)
+    runs = [await svc.start_run(key) for key in keys]
+    assert [r.status for r in runs] == ["running", "queued", "queued", "queued"]
+    svc.memory_reader = lambda: 3200
+    # One pass, one reading: each start takes 1500 MB off it, so the fourth waits.
+    await svc.set_run_limits(4, 1500)
+    after = [(await svc.get_run(r.id)).status for r in runs]
+    assert after == ["running", "running", "running", "queued"]
+    held = await svc.get_run(runs[3].id)
+    assert held.status_reason == "waiting for memory: 0.2 GB free, 1.5 GB needed"
+
+
+async def test_a_failed_trace_delete_is_tried_again(
+    svc: Service, short_claude_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = await svc.start_run("acme-shop-1")
+    turn_id = stub(svc).active.pop(run.id)
+    await svc.turn_init(turn_id, CC_A)
+    await svc.turn_done(turn_id, "success", None, 0, None)
+    async with svc._tx() as tx:
+        await repo.mark_run(tx.conn, run.id, "secret_seen_at", tx.now)
+    path = Path(run.cwd)  # any path: the delete below fails for it
+    monkeypatch.setattr(transcripts, "find", lambda *_: [path])
+    monkeypatch.setattr(transcripts, "delete", lambda paths: ([], [f"{path}: busy"]))
+    await svc.set_stage("acme-shop-1", "done", actor="owner")
+    await svc.settle_closings()
+    assert (await svc.get_run(run.id)).deleted_at is None
+    await svc.close_done_cards()  # the sweep: the same failure, no second event
+    assert len(await events(svc, "run.traces_deleted")) == 1
+    monkeypatch.setattr(transcripts, "delete", lambda paths: ([str(path)], []))
+    await svc.close_done_cards()
+    assert (await svc.get_run(run.id)).deleted_at is not None
+    assert len(await events(svc, "run.traces_deleted")) == 2
+
+
+def test_a_session_folder_reached_through_a_link_is_not_deleted(tmp_path: Path) -> None:
+    data = tmp_path / "claude"
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / CC_A).mkdir(parents=True)
+    (data / "projects").mkdir(parents=True)
+    if os.name == "nt":  # a junction: a symlink needs a privilege on Windows
+        import _winapi
+
+        _winapi.CreateJunction(str(elsewhere), str(data / "file-history"))
+    else:
+        (data / "file-history").symlink_to(elsewhere, target_is_directory=True)
+    assert transcripts.find(data, CC_A, []) == []
+    crafted = data / "projects" / ".." / f"{CC_A}.jsonl"
+    write(data / f"{CC_A}.jsonl", "{}")
+    assert not transcripts.own_transcript(crafted, data, CC_A)
+    assert (elsewhere / CC_A).is_dir()

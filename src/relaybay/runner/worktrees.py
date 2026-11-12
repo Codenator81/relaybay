@@ -432,27 +432,79 @@ def remove_created(specs: Sequence[WorktreeSpec], git: str | None, run: Runner =
 
 
 REASON_ENTRIES = 5  # changed files named in a kept worktree's reason
+STATUS_ARGS = (
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all",
+    "--ignored=matching",
+    "--ignore-submodules=none",
+)
 
 
-def _status_names(text: str) -> list[str]:
-    """The paths of `git status --porcelain=v1 -z`: `XY path`, a rename followed by its source."""
-    names, parts, i = [], text.split("\0"), 0
+def _status_entries(text: str) -> list[tuple[str, str]]:
+    """(code, path) of `git status --porcelain=v1 -z`: `XY path`, a rename followed by its
+    source; an ignored folder git did not walk ends in "/"."""
+    entries, parts, i = [], text.split("\0"), 0
     while i < len(parts):
         entry = parts[i]
         i += 1
         if len(entry) < 4:
             continue
-        names.append(entry[3:])
+        entries.append((entry[:2], entry[3:]))
         if entry[0] in "RC":
             i += 1  # the rename's source
-    return names
+    return entries
 
 
 def _same_file(a: Path, b: Path) -> bool:
+    """Both regular files (no link) with the same bytes."""
     try:
-        return a.is_file() and b.is_file() and a.read_bytes() == b.read_bytes()
+        return (
+            not a.is_symlink() and a.is_file() and b.is_file() and a.read_bytes() == b.read_bytes()
+        )
     except OSError:
         return False
+
+
+def _files_under(root: Path, folder: str) -> list[str]:
+    """The names (relative, with "/") of everything in an ignored folder, links not followed."""
+    names = []
+    for here, dirs, files in os.walk(root / folder, followlinks=False):
+        rel = Path(here).relative_to(root).as_posix()
+        names += [f"{rel}/{name}" for name in files]
+        # A link to a folder is not walked: it is one entry, and it is new.
+        names += [f"{rel}/{name}" for name in dirs if (Path(here) / name).is_symlink()]
+        dirs[:] = [d for d in dirs if not (Path(here) / d).is_symlink()]
+    return names
+
+
+def _changed_files(path: str, source: str, copied: Sequence[str], text: str) -> list[str]:
+    """What the run left in the worktree: tracked changes, untracked files, ignored files it
+    made, and each copied file that differs from the source now or is gone. An ignored folder
+    that holds copies is looked into file by file; any other ignored entry counts whole."""
+    root, ours = Path(path), set(copied)
+    holders = {
+        PurePosixPath(n).parents[i].as_posix() + "/"
+        for n in copied
+        for i in range(len(PurePosixPath(n).parts) - 1)
+    }
+    changed: list[str] = []
+    for code, name in _status_entries(text):
+        if code == "!!" and name.endswith("/") and name in holders:
+            changed += [
+                f
+                for f in _files_under(root, name.rstrip("/"))
+                if f not in ours or not _same_file(root / f, Path(source) / f)
+            ]
+        elif code in ("??", "!!") and name in ours:
+            continue  # compared below
+        else:
+            changed.append(name)
+    for name in copied:
+        if not _same_file(root / name, Path(source) / name) and name not in changed:
+            changed.append(name)
+    return changed
 
 
 def work_left(
@@ -463,24 +515,15 @@ def work_left(
     git: str,
     run: Runner = run_quiet,
 ) -> str | None:
-    """Why a worktree the run created must not be removed without the owner: changed or
-    untracked files (the files relaybay copied in count only when they differ from the source
-    now), commits on its HEAD that are on no remote and on no other local branch (the run's
-    branch stays when the worktree goes), or a git that cannot tell. None: nothing would be lost."""
-    done = _git(
-        git,
-        path,
-        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
-        run,
-    )
+    """Why a worktree the run created must not be removed without the owner: tracked changes,
+    untracked files, ignored files the run made (build output too: git would delete it), a
+    copied file that differs from the source or is gone, commits on its HEAD that are on no
+    remote and on no other local branch (the run's branch stays when the worktree goes), or a
+    git that cannot tell. None: nothing would be lost."""
+    done = _git(git, path, list(STATUS_ARGS), run)
     if done.returncode != 0:
         return f"git status failed: {_first_line(done)}"
-    ours = set(copied)
-    changed = []
-    for name in _status_names(done.stdout or ""):
-        if name in ours and _same_file(Path(path) / name, Path(source) / name):
-            continue
-        changed.append(name)
+    changed = _changed_files(path, source, copied, done.stdout or "")
     head = _git(git, path, ["rev-parse", "--abbrev-ref", "HEAD"], run)
     current = (head.stdout or "").strip() if head.returncode == 0 else ""
     mine = [n for n in {branch, current} if n and n != "HEAD"]
@@ -500,22 +543,36 @@ def work_left(
     return "; ".join(parts) or None
 
 
-def _drop_copied(path: str, copied: Sequence[str]) -> None:
-    """Delete the files relaybay copied into the worktree (only those, never through a link),
-    then the folders they leave empty, so that git sees a clean worktree."""
+def _stash_copies(path: str, source: str, copied: Sequence[str], stash: Path) -> list[str]:
+    """Move the copied files that still match the source out of the worktree into `stash` (a
+    folder of the run in the data folder), so that git sees it clean; never through a link.
+    Returns what was moved, for `_unstash`."""
     root = Path(path)
+    moved = []
     for name in copied:
         if not _safe_relative(name) or _inside_symlink(root, PurePosixPath(name).parent.as_posix()):
             continue
         target = root / name
-        if target.is_symlink() or target.is_file():
-            target.unlink()
+        if not _same_file(target, Path(source) / name):
+            continue
+        dest = stash / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(target, dest)
+        moved.append(name)
     folders = {
-        PurePosixPath(n).parents[i] for n in copied for i in range(len(PurePosixPath(n).parts) - 1)
+        PurePosixPath(n).parents[i] for n in moved for i in range(len(PurePosixPath(n).parts) - 1)
     }
     for folder in sorted(folders, key=lambda f: len(f.parts), reverse=True):
         with contextlib.suppress(OSError):
-            (root / folder).rmdir()
+            (root / folder).rmdir()  # only an emptied one
+    return moved
+
+
+def _unstash(path: str, moved: Sequence[str], stash: Path) -> None:
+    for name in moved:
+        target = Path(path) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(stash / name, target)
 
 
 def remove_worktree(
@@ -525,21 +582,27 @@ def remove_worktree(
     git: str,
     *,
     force: bool,
+    stash: Path,
     run: Runner = run_quiet,
 ) -> str | None:
     """`git worktree remove` of a worktree the run created; None when it is gone, else git's
-    first line. Without `force` git itself refuses a worktree with changes, after the copied
-    files are deleted; `force` only on the owner's answer. The branch stays. The run's folder
-    goes too once empty."""
-    if not force:
-        _drop_copied(path, copied)
+    first line. Without `force` the copies that still match the source are moved to `stash`
+    first, so git itself refuses a worktree with anything else in it, and are moved back when
+    git refuses; `force` only on the owner's answer. The branch stays; the run's folder goes too
+    once empty, and so does `stash`."""
+    moved = [] if force else _stash_copies(path, source, copied, stash)
     args = ["worktree", "remove", *(["--force"] if force else []), path]
     done = _git(git, source, args, run)
     if done.returncode != 0:
-        return _first_line(done)
-    with contextlib.suppress(OSError):
-        Path(path).parent.rmdir()
-    return None
+        _unstash(path, moved, stash)
+        refused = _first_line(done)
+    else:
+        refused = None
+        with contextlib.suppress(OSError):
+            Path(path).parent.rmdir()
+    if stash.is_dir() and not stash.is_symlink():
+        shutil.rmtree(stash)  # relaybay's own folder: only the copies just moved, now spare
+    return refused
 
 
 def find_git(which: Callable[..., Any] = shutil.which) -> str | None:
