@@ -78,7 +78,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `install.py` | How this copy was installed (`install_kind()`), its executable and whether its location is stable; used by upgrade hints, the updater, `doctor` and the hook command |
 | `updates.py` | The update check of the latest GitHub release and the installer download, checked against `SHA256SUMS.txt` |
 | `backup.py` | `last_version` and the backup of the database and settings files before a new version migrates, with rotation (`backup_keep`) |
-| `runner/` | Runs on cards, processes only (no database): `claude_cli.py` (find `claude`, a turn's argv and environment, the batch-shim check), `auth.py` (`claude auth status`, the sign-in method only), `layers.py` (relaybay's hooks and MCP server in the user settings, read like `setup --check`, else a run's own `--settings` / `--mcp-config` files), `worktrees.py` (a run's folders: `git worktree add` with rollback, the untracked Claude Code files copied in), `proctree.py` (a Windows job object, a POSIX process group), `stream.py` (`system/init` and `result` lines), `manager.py` (`RunManager`: one turn per run, stdout and stderr read in threads, the service as the sink). Statuses and cleaners in `domain/runs.py` |
+| `runner/` | Runs on cards, processes only (no database): `claude_cli.py` (find `claude`, a turn's argv and environment, the batch-shim check), `auth.py` (`claude auth status`, the sign-in method only), `layers.py` (relaybay's hooks and MCP server in the user settings, read like `setup --check`, else a run's own `--settings` / `--mcp-config` files), `worktrees.py` (a run's folders: `git worktree add` with rollback, the untracked Claude Code files copied in; at a card's close the check for work left and `git worktree remove`), `memory.py` (free memory by platform code: `GlobalMemoryStatusEx`, `/proc/meminfo`, `vm_stat`), `transcripts.py` (a run's own Claude Code transcript, found and deleted only by its session id under `projects/`), `proctree.py` (a Windows job object, a POSIX process group), `stream.py` (`system/init` and `result` lines), `manager.py` (`RunManager`: one turn per run, stdout and stderr read in threads, the service as the sink). Statuses and cleaners in `domain/runs.py`; the queue (slots, memory, brake), Start anyway, a card's close and the retention in the service, re-checked by its `run_loop` every 15 s |
 | `desktop/` | The desktop program: GUI loop and window (pywebview), tray (pystray), embedded server thread, `desktop.toml` settings and Settings window, start at login, single instance, window state, tray notifications |
 
 <a id="data-model"></a>
@@ -87,7 +87,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 ```
 project       id, slug UNIQUE, name, repo_path, description, task_seq, created_at, updated_at,
-              archived_at, pulse, pulse_at, pulse_by, autonomy (0|1)
+              archived_at, pulse, pulse_at, pulse_by, autonomy (0|1), run_retention (days|off)
               -- repo_path: always the path of the first project_repo (kept for older readers)
 project_repo  id, project_id, name (UNIQUE per project), path (as written; a run's cwd),
               kind (app|web|api|lib|other, optional), position, created_at, updated_at
@@ -141,14 +141,16 @@ brake         id, scope (all|project|session|task), project_id, session_id, task
               released_by   -- a released row stays as history
 project_run_defaults project_id PK, folder, model, effort, permission_mode, allowed_tools,
               chrome (0|1), updated_at, updated_by   -- no row: the defaults
-app_setting   key PK, value, updated_at, updated_by   -- run_login_any
+app_setting   key PK, value, updated_at, updated_by   -- run_login_any, run_max_running_turns,
+              run_min_free_memory_mb
 run           id, task_id, project_id, session_id (kind 'run'), cwd, cwd_repo_id, model, effort,
               permission_mode, allowed_tools, chrome, claude_session_id (UNIQUE),
               status (queued|running|waiting|idle|stopped|ended|lost), status_reason,
               auth_method (the method only), hooks_source, mcp_source (user|run), started_by,
               started_by_kind (owner|coordinator), created_at, updated_at, ended_at, ended_by,
               with_owner_at, with_owner_by (with the owner in the Claude desktop app: no turn
-              starts), desktop_opened_at
+              starts), desktop_opened_at, secret_seen_at, touched_live_at, transcript_path,
+              deleted_at (its lines and transcript deleted when the card closed)
               -- one open run per task (UNIQUE index WHERE ended_at IS NULL)
 run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, queued_at,
               started_at, ended_at, pid, outcome, result_subtype, exit_code, num_turns,
@@ -158,7 +160,8 @@ run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, q
 run_event     id, turn_id, seq (UNIQUE per turn), type, subtype, parent_tool_use_id (nests a
               subagent's lines), ts, size, truncated (0|1), data (zlib of the masked line)
 run_worktree  id, run_id, project_repo_id, repo_name, source_path, path, path_key, branch,
-              created_by_run (0|1), copied (JSON names), created_at, removed_at
+              created_by_run (0|1), copied (JSON names), created_at, removed_at, kept_reason,
+              question_id (the owner's question whether to remove it), kept_at
               -- one open run per path_key, checked by the service
 question      id, task_id, run_id, session_id (who asked), asked_by, kind (question|look), text,
               options (JSON), default_answer, blocking (0|1), look_url, look_account,

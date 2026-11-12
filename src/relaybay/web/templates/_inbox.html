@@ -53,6 +53,31 @@
   </section>
   {% endif %}
 
+  {% if inbox.queued %}
+  <section class="panel inbox-group" id="inbox-queued">
+    <h2>Queued turns <span class="col-count">{{ inbox.queued|length }}</span></h2>
+    <p class="muted inbox-hint">A run's next turn waits for a slot, for free memory or for a brake, the first queued first. It starts by itself when it may; <em>Start anyway</em> starts it past the slot limit and the memory check.</p>
+    <ul class="inbox-list run-queue">
+      {% for r in inbox.queued %}
+      <li class="inbox-row" data-run="{{ r.id }}">
+        <a class="inbox-link" href="/p/{{ r.project_slug }}?task={{ r.task_key }}">
+          <span class="card-key">{{ r.task_key }}</span>
+          <span class="inbox-title">run {{ r.id }}</span>
+        </a>
+        <p class="inbox-note">{{ r.status_reason or "waiting" }} <span class="muted">· since <time datetime="{{ r.updated_at }}" data-age>{{ r.updated_at|age }}</time></span></p>
+        {% if not (r.status_reason or "").startswith("braked") %}
+        <form class="inline-form" method="post" action="/p/{{ r.project_slug }}/t/{{ r.task_key }}/run/{{ r.id }}/anyway">
+          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+          <input type="hidden" name="from" value="inbox">
+          <button type="submit" class="btn">Start anyway</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   {% if inbox.approvals %}
   <section class="panel inbox-group" id="inbox-approvals">
     <h2>Approvals <span class="col-count">{{ inbox.approvals|length }}</span></h2>

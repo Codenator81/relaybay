@@ -44,6 +44,14 @@
   the card, the decision as the next turn or an owner comment, the tray kind `approval`
   ([0022](0022-questions-and-approvals.md#approvals); behaviour:
   [SPEC](../SPEC.md#spec-approvals)).
+- PR 5 shipped: migration 0040 `run_lifecycle`; `max_running_turns` and `min_free_memory_mb`
+  (config.toml, editable in Settings → Agents) checked before each turn with the brake, a turn
+  `queued` with its reason on the card and in the Inbox, FIFO over all runs, **Start anyway** past
+  the slot limit and the memory check (never past a brake); free memory by platform code (C5); a
+  braked run's turn killed after its refused call; a card to done ends its run, removes the
+  worktrees it created and asks about one with work left; "saw a secret" and "touched live" runs
+  lose their lines and transcript on close; per-project retention (C3) (behaviour:
+  [SPEC](../SPEC.md#spec-run-limits), [lifecycle](../SPEC.md#spec-run-lifecycle)).
 - The probes of 0012 were run on 2026-11-10 and the design relies on them
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
   accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).

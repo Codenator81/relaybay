@@ -54,6 +54,9 @@ class RunnerConfig:
     token_path: Path
     claude_path: Path | None = None
     claude_home: Path | None = None
+    # Claude Code's data folder, where a run's transcript is; None: CLAUDE_CONFIG_DIR, else
+    # ~/.claude, as the turn's own claude finds it.
+    claude_dir: Path | None = None
 
 
 class TurnSink(Protocol):

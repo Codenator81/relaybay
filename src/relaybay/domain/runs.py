@@ -14,17 +14,18 @@ from relaybay.domain.reports import parse_report
 
 RUN_STATUSES = ("queued", "running", "waiting", "idle", "stopped", "ended", "lost")
 OPEN_STATUSES = tuple(s for s in RUN_STATUSES if s != "ended")
-# None: a run that does not exist yet. `queued` is not produced yet; it leads on like `idle`.
+# None: a run that does not exist yet. `queued`: its next turn waits for a slot, for memory or
+# for a brake to be released (the reason says which; a new reason is queued -> queued).
 # `waiting`: a turn ended with an open blocking question; the owner's answer starts the next turn,
 # a withdrawn question makes it idle. A running run is stopped before it ends.
 TRANSITIONS: dict[str | None, frozenset[str]] = {
-    None: frozenset({"running"}),
+    None: frozenset({"running", "queued"}),
     "running": frozenset({"idle", "waiting", "stopped", "lost"}),
-    "idle": frozenset({"running", "ended"}),
-    "stopped": frozenset({"running", "ended"}),
-    "lost": frozenset({"running", "ended"}),
-    "queued": frozenset({"running", "ended"}),
-    "waiting": frozenset({"running", "idle", "ended"}),
+    "idle": frozenset({"running", "queued", "ended"}),
+    "stopped": frozenset({"running", "queued", "ended"}),
+    "lost": frozenset({"running", "queued", "ended"}),
+    "queued": frozenset({"running", "queued", "ended"}),
+    "waiting": frozenset({"running", "queued", "idle", "ended"}),
     "ended": frozenset(),
 }
 TURN_OUTCOMES = ("success", "error", "stopped", "lost", "cancelled", "failed_to_start")
@@ -62,6 +63,17 @@ ALLOWED_RULE_MAX = 200
 # argument pattern in parentheses: `Bash(git diff *)`.
 _RULE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.*-]*(\([^()\r\n]*\))?")
 LOGIN_ANY_KEY = "run_login_any"
+# The owner's limits from Settings -> Agents; without a row, config.toml's values hold.
+MAX_RUNNING_KEY = "run_max_running_turns"
+MIN_MEMORY_KEY = "run_min_free_memory_mb"
+DEFAULT_MAX_RUNNING = 2
+DEFAULT_MIN_MEMORY_MB = 1500
+MAX_RUNNING_MAX = 50
+MIN_MEMORY_MAX = 1024 * 1024
+# How long a project keeps its runs' stream-json lines: whole days, or "off" (not stored).
+RETENTION_OFF = "off"
+DEFAULT_RETENTION = "30"
+RETENTION_DAYS_MAX = 3650
 
 
 def check_transition(current: str | None, new: str) -> None:
@@ -161,6 +173,35 @@ def clean_prompt(value: Any, name: str = "text") -> str:
     return text
 
 
+def clean_limit(value: Any, name: str, low: int, high: int) -> int:
+    text = str(value if value is not None else "").strip().replace(",", "").replace(" ", "")
+    if not text.isdigit() or not low <= int(text) <= high:
+        raise ValidationError(f"{name} must be a whole number from {low} to {high}; got {value!r}.")
+    return int(text)
+
+
+def clean_retention(value: Any, current: str = DEFAULT_RETENTION) -> str:
+    """Days to keep the lines (1 to RETENTION_DAYS_MAX) or "off"; empty keeps `current`."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return current
+    if text == RETENTION_OFF:
+        return text
+    return str(clean_limit(text, "Event retention", 1, RETENTION_DAYS_MAX))
+
+
+def slot_reason(running: int, limit: int) -> str:
+    return f"waiting for a slot: {running} of {limit} running"
+
+
+def memory_reason(free_mb: int, need_mb: int) -> str:
+    return f"waiting for memory: {free_mb / 1024:.1f} GB free, {need_mb / 1024:.1f} GB needed"
+
+
+def brake_reason(target: str, why: str) -> str:
+    return f"braked ({target}): {why}"
+
+
 @dataclass(slots=True)
 class RunDefaults:
     project_id: int
@@ -172,6 +213,7 @@ class RunDefaults:
     folder: str | None = None
     updated_at: str | None = None
     updated_by: str | None = None
+    retention: str = DEFAULT_RETENTION  # project.run_retention
 
     @property
     def allowed_rules(self) -> list[str]:
@@ -209,6 +251,10 @@ class Run:
     with_owner_at: str | None = None  # handed to the owner in the Claude desktop app
     with_owner_by: str | None = None
     desktop_opened_at: str | None = None
+    secret_seen_at: str | None = None  # the masking replaced something in its lines
+    touched_live_at: str | None = None  # the guard saw a call of it on a live stand
+    transcript_path: str | None = None  # its Claude Code transcript, as computed at init
+    deleted_at: str | None = None  # its lines and transcript deleted when the card closed
 
     @property
     def is_open(self) -> bool:
@@ -290,6 +336,9 @@ class RunWorktree:
     copied: list[str] = field(default_factory=list)
     created_at: str = ""
     removed_at: str | None = None
+    kept_reason: str | None = None  # why the card's close left it: work left in it, git refused
+    question_id: int | None = None  # the question to the owner whether to remove it
+    kept_at: str | None = None  # the owner answered keep
 
 
 @dataclass(slots=True)

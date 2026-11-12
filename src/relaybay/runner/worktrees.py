@@ -431,6 +431,117 @@ def remove_created(specs: Sequence[WorktreeSpec], git: str | None, run: Runner =
             Path(spec.path).parent.rmdir()  # the run's folder, once empty
 
 
+REASON_ENTRIES = 5  # changed files named in a kept worktree's reason
+
+
+def _status_names(text: str) -> list[str]:
+    """The paths of `git status --porcelain=v1 -z`: `XY path`, a rename followed by its source."""
+    names, parts, i = [], text.split("\0"), 0
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        names.append(entry[3:])
+        if entry[0] in "RC":
+            i += 1  # the rename's source
+    return names
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.is_file() and b.is_file() and a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
+def work_left(
+    path: str,
+    branch: str | None,
+    source: str,
+    copied: Sequence[str],
+    git: str,
+    run: Runner = run_quiet,
+) -> str | None:
+    """Why a worktree the run created must not be removed without the owner: changed or
+    untracked files (the files relaybay copied in count only when they differ from the source
+    now), commits on its HEAD that are on no remote and on no other local branch (the run's
+    branch stays when the worktree goes), or a git that cannot tell. None: nothing would be lost."""
+    done = _git(
+        git,
+        path,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+        run,
+    )
+    if done.returncode != 0:
+        return f"git status failed: {_first_line(done)}"
+    ours = set(copied)
+    changed = []
+    for name in _status_names(done.stdout or ""):
+        if name in ours and _same_file(Path(path) / name, Path(source) / name):
+            continue
+        changed.append(name)
+    head = _git(git, path, ["rev-parse", "--abbrev-ref", "HEAD"], run)
+    current = (head.stdout or "").strip() if head.returncode == 0 else ""
+    mine = [n for n in {branch, current} if n and n != "HEAD"]
+    args = ["rev-list", "--count", "HEAD", "--not", "--remotes"]
+    args += [f"--exclude={name}" for name in mine] + ["--branches"]
+    ahead = _git(git, path, args, run)
+    if ahead.returncode != 0:
+        return f"git rev-list failed: {_first_line(ahead)}"
+    commits = int((ahead.stdout or "0").strip() or "0")
+    parts = []
+    if changed:
+        shown = ", ".join(changed[:REASON_ENTRIES])
+        more = f" and {len(changed) - REASON_ENTRIES} more" if len(changed) > REASON_ENTRIES else ""
+        parts.append(f"uncommitted changes ({shown}{more})")
+    if commits:
+        parts.append(f"{commits} commit{'s' if commits != 1 else ''} not on any remote")
+    return "; ".join(parts) or None
+
+
+def _drop_copied(path: str, copied: Sequence[str]) -> None:
+    """Delete the files relaybay copied into the worktree (only those, never through a link),
+    then the folders they leave empty, so that git sees a clean worktree."""
+    root = Path(path)
+    for name in copied:
+        if not _safe_relative(name) or _inside_symlink(root, PurePosixPath(name).parent.as_posix()):
+            continue
+        target = root / name
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+    folders = {
+        PurePosixPath(n).parents[i] for n in copied for i in range(len(PurePosixPath(n).parts) - 1)
+    }
+    for folder in sorted(folders, key=lambda f: len(f.parts), reverse=True):
+        with contextlib.suppress(OSError):
+            (root / folder).rmdir()
+
+
+def remove_worktree(
+    path: str,
+    source: str,
+    copied: Sequence[str],
+    git: str,
+    *,
+    force: bool,
+    run: Runner = run_quiet,
+) -> str | None:
+    """`git worktree remove` of a worktree the run created; None when it is gone, else git's
+    first line. Without `force` git itself refuses a worktree with changes, after the copied
+    files are deleted; `force` only on the owner's answer. The branch stays. The run's folder
+    goes too once empty."""
+    if not force:
+        _drop_copied(path, copied)
+    args = ["worktree", "remove", *(["--force"] if force else []), path]
+    done = _git(git, source, args, run)
+    if done.returncode != 0:
+        return _first_line(done)
+    with contextlib.suppress(OSError):
+        Path(path).parent.rmdir()
+    return None
+
+
 def find_git(which: Callable[..., Any] = shutil.which) -> str | None:
     return which("git")
 

@@ -4705,6 +4705,10 @@ def _run(row: aiosqlite.Row) -> Run:
         with_owner_at=row["with_owner_at"],
         with_owner_by=row["with_owner_by"],
         desktop_opened_at=row["desktop_opened_at"],
+        secret_seen_at=row["secret_seen_at"],
+        touched_live_at=row["touched_live_at"],
+        transcript_path=row["transcript_path"],
+        deleted_at=row["deleted_at"],
     )
 
 
@@ -4738,6 +4742,144 @@ async def latest_run_of_task(conn: aiosqlite.Connection, task_id: int) -> Run | 
 async def open_runs(conn: aiosqlite.Connection) -> list[Run]:
     rows = await _all(conn, _RUN_SELECT + " WHERE r.ended_at IS NULL ORDER BY r.id")
     return [_run(r) for r in rows]
+
+
+async def runs_of_task(conn: aiosqlite.Connection, task_id: int) -> list[Run]:
+    rows = await _all(conn, _RUN_SELECT + " WHERE r.task_id = ? ORDER BY r.id", (task_id,))
+    return [_run(r) for r in rows]
+
+
+async def count_running_turns(conn: aiosqlite.Connection) -> int:
+    """Turns marked started and not ended, over all runs: the slots in use."""
+    row = await _one(
+        conn,
+        "SELECT COUNT(*) FROM run_turn WHERE started_at IS NOT NULL AND ended_at IS NULL",
+        (),
+    )
+    return int(row[0]) if row else 0
+
+
+_QUEUED_SELECT = """
+SELECT r.*, t.key AS task_key, p.slug AS project_slug, s.name AS session_name,
+       (SELECT q.id FROM run_turn q WHERE q.run_id = r.id AND q.started_at IS NULL
+        AND q.ended_at IS NULL ORDER BY q.seq LIMIT 1) AS next_turn,
+       (SELECT MIN(q.queued_at) FROM run_turn q WHERE q.run_id = r.id AND q.started_at IS NULL
+        AND q.ended_at IS NULL) AS first_queued
+FROM run r
+JOIN task t ON t.id = r.task_id
+JOIN project p ON p.id = r.project_id
+LEFT JOIN session s ON s.id = r.session_id
+WHERE r.ended_at IS NULL AND r.with_owner_at IS NULL AND r.status != 'running'
+  AND NOT EXISTS (SELECT 1 FROM run_turn a WHERE a.run_id = r.id AND a.started_at IS NOT NULL
+                  AND a.ended_at IS NULL)
+  AND EXISTS (SELECT 1 FROM run_turn q WHERE q.run_id = r.id AND q.started_at IS NULL
+              AND q.ended_at IS NULL)
+ORDER BY first_queued, r.id
+"""
+
+
+async def queued_runs(conn: aiosqlite.Connection) -> list[tuple[Run, int]]:
+    """Open runs with a turn waiting and none running, not with the owner, in the order their
+    first waiting turn was queued (FIFO over all runs); each with that turn's id."""
+    rows = await _all(conn, _QUEUED_SELECT, ())
+    return [(_run(r), int(r["next_turn"])) for r in rows]
+
+
+async def mark_run(conn: aiosqlite.Connection, run_id: int, column: str, now: str) -> bool:
+    """Set `secret_seen_at` or `touched_live_at` once; True when it was not set before."""
+    if column not in ("secret_seen_at", "touched_live_at"):
+        raise ValueError(f"not a run mark: {column}")
+    cur = await conn.execute(
+        f"UPDATE run SET {column} = ? WHERE id = ? AND {column} IS NULL", (now, run_id)
+    )
+    return cur.rowcount > 0
+
+
+async def open_runs_of_session(conn: aiosqlite.Connection, session_id: int) -> list[Run]:
+    rows = await _all(
+        conn, _RUN_SELECT + " WHERE r.session_id = ? AND r.ended_at IS NULL", (session_id,)
+    )
+    return [_run(r) for r in rows]
+
+
+async def run_of_turn_retention(conn: aiosqlite.Connection, turn_id: int) -> tuple[int, str] | None:
+    """The run of a turn and its project's event retention."""
+    row = await _one(
+        conn,
+        "SELECT t.run_id, p.run_retention FROM run_turn t JOIN run r ON r.id = t.run_id"
+        " JOIN project p ON p.id = r.project_id WHERE t.id = ?",
+        (turn_id,),
+    )
+    return (int(row[0]), str(row[1])) if row else None
+
+
+async def delete_run_events(conn: aiosqlite.Connection, run_id: int) -> int:
+    cur = await conn.execute(
+        "DELETE FROM run_event WHERE turn_id IN (SELECT id FROM run_turn WHERE run_id = ?)",
+        (run_id,),
+    )
+    return cur.rowcount
+
+
+async def delete_project_events(
+    conn: aiosqlite.Connection, project_id: int, before: str | None
+) -> int:
+    """The project's runs' lines read before `before` (an ISO time); None: all of them."""
+    where = " AND e.ts < ?" if before is not None else ""
+    params: tuple[Any, ...] = (project_id, before) if before is not None else (project_id,)
+    cur = await conn.execute(
+        "DELETE FROM run_event WHERE id IN (SELECT e.id FROM run_event e"
+        " JOIN run_turn t ON t.id = e.turn_id JOIN run r ON r.id = t.run_id"
+        f" WHERE r.project_id = ?{where})",
+        params,
+    )
+    return cur.rowcount
+
+
+async def project_retentions(conn: aiosqlite.Connection) -> list[tuple[int, str, str]]:
+    """(id, slug, retention) of the projects that have runs."""
+    rows = await _all(
+        conn,
+        "SELECT p.id, p.slug, p.run_retention FROM project p"
+        " WHERE EXISTS (SELECT 1 FROM run r WHERE r.project_id = p.id) ORDER BY p.id",
+        (),
+    )
+    return [(int(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
+async def get_project_retention(conn: aiosqlite.Connection, project_id: int) -> str | None:
+    row = await _one(conn, "SELECT run_retention FROM project WHERE id = ?", (project_id,))
+    return str(row[0]) if row else None
+
+
+async def set_project_retention(
+    conn: aiosqlite.Connection, project_id: int, value: str, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE project SET run_retention = ?, updated_at = ? WHERE id = ?",
+        (value, now, project_id),
+    )
+
+
+async def done_cards_to_close(conn: aiosqlite.Connection) -> list[int]:
+    """Cards in done whose close is not finished: an open run, a worktree a run created that is
+    neither removed, nor kept by the owner, nor waiting for the open question about it, or a
+    run to clean (a secret seen or live touched) whose lines and transcript are not deleted
+    yet."""
+    rows = await _all(
+        conn,
+        "SELECT DISTINCT t.id FROM task t JOIN run r ON r.task_id = t.id WHERE t.stage = 'done'"
+        " AND (r.ended_at IS NULL"
+        " OR (r.deleted_at IS NULL AND (r.secret_seen_at IS NOT NULL"
+        " OR r.touched_live_at IS NOT NULL))"
+        " OR EXISTS (SELECT 1 FROM run_worktree w WHERE w.run_id = r.id"
+        " AND w.created_by_run = 1 AND w.removed_at IS NULL AND w.kept_at IS NULL"
+        " AND NOT EXISTS (SELECT 1 FROM question q WHERE q.id = w.question_id"
+        " AND q.status = 'open')))"
+        " ORDER BY t.id",
+        (),
+    )
+    return [int(r[0]) for r in rows]
 
 
 async def update_run(
@@ -4955,7 +5097,8 @@ async def cancel_queued(conn: aiosqlite.Connection, run_id: int, now: str) -> in
 
 
 async def lose_open_turns(conn: aiosqlite.Connection, now: str) -> None:
-    """At start: a turn that was running when the server went away is lost; queued ones go."""
+    """At start: a turn that was running when the server went away is lost; the texts that
+    waited behind it go. A run `queued` for a slot, memory or a brake keeps its turn."""
     await conn.execute(
         "UPDATE run_turn SET ended_at = ?, outcome = 'lost'"
         " WHERE started_at IS NOT NULL AND ended_at IS NULL",
@@ -4963,7 +5106,8 @@ async def lose_open_turns(conn: aiosqlite.Connection, now: str) -> None:
     )
     await conn.execute(
         "UPDATE run_turn SET ended_at = ?, outcome = 'cancelled'"
-        " WHERE started_at IS NULL AND ended_at IS NULL",
+        " WHERE started_at IS NULL AND ended_at IS NULL"
+        " AND run_id NOT IN (SELECT id FROM run WHERE status = 'queued' AND ended_at IS NULL)",
         (now,),
     )
 
@@ -4988,6 +5132,9 @@ def _worktree(row: aiosqlite.Row) -> RunWorktree:
         copied=json.loads(row["copied"]) if row["copied"] else [],
         created_at=row["created_at"],
         removed_at=row["removed_at"],
+        kept_reason=row["kept_reason"],
+        question_id=row["question_id"],
+        kept_at=row["kept_at"],
     )
 
 
@@ -5008,6 +5155,25 @@ async def insert_run_worktree(
 async def list_run_worktrees(conn: aiosqlite.Connection, run_id: int) -> list[RunWorktree]:
     rows = await _all(conn, "SELECT * FROM run_worktree WHERE run_id = ? ORDER BY id", (run_id,))
     return [_worktree(r) for r in rows]
+
+
+async def get_run_worktree(conn: aiosqlite.Connection, worktree_id: int) -> RunWorktree | None:
+    row = await _one(conn, "SELECT * FROM run_worktree WHERE id = ?", (worktree_id,))
+    return _worktree(row) if row else None
+
+
+async def worktree_of_question(conn: aiosqlite.Connection, question_id: int) -> RunWorktree | None:
+    row = await _one(conn, "SELECT * FROM run_worktree WHERE question_id = ?", (question_id,))
+    return _worktree(row) if row else None
+
+
+async def update_run_worktree(
+    conn: aiosqlite.Connection, worktree_id: int, changes: dict[str, Any]
+) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(
+        f"UPDATE run_worktree SET {sets} WHERE id = ?", (*changes.values(), worktree_id)
+    )
 
 
 async def open_worktrees(conn: aiosqlite.Connection) -> list[tuple[RunWorktree, str]]:

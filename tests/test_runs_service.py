@@ -35,7 +35,9 @@ class StubRuns:
 
     def __init__(self, sink: Service, home: Path) -> None:
         self.sink = sink
-        self.config = RunnerConfig(home, "http://127.0.0.1:8765", home / "token")
+        self.config = RunnerConfig(
+            home, "http://127.0.0.1:8765", home / "token", claude_dir=home / "claude-data"
+        )
         self.state = SUBSCRIPTION
         self.started: list[tuple[int, int, TurnSpec]] = []
         self.active: dict[int, int] = {}
@@ -384,16 +386,17 @@ async def test_a_send_again_after_a_failed_turn_is_a_new_turn(svc: Service) -> N
 async def test_a_turn_stopped_before_its_process_exists_never_starts(svc: Service) -> None:
     run = await svc.start_run("acme-shop-1")
     await stub(svc).finish(run.id)
-    spawn = svc._spawn_turn
+    spawn = svc._spawn_all
     lost: list[str] = []
 
-    async def stop_first(run_id: int, turn_id: int) -> None:
+    async def stop_first(launches: list[tuple[int, int]]) -> None:
         # Stop arrives between the commit of the started turn and the spawn.
-        await svc.stop_run(run_id)
-        lost.append((await svc.get_run(run_id)).status)
-        await spawn(run_id, turn_id)
+        for run_id, _ in launches:
+            await svc.stop_run(run_id)
+            lost.append((await svc.get_run(run_id)).status)
+        await spawn(launches)
 
-    svc._spawn_turn = stop_first  # type: ignore[method-assign]
+    svc._spawn_all = stop_first  # type: ignore[method-assign]
     started = len(stub(svc).started)
     await svc.send_to_run(run.id, "Then the tests")
     assert lost == ["lost"]

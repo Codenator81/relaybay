@@ -338,8 +338,8 @@ folder or a key variable.
   order before the Start's transaction; when one fails, or the transaction does, or the Start is
   cancelled meanwhile, the worktrees that Start made are removed again (`git worktree remove
   --force`, since the copied files are untracked) and the reason names the repository with git's
-  first line; the branch stays. Removing a run's
-  worktrees later is not built yet. relaybay runs no other git write: never a commit, a push, an
+  first line; the branch stays. A card gone to done removes the worktrees its runs created
+  ([lifecycle](#spec-run-lifecycle)). relaybay runs no other git write: never a commit, a push, an
   add or a branch delete.
 - **Copied into a new worktree.** A fresh worktree lacks what the repository keeps out of git, so
   relaybay copies, as local files and never `git add`ed, the untracked `CLAUDE.md`,
@@ -364,16 +364,21 @@ folder or a key variable.
   http hooks without the `X-Relaybay-Run` header still refuse (a re-apply of setup), since they
   would fire next to the run's command hooks.
 
-- **Statuses**, one writer (`domain.runs.check_transition`): Start → `running`; `running` →
+- **Statuses**, one writer (`domain.runs.check_transition`): Start → `queued`, then at once
+  `running` when the [limits](#spec-run-limits) allow (else it stays `queued` with its reason);
+  `running` →
   `idle` (a `result` came; an `is_error` result keeps the reason "the turn ended with an error"),
   `stopped` (Stop, the server stopping, or the process failing to start) or `lost` (the process
   exited without a `result`, not by Stop; or a `running` row found when the server starts);
-  `idle`, `stopped`, `lost` → `running` (Continue, or the next waiting text); any of those →
+  `idle`, `stopped`, `lost`, `waiting` → `running` (Continue, or the next waiting text) or
+  `queued` (that turn may not start yet: [limits](#spec-run-limits)); `queued` → `running` (a slot
+  freed, memory recovered, the brake released, Start anyway), `queued` with a new reason, or
+  `ended`; any of those →
   `ended` (End; a running turn is stopped first). `ended` is final. `running` → `waiting` when a
   turn's `result` comes while a blocking question of the run is open and no text waits
   ([questions](#spec-questions)); `waiting` → `running` (the owner's answer, or a text) or `idle`
   (the question withdrawn); an open approval request of the run at the `result` does the same
-  ([approvals](#spec-approvals)). `queued` is allowed by the table but not produced yet. Stop, lost and End cancel the texts that waited,
+  ([approvals](#spec-approvals)). Stop, lost and End cancel the texts that waited,
   also when Stop comes after the turn's `result` while the process still ends (its `SessionEnd`
   hooks run then): the turn keeps its outcome, the run goes `stopped`. A run left `running` with no
   process behind it (its end could not be stored) is marked `lost` by Stop or End, which then
@@ -404,7 +409,10 @@ folder or a key variable.
   `[relaybay: line truncated]`; its type and `parent_tool_use_id` are read from the head. Lines reach the database in batches, at 200 lines or 0.5 s after the
   first one waiting, and all that are left before the turn's end is written; the reader thread
   never waits for the database, and the hook path is not involved. A batch that cannot be stored is
-  logged and the turn goes on. Events are kept with their run (the retention policy comes later).
+  logged and the turn goes on. A line the masking changed marks the run "saw a secret"
+  (`run.secret_seen_at`, with a `run.secret_seen` event once). Lines are kept by the project's
+  retention and deleted with the run's traces when its card closes
+  ([lifecycle](#spec-run-lifecycle)).
 - **The turn's report.** When a turn's `result` comes, its final text (`result.result`, masked,
   at most 100,000 characters) becomes a report on the card in the turn's end transaction, through the
   same writes as `report_add` (the board, digests, search and MCP see it; the author is the run's
@@ -448,7 +456,8 @@ folder or a key variable.
   `SessionEnd` on Windows, so relaybay ends the run's session row itself.
 - **Server stop and start.** Stopping the server stops every running turn (`stopped`, "server
   stopped") and starts no new one. A start finds `running` runs of a server that crashed and marks them `lost`, their
-  open turns `lost` and the waiting ones `cancelled`.
+  open turns `lost` and the waiting ones `cancelled`; a run `queued` for a slot, memory or a brake
+  keeps its turn, which the queue starts after the sign-in check of the new server.
 - **Who may start.** The owner, on the board (cookie and CSRF), any card. A coordinator (a session
   in the `coordinators` config, checked like `brake_set`) with MCP `run_start`: cards in `plan` or
   `dev`, no open brake of scope `all`, the card's project or the card, and no brake covers the
@@ -505,6 +514,91 @@ folder or a key variable.
   and never pick `bypassPermissions`, and may change model and effort. Every change is a
   `run.settings_changed` event with who and, per changed value, from and to; it is listed on the
   Audit page with the changes. Nothing changed: no event.
+
+<a id="spec-run-limits"></a>
+
+**Run limits** ([design 0021](design/0021-agents-inside.md), C4, C5). Before each turn of a run (the
+first, a Continue, the owner's answer or decision, a text that waited for the running turn or for
+Back to the program) the queue decides, in the transaction that would mark it started:
+
+- **Slots.** At most `max_running_turns` turns run at once over all runs (default 2; a turn counts
+  from the moment it is marked started until it ends, whatever the number of its worktrees; an idle
+  run or one with the owner holds none). The count is read in the same write transaction that
+  marks a turn started, so two starts can never both take the last slot.
+- **Memory.** This machine's free memory, read just before that transaction, must be at least
+  `min_free_memory_mb` (default 1500; 0 turns the check off). Read by platform code, no `psutil`:
+  Windows `GlobalMemoryStatusEx` (`ullAvailPhys`), Linux `MemAvailable` of `/proc/meminfo`, macOS
+  `vm_stat` (free, speculative and inactive pages times its page size; not yet seen on a Mac). When
+  it cannot be read (an older kernel, `vm_stat` missing), the check lets the turn start and the
+  log says why.
+- **Brake.** No open brake holds the run: scope `all`, its project (or a project whose folder it
+  works in), its card or its session, a stop budget's brake too ([brake](#spec-brake)).
+
+A turn that may not start stays `queued` with its reason on the run, shown on the card, in the
+Inbox ("Queued turns") and by `run_status`: `waiting for a slot: 2 of 2 running`, `waiting for
+memory: 1.2 GB free, 1.5 GB needed` or `braked (<target>): <reason>`; a `run.turn_queued` event
+with the reason when the reason changes (the Audit page lists it). Turns that wait start by
+themselves, first queued first over all runs (by when their first waiting text was queued), when
+a turn ends (its slot frees), when the owner changes a limit, and at the server's re-check every
+15 s (memory that recovered, a brake released). Nothing is refused silently.
+
+**Start anyway** (the board only, cookie and CSRF: the card's Agent block and the Inbox) starts a
+queued run's waiting turn past both the slot limit and the memory check; it does not go past a
+brake, which only the owner releases in the banner. A `run.start_anyway` event records what it
+went past (the reason, turns running, the limit, free memory and the need).
+
+**The brake on a running turn.** The brake refuses a run's tool calls like any session's
+([brake](#spec-brake)). When the refused `PreToolUse` comes from a run's turn (the hook's
+session row is the run's, linked by `RELAYBAY_RUN_ID` at its `SessionStart`, or an http hook names
+the run in `X-Relaybay-Run`) and a brake holds that run itself (checked on the server, not taken
+from the hook), relaybay also
+stops the turn as Stop does, in the background so the hook's answer is not held: the process tree
+is killed (Windows job object; on macOS and Linux SIGTERM to the group, SIGKILL after 10 s), so
+builds and servers the agent started die with it. The run goes `stopped` with the reason
+`braked (<target>): <reason>`; its next turn waits `queued` until the brake is released. A turn
+that makes no tool call is not killed by the brake (design: "after its next refused tool call").
+A token budget's `stop` action sets a brake and acts the same; `warn` budgets only warn (the
+context line, the Inbox), as [0018](design/0018-brake-and-budgets.md) says.
+
+<a id="spec-run-lifecycle"></a>
+
+**Lifecycle.** A card that goes to done (by any path: the board, MCP, a stage change of the
+owner's) is closed in the background after the commit, one close per card at a time, and the
+server's 15 s re-check finishes a close the server did not (cards in done with an open run, a
+worktree neither removed nor kept, or traces still to delete):
+
+- **The run ends** as End does: a running turn is stopped first, waiting texts are cancelled; the
+  reason is "the card went to done".
+- **Worktrees.** Each worktree a run of the card created (`created_by_run`; never a repository used
+  in place, never anything else) is looked at: `git status --porcelain --untracked-files=all` (the
+  files relaybay copied in count only when they differ from the source now) and the commits of its
+  `HEAD` on no remote and on no other local branch (`git rev-list --count HEAD --not --remotes
+  --exclude=<the run's branch> --exclude=<its current branch> --branches`; the branch stays when the
+  worktree goes, so its commits are not lost either way). Nothing left: the copied files are deleted
+  and `git -C <repository> worktree remove <path>` runs without `--force`, so git itself refuses a
+  worktree with changes; files git ignores (build output, `node_modules`) go with it, as git does;
+  the run's folder goes too once empty. Work left, or git refusing: the worktree stays,
+  `run_worktree.kept_reason` says why ("uncommitted changes (a.txt, b.txt)", "1 commit not on any
+  remote", git's first line), the card lists it, and relaybay asks the owner a blocking question on
+  the card (asked by `relaybay`, options `remove` and `keep`, default `keep`). **remove**:
+  `git worktree remove --force` (the owner decided, so what was left goes; the branch stays);
+  **keep**: it stays (`kept_at`) and is not asked about again. A worktree already gone from disk is
+  marked removed. A card reopened and closed again asks again about a kept worktree whose question
+  was withdrawn. Events `run.worktree_removed` (with `forced` on the owner's remove) and
+  `run.worktree_kept`, on the Audit page.
+- **Traces.** A run that saw a secret (above) or touched a live stand (the guard saw one of its
+  calls on a live environment, allowed or not: `run.touched_live_at`, a `run.touched_live` event)
+  loses its stored lines and its Claude Code transcript. The transcript is only a file named
+  `<the run's Claude Code session id>.jsonl` directly in a folder of `projects` under Claude
+  Code's data folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`), a regular file and not a link: the
+  path computed when the session id came (`projects/<cwd with every character but letters and
+  digits as ->/<id>.jsonl`, `run.transcript_path`), the path the run's hooks reported, or found by
+  that name; the subagent transcripts in the session's own folder stay. One `run.traces_deleted`
+  event names the reason, the number of lines and the files deleted (and any that could not be);
+  `run.deleted_at` is set.
+- **Retention.** A project keeps its runs' lines `run_retention` days (default 30; Stands & access →
+  Agent defaults), or `off`: no line is stored and those stored go. The server deletes older lines
+  hourly, with one `run.events_expired` event per project that lost some.
 
 <a id="spec-questions"></a>
 
@@ -819,8 +913,13 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `project.pulse_set`, the `intake.*` and `backlog.*` events ([§12](#spec-intake)),
 `run.started`, `run.turn_started`, `run.turn_queued`, `run.turn_ended`, `run.stopped`, `run.ended`,
 `run.lost`, `run.opened_in_desktop`, `run.returned`, `run.settings_changed` (with `changed`: per
-value `from` and `to`), `run.waiting` (all with `project`, `key` and `run_id`), `run.defaults_set`,
-`settings.run_login_any`, `question.asked`, `question.answered`, `question.defaulted`,
+value `from` and `to`), `run.waiting`, `run.start_anyway` (with what it went past),
+`run.worktree_removed`, `run.worktree_kept` (with `repository`, `path`, `branch`, the reason or
+`forced`), `run.secret_seen`, `run.touched_live`, `run.traces_deleted` (with the reason, `lines`,
+`transcripts`, `failed`) (all with `project`, `key` and `run_id`; `run.turn_queued` carries the
+queue's `reason` when a limit holds the turn, [§1](#spec-run-limits)), `run.events_expired` (per
+project, with `lines` and `retention`), `run.defaults_set`, `settings.run_login_any`,
+`settings.run_limits`, `question.asked`, `question.answered`, `question.defaulted`,
 `question.delivered`, `question.withdrawn` (with `question_id`, `run_id` and the text,
 [§1](#spec-questions)), `approval.requested`, `approval.decided`, `approval.used` (with
 `approval_id`, `run_id`, `action`, `target` and `what`), `approval.expired`
@@ -1030,15 +1129,19 @@ Approve and Refuse post `/approvals/{id}/decide` ([§1](#spec-approvals)).
 (comma-separated rules, each a tool name, `mcp__<server>` or `Tool(pattern)`; default
 `mcp__relaybay`), `--chrome` (default off) and the project folder (optional, an absolute path,
 kept as written; a run may use it as its cwd, with the repositories as worktrees passed with
-`--add-dir`; empty clears it). No MCP tool writes them, so an agent never widens its own
-permissions. A save is a `run.defaults_set` event.
+`--add-dir`; empty clears it), and how long the runs' stream-json lines are kept (days, default
+30, or `off`; empty keeps it; [lifecycle](#spec-run-lifecycle)). No MCP tool writes them, so an
+agent never widens its own permissions. A save is a `run.defaults_set` event.
 
 <a id="spec-board-agents"></a>
 
 **Settings → Agents** (`/settings/agents`) shows the `claude` runs start (and whether
 `claude_path` set it), the sign-in line, where relaybay's hooks and MCP server stand in the user
 settings, and a switch that lets runs start under an API key or another sign-in that is not a
-subscription (off by default; board only, a `settings.run_login_any` event).
+subscription (off by default; board only, a `settings.run_login_any` event). **Limits** shows the
+free memory now and edits the [run limits](#spec-run-limits) (turns at once, 1 to 50; MB of free
+memory before a turn, 0 for no check) with `config.toml`'s values beside them; a save is board
+only, a `settings.run_limits` event, and starts the turns that the new limits let start.
 
 <a id="spec-board-repos"></a>
 
@@ -1240,6 +1343,9 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
   in backend`), the summary, the rollback (a deploy without one says so), a line for the agent and
   **Approve** / **Refuse**. A decision swaps the Inbox. Each request counts as one row; its card is
   not counted again under Waiting on you. A half-typed line is held like an answer.
+- **Queued turns:** runs whose next turn waits for a slot, free memory or a brake, the first
+  queued first ([§1](#spec-run-limits)): the card, the run, the reason and since when, and **Start
+  anyway** (not for a braked run). Each counts as one row.
 - **Answers:** open tasks with the "answer received" mark ([§12](#spec-intake-answer)).
 - **Intake:** new messages that match no task, with Tie to a task, Propose a task, Dismiss and
   Trust this source ([§12](#spec-intake-board)).
@@ -1324,7 +1430,10 @@ session, project, stand, tool, redacted command, decision, level, rule, task. Fi
 stand, session (its number, from the list), decision, period (1, 7 (the default), 30 or 90 days, or
 All). The checkbox "Changes to the policy, stands and switches" (`?changes=1`) adds the `policy.*`,
 `environment.*`, `session.no_live_on` and `session.no_live_off` events as rows with their kind and a
-short description. On the first page new rows are prepended live on `live.action`, and on those
+short description, and with them a run's settings changes, questions, approvals, turns queued by
+the [limits](#spec-run-limits) (`run.turn_queued`) and **Start anyway**, worktrees removed or kept,
+the "saw a secret" and "touched live" marks, deletes of a run's lines and transcript, the
+retention's deletes and changes of the run limits. On the first page new rows are prepended live on `live.action`, and on those
 kinds with the checkbox on. A note on the page says what it does not show: only tool calls that
 touch a live stand are journaled, known by the names in its access map; test and local stands are
 not. Events are never pruned. The session filter goes by the row the call was recorded under: calls
@@ -1397,8 +1506,9 @@ brake on the same target answers with the open one, and a session brake on a row
 or a task brake on a task with no bound session or one bound to such a row, says that it reaches nobody
 yet. What it does to a session is in
 [§4](#spec-hooks-brake). It is real at the next tool call and no sooner: it cannot interrupt
-streaming, a long Bash command or a background process, whose process goes on; it fails open; with
-the runner ([0012](design/0012-runner-and-embedded-terminal.md)) it will kill the process tree. It is
+streaming, a long Bash command or a background process, whose process goes on; it fails open; a
+run's turn is killed with its process tree after its refused call
+([run limits](#spec-run-limits)). It is
 not access control: all clients share one token. Events `brake.set`, `brake.released`.
 
 *Token budgets.* A **Budgets** block on `/usage` shows and sets them (`POST /usage/budgets`,
@@ -2965,6 +3075,11 @@ The data directory itself is `--home`, else `RELAYBAY_HOME`, else `data_dir` in 
 `/opt/homebrew/bin`, `/usr/local/bin`; on Windows `%USERPROFILE%\.local\bin\claude.exe` and
 `%APPDATA%\npm\claude.cmd`), which a program started from the desktop may miss on `PATH`.
 
+`max_running_turns` (default 2) and `min_free_memory_mb` (default 1500) are the [run
+limits](#spec-run-limits); the owner's values saved in Settings → Agents (board only, kept in
+`app_setting` as `run_max_running_turns` and `run_min_free_memory_mb`, a `settings.run_limits`
+event) win over `config.toml`'s.
+
 **Distribution.** The version lives only in `pyproject.toml`; `relaybay --version`, `/healthz` and
 the MCP server info read it from the installed package (the frozen program carries the package
 metadata). The wheel and sdist carry the templates,
@@ -3028,6 +3143,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0037_question` | `question` (task, run or session, asked by, kind `question` / `look`, text, options JSON, default, blocking, look URL and account, `default_after`, asked at, status `open` / `answered` / `defaulted` / `withdrawn`, answer, answered by `owner` / `default`, answered / defaulted / withdrawn at, withdrawn by, the turn or owner comment that carries the answer, told / delivered at); checks that a look question blocks and has its URL and that a blocking one has no deadline; indexes per task, run, comment and on the open ones by deadline ([§1](#spec-questions)). Additive only |
 | `0038_task_archive` | `task.archived_at`, `task.archived_by` (archived by hand), `task.unarchived_at` (the last "Back from the archive") ([§2](#spec-board-archive)). Additive only, no backfill |
 | `0039_approval` | `approval` (task, run or session, requested by and via `agent` / `guard` / `denial`, action `commit` / `push` / `merge` / `deploy` / `sql`, a push's mode `plain` / `force` / `delete`, repository, branch, PR, environment, summary, rollback, requested at, status `open` / `approved` / `refused` / `used` / `expired`, decision, decided by and at, the owner's line, valid until, used at / by / session, expired at and why, the turn or owner comment that carries the decision, told / delivered at); checks that a push or commit names its branch, a merge its PR, a deploy or SQL change its environment, an approved deploy its rollback, and that the status matches the decision and the use; indexes per task, run, comment and on the open and approved ones ([§1](#spec-approvals)). Additive only |
+| `0040_run_lifecycle` | `run.secret_seen_at`, `run.touched_live_at`, `run.transcript_path`, `run.deleted_at`; `project.run_retention` (days as text, or `off`; default `30`); `run_worktree.kept_reason`, `run_worktree.question_id` (the owner's question whether to remove it), `run_worktree.kept_at` (the owner's keep); an index on `run_event.ts` for the retention and one on the question of a kept worktree ([§1](#spec-run-lifecycle)). Additive only |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

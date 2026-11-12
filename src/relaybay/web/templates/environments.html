@@ -193,6 +193,9 @@
       </label>
       <input type="hidden" name="chrome" value="0">
       <label class="field field-check"><input type="checkbox" name="chrome" value="1"{% if run_defaults.chrome %} checked{% endif %}> <span>Pass --chrome (the browser extension's tools)</span></label>
+      <label class="field"><span>Keep the runs' stream-json lines (days, or <code>off</code> to store none; older lines are deleted hourly)</span>
+        <input name="retention" maxlength="4" value="{{ run_defaults.retention }}" spellcheck="false" pattern="[0-9]{1,4}|off">
+      </label>
       <button type="submit" class="btn primary">Save</button>
     </form>
   </section>

@@ -22,7 +22,7 @@ object a 200 carries.
 | Token budget, `warn` (the default) | A context line, an Inbox line, an event | Stops nothing |
 | Token budget, `stop` (opt-in per budget) | The same brake, set by the budget check | Also lags the reader |
 | Concurrent runs | A warning only | Stops nothing |
-| With the runner ([0012](0012-runner-and-embedded-terminal.md)) | Kills the process tree | Not built yet |
+| With the runner ([0012](0012-runner-and-embedded-terminal.md)) | Kills the turn's process tree after its refused call; the next turn waits for the release ([SPEC](../SPEC.md#spec-run-limits)) | A turn that makes no tool call is not killed |
 
 The brake does not interrupt streaming, a long Bash command or a background process: a process keeps
 running after the session stops. It fails open: a server that is down, a read that fails and the

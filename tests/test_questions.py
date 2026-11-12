@@ -260,7 +260,7 @@ async def test_an_answer_whose_turn_was_lost_before_its_process_goes_with_the_ne
     async def server_dies(*_: Any) -> None:  # the answer is committed, no process starts
         return None
 
-    monkeypatch.setattr(svc, "_spawn_turn", server_dies)
+    monkeypatch.setattr(svc, "_spawn_all", server_dies)
     await svc.answer_question(q.id, text="Adyen")
     monkeypatch.undo()
     await svc._recover_runs()  # the restart: the started turn is lost
