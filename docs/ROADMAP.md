@@ -140,6 +140,12 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | The start journal says who asked the program to quit; a tray without notifications no longer fails a notice | done | — |
 
+## 0.8.6 — plan acceptance reaches the session (released 2026-11-12)
+
+| Item | Status | Design |
+|---|---|---|
+| A plan accepted on the board wakes the idle bound session and reaches coordinators; the board warning has a close button; stopping the server ends the wake-up polls at once | done | — |
+
 ## After 0.8
 
 | Item | Status | Design |

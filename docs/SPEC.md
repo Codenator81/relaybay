@@ -4,7 +4,7 @@ How relaybay behaves **now**: the concepts and every shipped feature. This page 
 plans; upcoming work lives in the [roadmap](ROADMAP.md) and the [design documents](design/index.md).
 When a feature ships, its final behaviour moves here in the same pull request.
 
-Version covered: `0.8.5`. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.8.6`. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:

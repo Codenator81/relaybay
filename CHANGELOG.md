@@ -7,8 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-11-12
+
 ### Fixed
 
+- Stopping the server ends the wake-up hook's long polls at once (they answer 204), instead of holding the shutdown until the graceful timeout cancelled them with a 500 and an error in the log.
 - The owner's plan acceptance on the board now reaches the bound session when it is idle: the
   wake-up hook wakes it with the `Owner accepted the plan of …` line, as it does for an owner
   comment. Before, only a tool or prompt hook told it, so a session that had asked for the
@@ -26,10 +29,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the rest, and an owner comment that no longer fits beside them, come with the next hook.
 
 ## [0.8.5] - 2026-11-10
-
-### Fixed
-
-- Stopping the server ends the wake-up hook's long polls at once (they answer 204), instead of holding the shutdown until the graceful timeout cancelled them with a 500 and an error in the log.
 
 ### Fixed
 
@@ -912,7 +911,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.8.6...HEAD
+[0.8.6]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.6
 [0.8.5]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.5
 [0.8.4]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.4
 [0.8.3]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.3
