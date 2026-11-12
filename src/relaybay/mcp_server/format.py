@@ -1080,6 +1080,14 @@ def event_detail(e: Event) -> str:
     if e.kind == "run.turn_ended":
         turn = f"run {p.get('run_id')} turn {p.get('seq')}"
         return f"{turn}: {p.get('outcome')}, {p.get('tokens')} tokens"
+    if e.kind == "run.settings_changed":
+        changed = p.get("changed") or {}
+        moves = ", ".join(
+            f"{name.replace('permission_mode', 'mode')} {v.get('from')} to {v.get('to')}"
+            for name, v in changed.items()
+            if isinstance(v, dict)
+        )
+        return f"run {p.get('run_id')}: {moves}"
     if e.kind in ("run.turn_started", "run.turn_queued"):
         return f"run {p.get('run_id')} turn {p.get('seq')}"
     if e.kind.startswith("run."):
@@ -1199,6 +1207,11 @@ def run_status(task: Task, view: RunView | None) -> str:
         f" {r.created_at[:19]}Z.",
         f"Folder: {r.cwd}",
     ]
+    if r.is_open and r.with_owner and r.with_owner_at:
+        lines.append(
+            f"With the owner in the Claude desktop app since {r.with_owner_at[:19]}Z: no turn"
+            " starts; texts sent wait until the owner hands the run back on the card."
+        )
     for w in view.worktrees:
         if w.created_by_run:
             copied = summary(w.copied)
@@ -1212,6 +1225,10 @@ def run_status(task: Task, view: RunView | None) -> str:
         f" session {r.session_name or '-'}; hooks from {r.hooks_source},"
         f" MCP from {r.mcp_source}."
     )
+    if r.desktop_link and r.desktop_opened_at:
+        lines.append(
+            f"Opened in the Claude desktop app {r.desktop_opened_at[:19]}Z: {r.desktop_link}"
+        )
     t = view.totals
     lines.append(
         f"Tokens: {t.tokens:,} (input {t.input_tokens:,}, output {t.output_tokens:,}, cache read"
@@ -1225,6 +1242,13 @@ def run_status(task: Task, view: RunView | None) -> str:
                 f" {turn.tokens:,} tokens"
             )
     return "\n".join(lines)
+
+
+def run_settings_saved(task: Task, run: Run) -> str:
+    return (
+        f"Run {run.id} on {task.key} from its next turn on: {run.permission_mode}, {run.model},"
+        f" effort {run.effort}."
+    )
 
 
 def run_started(task: Task, run: Run) -> str:

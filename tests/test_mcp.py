@@ -510,3 +510,17 @@ async def test_a_long_waiting_on_gets_a_hint_and_is_saved_as_it_is(
         ]
         for tool, extra in quiet:
             assert hint not in await call(client, tool, task=task, **extra), tool
+
+
+async def test_run_settings_is_for_coordinators(live_server: Callable[[], LiveServer]) -> None:
+    live = live_server()
+    async with connect(live) as client:
+        tools = {t.name for t in (await client.list_tools()).tools}
+        assert "run_settings" in tools
+        await call(client, "project_upsert", slug="acme-shop", session="checkout-dev")
+        await call(client, "task_create", project="acme-shop", title="Pay", session="checkout-dev")
+        result = await client.call_tool(
+            "run_settings", {"task": "acme-shop-1", "permission_mode": "plan", "session": "x"}
+        )
+        text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+        assert result.is_error and "only for the coordinator" in text and "Nothing changed" in text

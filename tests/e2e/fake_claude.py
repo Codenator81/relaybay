@@ -44,6 +44,10 @@ also writes `{"kind": "argv", "argv", "prompt", "run_id", "started"}` first and
 `{"kind": "turn_end", "session_id", "started", "ended"}` when it ends normally. Every hook command
 run is `{"kind": "hook", "event", "command"}`; the memory loaded at the start is
 `{"kind": "memory", "files", "lines"}` (the files' paths and their non-empty lines).
+
+`claude --desktop --resume <id>` (no -p) hands the session to the desktop app: it writes
+`{"kind": "desktop", "argv", "cwd", "tty"}` and, like the real CLI, exits 1 with its message when
+stdout is not a terminal, else 0 printing nothing.
 """
 
 import argparse
@@ -100,6 +104,10 @@ DEFAULT_AUTH = {
     },
 }
 TOOL_EVENTS = ("PreToolUse", "PostToolUse")
+DESKTOP_REFUSAL = (
+    "--desktop opens the Claude Desktop app and can't run non-interactively (`--print`,"
+    " `--sdk-url`, `--init-only`, or redirected output)"
+)
 
 
 class Terminated(BaseException):
@@ -136,8 +144,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--add-dir", nargs="+", action="extend", default=[], dest="add_dirs")
     parser.add_argument("--bare", action="store_true")
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("--desktop", action="store_true")
     args = parser.parse_args(argv)
-    if args.version:
+    if args.version or args.desktop:
         return args
     if args.bare:
         # relaybay's runner must never pass it: bare mode skips hooks and the subscription login.
@@ -693,6 +702,19 @@ def auth_status() -> int:
     return int(auth.get("exit", 0))
 
 
+def desktop(words: list[str]) -> int:
+    trace = os.environ.get("FAKE_CLAUDE_TRACE")
+    tty = sys.stdout is not None and sys.stdout.isatty()
+    if trace:
+        entry = {"kind": "desktop", "argv": words, "cwd": str(Path.cwd()), "tty": tty}
+        with Path(trace).open("a", encoding="utf-8") as out:
+            out.write(json.dumps(entry) + "\n")
+    if not tty:
+        sys.stderr.write(DESKTOP_REFUSAL + "\n")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     words = sys.argv[1:] if argv is None else argv
     if words[:2] == ["auth", "status"]:
@@ -702,6 +724,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(VERSION)
         return 0
+    if args.desktop:
+        return desktop(words)
     if args.prompt is None and sys.stdin is not None and not sys.stdin.isatty():
         args.prompt = sys.stdin.read()
     # Never the real settings and transcripts of whoever runs the tests.

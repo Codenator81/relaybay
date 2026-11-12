@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import re
 import shutil
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -11,7 +13,8 @@ from typing import Any
 import pytest
 
 from relaybay.db import repo
-from relaybay.domain.errors import ConflictError, ValidationError
+from relaybay.domain.errors import ConflictError, NotFoundError, ValidationError
+from relaybay.mcp_server import format as fmt
 from relaybay.runner.auth import LoginState
 from relaybay.runner.claude_cli import TurnSpec
 from relaybay.runner.layers import LayerState
@@ -38,6 +41,24 @@ class StubRuns:
         self.checked_since_start: set[int] = set()
         self.fail: Exception | None = None
         self.reserved: set[int] = set()
+        self.desktop_calls: list[tuple[str, str, dict[str, str], float]] = []
+        self.desktop_answer: int | Exception = 0
+        self.desktop_stderr = ""  # what the "CLI" writes into the stderr file of the command
+        self.during_launch: Any = None  # a coroutine function run while the launch waits
+        self.loop: Any = None
+        self.desktop_launcher: Any = self.launch_desktop
+
+    def launch_desktop(self, command: str, cwd: str, env: dict[str, str], timeout: float) -> int:
+        self.desktop_calls.append((command, cwd, env, timeout))
+        if self.desktop_stderr:
+            target = re.search(r'2> "([^"]+)"', command)
+            assert target is not None
+            Path(target.group(1)).write_text(self.desktop_stderr, encoding="utf-8")
+        if self.during_launch is not None:
+            asyncio.run_coroutine_threadsafe(self.during_launch(), self.loop).result(10)
+        if isinstance(self.desktop_answer, Exception):
+            raise self.desktop_answer
+        return self.desktop_answer
 
     def claude(self) -> str:
         return "/usr/local/bin/claude"
@@ -93,6 +114,7 @@ async def svc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     service = Service(tmp_path / "relaybay.sqlite")
     await service.start()
     service.runs = StubRuns(service, tmp_path)  # type: ignore[assignment]
+    stub(service).loop = asyncio.get_running_loop()
     repo = tmp_path / "acme-shop"
     repo.mkdir()
     await service.upsert_project("acme-shop", repo_path=str(repo))
@@ -445,3 +467,220 @@ async def test_a_cancelled_start_removes_the_worktrees_made_meanwhile(
     release.set()
     assert await asyncio.to_thread(undone.wait, 30)
     assert removed == [[spec]]
+
+
+# --- the desktop app and the settings between turns -----------------------------------------
+
+
+async def idle_run(service: Service) -> Any:
+    run = await service.start_run("acme-shop-1")
+    await stub(service).finish(run.id)
+    return await service.get_run(run.id)
+
+
+async def run_events(service: Service, kind: str) -> list[Any]:
+    return [e for e in await repo.events_after(service._r, 0, None, 1000) if e.kind == kind]
+
+
+async def test_open_in_desktop_hands_the_session_to_the_owner_and_back(
+    svc: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDECODE", "1")
+    run = await idle_run(svc)
+    opened = await svc.open_in_desktop(run.id)
+    [(command, cwd, env, timeout)] = stub(svc).desktop_calls
+    stderr_file = svc._run_folder(run.id) / "desktop-stderr.txt"
+    assert command == (
+        f'cmd.exe /d /c ""/usr/local/bin/claude" --desktop --resume {CC_A} 2> "{stderr_file}""'
+    )
+    assert "--add-dir" not in command and not stderr_file.exists()
+    assert cwd == run.cwd and timeout == 60.0
+    assert "CLAUDECODE" not in env and "RELAYBAY_RUN_ID" not in env
+    assert opened.with_owner and opened.with_owner_by == "owner" and opened.desktop_opened_at
+    assert opened.desktop_link == f"claude://claude.ai/epitaxy/local_{CC_A}"
+    [event] = await run_events(svc, "run.opened_in_desktop")
+    assert (event.actor, event.payload["run_id"]) == ("owner", run.id)
+    with pytest.raises(ValidationError, match="already with the owner"):
+        await svc.open_in_desktop(run.id)
+    waiting = await svc.send_to_run(run.id, "After the desktop")
+    assert waiting.state == "queued" and len(stub(svc).started) == 1
+    assert (await svc.get_run(run.id)).status == "idle"
+    task, view = await svc.run_status("acme-shop-1")
+    status = fmt.run_status(task, view)
+    assert "With the owner in the Claude desktop app since" in status
+    assert f"claude://claude.ai/epitaxy/local_{CC_A}" in status
+    back = await svc.return_run(run.id)
+    assert not back.with_owner and back.status == "running"
+    assert back.desktop_link  # the link stays
+    spec = stub(svc).started[-1][2]
+    assert (spec.prompt, spec.resume) == ("After the desktop", CC_A)
+    [returned] = await run_events(svc, "run.returned")
+    assert returned.actor == "owner"
+    with pytest.raises(ValidationError, match="not with the owner"):
+        await svc.return_run(run.id)
+
+
+async def test_open_in_desktop_is_refused_while_a_turn_runs_or_without_a_session(
+    svc: Service,
+) -> None:
+    run = await svc.start_run("acme-shop-1")
+    with pytest.raises(ValidationError, match="is running"):
+        await svc.open_in_desktop(run.id)
+    await svc.stop_run(run.id)
+    with pytest.raises(ValidationError, match="no Claude session yet"):
+        await svc.open_in_desktop(run.id)
+    assert stub(svc).desktop_calls == []
+
+
+async def test_without_a_console_the_terminal_command_is_named(svc: Service) -> None:
+    run = await idle_run(svc)
+    stub(svc).desktop_launcher = None
+    with pytest.raises(ValidationError, match=f"claude --resume {CC_A}"):
+        await svc.open_in_desktop(run.id)
+    assert not (await svc.get_run(run.id)).with_owner
+
+
+@pytest.mark.parametrize(
+    ("answer", "why"),
+    [
+        (1, "exited with code 1"),
+        (subprocess.TimeoutExpired("claude", 60), "did not finish in 60 s"),
+        (FileNotFoundError(2, "No such file"), "did not start"),
+    ],
+)
+async def test_a_failed_desktop_launch_keeps_the_run_with_relaybay(
+    svc: Service, answer: Any, why: str
+) -> None:
+    run = await idle_run(svc)
+    stub(svc).desktop_answer = answer
+    with pytest.raises(ValidationError, match=why) as caught:
+        await svc.open_in_desktop(run.id)
+    assert "the run stays with relaybay" in str(caught.value)
+    after = await svc.get_run(run.id)
+    assert not after.with_owner and after.desktop_opened_at is None
+    assert await run_events(svc, "run.opened_in_desktop") == []
+    await svc.send_to_run(run.id, "Go on")
+    assert (await svc.get_run(run.id)).status == "running"
+
+
+async def test_end_works_while_the_run_is_with_the_owner(svc: Service) -> None:
+    run = await idle_run(svc)
+    await svc.open_in_desktop(run.id)
+    await svc.send_to_run(run.id, "Never runs")
+    ended = await svc.end_run(run.id)
+    assert ended.status == "ended" and not ended.with_owner
+    view = await svc.run_view(await svc.get_task("acme-shop-1"))
+    assert view is not None and view.turns[-1].outcome == "cancelled"
+    assert len(stub(svc).started) == 1
+
+
+async def test_settings_apply_from_the_next_turn_and_are_journaled(svc: Service) -> None:
+    run = await svc.start_run("acme-shop-1")
+    with pytest.raises(ValidationError, match="is running"):
+        await svc.set_run_settings(run.id, mode="plan")
+    await stub(svc).finish(run.id)
+    changed = await svc.set_run_settings(
+        run.id, mode="bypassPermissions", model="sonnet", effort="-"
+    )
+    assert (changed.permission_mode, changed.model, changed.effort) == (
+        "bypassPermissions",
+        "sonnet",
+        "medium",
+    )
+    [event] = await run_events(svc, "run.settings_changed")
+    assert event.actor == "owner"
+    assert event.payload["changed"] == {
+        "permission_mode": {"from": "auto", "to": "bypassPermissions"},
+        "model": {"from": "opus", "to": "sonnet"},
+    }
+    await svc.set_run_settings(run.id, mode="bypassPermissions")  # no change: no event
+    assert len(await run_events(svc, "run.settings_changed")) == 1
+    with pytest.raises(ValidationError, match="model must be one of"):
+        await svc.set_run_settings(run.id, model="gpt")
+    await svc.send_to_run(run.id, "Next")
+    spec = stub(svc).started[-1][2]
+    assert (spec.mode, spec.model, spec.effort) == ("bypassPermissions", "sonnet", "medium")
+
+
+async def test_a_coordinator_may_only_lower_the_mode(svc: Service) -> None:
+    svc.coordinators = ["lead"]
+    run = await idle_run(svc)
+    with pytest.raises(ValidationError, match="only for the coordinator"):
+        await svc.run_settings_mcp("acme-shop-1", permission_mode="plan", session="worker")
+    with pytest.raises(ValidationError, match="alone, picked on the card"):
+        await svc.run_settings_mcp(
+            "acme-shop-1", permission_mode="bypassPermissions", session="lead"
+        )
+    lowered = await svc.run_settings_mcp(
+        "acme-shop-1", permission_mode="acceptEdits", effort="low", session="lead"
+    )
+    assert (lowered.permission_mode, lowered.effort) == ("acceptEdits", "low")
+    same_rank = await svc.run_settings_mcp("acme-shop-1", permission_mode="dontAsk", session="lead")
+    assert same_rank.permission_mode == "dontAsk"
+    with pytest.raises(ValidationError, match="raises the permission mode"):
+        await svc.run_settings_mcp("acme-shop-1", permission_mode="auto", session="lead")
+    [*_, event] = await run_events(svc, "run.settings_changed")
+    assert event.actor == "lead"
+    assert event.payload["changed"] == {"permission_mode": {"from": "acceptEdits", "to": "dontAsk"}}
+    await svc.set_board_brake("project", project="acme-shop")
+    with pytest.raises(ValidationError, match="under the brake"):
+        await svc.run_settings_mcp("acme-shop-1", model="haiku", session="lead")
+    assert (await svc.get_run(run.id)).model == "opus"
+
+
+async def test_a_coordinator_lowers_the_owners_bypass(svc: Service) -> None:
+    svc.coordinators = ["lead"]
+    run = await idle_run(svc)
+    await svc.set_run_settings(run.id, mode="bypassPermissions")
+    lowered = await svc.run_settings_mcp("acme-shop-1", permission_mode="plan", session="lead")
+    assert lowered.permission_mode == "plan"
+    await svc.end_run(run.id)
+    with pytest.raises(NotFoundError, match="no open run"):
+        await svc.run_settings_mcp("acme-shop-1", model="haiku", session="lead")
+
+
+async def test_a_refusal_of_the_cli_is_shown_and_an_opened_session_offers_its_link(
+    svc: Service,
+) -> None:
+    run = await idle_run(svc)
+    red, reset = "\x1b[31m", "\x1b[0m"
+    stub(
+        svc
+    ).desktop_stderr = (
+        f"{red}Session {CC_A} is open in another terminal.{reset}\n Run /desktop there instead.\n"
+    )
+    stub(svc).desktop_answer = 1
+    with pytest.raises(ValidationError) as first:
+        await svc.open_in_desktop(run.id)
+    text = str(first.value)
+    assert f"exited with code 1: Session {CC_A} is open in another terminal. Run /desktop" in text
+    assert "\x1b" not in text and f"claude --resume {CC_A}" in text
+    assert not (svc._run_folder(run.id) / "desktop-stderr.txt").exists()
+    stub(svc).desktop_stderr, stub(svc).desktop_answer = "", 0
+    await svc.open_in_desktop(run.id)
+    await svc.return_run(run.id)
+    stub(svc).desktop_answer = 1
+    with pytest.raises(ValidationError) as second:
+        await svc.open_in_desktop(run.id)
+    assert f"claude://claude.ai/epitaxy/local_{CC_A}" in str(second.value)
+    assert "claude --resume" not in str(second.value)
+
+
+async def test_back_waits_for_the_launch_and_end_meanwhile_records_no_event(
+    svc: Service,
+) -> None:
+    run = await idle_run(svc)
+    refusals: list[str] = []
+
+    async def press_back_then_end() -> None:
+        assert run.id in svc.desktop_launching
+        with pytest.raises(ValidationError, match="still being opened") as caught:
+            await svc.return_run(run.id)
+        refusals.append(str(caught.value))
+        await svc.end_run(run.id)
+
+    stub(svc).during_launch = press_back_then_end
+    after = await svc.open_in_desktop(run.id)
+    assert refusals and run.id not in svc.desktop_launching
+    assert after.status == "ended" and not after.with_owner and after.desktop_opened_at
+    assert await run_events(svc, "run.opened_in_desktop") == []

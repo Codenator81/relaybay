@@ -143,7 +143,9 @@ run           id, task_id, project_id, session_id (kind 'run'), cwd, cwd_repo_id
               permission_mode, allowed_tools, chrome, claude_session_id (UNIQUE),
               status (queued|running|waiting|idle|stopped|ended|lost), status_reason,
               auth_method (the method only), hooks_source, mcp_source (user|run), started_by,
-              started_by_kind (owner|coordinator), created_at, updated_at, ended_at, ended_by
+              started_by_kind (owner|coordinator), created_at, updated_at, ended_at, ended_by,
+              with_owner_at, with_owner_by (with the owner in the Claude desktop app: no turn
+              starts), desktop_opened_at
               -- one open run per task (UNIQUE index WHERE ended_at IS NULL)
 run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, queued_at,
               started_at, ended_at, pid, outcome, result_subtype, exit_code, num_turns,

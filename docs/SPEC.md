@@ -410,6 +410,54 @@ folder or a key variable.
   Any other caller is refused, with "a side task goes to backlog_add". `run_status` is open to
   every caller and changes nothing. The caller check is the weak identity of `rules_update` (one
   shared token): it stops mistakes, not a determined agent.
+- **Open in the desktop app.** The owner (board only) hands an open run whose Claude Code session
+  is known and with no turn running to the Claude desktop app: relaybay runs `claude --desktop
+  --resume <Claude Code session id>` in the run's cwd, which opens that same session there with the
+  history of every turn (its desktop id is `local_<Claude Code session id>`). The CLI refuses
+  `--desktop` when its stdout or stderr is a pipe (exit 1), not when stderr goes to a file: on
+  Windows relaybay runs `cmd.exe /d /c ""<claude>" --desktop --resume <id> 2> "<file>""` in a
+  console of its own, started minimized and not focused, without the host session's variables and
+  without `RELAYBAY_RUN_ID`; the file is `<data folder>/runs/<id>/desktop-stderr.txt`, removed after
+  each launch. relaybay waits up to 60 s for the exit code; past that it kills the whole tree
+  (`taskkill /T /F`: cmd.exe, a `claude.cmd` shim and the CLI). A `claude` path or data folder with
+  a character cmd.exe acts on (`"`, `%`, `^`, `&`, `|`, `<`, `>`, `!`) is refused. On macOS and
+  Linux, which would need a terminal for it, the button is replaced by the command to run in a
+  terminal in the run's folder, `claude --resume <id>`. A failed launch (an exit code other than 0,
+  60 s passed, the program not starting) says why with the first 500 characters the CLI wrote to
+  stderr (colour codes removed; for example "Session … is open in another terminal. Run /desktop
+  there instead.", when the desktop app holds the session open), then where else to open it: the
+  desktop link once the session was opened there (a terminal would meet the same refusal), else
+  the terminal command. `--desktop` takes no `--add-dir`: in the desktop app only the run's cwd is
+  a working folder; worktrees and repositories of the run outside it are not, and the card says so
+  for a run with more than one folder (the owner adds them there with `/add-dir`).
+- **With the owner.** From just before the launch the run is with the owner (`run.with_owner_at`
+  and `with_owner_by`; the status stays `idle`, `stopped` or `lost`): relaybay starts no turn of
+  it, texts sent (by the owner) wait, `run_status` says so; End still ends it and cancels them. A
+  failed launch hands it back at once, unless a waiting text's pre-turn check refuses: then it
+  stays with the owner until Back to the program. **Back to the program** hands it back: the
+  first waiting text starts as the next turn with `--resume`, so the session goes on with what the
+  owner did in the desktop app. While the launch still runs the card shows "Opening the desktop
+  app…" instead of Back and the server refuses Back; End is taken, and a launch that then
+  succeeds on a run already handed back or ended records only `run.desktop_opened_at`, with no
+  event. `claude -p --resume` works while the desktop app holds the session open, so after Back
+  relaybay's turns and the owner's typing there would write to one session: the card asks to close
+  or leave the session in the desktop app before Back to the program. Once opened, the run's main
+  action is the link `claude://claude.ai/epitaxy/local_<Claude Code session id>`
+  (`run.desktop_opened_at`), Open in the desktop app the second. Events `run.opened_in_desktop`
+  and `run.returned`, with who and when.
+- **Mode, model and effort between turns.** An open run with no turn running may change its
+  permission mode, model and effort; the run's row is updated and the next turn passes them
+  (`--permission-mode`, `--model`, `--effort` with `--resume`). While a turn runs the board's form is
+  disabled and the server refuses with the reason. The order of the modes, by what a turn under
+  `claude -p` may do without asking (`domain.runs.MODE_RANK`): `plan` (no edits) < `default` =
+  `manual` (its CLI alias) = `dontAsk` (reads and the allowed tools; everything else is denied,
+  nobody answers a prompt) < `acceptEdits` (edits in the working folder too) < `auto` (a classifier
+  approves the rest) < `bypassPermissions` (no checks). The owner, on the board, may pick any mode,
+  `bypassPermissions` too. A coordinator (MCP `run_settings`, checked like `run_start`, refused under
+  a brake on itself or on the card, its project or all) may keep or lower the mode, never raise it
+  and never pick `bypassPermissions`, and may change model and effort. Every change is a
+  `run.settings_changed` event with who and, per changed value, from and to; it is listed on the
+  Audit page with the changes. Nothing changed: no event.
 
 <a id="spec-run-login"></a>
 
@@ -489,7 +537,9 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `live.action`, `document.updated`, `memory.added`, `memory.updated`, `block.updated`,
 `project.pulse_set`, the `intake.*` and `backlog.*` events ([§12](#spec-intake)),
 `run.started`, `run.turn_started`, `run.turn_queued`, `run.turn_ended`, `run.stopped`, `run.ended`,
-`run.lost` (with `project`, `key` and `run_id`), `run.defaults_set`, `settings.run_login_any`
+`run.lost`, `run.opened_in_desktop`, `run.returned`, `run.settings_changed` (with `changed`: per
+value `from` and `to`) (all with `project`, `key` and `run_id`), `run.defaults_set`,
+`settings.run_login_any`
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
@@ -649,9 +699,19 @@ allowed tools and `--chrome` as the project sets them, the brief, and **Start**.
 open one, else the latest) it shows status and reason, folder, each repository's folder (a new
 worktree with its branch and what was copied, or the repository itself), where relaybay's hooks
 and MCP server come from, session, the Claude Code session id, total tokens and one row per turn (sent by, queued, outcome, tokens, denials with the tool
-names), then **Stop** while a turn runs, a **Send** text box (Continue, or a text that waits for
-the running turn) and **End run** (asks first). The posts are `/p/<slug>/t/<key>/run/start` and
-`/p/<slug>/t/<key>/run/<id>/send|stop|end`, board only (cookie and CSRF; a Bearer request is
+names), then **Stop** while a turn runs, **Open in the desktop app** when the Claude Code session
+is known and no turn runs (on macOS and Linux the `claude --resume <id>` command instead; once
+the session was opened there, **Go to the session in the desktop app**, its `claude://` link, comes
+first), **Back to the program** while the run is with the owner (a "with the owner" badge, a line
+since when, "close or leave the session in the desktop app before Back to the program" next to the
+button, and "Opening the desktop app…" in its place while the launch runs), for a run with more
+than one folder a line that only the cwd is a working folder in the desktop app,
+a **Send** text box (Continue, or a text that waits for the running turn or for Back to the
+program), the **From the next turn on** form (model, effort, permission mode with
+`bypassPermissions`, **Apply**; disabled while a turn runs) and **End run** (asks first). Once the
+session was opened in the desktop app, the Claude session line links to it. The posts are
+`/p/<slug>/t/<key>/run/start` and
+`/p/<slug>/t/<key>/run/<id>/send|stop|end|desktop|back|settings`, board only (cookie and CSRF; a Bearer request is
 refused, `403`); a refusal comes back inside the block.
 
 <a id="spec-board-run-defaults"></a>
@@ -1096,7 +1156,7 @@ keep a thread going for its own sake.
 | Catch-up and rules | `events_since`, `rules_get`, `rules_update`, `rules_propose` |
 | Usage | `usage_summary`, `budget_get` |
 | Brake | `brake_status`, `brake_set` ([§2](#spec-brake)) |
-| Runs | `run_start` (coordinators only), `run_status` ([§1](#spec-run)) |
+| Runs | `run_start`, `run_settings` (coordinators only), `run_status` ([§1](#spec-run)) |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Intake | `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources` ([§12](#spec-intake-mcp)) |
@@ -2607,6 +2667,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0031_run` | `run` (task, project, its session, cwd, cwd repository, model, effort, permission mode, allowed tools, chrome, Claude Code session id, status with all seven values, reason, sign-in method, where hooks and MCP come from, started by and its kind, created / updated / ended at, ended by); one open run per task and one run per Claude Code session (unique indexes) ([§1](#spec-run)). Additive only |
 | `0032_run_turn` | `run_turn` (run, sequence, text, sent by and its kind, queued / started / ended at, pid, outcome, result subtype, exit code, number of turns, duration, four token counts, denials and denied tool names); a unique index allows one running turn per run. Additive only |
 | `0033_run_worktree` | `run_worktree` (run, project repository, repository name, source path, path, path key, branch, created by the run, the copied file names, created / removed at); an index per run and one on the path key of the not removed ([§1](#spec-run)). One open run per path is checked by the service. Additive only |
+| `0034_run_with_owner` | `run.with_owner_at`, `run.with_owner_by` (the run is with the owner in the Claude desktop app: no turn starts), `run.desktop_opened_at` ([§1](#spec-run)). Columns, not a status, so the status CHECK of 0031 stays. Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

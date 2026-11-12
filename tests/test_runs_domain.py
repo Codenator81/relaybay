@@ -1,5 +1,7 @@
 """The run rules: status transitions and what a run may be started with."""
 
+import itertools
+
 import pytest
 
 from relaybay.domain import runs
@@ -69,3 +71,26 @@ def test_prompt() -> None:
     for bad in ("", "   ", "x" * (runs.BRIEF_MAX + 1), "a\x00b"):
         with pytest.raises(ValidationError):
             runs.clean_prompt(bad)
+
+
+def test_the_order_of_permission_modes() -> None:
+    assert set(runs.MODE_RANK) == set(runs.PERMISSION_MODES + runs.OWNER_ONLY_MODES)
+    order = ["plan", "default", "acceptEdits", "auto", "bypassPermissions"]
+    for low, high in itertools.pairwise(order):
+        assert runs.raises_mode(low, high) and not runs.raises_mode(high, low)
+    for same in ("manual", "dontAsk"):
+        assert not runs.raises_mode("default", same) and not runs.raises_mode(same, "default")
+    assert runs.raises_mode("plan", "someNewMode")  # unknown counts as a raise
+
+
+def test_the_desktop_link_needs_an_opened_session() -> None:
+    run = runs.Run(
+        1, 1, 1, None, "/w", None, "opus", "medium", "auto", "mcp__relaybay", False,
+        "11111111-2222-3333-4444-555555555555", "idle", None, None, "user", "user", "owner",
+        "owner", "t", "t", None, None,
+    )  # fmt: skip
+    assert run.desktop_link is None and not run.with_owner
+    run.desktop_opened_at = "t"
+    assert (
+        run.desktop_link == "claude://claude.ai/epitaxy/local_11111111-2222-3333-4444-555555555555"
+    )

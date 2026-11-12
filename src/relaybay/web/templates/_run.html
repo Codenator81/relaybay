@@ -1,6 +1,7 @@
 {#- The Agent block of a card: the user's own claude run on it. Expects: t (the task), view (the
     open or latest run, or None), form (the Start form when no run is open), running, error,
-    choices, owner_modes. Refetched on live run events. -#}
+    choices, owner_modes, desktop_ok (relaybay can open the desktop app here), launching (that
+    launch runs now). Refetched on live run events. -#}
 {%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
 {%- set base = "/p/" ~ t.project_slug ~ "/t/" ~ t.key ~ "/run" %}
 <div class="run" id="run-{{ t.key }}" data-key="{{ t.key }}"
@@ -10,9 +11,11 @@
   {%- set r = view.run %}
   <p class="run-head">
     <span class="run-status status-{{ r.status }}">{{ r.status }}</span>
+    {% if r.is_open and r.with_owner %}<span class="run-status run-with-owner">with the owner</span>{% endif %}
     <span class="muted">run {{ r.id }} · {{ r.model }} · {{ r.effort }} · {{ r.permission_mode }} · started by {{ r.started_by }} <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
   </p>
   {% if r.status_reason %}<p class="run-reason">{{ r.status_reason }}</p>{% endif %}
+  {% if r.is_open and r.with_owner %}<p class="run-reason run-owner-note">With you in the Claude desktop app since <time datetime="{{ r.with_owner_at }}" data-age>{{ r.with_owner_at|age }}</time>: relaybay starts no turn, texts sent wait until Back to the program.</p>{% endif %}
   <dl class="run-facts">
     <dt>Folder</dt><dd><code>{{ r.cwd }}</code></dd>
     {% for w in view.worktrees %}
@@ -20,7 +23,7 @@
     {% endfor %}
     <dt>relaybay</dt><dd class="muted run-sources">hooks {{ "from your user settings" if r.hooks_source == "user" else "added by the run (--settings)" }}; MCP {{ "from your user settings" if r.mcp_source == "user" else "added by the run (--mcp-config)" }}</dd>
     {% if r.session_name %}<dt>Session</dt><dd>{{ r.session_name }}</dd>{% endif %}
-    <dt>Claude session</dt><dd class="mono">{{ r.claude_session_id or "not known yet" }}</dd>
+    <dt>Claude session</dt><dd class="mono">{{ r.claude_session_id or "not known yet" }}{% if r.desktop_link %} <a class="run-desktop-link" href="{{ r.desktop_link }}">open in the Claude desktop app</a>{% endif %}</dd>
     <dt>Tokens</dt><dd>{{ "{:,}".format(view.totals.tokens) }} <span class="muted">(input {{ "{:,}".format(view.totals.input_tokens) }}, output {{ "{:,}".format(view.totals.output_tokens) }}, cache read {{ "{:,}".format(view.totals.cache_read_tokens) }}, cache write {{ "{:,}".format(view.totals.cache_write_tokens) }})</span></dd>
   </dl>
   {% if view.turns %}
@@ -49,13 +52,57 @@
       <button type="submit" class="btn danger">Stop</button>
     </form>
     {% endif %}
+    {% if r.with_owner or (r.claude_session_id and not running and r.status != "running") %}
+    {% if view.worktrees|rejectattr("path", "equalto", r.cwd)|list %}<p class="muted run-desktop-folders">In the desktop app only <code>{{ r.cwd }}</code> is a working folder (<code>--desktop</code> takes no <code>--add-dir</code>); add the run's other folders there with <code>/add-dir</code>.</p>{% endif %}
+    {% endif %}
+    {% if r.with_owner %}
+    {% if launching %}
+    <p class="muted run-launching">Opening the desktop app…</p>
+    {% else %}
+    {% if r.desktop_link %}<a class="btn" href="{{ r.desktop_link }}">Go to the session in the desktop app</a>{% endif %}
+    <form class="inline-form" method="post" action="{{ base }}/{{ r.id }}/back"
+          hx-post="{{ base }}/{{ r.id }}/back" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
+      {{ hidden_csrf() }}
+      <button type="submit" class="btn primary">Back to the program</button>
+    </form>
+    <p class="muted run-back-note">Close or leave the session in the desktop app before Back to the program: relaybay's turns and your typing there would write to one session.</p>
+    {% endif %}
+    {% elif r.claude_session_id and not running and r.status != "running" %}
+    {% if r.desktop_link %}<a class="btn primary" href="{{ r.desktop_link }}">Go to the session in the desktop app</a>{% endif %}
+    {% if desktop_ok %}
+    <form class="inline-form" method="post" action="{{ base }}/{{ r.id }}/desktop"
+          hx-post="{{ base }}/{{ r.id }}/desktop" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
+      {{ hidden_csrf() }}
+      <button type="submit" class="btn">Open in the desktop app</button>
+    </form>
+    {% elif not r.desktop_link %}
+    <p class="muted run-terminal">Open the session in a terminal in its folder: <code>claude --resume {{ r.claude_session_id }}</code></p>
+    {% endif %}
+    {% endif %}
     <form class="run-send" method="post" action="{{ base }}/{{ r.id }}/send"
           hx-post="{{ base }}/{{ r.id }}/send" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
       {{ hidden_csrf() }}
-      <label class="field"><span>{{ "Next text (waits for the running turn)" if running else "Continue" }}</span>
+      <label class="field"><span>{{ "Next text (waits until Back to the program)" if r.with_owner else "Next text (waits for the running turn)" if running else "Continue" }}</span>
         <textarea name="text" rows="3" maxlength="20000" required placeholder="What the agent should do next"></textarea>
       </label>
       <button type="submit" class="btn primary">Send</button>
+    </form>
+    <form class="run-settings" method="post" action="{{ base }}/{{ r.id }}/settings"
+          hx-post="{{ base }}/{{ r.id }}/settings" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
+      {{ hidden_csrf() }}
+      <fieldset class="field-row"{% if running or r.status == "running" %} disabled{% endif %}>
+        <legend>From the next turn on{% if running or r.status == "running" %} (changes between turns: a turn is running){% endif %}</legend>
+        <label class="field"><span>Model</span>
+          <select name="model">{% for m in choices.models %}<option value="{{ m }}"{% if m == r.model %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        </label>
+        <label class="field"><span>Effort</span>
+          <select name="effort">{% for e in choices.efforts %}<option value="{{ e }}"{% if e == r.effort %} selected{% endif %}>{{ e }}</option>{% endfor %}</select>
+        </label>
+        <label class="field"><span>Permission mode</span>
+          <select name="permission_mode">{% for m in owner_modes %}<option value="{{ m }}"{% if m == r.permission_mode %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        </label>
+        <button type="submit" class="btn">Apply</button>
+      </fieldset>
     </form>
     <form class="inline-form" method="post" action="{{ base }}/{{ r.id }}/end"
           hx-post="{{ base }}/{{ r.id }}/end" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button"

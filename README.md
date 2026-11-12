@@ -174,7 +174,10 @@ program as its client:
   Code session (`--resume`); a text sent during a turn waits for it, Stop kills the turn's whole
   process tree, and the card shows the status, the Claude session id and each turn's tokens. The
   run's hooks report to its own session row on the card; when `relaybay setup` did not install
-  them, the run passes them itself. Coordinator sessions may start runs with `run_start`; project
+  them, the run passes them itself. Between turns you can open the session in the Claude desktop
+  app (on Windows; elsewhere the card shows the `claude --resume` command) and hand it back, and
+  change the permission mode, model and effort for the next turns. Coordinator sessions may start
+  runs with `run_start` and lower a run's mode with `run_settings`; project
   defaults (model, effort, permission mode, allowed tools, project folder) are on Stands & access,
   the sign-in switch in Settings → Agents. relaybay runs `git worktree add`, never a commit or push.
 - **Desktop program** — an installer per OS puts relaybay in the tray with the board in its own

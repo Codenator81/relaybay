@@ -323,3 +323,16 @@ def test_probe_reads_the_servers_of_both_runs(local: Local) -> None:
         check=False,
     )
     assert refused.returncode == 2 and "never in CI" in refused.stderr
+
+
+def test_desktop_refuses_redirected_output_like_the_real_cli(local: Local) -> None:
+    session = "11111111-2222-3333-4444-555555555555"
+    refused = local.cli("--desktop", "--resume", session)
+    assert refused.returncode == 1
+    assert "can't run non-interactively" in refused.stderr and refused.stdout == ""
+    [entry] = [
+        json.loads(x)
+        for x in (local.root / "trace.jsonl").read_text("utf-8").splitlines()
+        if json.loads(x)["kind"] == "desktop"
+    ]
+    assert entry["argv"] == ["--desktop", "--resume", session] and entry["tty"] is False

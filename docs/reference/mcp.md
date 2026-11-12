@@ -46,6 +46,7 @@ Deprecations: none.
 | [`brake_set`](#brake_set) | write |
 | [`run_start`](#run_start) | write |
 | [`run_status`](#run_status) | read |
+| [`run_settings`](#run_settings) | write |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -454,6 +455,20 @@ The card's run (the open one, else the latest): status, folders, Claude session 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+
+### `run_settings`
+
+Change the permission mode, model or effort of the card's open run from its next turn on, for coordinator sessions only, never while a turn runs and never under a brake. The mode may only stay or go down; the owner raises it on the card.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `permission_mode` | string or null | no | A mode that does not raise the run's current one: plan, then manual / default / dontAsk, then acceptEdits, then auto. Raising it and bypassPermissions are the owner's, on the card. Default: unchanged. |
+| `model` | string or null | no | opus, sonnet or haiku. Default: unchanged. |
+| `effort` | string or null | no | low, medium, high, xhigh or max. Default: unchanged. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `memory_search`
 
