@@ -28,6 +28,13 @@
         <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
         <button type="submit" class="action">Clear</button>
       </form></dd>{% endif %}
+    {% if is_done %}{% set in_archive = task_archived(t) %}<dt>Archive</dt><dd>{% if t.archived_at %}archived <time datetime="{{ t.archived_at }}" data-age>{{ t.archived_at|age }}</time> by {{ t.archived_by }}{% elif in_archive %}archived: closed more than {{ done_window_days }} days ago{% else %}<span class="muted">in the done column</span>{% endif %}
+      <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}"
+            hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}" hx-target="closest .task-view" hx-swap="outerHTML">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        <input type="hidden" name="target" value="view">
+        <button type="submit" class="action">{{ "Back from the archive" if in_archive else "Archive" }}</button>
+      </form></dd>{% endif %}
     {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
     {% if detail.budget %}{% set b = detail.budget %}<dt>Budget</dt><dd>{{ "{:,}".format(b.used) }} of {{ "{:,}".format(b.budget.max_tokens) }} tokens {{ "this UTC day" if b.budget.period == "day" else "in total" }} ({{ b.percent }}%) <span class="muted">· {{ "stops agents" if b.budget.action == "stop" else "warns" }}</span> <a href="/usage#budgets">Budgets</a></dd>{% endif %}
     <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>

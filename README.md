@@ -103,8 +103,9 @@ program as its client:
   and marked "stale".
 - **Done column and archive** — the `done` column shows tasks closed in the last
   `done_window_days` (default 7); older ones are archived and come back with "Show archived" or a
-  search by key or title (`/p/<project>?archived=1`, `?q=…`). Done cards hide "waiting on" and the
-  next step.
+  search by key or title (`/p/<project>?archived=1`, `?q=…`). **Archive** on a done card sends it
+  there at once, **Back from the archive** brings it back for another window. Done cards hide
+  "waiting on" and the next step.
 - **External tracker mark** — a task can carry its issue in any tracker (tracker name, issue key,
   optional link) and a "work log entered" mark. The card shows the issue as a badge at the top (a
   link when a URL is set, ✓ once logged). With `require_tracker_log = true` a done task without

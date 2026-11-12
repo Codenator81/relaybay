@@ -32,6 +32,8 @@ Deprecations: none.
 | [`task_update`](#task_update) | write |
 | [`task_patch`](#task_patch) | write |
 | [`task_set_stage`](#task_set_stage) | write |
+| [`task_archive`](#task_archive) | write |
+| [`task_unarchive`](#task_unarchive) | write |
 | [`task_bind_session`](#task_bind_session) | write |
 | [`task_unbind_session`](#task_unbind_session) | write |
 | [`report_add`](#report_add) | write |
@@ -271,6 +273,28 @@ Move a task to another stage (plan, dev, review, test, live, done) when its work
 | `note` | string or null | no | Short note next to the stage, e.g. 'PR open'. |
 | `next_step` | string or null | no | What happens next, one line; saved in the same write. A next step set before the last stage change shows as stale. Omit to keep it; '-' or '' clears it. |
 | `waiting_on` | string or null | no | Only who acts next: a name or role, no text after it; what happens goes to next_step. Saved in the same write. Omit to keep it; '-' or '' clears it. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `task_archive`
+
+Send a done task to the archive now, for coordinator sessions only: it leaves the done column (the board's "show archive" and search still find it). Only a task in done; any later stage change takes it out of the archive. Nothing is deleted.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `task_unarchive`
+
+Bring a done task back from the archive, for coordinator sessions only: it shows in the done column again, and the automatic done window starts again from now.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

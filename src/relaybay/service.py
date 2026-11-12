@@ -244,7 +244,8 @@ HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatc
 LIVE_ACTION = "live.action"
 NO_LIVE_ON = "session.no_live_on"
 NO_LIVE_OFF = "session.no_live_off"
-# What the Audit page adds to the journal when asked: changes to who may do what.
+# What the Audit page adds to the journal when asked: changes to who may do what, and done
+# cards archived or brought back by hand.
 AUDIT_CHANGE_KINDS = (
     "policy.updated",
     "policy.proposed",
@@ -268,6 +269,8 @@ AUDIT_CHANGE_KINDS = (
     "question.defaulted",
     "question.delivered",
     "question.withdrawn",
+    "task.archived",
+    "task.unarchived",
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -999,6 +1002,11 @@ RUN_START_STAGES = ("plan", "dev")
 RUN_START_NOT_COORDINATOR = (
     "run_start is only for the coordinator sessions named in the server's config; a side task"
     " goes to backlog_add. Nothing started."
+)
+ARCHIVE_NOT_COORDINATOR = (
+    "{tool} is only for the coordinator sessions named in the server's config; a desktop id also"
+    " needs that session's own hook_session. Nothing changed. The owner archives done cards on"
+    " the board."
 )
 RUN_SETTINGS_NOT_COORDINATOR = (
     "run_settings is only for the coordinator sessions named in the server's config; the owner"
@@ -2389,6 +2397,11 @@ class Service:
         now = datetime.now(UTC)
         waiting, warned, not_logged = [], [], []
         for task in tasks:
+            unlogged = task.stage == Stage.DONE and require_tracker_log and not task.tracker_logged
+            if unlogged and task.archived_at is not None:
+                # Archived by hand before its work log was marked: it still waits for the mark.
+                not_logged.append(task)
+                continue
             if is_archived(task, now, done_window_days, require_tracker_log):
                 continue
             if task.stage == Stage.DONE:
@@ -6772,6 +6785,64 @@ class Service:
                     stage=task.stage.value,
                 )
             return await self.get_task(task.id, tx.conn)
+
+    async def set_archived(self, ref: str | int, archived: bool, *, actor: str = "owner") -> Task:
+        """The board's "Archive" / "Back from the archive" on a done card."""
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            await self._set_archived_tx(tx, task, archived, actor, None)
+            return await self.get_task(task.id, tx.conn)
+
+    async def set_archived_mcp(
+        self,
+        ref: str | int,
+        archived: bool,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> Task:
+        """`task_archive` / `task_unarchive`: for coordinator sessions only."""
+        tool = "task_archive" if archived else "task_unarchive"
+        async with self._tx() as tx:
+            if not await self._is_coordinator(tx.conn, session, hook_session):
+                raise ValidationError(ARCHIVE_NOT_COORDINATOR.format(tool=tool))
+            caller = await self._session(tx, session, session_title, hook_session)
+            assert caller is not None
+            task = await self.get_task(ref, tx.conn)
+            await self._set_archived_tx(tx, task, archived, caller.name, caller.id)
+            return await self.get_task(task.id, tx.conn)
+
+    async def _set_archived_tx(
+        self, tx: _Tx, task: Task, archived: bool, actor: str, session_id: int | None
+    ) -> None:
+        """Only a done task is archived. A repeat changes nothing and records nothing. "Back from
+        the archive" also takes a task the done window archived: its window starts again now."""
+        if task.stage != Stage.DONE:
+            raise ValidationError(
+                f"Only a done task goes to the archive; {task.key} is in {task.stage.value}."
+                " Nothing changed."
+            )
+        ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
+        payload = {"project": task.project_slug, "key": task.key, "stage": task.stage.value}
+        if archived:
+            if task.archived_at is not None:
+                return
+            await repo.set_archive_mark(tx.conn, task.id, tx.now, actor, task.unarchived_at)
+            await tx.event("task.archived", actor, **ids, **payload)
+            return
+        if not is_archived(
+            task, datetime.now(UTC), self.done_window_days, self.require_tracker_log
+        ):
+            return
+        await repo.set_archive_mark(tx.conn, task.id, None, None, tx.now)
+        await tx.event(
+            "task.unarchived",
+            actor,
+            **ids,
+            **payload,
+            archived_by=task.archived_by,  # None: the done window had archived it
+        )
 
     async def intake_propose(
         self,

@@ -1246,6 +1246,9 @@ async def test_a_stale_hash_does_not_migrate(
             ("task", "autonomy"),
             ("task", "answer_received_at"),
             ("task", "answer_message_id"),
+            ("task", "archived_at"),
+            ("task", "archived_by"),
+            ("task", "unarchived_at"),
             ("project", "autonomy"),
         ):
             conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")

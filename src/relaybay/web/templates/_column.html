@@ -10,7 +10,7 @@
   </div>
   {% if stage == "done" %}
   {% if done_more %}<p class="col-note muted">{{ done_more }} more not shown; search to find them.</p>{% endif %}
-  {% if hidden_archived %}<p class="col-note muted">{{ hidden_archived }} closed more than {{ done_window_days }} days ago ·
+  {% if hidden_archived %}<p class="col-note muted">{{ hidden_archived }} in the archive (closed more than {{ done_window_days }} days ago or archived by hand) ·
     <a href="/p/{{ project.slug }}?{{ archived_qs }}">Show archived</a></p>{% endif %}
   {% endif %}
 </section>

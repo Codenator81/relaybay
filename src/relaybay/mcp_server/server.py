@@ -644,6 +644,47 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
 
     @write
+    async def task_archive(
+        task: TaskRef,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Send a done task to the archive now, for coordinator sessions only: it leaves the done
+        column (the board's "show archive" and search still find it). Only a task in done; any
+        later stage change takes it out of the archive. Nothing is deleted."""
+        saved = await run(
+            service.set_archived_mcp(
+                task,
+                True,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.task_archive_saved(saved)
+
+    @write
+    async def task_unarchive(
+        task: TaskRef,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Bring a done task back from the archive, for coordinator sessions only: it shows in
+        the done column again, and the automatic done window starts again from now."""
+        saved = await run(
+            service.set_archived_mcp(
+                task,
+                False,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.task_archive_saved(saved)
+
+    @write
     async def task_bind_session(
         task: TaskRef,
         session: Annotated[str, Field(description=SESSION_HELP)],

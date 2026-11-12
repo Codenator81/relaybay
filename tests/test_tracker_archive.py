@@ -215,7 +215,7 @@ def test_done_window_archive_and_search(board: TestClient, seeded: str, monkeypa
     page = board.get("/p/acme-shop").text
     # Default: tracker fields do not matter, every old done task is archived.
     assert not any(f'id="card-{k}"' in page for k in (logged.key, old.key, fresh.key))
-    assert "3 closed more than 7 days ago" in page
+    assert "3 in the archive (closed more than 7 days ago or archived by hand)" in page
     assert 'href="/p/acme-shop?archived=1">Show archived</a>' in page
     assert 'hx-get="/p/acme-shop/col/done"' in page
 
@@ -248,7 +248,7 @@ def test_unlogged_done_tasks_stay_with_require_tracker_log(strict: TestClient, m
     page = strict.get("/p/acme-shop").text
     assert f'id="card-{logged.key}"' not in page
     assert f'id="card-{unlogged.key}"' in page  # not logged: never archived
-    assert "1 closed more than 7 days ago" in page
+    assert "1 in the archive (closed more than 7 days ago or archived by hand)" in page
 
 
 def test_done_window_from_config(tmp_path, monkeypatch) -> None:

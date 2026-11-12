@@ -6,6 +6,7 @@
   var KINDS = [
     "project.created", "project.updated", "project.pulse_set",
     "task.created", "task.updated", "task.stage_changed", "task.reordered",
+    "task.archived", "task.unarchived",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
     "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
     "session.no_live_on", "session.no_live_off",
@@ -41,6 +42,7 @@
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
+    "task.archived", "task.unarchived",
     "session.seen", "session.status_changed", "comment.added", "comment.read",
     "message.loop_stopped", "message.loop_dismissed",
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
@@ -368,7 +370,7 @@
     var audit = document.getElementById("audit");
     if (audit) {
       if (audit.dataset.live && (data.kind === "live.action" || (audit.dataset.changes &&
-          /^(policy\.|environment\.|session\.no_live_|question\.)/.test(data.kind)))) {
+          /^(policy\.|environment\.|session\.no_live_|question\.|task\.(un)?archived$)/.test(data.kind)))) {
         prependActivity(audit);
       }
       return;
@@ -405,6 +407,8 @@
         queue(column(data.to));
         break;
       case "task.reordered":
+      case "task.archived":
+      case "task.unarchived":
         queue(column(data.stage));
         break;
       case "task.updated":

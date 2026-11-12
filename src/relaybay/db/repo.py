@@ -152,6 +152,9 @@ def _task(row: aiosqlite.Row) -> Task:
         project_autonomy=bool(row["project_autonomy"]),
         answer_received_at=row["answer_received_at"],
         answer_message_id=row["answer_message_id"],
+        archived_at=row["archived_at"],
+        archived_by=row["archived_by"],
+        unarchived_at=row["unarchived_at"],
     )
 
 
@@ -805,6 +808,8 @@ async def update_task(
         params.append(now if changes["stage"] == Stage.DONE else None)
         sets.append("stage_changed_at = ?")
         params.append(now)
+        # The archive marks belong to this stay in done: any stage change ends it.
+        sets += ["archived_at = NULL", "archived_by = NULL", "unarchived_at = NULL"]
     if "next_step" in changes:
         sets.append("next_step_at = ?")
         params.append(now)
@@ -4446,6 +4451,20 @@ async def set_answer_mark(
     await conn.execute(
         "UPDATE task SET answer_received_at = ?, answer_message_id = ? WHERE id = ?",
         (received_at, message_id, task_id),
+    )
+
+
+async def set_archive_mark(
+    conn: aiosqlite.Connection,
+    task_id: int,
+    archived_at: str | None,
+    archived_by: str | None,
+    unarchived_at: str | None,
+) -> None:
+    """The hand archive mark of a done task; no version bump, like the answer mark."""
+    await conn.execute(
+        "UPDATE task SET archived_at = ?, archived_by = ?, unarchived_at = ? WHERE id = ?",
+        (archived_at, archived_by, unarchived_at, task_id),
     )
 
 
