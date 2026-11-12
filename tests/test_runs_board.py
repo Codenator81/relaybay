@@ -1,6 +1,7 @@
 """The board's run pages without any `claude`: the Agent block, project defaults, Settings → Agents.
 `claude_path` names a file that does not exist, so nothing is ever started here."""
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from starlette.testclient import TestClient
 from relaybay.app import create_app
 from relaybay.config import Settings
 from relaybay.runner.layers import LayerState
+from relaybay.runner.stream import Result, read_line
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, run_in_app
@@ -152,3 +154,44 @@ def test_open_in_desktop_back_and_the_settings_between_turns(
     terminal = board.get(base).text
     assert "Open in the desktop app" not in terminal and "claude --resume" not in terminal
     assert "Go to the session in the desktop app" in terminal  # opened once: the link, not a CLI
+
+
+def test_a_turns_report_and_lines_open_folded_in_the_agent_block(
+    board: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ok = LayerState("command", True, "command hooks from your user settings", "registered")
+    monkeypatch.setattr("relaybay.service.user_layer_state", lambda *_: ok)
+    service: Service = board.app.state.service
+    stub = StubRuns(service, tmp_path)
+    service.runs = stub  # type: ignore[assignment]
+    base = "/p/acme-shop/t/acme-shop-1/run"
+    run = run_in_app(board, service.start_run, "acme-shop-1", brief="Build it")
+    turn_id = stub.active.pop(run.id)
+    lines = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "tool_use", "id": "toolu_A", "name": "Agent", "input": {}}]
+            },
+        },
+        {
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_A",
+            "message": {"content": [{"type": "text", "text": "Subagent looked <here>"}]},
+        },
+    ]
+    events = [read_line(json.dumps(line), n)[0] for n, line in enumerate(lines, start=1)]
+    run_in_app(board, service.turn_events, turn_id, events)
+    text = "verified · M · it works\n\n- the page loads (verified: browser at /p/acme-shop)"
+    result = Result("success", False, 1, 10, text=text)
+    run_in_app(board, service.turn_done, turn_id, "success", result, 0, None)
+    panel = board.get(base).text
+    assert 'hx-trigger="toggle once"' in panel and f"{base}/{run.id}/turns/1" in panel
+    assert "it works" in panel and "(2 lines)" in panel
+    turn = board.get(f"{base}/{run.id}/turns/1")
+    assert turn.status_code == 200
+    assert "browser at /p/acme-shop" in turn.text and "report-check" in turn.text
+    assert "Agent" in turn.text and "Subagent looked &lt;here&gt;" in turn.text
+    assert board.get(f"{base}/{run.id}/turns/9").status_code == 404
+    page = board.get("/p/acme-shop?task=acme-shop-1").text
+    assert 'class="report-checks"' in page and "browser at /p/acme-shop" in page

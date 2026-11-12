@@ -347,6 +347,20 @@ def report_format_problem(body: str, report_format: dict[str, Any]) -> str | Non
     return None
 
 
+MARKED_SIZES = ("M", "L")
+
+
+def verified_marks_problem(size: str | None, marks: int) -> str | None:
+    """An M or L report should say where its claims were checked; an S report never has to.
+    Always a warning: the claims may be true, only unchecked by what the report says."""
+    if size not in MARKED_SIZES or marks:
+        return None
+    return (
+        "an M or L report has no verified marks: add `verified: <where>` to each claim you"
+        " checked (e.g. `verified: pytest on Windows`), and say what was not checked."
+    )
+
+
 def rules_markdown(rules: Rules) -> str:
     """The merged document as markdown, without the heading a caller puts on top."""
     body = rules.body

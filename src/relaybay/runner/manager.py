@@ -2,9 +2,10 @@
 
 Threads, not asyncio subprocesses: the event loop the desktop program's server thread runs may
 have no subprocess support on Windows, and threads allow the suspended start of `proctree`. One
-thread reads stdout and hands parsed lines to the loop, one drains stderr into a small ring kept in
-memory only (never stored: it may hold account details), and an asyncio task per turn waits for
-the end and tells the sink. No database here: the service is the sink.
+thread reads stdout, masks and compresses every line and hands it to the loop, one drains stderr
+into a small ring kept in memory only (never stored: it may hold account details), and an asyncio
+task per turn hands the lines to the sink in batches, waits for the end and tells the sink. No
+database here: the service is the sink.
 """
 
 import asyncio
@@ -23,7 +24,15 @@ from relaybay.runner import auth
 from relaybay.runner.claude_cli import TurnSpec, build_command, child_env, find_claude
 from relaybay.runner.desktop import Launcher, default_launcher
 from relaybay.runner.proctree import ProcessTree
-from relaybay.runner.stream import LINE_MAX, Init, Result, parse_line
+from relaybay.runner.stream import (
+    HEAD_MAX,
+    LINE_MAX,
+    Init,
+    Result,
+    StreamEvent,
+    read_line,
+    truncated_event,
+)
 
 logger = logging.getLogger("relaybay")
 STDERR_KEEP = 4096
@@ -31,7 +40,11 @@ STOP_GRACE_SECONDS = 10.0
 CLOSE_GRACE_SECONDS = 1.5  # within uvicorn's graceful window of 2 s
 LOGIN_CACHE_SECONDS = 30.0
 DRAIN_SECONDS = 2.0
+# Lines go to the sink in batches: at this many, or this long after the first one waiting.
+EVENT_BATCH = 200
+EVENT_FLUSH_SECONDS = 0.5
 _END = object()
+_TICK = object()
 
 
 @dataclass(slots=True)
@@ -45,6 +58,8 @@ class RunnerConfig:
 
 class TurnSink(Protocol):
     async def turn_init(self, turn_id: int, claude_session_id: str) -> None: ...
+
+    async def turn_events(self, turn_id: int, events: list[StreamEvent]) -> None: ...
 
     async def turn_done(
         self,
@@ -68,18 +83,33 @@ class _Active:
 
 
 def _read_lines(stream: Any, put: Callable[[Any], None]) -> None:
-    """Lines longer than LINE_MAX are skipped whole without being held in memory."""
-    skipping = False
+    """Every line becomes a masked event (masked and compressed here, off the loop), followed by
+    its item when it steers the run. A line longer than LINE_MAX is never held whole: its head
+    is kept and the rest only counted."""
+    seq = 0
+    head: str | None = None  # the start of a line over LINE_MAX being skipped
+    size = 0
     while True:
         chunk = stream.readline(LINE_MAX + 1)
         if not chunk:
             break
-        if skipping or len(chunk) > LINE_MAX:
-            skipping = not chunk.endswith("\n")
+        if head is None and len(chunk) <= LINE_MAX:
+            event, item = read_line(chunk, seq + 1)
+            if event is not None:
+                seq += 1
+                put(event)
+            if item is not None:
+                put(item)
             continue
-        item = parse_line(chunk)
-        if item is not None:
-            put(item)
+        if head is None:
+            head, size = chunk[:HEAD_MAX], 0
+        size += len(chunk)
+        if chunk.endswith("\n"):
+            seq += 1
+            put(truncated_event(head, size, seq))
+            head = None
+    if head is not None:
+        put(truncated_event(head, size, seq + 1))
     put(_END)
 
 
@@ -211,24 +241,57 @@ class RunManager:
         result: Result | None = None
         code: int | None = None
         waiter = asyncio.ensure_future(asyncio.to_thread(proc.wait))
+        batch: list[StreamEvent] = []
+        due = 0.0  # when the lines waiting in `batch` go to the sink
 
-        async def next_item() -> Any:
+        async def next_item(due_in: float | None) -> Any:
             # A child left running may hold stdout open after claude exited: once the process
             # is gone, the lines still in the pipe get DRAIN_SECONDS, then the turn ends.
+            # `due_in`: until the waiting lines are due, then _TICK.
             while not waiter.done():
                 getter = asyncio.ensure_future(queue.get())
-                await asyncio.wait({getter, waiter}, return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.wait(
+                    {getter, waiter}, timeout=due_in, return_when=asyncio.FIRST_COMPLETED
+                )
                 if getter.done():
                     return getter.result()
                 getter.cancel()
+                if not waiter.done():
+                    return _TICK
+            wait = DRAIN_SECONDS if due_in is None else min(due_in, DRAIN_SECONDS)
             try:
-                return await asyncio.wait_for(queue.get(), DRAIN_SECONDS)
+                return await asyncio.wait_for(queue.get(), wait)
             except TimeoutError:
-                return _END
+                return _END if due_in is None else _TICK
+
+        async def flush() -> None:
+            if not batch:
+                return
+            lines = batch[:]
+            batch.clear()
+            try:
+                await self.sink.turn_events(active.turn_id, lines)
+            except Exception:
+                # The turn goes on and still ends on the card, without these lines.
+                logger.exception(
+                    "Storing %d line(s) of run %d's turn failed", len(lines), active.run_id
+                )
 
         try:
-            while (item := await next_item()) is not _END:
-                if isinstance(item, Init):
+            while True:
+                item = await next_item(max(0.0, due - time.monotonic()) if batch else None)
+                if item is _TICK:
+                    await flush()
+                    continue
+                if item is _END:
+                    break
+                if isinstance(item, StreamEvent):
+                    if not batch:
+                        due = time.monotonic() + EVENT_FLUSH_SECONDS
+                    batch.append(item)
+                    if len(batch) >= EVENT_BATCH:
+                        await flush()
+                elif isinstance(item, Init):
                     try:
                         await self.sink.turn_init(active.turn_id, item.session_id)
                     except Exception:
@@ -237,6 +300,7 @@ class RunManager:
                         logger.exception("Storing run %d's session id failed", active.run_id)
                 elif isinstance(item, Result):
                     result = item
+            await flush()
             code = await waiter
         finally:
             active.tree.close()
@@ -251,7 +315,6 @@ class RunManager:
         else:
             outcome = "lost"
             reason = f"claude exited with code {code} without a result"
-            logger.debug("Run %d turn ended without a result: %s", active.run_id, active.stderr)
         await self.sink.turn_done(active.turn_id, outcome, result, code, reason, stopped)
 
     async def stop(self, run_id: int, reason: str, grace: float = STOP_GRACE_SECONDS) -> bool:

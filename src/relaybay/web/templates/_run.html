@@ -28,7 +28,7 @@
   </dl>
   {% if view.turns %}
   <table class="run-turns">
-    <thead><tr><th scope="col">#</th><th scope="col">Sent by</th><th scope="col">Queued</th><th scope="col">Outcome</th><th scope="col">Tokens</th><th scope="col">Denied</th></tr></thead>
+    <thead><tr><th scope="col">#</th><th scope="col">Sent by</th><th scope="col">Queued</th><th scope="col">Outcome</th><th scope="col">Tokens</th><th scope="col">Denied</th><th scope="col">Report</th></tr></thead>
     <tbody>
       {% for turn in view.turns %}
       <tr class="run-turn state-{{ turn.state }}" data-seq="{{ turn.seq }}">
@@ -38,7 +38,19 @@
         <td>{{ turn.state|replace("_", " ") }}{% if turn.result_subtype and turn.result_subtype != "success" %} <span class="muted">({{ turn.result_subtype }})</span>{% endif %}</td>
         <td>{{ "{:,}".format(turn.tokens) }}</td>
         <td>{% if turn.denials %}{{ turn.denials }}{% if turn.denied_tools %} <span class="muted">{{ turn.denied_tools|join(", ") }}</span>{% endif %}{% else %}<span class="muted">0</span>{% endif %}</td>
+        <td>{% if turn.report_id %}{% with state = turn.report_state, size = turn.report_size %}{% include "_report_badges.html" %}{% endwith %} {{ turn.report_summary }}{% else %}<span class="muted">none</span>{% endif %}</td>
       </tr>
+      {% if turn.report_id or turn.events %}
+      <tr class="run-turn-more" data-seq="{{ turn.seq }}">
+        <td colspan="7">
+          {#- Folded: the report and the lines load when it is opened. -#}
+          <details class="run-turn-detail" hx-get="{{ base }}/{{ r.id }}/turns/{{ turn.seq }}" hx-trigger="toggle once" hx-target="find .run-turn-slot" hx-swap="innerHTML">
+            <summary>Report and events of turn {{ turn.seq }} <span class="muted">({{ turn.events }} line{{ "s" if turn.events != 1 }})</span></summary>
+            <div class="run-turn-slot"><p class="muted">Loading…</p></div>
+          </details>
+        </td>
+      </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>

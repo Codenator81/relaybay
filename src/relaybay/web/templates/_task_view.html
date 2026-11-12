@@ -186,6 +186,7 @@
         <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
       </header>
       <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
+      {% with checks = detail.checks.get(r.id, []), warning = detail.marks_warning(r) %}{% include "_report_checks.html" %}{% endwith %}
     </article>
     {% else %}
     {% if loop.index == 2 %}<h3>Earlier reports</h3>{% endif %}
@@ -197,6 +198,7 @@
         <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
       </summary>
       <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
+      {% with checks = detail.checks.get(r.id, []), warning = detail.marks_warning(r) %}{% include "_report_checks.html" %}{% endwith %}
     </details>
     {% endif %}
     {% else %}

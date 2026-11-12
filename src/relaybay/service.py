@@ -38,6 +38,7 @@ from relaybay.domain import environments as envs
 from relaybay.domain import limits as agent_limits
 from relaybay.domain import memory as mem
 from relaybay.domain import messages as message_text
+from relaybay.domain import run_events as run_lines
 from relaybay.domain import runs as run_rules
 from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
@@ -137,7 +138,7 @@ from relaybay.domain.plan import (
 )
 from relaybay.domain.plan import STEP_DETAILS_MAX as PLAN_DETAILS_MAX
 from relaybay.domain.plan import clean_step_title as clean_plan_title
-from relaybay.domain.reports import REPORT_SIZES, parse_report
+from relaybay.domain.reports import REPORT_SIZES, ReportCheck, parse_checks, parse_report
 from relaybay.domain.review import (
     CAPTION_MAX,
     DEFAULT_FILE_MAX_MB,
@@ -177,6 +178,7 @@ from relaybay.domain.rules import (
     stored_global_rules,
     unmet,
     validate_rules,
+    verified_marks_problem,
     warning_text,
 )
 from relaybay.domain.runs import Run, RunDefaults, RunTurn, RunView
@@ -288,6 +290,13 @@ def _note(text: str) -> None:
         notes.append(text)
 
 
+REPORT_MARKS_FROM_KEY = "report_marks_from"
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+
+
 def _plan_closed(task: Task) -> bool:
     return bool(task.plan_total) and task.plan_done == task.plan_total
 
@@ -376,6 +385,15 @@ class TaskDetail:
     budget: agent_limits.BudgetState | None = None  # the task's own token budget
     messages: list[SessionMessage] = field(default_factory=list)  # newest first
     code: TaskCode = field(default_factory=lambda: TaskCode([], [], []))
+    checks: dict[int, list[ReportCheck]] = field(default_factory=dict)  # `verified:` marks
+    marks_from: int = 0  # reports with a smaller id were written before marks existed
+
+    def marks_warning(self, report: Report) -> str | None:
+        """The rules warning of an M or L report without `verified:` marks."""
+        if report.id < self.marks_from:
+            return None
+        problem = verified_marks_problem(report.size, len(self.checks.get(report.id, [])))
+        return f"Warning (rules): {problem}" if problem else None
 
 
 @dataclass(slots=True)
@@ -1153,6 +1171,9 @@ class Service:
         self.coordinators = [c.strip() for c in coordinators or [] if c.strip()]
         # Runs whose `claude --desktop` is being launched now (Back waits for it).
         self.desktop_launching: set[int] = set()
+        # The first report id the missing-marks warning applies to: reports written before
+        # migration 0036 never warn (set at start).
+        self.report_marks_from = 0
         self.rules_changed: Callable[[], None] | None = None
         self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
@@ -1238,6 +1259,26 @@ class Service:
             self._db_layer(row)
         await self._sweep_attachments()
         await self._recover_runs()
+        await self._backfill_report_marks()
+
+    async def _backfill_report_marks(self) -> None:
+        """Once, on the first start with migration 0036: the `verified:` marks of the reports
+        written before it, and the id from which a report without marks is warned about."""
+        value = await repo.get_app_setting(self._r, REPORT_MARKS_FROM_KEY)
+        if value is None:
+            async with self._tx() as tx:
+                reports = await repo.all_report_bodies(tx.conn)
+                # A database that ran a build without the marker may hold marks already.
+                await tx.conn.execute("DELETE FROM report_check")
+                for report_id, body in reports:
+                    checks = parse_checks(body)
+                    if checks:
+                        await repo.insert_report_checks(tx.conn, report_id, checks)
+                value = str(reports[-1][0] + 1 if reports else 1)
+                await repo.set_app_setting(
+                    tx.conn, REPORT_MARKS_FROM_KEY, value, tx.now, "relaybay"
+                )
+        self.report_marks_from = int(value)
 
     async def close(self) -> None:
         if self.runs is not None:
@@ -3312,6 +3353,8 @@ class Service:
         return TaskDetail(
             task=task,
             reports=shown_reports,
+            checks=await repo.report_checks(self._r, [r.id for r in shown_reports]),
+            marks_from=self.report_marks_from,
             decisions=await repo.list_decisions(self._r, task_id=task.id, limit=10),
             bindings=await repo.list_bindings(self._r, task.id),
             tracker_history=await repo.list_tracker_entries(self._r, task.id),
@@ -4355,7 +4398,6 @@ class Service:
         body = (body or "").strip()
         if not body:
             raise ValidationError("Report body must not be empty.")
-        state, size, summary = parse_report(body)
         given = {"progress": progress, "next_step": next_step, "waiting_on": waiting_on}
         clean = {k: _clean_field(k, v) for k, v in given.items() if v is not None}
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
@@ -4365,44 +4407,56 @@ class Service:
             problem = report_format_problem(body, rules.body["report_format"])
             if problem and self.rules_mode == "strict":
                 raise ValidationError(f"Rules: {problem} Nothing changed.")
-            if problem:
-                _note(f"Warning (rules): {problem}")
-            if await self._work_after_closed_plan(tx, task, state):
-                _note_closed_plan(task)
-            if size and not task.size:
-                clean["size"] = size  # the first report's size sizes a task that has none
             sess = await self._session(tx, session, session_title, hook_session)
-            session_id = sess.id if sess else None
-            actor = sess.name if sess else default_actor
-            diff = _task_diff(task, clean)
-            unlog = None
-            if task.tracker_logged:
-                unlog = ", ".join(x for x in ("report added", _unlog_reason(task, diff)) if x)
-            writes = {**diff, "tracker_logged": False} if unlog else diff
-            if writes:
-                await repo.update_task(tx.conn, task.id, writes, tx.now)
-                await self._sync_tracker(tx, task, writes)
-            if diff:
-                await tx.event(
-                    "task.updated",
-                    actor,
-                    project_id=task.project_id,
-                    task_id=task.id,
-                    session_id=session_id,
-                    project=task.project_slug,
-                    key=task.key,
-                    stage=task.stage.value,
-                    changes=diff,
-                )
-            if unlog:
-                await self._unlogged(
-                    tx, task, actor, session_id, task.stage.value, task.tracker_ref, unlog
-                )
-            report_id = await repo.insert_report(
-                tx.conn, task.id, session_id, actor, state, size, summary, body, tx.now
+            report_id = await self._write_report(
+                tx,
+                task,
+                body,
+                clean,
+                session_id=sess.id if sess else None,
+                actor=sess.name if sess else default_actor,
+                format_problem=problem,
             )
+            report = await repo.get_report(tx.conn, report_id)
+            assert report is not None
+            task = await self.get_task(task.id, tx.conn)
+        return task, report
+
+    async def _write_report(
+        self,
+        tx: _Tx,
+        task: Task,
+        body: str,
+        clean: dict[str, Any],
+        *,
+        session_id: int | None,
+        actor: str,
+        format_problem: str | None,
+    ) -> int:
+        """The writes of one report, for report_add and a run's turn alike: the rules warnings
+        (`format_problem`, the first line's, checked by the caller; no `verified:` mark on an M or
+        L report), the task's fields, the report with its marks, its event and its index row."""
+        state, size, summary = parse_report(body)
+        checks = parse_checks(body)
+        problems = (format_problem, verified_marks_problem(size, len(checks)))
+        warnings = [f"Warning (rules): {p}" for p in problems if p]
+        for warning in warnings:
+            _note(warning)
+        if await self._work_after_closed_plan(tx, task, state):
+            _note_closed_plan(task)
+        if size and not task.size:
+            clean["size"] = size  # the first report's size sizes a task that has none
+        diff = _task_diff(task, clean)
+        unlog = None
+        if task.tracker_logged:
+            unlog = ", ".join(x for x in ("report added", _unlog_reason(task, diff)) if x)
+        writes = {**diff, "tracker_logged": False} if unlog else diff
+        if writes:
+            await repo.update_task(tx.conn, task.id, writes, tx.now)
+            await self._sync_tracker(tx, task, writes)
+        if diff:
             await tx.event(
-                "report.added",
+                "task.updated",
                 actor,
                 project_id=task.project_id,
                 task_id=task.id,
@@ -4410,16 +4464,35 @@ class Service:
                 project=task.project_slug,
                 key=task.key,
                 stage=task.stage.value,
-                report_id=report_id,
-                summary=summary,
-                state=state,
-                size=size,
-                **({"warnings": [f"Warning (rules): {problem}"]} if problem else {}),
+                changes=diff,
             )
-            await self._index(tx, "report", report_id)
-            report = (await repo.list_reports(tx.conn, task.id, 1))[0]
-            task = await self.get_task(task.id, tx.conn)
-        return task, report
+        if unlog:
+            await self._unlogged(
+                tx, task, actor, session_id, task.stage.value, task.tracker_ref, unlog
+            )
+        report_id = await repo.insert_report(
+            tx.conn, task.id, session_id, actor, state, size, summary, body, tx.now
+        )
+        if checks:
+            await repo.insert_report_checks(tx.conn, report_id, checks)
+        await tx.event(
+            "report.added",
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=session_id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            report_id=report_id,
+            summary=summary,
+            state=state,
+            size=size,
+            **({"checks": len(checks)} if checks else {}),
+            **({"warnings": warnings} if warnings else {}),
+        )
+        await self._index(tx, "report", report_id)
+        return report_id
 
     async def _reported_after_plan_closed(self, tx: _Tx, task: Task) -> bool:
         """Every plan step is done and a report came after the plan closed, so the work that
@@ -10070,7 +10143,56 @@ class Service:
             return None
         turns = await repo.list_turns(self._r, run.id)
         folders = await repo.list_run_worktrees(self._r, run.id)
-        return RunView(run, turns, run_rules.totals(turns), folders)
+        view = RunView(run, turns, run_rules.totals(turns), folders)
+        reported = [t for t in turns if t.report_id is not None]
+        report = await repo.get_report(self._r, reported[-1].report_id) if reported else None
+        if report is not None:
+            view.last_report = next(
+                (line.strip() for line in report.body_md.splitlines() if line.strip()), ""
+            )
+        started = [t for t in turns if t.started_at is not None]
+        if started:
+            view.last_counts = await repo.run_event_counts(self._r, started[-1].id)
+        return view
+
+    async def _run_turn(self, run_id: int, seq: int | None) -> tuple[Run, RunTurn]:
+        """A turn of a run by its number; None: the latest one that started."""
+        run = await self.get_run(run_id)
+        turns = await repo.list_turns(self._r, run.id)
+        if seq is None:
+            started = [t for t in turns if t.started_at is not None]
+            if not started:
+                raise NotFoundError(f"Run {run.id} has no turn that started.")
+            return run, started[-1]
+        turn = next((t for t in turns if t.seq == seq), None)
+        if turn is None:
+            raise NotFoundError(f"Run {run.id} has no turn {seq}.")
+        return run, turn
+
+    async def run_turn_detail(
+        self, run_id: int, seq: int
+    ) -> tuple[Run, RunTurn, Report | None, list[ReportCheck], list[run_lines.EventItem]]:
+        """The board's view of a turn: its report with its marks and its last BOARD_LINES lines,
+        nested under the calls of their subagents, their texts within BOARD_TOTAL_MAX."""
+        run, turn = await self._run_turn(run_id, seq)
+        report = await repo.get_report(self._r, turn.report_id) if turn.report_id else None
+        checks = []
+        if report is not None:
+            checks = (await repo.report_checks(self._r, [report.id])).get(report.id, [])
+        lines = await repo.list_run_events(self._r, turn.id, limit=run_lines.BOARD_LINES, last=True)
+        items = run_lines.items(lines, total=run_lines.BOARD_TOTAL_MAX)
+        return run, turn, report, checks, run_lines.nest(items)
+
+    async def run_events(
+        self, run_id: int, seq: int | None, *, limit: int, from_seq: int | None = None
+    ) -> tuple[Run, RunTurn, list[run_lines.EventItem]]:
+        """run_events over MCP, open to every caller, changing nothing: a turn's lines as short
+        items, from `from_seq` on, else the last `limit` lines."""
+        run, turn = await self._run_turn(run_id, seq)
+        lines = await repo.list_run_events(
+            self._r, turn.id, from_seq=from_seq, limit=limit, last=from_seq is None
+        )
+        return run, turn, run_lines.items(lines, run_lines.COMPACT_TEXT_MAX)
 
     async def run_status(self, ref: str | int) -> tuple[Task, RunView | None]:
         """run_status over MCP: open to every caller, it changes nothing."""
@@ -10818,6 +10940,53 @@ class Service:
                     tx.conn, run.id, {"claude_session_id": claude_session_id}, tx.now
                 )
 
+    async def turn_events(self, turn_id: int, events: list[run_lines.StreamEvent]) -> None:
+        """A batch of a turn's stream-json lines, masked and compressed by the runner. No board
+        event: the card shows them when asked, and the turn's end refreshes it."""
+        async with self._tx() as tx:
+            await repo.insert_run_events(tx.conn, turn_id, events)
+
+    async def _turn_report(
+        self, tx: _Tx, task: Task, run: Run, turn: RunTurn, outcome: str, result: Result
+    ) -> None:
+        """The turn's result as a report on the card, in the turn's end transaction. A report
+        that cannot be written must not keep the turn from ending: its writes are undone to a
+        savepoint and the failure is logged. When the agent already reported this turn with
+        report_add (the run's session, since the turn started) and the result adds nothing (no
+        text, or the same first line, and no refusals), the turn links that report instead."""
+        own = None
+        if run.session_id is not None and turn.started_at is not None and not result.refusals:
+            own = await repo.latest_report_of_session(
+                tx.conn, task.id, run.session_id, turn.started_at
+            )
+        if own is not None:
+            text = result.text.strip()
+            if not text or _first_line(text) == _first_line(own.body_md):
+                await repo.set_turn_report(tx.conn, turn.id, own.id)
+                return
+        body = run_rules.turn_report(
+            run.id, turn.seq, outcome, result.text, [(r.tool, r.input) for r in result.refusals]
+        )
+        await tx.conn.execute("SAVEPOINT turn_report")
+        events = len(tx.events)
+        try:
+            # No first-line warning: the turn's text is not a report_add the agent can fix.
+            report_id = await self._write_report(
+                tx,
+                task,
+                body,
+                {},
+                session_id=run.session_id,
+                actor=run.session_name or f"run {run.id}",
+                format_problem=None,
+            )
+            await repo.set_turn_report(tx.conn, turn.id, report_id)
+        except Exception:
+            await tx.conn.execute("ROLLBACK TO turn_report")
+            del tx.events[events:]
+            logger.exception("Writing the report of run %d turn %d failed", run.id, turn.seq)
+        await tx.conn.execute("RELEASE turn_report")
+
     async def turn_done(
         self,
         turn_id: int,
@@ -10850,6 +11019,8 @@ class Service:
                     denied_tools=result.denied_tools,
                 )
             await repo.end_turn(tx.conn, turn.id, changes, tx.now)
+            if result is not None:
+                await self._turn_report(tx, task, run, turn, outcome, result)
             tokens = sum(
                 changes.get(k, 0)
                 for k in (

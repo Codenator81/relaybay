@@ -23,9 +23,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `run_worktree` table (migration 0033).
 - Open in the desktop app: an idle run's Agent block opens its Claude Code session in the Claude desktop app (`claude --desktop --resume <id>` in a console of its own on Windows, its refusal shown when it fails; on macOS and Linux the `claude --resume <id>` command to run in a terminal). Only the run's working folder is a working folder there. While the run is with you there, relaybay starts no turn and texts sent wait; **Back to the program** starts the next one. The run then links to `claude://claude.ai/epitaxy/local_<id>`. Events `run.opened_in_desktop` and `run.returned`; migration 0034 adds the columns.
 - A run's permission mode, model and effort change between turns, from the next turn on: any mode by the owner on the card, only a lower or equal one (never `bypassPermissions`) by a coordinator with the new MCP tool `run_settings`. The order is documented in the SPEC; every change is a `run.settings_changed` event, also on the Audit page.
+- A run's turns are kept: every stream-json line is stored (`run_event`, migration 0035), each string masked with the journal's secret masking before the line is compressed (also a quoted secret name before its value, and the whole string under a field such as `password`, `api_key` or `Authorization`), never stored or logged unmasked; subagent lines keep their `parent_tool_use_id`. A line over 4 MiB keeps only its masked head with a marker. Lines are stored in batches (200 lines or 0.5 s), so storing never slows the turn.
+- The full report of each turn lands on the card: the turn's final text as a report (the board, digests and MCP see it like any `report_add`), its refusals (`permission_denials`, input masked and cut) under it. The Agent block lists each turn's report and opens, folded until asked, the report and the turn's lines: tool calls with their results, subagent work nested under its call.
+- `verified: <where>` marks on report claims (`report_check`, migration 0036), from `report_add` and from runs: shown under the report on the card; an M or L report without any gets a `Warning (rules)` line (never a refusal, never for S).
+- MCP `run_events` (open to every session, read-only): a turn's lines as short masked items, at most 200 per call and 20,000 characters. `run_status` shows the first line of the last turn's report and the latest turn's lines by type.
 
 ### Changed
 
+- Secret masking (the live-actions journal and run lines): a PGP private key block is masked, and the secret-name pattern is bounded, so masking a long run of word characters is linear instead of taking seconds.
 - The http hook that `relaybay setup --mode http` writes also sends `X-Relaybay-Run: ${RELAYBAY_RUN_ID}`; apply setup again before starting runs with http hooks.
 
 ## [0.8.6] - 2026-11-12
