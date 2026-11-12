@@ -98,6 +98,11 @@
   </details>
   {% endif %}
 
+  <details class="panel fold" data-fold="agent" open>
+    <summary><h2>Agent</h2></summary>
+    <div class="run" id="run-{{ t.key }}" hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/run" hx-trigger="load, rb:refresh" hx-swap="outerHTML"><p class="muted">Loading…</p></div>
+  </details>
+
   <details class="panel fold" data-fold="session" open>
     <summary><h2>Session</h2></summary>
     {% if t.session_name %}

@@ -36,6 +36,7 @@ from relaybay.domain import environments as envs
 from relaybay.domain import limits as agent_limits
 from relaybay.domain import memory as mem
 from relaybay.domain import messages as message_text
+from relaybay.domain import runs as run_rules
 from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.backlog import BacklogItem
@@ -176,6 +177,7 @@ from relaybay.domain.rules import (
     validate_rules,
     warning_text,
 )
+from relaybay.domain.runs import Run, RunDefaults, RunTurn, RunView
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.switcher import (
@@ -199,6 +201,7 @@ from relaybay.domain.task_fields import (
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
 from relaybay.install import install_kind
+from relaybay.machine_setup import claude_paths
 from relaybay.policy import (
     DEFAULT_PRESET,
     EffectivePolicy,
@@ -213,6 +216,11 @@ from relaybay.policy import (
     validate_layer,
     widened_on_live,
 )
+from relaybay.runner import auth as run_auth
+from relaybay.runner.claude_cli import TurnSpec, build_command
+from relaybay.runner.layers import LayerState, user_layer_state
+from relaybay.runner.manager import RunManager, RunnerConfig
+from relaybay.runner.stream import Result
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -942,6 +950,46 @@ def _clean_slug(value: str) -> str:
     return slug
 
 
+CLAUDE_MISSING = (
+    "claude was not found on PATH or in the usual install folders; install Claude Code or set"
+    " claude_path in config.toml."
+)
+NO_RUN_REPO = "A run works in one of the project's repositories: add one on Stands & access first."
+SEND_REPEAT_SECONDS = 5.0  # the same text from the same sender this soon is one turn
+BRIEF_ROOM = 500  # left in BRIEF_MAX for the run header and the report line
+RUN_REPORT_LINE = (
+    "At the end of each turn add a report with report_add on this card; its first line is"
+    " `state · size · gist`."
+)
+
+
+@dataclass(slots=True)
+class RunForm:
+    """What the Start form of a card shows."""
+
+    defaults: RunDefaults
+    repos: list[ProjectRepo]
+    task_repo_ids: set[int]
+    brief: str
+    claude: str | None
+    login: run_auth.LoginState | None
+    login_line: str
+    layers: LayerState | None
+    refusals: list[str]
+    fix_command: str
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def _paths_overlap(a: str, b: str) -> bool:
+    """The same folder, or one inside the other."""
+    x = os.path.normcase(os.path.normpath(a)).rstrip(os.sep)
+    y = os.path.normcase(os.path.normpath(b)).rstrip(os.sep)
+    return x == y or x.startswith(y + os.sep) or y.startswith(x + os.sep)
+
+
 class Service:
     def __init__(
         self,
@@ -973,6 +1021,7 @@ class Service:
         coordinators: list[str] | None = None,
         max_concurrent_sessions: int = 0,
         rules_table: dict[str, Any] | None = None,
+        runner: RunnerConfig | None = None,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -1065,6 +1114,8 @@ class Service:
         self.update = updates.UpdateStatus()  # the last update check, in memory only
         # Projects whose missing or stale pulse a stage move already mentioned in this run.
         self._pulse_noted: set[int] = set()
+        # The turns of runs on cards; None without a runner config (runs are then refused).
+        self.runs: RunManager | None = RunManager(self, runner) if runner is not None else None
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1085,8 +1136,11 @@ class Service:
         for row in await repo.list_policy_layers(self._read_conn):
             self._db_layer(row)
         await self._sweep_attachments()
+        await self._recover_runs()
 
     async def close(self) -> None:
+        if self.runs is not None:
+            await self.runs.close()  # the turns end `stopped` while the database is still open
         for timer in [*self._activity_timers.values(), *self._status_timers.values()]:
             timer.cancel()
         self._activity_timers.clear()
@@ -1552,6 +1606,17 @@ class Service:
         desktop session bound in the project of `cwd`; several possible ones (or a folder of
         several projects) stay unlinked; none, a plain session named after the folder."""
         found = await repo.get_session_by_cc(tx.conn, hook.cc_session_id)
+        if hook.run_id is not None:
+            linked = await self._run_hook_session(tx, hook)
+            if linked is not None:
+                return linked
+            if found is not None:
+                return found
+            # Not that run's turn (a `claude` started inside it inherits the id): its own row,
+            # never a guess onto a desktop session.
+            projects = await repo.projects_with_repo_path(tx.conn)
+            project, _ = self._project_for_cwd(projects, hook.cwd)
+            return await self._new_hook_session(tx, hook, project.id if project else None, None)
         desktop = await self._host_desktop(tx, hook, found)
         if desktop is not None:
             return await self._link_hook_session(tx, desktop, hook.cc_session_id, from_window=True)
@@ -1796,9 +1861,14 @@ class Service:
     @staticmethod
     def _continues(session: Session, hook: HookEvent) -> bool:
         """A SessionEnd after which the session goes on under a new Claude Code id keeps its
-        tasks: /clear and /resume in any session, and every end of a desktop session (its id
-        outlives the Claude Code processes; the next SessionStart links the new one)."""
-        return session.external_id is not None or hook.end_reason in CONTINUED_END_REASONS
+        tasks: /clear and /resume in any session, every end of a desktop session (its id
+        outlives the Claude Code processes; the next SessionStart links the new one) and of a
+        run's session."""
+        return (
+            session.external_id is not None
+            or session.kind == "run"  # every turn of a run ends its process; the run goes on
+            or hook.end_reason in CONTINUED_END_REASONS
+        )
 
     # --- comment delivery through hooks ------------------------------------
 
@@ -2116,7 +2186,9 @@ class Service:
         if not isinstance(cc_id, str) or not cc_id.strip():
             return None
         session = await self._exact_session(cc_id.strip()[:CC_ID_MAX])
-        if session is None:
+        # A run's turn ends its process: nothing would read a wake-up, and what it took would
+        # be marked delivered and lost. The next turn's hooks tell it instead.
+        if session is None or session.kind == "run":
             return None
         self._waiter_seq += 1
         me = self._waiters[session.id] = self._waiter_seq
@@ -9730,3 +9802,557 @@ class Service:
             await tx.event(
                 "filter.deleted", actor, project_id=proj.id, project=proj.slug, name=found.name
             )
+
+    # --- runs on a card ------------------------------------------------------
+
+    def _claude_missing(self) -> str:
+        configured = self.runs.config.claude_path if self.runs is not None else None
+        if configured is not None:
+            return f"claude_path is {configured}, which is not a file; fix it in config.toml."
+        return CLAUDE_MISSING
+
+    def _run_home_problem(self) -> str | None:
+        """The settings check reads `claude_home`, but a run's claude runs with the server's own
+        home folder: when they differ the check would judge files the turn never loads."""
+        home = self.runs.config.claude_home if self.runs is not None else None
+        if home is None or _same_folder(home, Path.home()):
+            return None
+        return (
+            f"claude_home is {home}, but a run's claude uses the home folder {Path.home()}:"
+            " runs need claude_home unset (or equal to that folder)."
+        )
+
+    def _run_manager(self) -> RunManager:
+        if self.runs is None:
+            raise ValidationError("Runs need a server started by relaybay serve or the program.")
+        return self.runs
+
+    async def run_defaults(
+        self, slug: str, conn: aiosqlite.Connection | None = None
+    ) -> RunDefaults:
+        project = await self.get_project(slug, conn)
+        found = await repo.get_run_defaults(conn or self._r, project.id)
+        return found or RunDefaults(project.id)
+
+    async def set_run_defaults(
+        self, slug: str, values: dict[str, Any], *, actor: str = "owner"
+    ) -> RunDefaults:
+        """The project's run defaults. Board only (no MCP tool): an agent never widens its own
+        permission mode, and `bypassPermissions` is never a default."""
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            current = await repo.get_run_defaults(tx.conn, project.id) or RunDefaults(project.id)
+            new = RunDefaults(
+                project.id,
+                model=run_rules.clean_model(values.get("model", current.model)),
+                effort=run_rules.clean_effort(values.get("effort", current.effort)),
+                permission_mode=run_rules.clean_mode(
+                    values.get("permission_mode", current.permission_mode), owner=False
+                ),
+                allowed_tools=run_rules.clean_allowed_tools(
+                    values.get("allowed_tools", current.allowed_tools)
+                ),
+                chrome=bool(values.get("chrome", current.chrome)),
+                folder=current.folder,
+            )
+            await repo.upsert_run_defaults(tx.conn, new, tx.now, actor)
+            await tx.event(
+                "run.defaults_set",
+                actor,
+                project_id=project.id,
+                project=project.slug,
+                model=new.model,
+                effort=new.effort,
+                permission_mode=new.permission_mode,
+                allowed_tools=new.allowed_tools,
+                chrome=new.chrome,
+            )
+            saved = await repo.get_run_defaults(tx.conn, project.id)
+            assert saved is not None
+            return saved
+
+    async def run_login_any(self) -> bool:
+        return await repo.get_app_setting(self._r, run_rules.LOGIN_ANY_KEY) == "1"
+
+    async def set_run_login_any(self, on: bool, *, actor: str = "owner") -> None:
+        """The owner's switch in Settings → Agents: runs may start under an API key or another
+        sign-in that is not a subscription."""
+        async with self._tx() as tx:
+            value = "1" if on else "0"
+            await repo.set_app_setting(tx.conn, run_rules.LOGIN_ANY_KEY, value, tx.now, actor)
+            await tx.event("settings.run_login_any", actor, on=on)
+
+    async def run_layers(self) -> LayerState | None:
+        if self.runs is None:
+            return None
+        paths = claude_paths(self.runs.config.claude_home)
+        return await asyncio.to_thread(user_layer_state, paths, self.runs.config.base_url)
+
+    async def run_brief(self, task: Task) -> str:
+        """The first turn's text without the run header: the task's digest and the report line."""
+        budget = min(self.digest_budget_chars, run_rules.BRIEF_MAX - BRIEF_ROOM)
+        text, _ = await self._task_context(task, None, None, budget)
+        return f"{text}\n\n{RUN_REPORT_LINE}"
+
+    @staticmethod
+    def _run_header(task: Task, run_id: int, session_name: str, cwd: str) -> str:
+        return "\n".join(
+            [
+                f"relaybay run {run_id} on card {task.key} ({task.project_slug}).",
+                f'In relaybay writes pass session "{session_name}" and the hook session your'
+                " SessionStart gave you as hook_session.",
+                f"Work only in this folder: {cwd}",
+                "",
+            ]
+        )
+
+    async def run_form(self, task: Task) -> RunForm:
+        """What the Start form shows: defaults, repositories, the brief and why Start would be
+        refused (the sign-in, relaybay's hooks and MCP server in the user's settings)."""
+        defaults = await self.run_defaults(task.project_slug)
+        repos = await repo.list_project_repos(self._r, task.project_id)
+        linked = {link.repo_id for link in await repo.task_repo_links(self._r, task_id=task.id)}
+        refusals: list[str] = []
+        login, layers, claude = None, None, None
+        if self.runs is None:
+            refusals.append("Runs need a server started by relaybay serve or the program.")
+        else:
+            claude = self.runs.claude()
+            login = await self.runs.login()
+            why = run_auth.refusal(login, await self.run_login_any())
+            if claude is None:
+                refusals.append(self._claude_missing())
+            elif why:
+                refusals.append(why)
+            home = self._run_home_problem()
+            if home:
+                refusals.append(home)
+            layers = await self.run_layers()
+            if layers is not None and layers.refusal:
+                refusals.append(layers.refusal)
+        if not repos:
+            refusals.append(NO_RUN_REPO)
+        return RunForm(
+            defaults=defaults,
+            repos=repos,
+            task_repo_ids=linked,
+            brief=await self.run_brief(task),
+            claude=claude,
+            login=login,
+            login_line=run_auth.login_line(login) if login is not None else "",
+            layers=layers,
+            refusals=refusals,
+            fix_command=run_auth.FIX_COMMAND,
+        )
+
+    async def run_view(self, task: Task) -> RunView | None:
+        """The card's open run, else its latest one."""
+        run = await repo.latest_run_of_task(self._r, task.id)
+        if run is None:
+            return None
+        turns = await repo.list_turns(self._r, run.id)
+        return RunView(run, turns, run_rules.totals(turns))
+
+    async def get_run(self, run_id: int, conn: aiosqlite.Connection | None = None) -> Run:
+        run = await repo.get_run(conn or self._r, run_id)
+        if run is None:
+            raise NotFoundError(f"Run #{run_id} not found.")
+        return run
+
+    async def _run_preflight(self, runs: RunManager) -> str:
+        """The sign-in and the user layer, right before a turn; returns the sign-in method."""
+        if runs.claude() is None:
+            raise ValidationError(self._claude_missing())
+        state = await runs.login(force=True)
+        why = run_auth.refusal(state, await self.run_login_any())
+        if why:
+            raise ValidationError(why)
+        home = self._run_home_problem()
+        if home:
+            raise ValidationError(home)
+        layers = await self.run_layers()
+        if layers is not None and layers.refusal:
+            raise ValidationError(layers.refusal)
+        return state.method or "unknown"
+
+    async def start_run(
+        self,
+        ref: str | int,
+        *,
+        actor: str = "owner",
+        repo_id: int | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        mode: str | None = None,
+        brief: str | None = None,
+    ) -> Run:
+        """Start a run on the card: the owner's board button. Checks come first and run no
+        transaction; one transaction writes the run, its session, the binding and turn 1; the
+        process starts after the commit."""
+        runs = self._run_manager()
+        task = await self.get_task(ref)
+        defaults = await self.run_defaults(task.project_slug)
+        model = run_rules.clean_model(model or defaults.model)
+        effort = run_rules.clean_effort(effort or defaults.effort)
+        mode = run_rules.clean_mode(mode or defaults.permission_mode, owner=True)
+        if brief and brief.strip():
+            text = run_rules.clean_prompt(brief, "brief")
+        else:
+            text = await self.run_brief(task)
+        repos = await repo.list_project_repos(self._r, task.project_id)
+        if not repos:
+            raise ValidationError(NO_RUN_REPO)
+        chosen = repos[0] if repo_id is None else next((r for r in repos if r.id == repo_id), None)
+        if chosen is None:
+            raise NotFoundError(f"{task.project_slug} has no repository #{repo_id}.")
+        if not await asyncio.to_thread(Path(chosen.path).is_dir):
+            raise ValidationError(f"{chosen.path} is not a folder on this machine ({chosen.name}).")
+        if await repo.open_run_of_task(self._r, task.id) is not None:
+            raise ConflictError(f"{task.key} already has an open run; end it first.")
+        method = await self._run_preflight(runs)
+        claude = runs.claude()
+        assert claude is not None
+        # The batch-shim check, before anything is written.
+        build_command(
+            TurnSpec(claude, "", chosen.path, model, effort, mode, tuple(defaults.allowed_rules))
+        )
+        async with self._tx() as tx:
+            task = await self.get_task(task.id, tx.conn)
+            if await repo.open_run_of_task(tx.conn, task.id) is not None:
+                raise ConflictError(f"{task.key} already has an open run; end it first.")
+            for other in await repo.open_runs(tx.conn):
+                if _paths_overlap(other.cwd, chosen.path):
+                    raise ConflictError(
+                        f"{chosen.name} ({chosen.path}) is in use by run {other.id} on"
+                        f" {other.task_key}; end that run first."
+                    )
+            run_id = await repo.insert_run(
+                tx.conn,
+                {
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "cwd": chosen.path,
+                    "cwd_repo_id": chosen.id,
+                    "model": model,
+                    "effort": effort,
+                    "permission_mode": mode,
+                    "allowed_tools": defaults.allowed_tools,
+                    "chrome": int(defaults.chrome),
+                    "status": "running",
+                    "auth_method": method,
+                    "hooks_source": "user",
+                    "mcp_source": "user",
+                    "started_by": actor,
+                    "started_by_kind": "owner",
+                },
+                tx.now,
+            )
+            name = f"{task.key} run {run_id}"
+            session_id = await repo.insert_session(tx.conn, name, tx.now, kind="run")
+            await repo.touch_session(
+                tx.conn, session_id, tx.now, {"project_id": task.project_id, "cwd": chosen.path}
+            )
+            await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
+            await tx.event(
+                "session.seen",
+                name,
+                project_id=task.project_id,
+                session_id=session_id,
+                session=name,
+            )
+            session = await repo.get_session_by_id(tx.conn, session_id)
+            assert session is not None
+            await self._bind(tx, task, session, actor)
+            prompt = self._run_header(task, run_id, name, chosen.path) + text
+            turn_id = await repo.insert_turn(tx.conn, run_id, prompt, actor, "owner", tx.now)
+            await repo.start_turn(tx.conn, turn_id, tx.now)
+            await self._run_event(tx, "run.started", actor, task, run_id, model=model, mode=mode)
+            await self._run_event(tx, "run.turn_started", actor, task, run_id, seq=1)
+        await self._spawn_turn(run_id, turn_id)
+        return await self.get_run(run_id)
+
+    async def _run_event(
+        self, tx: _Tx, kind: str, actor: str, task: Task, run_id: int, **payload: Any
+    ) -> None:
+        await tx.event(
+            kind,
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            run_id=run_id,
+            **payload,
+        )
+
+    async def _set_run_status(
+        self, tx: _Tx, run: Run, new: str, reason: str | None, **changes: Any
+    ) -> None:
+        """The one writer of a run's status: `domain.runs.check_transition` decides."""
+        run_rules.check_transition(run.status, new)
+        values: dict[str, Any] = {"status": new, "status_reason": reason, **changes}
+        if new == "ended":
+            values["ended_at"] = tx.now
+        await repo.update_run(tx.conn, run.id, values, tx.now)
+        run.status = new
+
+    async def _spawn_turn(self, run_id: int, turn_id: int) -> None:
+        """Start the process of a turn already marked started; a failure ends it visibly."""
+        runs = self._run_manager()
+        run = await self.get_run(run_id)
+        turn = await repo.get_turn(self._r, turn_id)
+        assert turn is not None
+        claude = runs.claude()
+        error = self._claude_missing() if claude is None else None
+        pid = None
+        if claude is not None:
+            spec = TurnSpec(
+                claude,
+                turn.prompt,
+                run.cwd,
+                run.model,
+                run.effort,
+                run.permission_mode,
+                tuple(run.allowed_rules),
+                run.claude_session_id,
+                run.chrome,
+            )
+            try:
+                pid = await runs.start_turn(run.id, turn.id, spec)
+            except (OSError, ValidationError, RuntimeError) as exc:
+                error = f"claude did not start: {exc}"
+        async with self._tx() as tx:
+            if pid is not None:
+                runs.checked_since_start.add(run.id)
+                await repo.set_turn_pid(tx.conn, turn.id, pid)
+                return
+            run = await self.get_run(run_id, tx.conn)
+            task = await self.get_task(run.task_id, tx.conn)
+            await repo.end_turn(tx.conn, turn.id, {"outcome": "failed_to_start"}, tx.now)
+            await repo.cancel_queued(tx.conn, run.id, tx.now)
+            await self._set_run_status(tx, run, "stopped", error)
+            await self._run_event(tx, "run.stopped", "relaybay", task, run.id, reason=error)
+
+    async def turn_init(self, turn_id: int, claude_session_id: str) -> None:
+        """The turn's `system/init`: the Claude Code session id every later turn resumes."""
+        async with self._tx() as tx:
+            turn = await repo.get_turn(tx.conn, turn_id)
+            run = await repo.get_run(tx.conn, turn.run_id) if turn is not None else None
+            if run is not None and run.claude_session_id != claude_session_id:
+                await repo.update_run(
+                    tx.conn, run.id, {"claude_session_id": claude_session_id}, tx.now
+                )
+
+    async def turn_done(
+        self,
+        turn_id: int,
+        outcome: str,
+        result: Result | None,
+        exit_code: int | None,
+        reason: str | None,
+        stopped: bool = False,
+    ) -> None:
+        """A turn's process ended. The run goes idle (a result came), stopped (Stop, also after
+        a result while the process was still ending) or lost; Stop and lost cancel the texts
+        that waited, otherwise the next one starts."""
+        follow: tuple[int, int] | None = None
+        async with self._tx() as tx:
+            turn = await repo.get_turn(tx.conn, turn_id)
+            assert turn is not None
+            run = await self.get_run(turn.run_id, tx.conn)
+            task = await self.get_task(run.task_id, tx.conn)
+            changes: dict[str, Any] = {"outcome": outcome, "exit_code": exit_code}
+            if result is not None:
+                changes.update(
+                    result_subtype=result.subtype,
+                    num_turns=result.num_turns,
+                    duration_ms=result.duration_ms,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    cache_read_tokens=result.cache_read_tokens,
+                    cache_write_tokens=result.cache_write_tokens,
+                    denials=result.denials,
+                    denied_tools=result.denied_tools,
+                )
+            await repo.end_turn(tx.conn, turn.id, changes, tx.now)
+            tokens = sum(
+                changes.get(k, 0)
+                for k in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_write_tokens",
+                )
+            )
+            await self._run_event(
+                tx,
+                "run.turn_ended",
+                "relaybay",
+                task,
+                run.id,
+                seq=turn.seq,
+                outcome=outcome,
+                tokens=tokens,
+            )
+            if outcome in ("success", "error") and not stopped:
+                subtype = result.subtype if result is not None else "unknown"
+                why = None if outcome == "success" else f"the turn ended with an error ({subtype})"
+                await self._set_run_status(tx, run, "idle", why)
+                queued = await repo.next_queued_turn(tx.conn, run.id)
+                if queued is not None:
+                    await repo.start_turn(tx.conn, queued.id, tx.now)
+                    await self._set_run_status(tx, run, "running", None)
+                    await self._run_event(
+                        tx, "run.turn_started", "relaybay", task, run.id, seq=queued.seq
+                    )
+                    follow = (run.id, queued.id)
+            else:
+                new = "lost" if outcome == "lost" else "stopped"
+                await self._set_run_status(tx, run, new, reason)
+                await repo.cancel_queued(tx.conn, run.id, tx.now)
+                await self._run_event(tx, f"run.{new}", "relaybay", task, run.id, reason=reason)
+                await self._end_run_session(tx, run)
+        if follow is not None:
+            await self._spawn_turn(*follow)
+
+    async def _end_run_session(self, tx: _Tx, run: Run) -> None:
+        """A killed turn sends no SessionEnd (Windows kills hard): the row ends here."""
+        session = await repo.get_session_by_id(tx.conn, run.session_id) if run.session_id else None
+        if session is None or session.status == "ended":
+            return
+        await repo.touch_session(
+            tx.conn,
+            session.id,
+            tx.now,
+            {"status": "ended", "activity": "turn stopped", "activity_at": tx.now},
+        )
+        ended = await repo.get_session_by_id(tx.conn, session.id)
+        assert ended is not None
+        await self._session_events(tx, ended, ended.name, previous=session.status)
+
+    async def send_to_run(self, run_id: int, text: str, *, actor: str = "owner") -> RunTurn:
+        """Continue the run with the owner's text: a new turn with --resume, or, while a turn
+        runs, a turn that waits for it (never two at once)."""
+        runs = self._run_manager()
+        prompt = run_rules.clean_prompt(text)
+        run = await self.get_run(run_id)
+        if not run.is_open:
+            raise ValidationError(f"Run {run.id} has ended; start a new run on {run.task_key}.")
+        if not runs.is_running(run.id) and run.id not in runs.checked_since_start:
+            await self._run_preflight(runs)  # the first turn after a restart checks again
+        launch = False
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            if not run.is_open:
+                raise ValidationError(f"Run {run.id} has ended; start a new run on {run.task_key}.")
+            task = await self.get_task(run.task_id, tx.conn)
+            repeat = await self._repeated_send(tx, run.id, prompt, actor)
+            if repeat is not None:
+                return repeat
+            turn_id = await repo.insert_turn(tx.conn, run.id, prompt, actor, "owner", tx.now)
+            turn = await repo.get_turn(tx.conn, turn_id)
+            assert turn is not None
+            if run.status != "running" and await repo.active_turn(tx.conn, run.id) is None:
+                await repo.start_turn(tx.conn, turn_id, tx.now)
+                await self._set_run_status(tx, run, "running", None)
+                await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
+                launch = True
+            else:
+                await self._run_event(tx, "run.turn_queued", actor, task, run.id, seq=turn.seq)
+        if launch:
+            await self._spawn_turn(run.id, turn_id)
+        found = await repo.get_turn(self._r, turn_id)
+        assert found is not None
+        return found
+
+    @staticmethod
+    async def _repeated_send(tx: _Tx, run_id: int, prompt: str, actor: str) -> RunTurn | None:
+        """The run's last turn when it is this text from this sender a moment ago (a double
+        click), so the second send adds nothing."""
+        turns = await repo.list_turns(tx.conn, run_id)
+        last = turns[-1] if turns else None
+        if last is None or (last.prompt, last.sent_by) != (prompt, actor):
+            return None
+        queued = datetime.fromisoformat(last.queued_at)
+        age = datetime.fromisoformat(tx.now) - queued
+        return last if age.total_seconds() < SEND_REPEAT_SECONDS else None
+
+    async def stop_run(self, run_id: int, *, actor: str = "owner") -> Run:
+        """Kill the running turn's process tree; the session stays resumable."""
+        runs = self._run_manager()
+        run = await self.get_run(run_id)
+        if await self._lose_orphan(runs, run):
+            return await self.get_run(run_id)
+        if not await runs.stop(run.id, f"stopped by {actor}"):
+            raise ValidationError(f"No turn of run {run.id} is running.")
+        return await self.get_run(run_id)
+
+    async def _lose_orphan(self, runs: RunManager, run: Run) -> bool:
+        """A run marked running with no process behind it (its end could not be stored, or
+        the start failed oddly) is marked lost, so Stop and End work again. True if it was."""
+        if run.status != "running" or runs.is_running(run.id):
+            return False
+        async with self._tx() as tx:
+            run = await self.get_run(run.id, tx.conn)
+            if run.status != "running" or runs.is_running(run.id):
+                return False
+            task = await self.get_task(run.task_id, tx.conn)
+            reason = "no claude process was running for this turn"
+            active = await repo.active_turn(tx.conn, run.id)
+            if active is not None:
+                await repo.end_turn(tx.conn, active.id, {"outcome": "lost"}, tx.now)
+            await repo.cancel_queued(tx.conn, run.id, tx.now)
+            await self._set_run_status(tx, run, "lost", reason)
+            await self._run_event(tx, "run.lost", "relaybay", task, run.id, reason=reason)
+            await self._end_run_session(tx, run)
+        return True
+
+    async def end_run(self, run_id: int, *, actor: str = "owner") -> Run:
+        """No more turns: a running one is stopped first, waiting texts are cancelled."""
+        runs = self._run_manager()
+        run = await self.get_run(run_id)
+        if not run.is_open:
+            raise ValidationError(f"Run {run.id} has already ended.")
+        if runs.is_running(run.id):
+            await runs.stop(run.id, f"ended by {actor}")
+        await self._lose_orphan(runs, run)
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            task = await self.get_task(run.task_id, tx.conn)
+            await repo.cancel_queued(tx.conn, run.id, tx.now)
+            await self._set_run_status(tx, run, "ended", f"ended by {actor}", ended_by=actor)
+            await self._run_event(tx, "run.ended", actor, task, run.id)
+        return await self.get_run(run_id)
+
+    async def _recover_runs(self) -> None:
+        """At start: a run still `running` lost its process with the previous server."""
+        async with self._tx() as tx:
+            for run in await repo.open_runs(tx.conn):
+                if run.status != "running":
+                    continue
+                task = await self.get_task(run.task_id, tx.conn)
+                reason = "the server stopped while a turn ran"
+                await self._set_run_status(tx, run, "lost", reason)
+                await self._run_event(tx, "run.lost", "relaybay", task, run.id, reason=reason)
+                await self._end_run_session(tx, run)
+            await repo.lose_open_turns(tx.conn, tx.now)
+
+    async def _run_hook_session(self, tx: _Tx, hook: HookEvent) -> Session | None:
+        """The run's session row for a SessionStart that carries its id: only while one of its
+        turns runs, and only for its own Claude Code session (none known yet, or this one). A
+        `claude` started inside the turn inherits the variable and gets None."""
+        assert hook.run_id is not None
+        run = await repo.get_run(tx.conn, hook.run_id)
+        if run is None or not run.is_open or run.session_id is None:
+            return None
+        if await repo.active_turn(tx.conn, run.id) is None:
+            return None
+        session = await repo.get_session_by_id(tx.conn, run.session_id)
+        if session is None:
+            return None
+        cc_id = hook.cc_session_id
+        known = {run.claude_session_id, session.cc_session_id} - {None}
+        if known and cc_id not in known:
+            return None
+        return await self._link_hook_session(tx, session, cc_id, from_window=True)

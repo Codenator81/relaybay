@@ -1,0 +1,98 @@
+{#- The Agent block of a card: the user's own claude run on it. Expects: t (the task), view (the
+    open or latest run, or None), form (the Start form when no run is open), running, error,
+    choices, owner_modes. Refetched on live run events. -#}
+{%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
+{%- set base = "/p/" ~ t.project_slug ~ "/t/" ~ t.key ~ "/run" %}
+<div class="run" id="run-{{ t.key }}" data-key="{{ t.key }}"
+     hx-get="{{ base }}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {% if view %}
+  {%- set r = view.run %}
+  <p class="run-head">
+    <span class="run-status status-{{ r.status }}">{{ r.status }}</span>
+    <span class="muted">run {{ r.id }} · {{ r.model }} · {{ r.effort }} · {{ r.permission_mode }} · started by {{ r.started_by }} <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
+  </p>
+  {% if r.status_reason %}<p class="run-reason">{{ r.status_reason }}</p>{% endif %}
+  <dl class="run-facts">
+    <dt>Folder</dt><dd><code>{{ r.cwd }}</code></dd>
+    {% if r.session_name %}<dt>Session</dt><dd>{{ r.session_name }}</dd>{% endif %}
+    <dt>Claude session</dt><dd class="mono">{{ r.claude_session_id or "not known yet" }}</dd>
+    <dt>Tokens</dt><dd>{{ "{:,}".format(view.totals.tokens) }} <span class="muted">(input {{ "{:,}".format(view.totals.input_tokens) }}, output {{ "{:,}".format(view.totals.output_tokens) }}, cache read {{ "{:,}".format(view.totals.cache_read_tokens) }}, cache write {{ "{:,}".format(view.totals.cache_write_tokens) }})</span></dd>
+  </dl>
+  {% if view.turns %}
+  <table class="run-turns">
+    <thead><tr><th scope="col">#</th><th scope="col">Sent by</th><th scope="col">Queued</th><th scope="col">Outcome</th><th scope="col">Tokens</th><th scope="col">Denied</th></tr></thead>
+    <tbody>
+      {% for turn in view.turns %}
+      <tr class="run-turn state-{{ turn.state }}" data-seq="{{ turn.seq }}">
+        <td>{{ turn.seq }}</td>
+        <td>{{ turn.sent_by }}</td>
+        <td><time datetime="{{ turn.queued_at }}" data-age>{{ turn.queued_at|age }}</time></td>
+        <td>{{ turn.state|replace("_", " ") }}{% if turn.result_subtype and turn.result_subtype != "success" %} <span class="muted">({{ turn.result_subtype }})</span>{% endif %}</td>
+        <td>{{ "{:,}".format(turn.tokens) }}</td>
+        <td>{% if turn.denials %}{{ turn.denials }}{% if turn.denied_tools %} <span class="muted">{{ turn.denied_tools|join(", ") }}</span>{% endif %}{% else %}<span class="muted">0</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if r.is_open %}
+  <div class="run-actions">
+    {% if running %}
+    <form class="inline-form" method="post" action="{{ base }}/{{ r.id }}/stop"
+          hx-post="{{ base }}/{{ r.id }}/stop" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
+      {{ hidden_csrf() }}
+      <button type="submit" class="btn danger">Stop</button>
+    </form>
+    {% endif %}
+    <form class="run-send" method="post" action="{{ base }}/{{ r.id }}/send"
+          hx-post="{{ base }}/{{ r.id }}/send" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
+      {{ hidden_csrf() }}
+      <label class="field"><span>{{ "Next text (waits for the running turn)" if running else "Continue" }}</span>
+        <textarea name="text" rows="3" maxlength="20000" required placeholder="What the agent should do next"></textarea>
+      </label>
+      <button type="submit" class="btn primary">Send</button>
+    </form>
+    <form class="inline-form" method="post" action="{{ base }}/{{ r.id }}/end"
+          hx-post="{{ base }}/{{ r.id }}/end" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button"
+          hx-confirm="End run {{ r.id }}? No more turns; the Claude session stays in Claude Code.">
+      {{ hidden_csrf() }}
+      <button type="submit" class="btn">End run</button>
+    </form>
+  </div>
+  {% endif %}
+  {% endif %}
+  {% if form %}
+  <form class="task-form run-start" method="post" action="{{ base }}/start"
+        hx-post="{{ base }}/start" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
+    {{ hidden_csrf() }}
+    <p class="muted">Starts your own <code>claude</code> on this machine under your own sign-in, one turn at a time; its hooks report to this card.</p>
+    {% if form.login_line %}<p class="run-login">{{ form.login_line }}</p>{% endif %}
+    {% if form.layers %}<p class="muted">Hooks: {{ form.layers.hooks_detail }}; MCP: {{ form.layers.mcp_detail }}</p>{% endif %}
+    {% for why in form.refusals %}<p class="form-error run-refusal">{{ why }}</p>{% endfor %}
+    {% if form.repos %}
+    <label class="field"><span>Folder</span>
+      <select name="repo">
+        {% for repo in form.repos %}<option value="{{ repo.id }}"{% if repo.id in form.task_repo_ids %} selected{% endif %}>{{ repo.name }} — {{ repo.path }} (the repository itself)</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    <div class="field-row">
+      <label class="field"><span>Model</span>
+        <select name="model">{% for m in choices.models %}<option value="{{ m }}"{% if m == form.defaults.model %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+      </label>
+      <label class="field"><span>Effort</span>
+        <select name="effort">{% for e in choices.efforts %}<option value="{{ e }}"{% if e == form.defaults.effort %} selected{% endif %}>{{ e }}</option>{% endfor %}</select>
+      </label>
+      <label class="field"><span>Permission mode</span>
+        <select name="permission_mode">{% for m in owner_modes %}<option value="{{ m }}"{% if m == form.defaults.permission_mode %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+      </label>
+    </div>
+    <p class="muted">Allowed tools: <code>{{ form.defaults.allowed_tools }}</code>{% if form.defaults.chrome %} · with --chrome{% endif %} (the project's agent defaults on Stands &amp; access).</p>
+    <label class="field"><span>Brief (the first turn's text, for this run only; relaybay adds the run's header above it)</span>
+      <textarea name="brief" rows="10" maxlength="20000">{{ form.brief }}</textarea>
+    </label>
+    <button type="submit" class="btn primary">Start</button>
+  </form>
+  {% endif %}
+</div>

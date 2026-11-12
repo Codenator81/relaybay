@@ -152,11 +152,13 @@ def test_http_handler_references_the_token_by_env_var(tmp_path: Path) -> None:
         "Authorization": "Bearer ${RELAYBAY_TOKEN}",
         "X-Relaybay-Host-Session": "${CLAUDE_CODE_HOST_SESSION_ID}",
         "X-Relaybay-Host-Attended": "${CLAUDE_CODE_SESSION_ATTENDED}",
+        "X-Relaybay-Run": "${RELAYBAY_RUN_ID}",
     }
     assert handler["allowedEnvVars"] == [
         "RELAYBAY_TOKEN",
         "CLAUDE_CODE_HOST_SESSION_ID",
         "CLAUDE_CODE_SESSION_ATTENDED",
+        "RELAYBAY_RUN_ID",
     ]
     assert handler["url"] == f"{BASE}/hooks/claude-code" and is_ours(handler)
     assert handler["timeout"] <= 5

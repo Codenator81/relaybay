@@ -27,7 +27,10 @@ Installers per OS: `packaging/README.md`. The desktop program, `desktop.toml`, t
 `relaybay-hook` and setup from an installed program: `docs/design/0016-desktop-program.md`.
 
 `tests/e2e/` runs scenarios against a real server with `tests/e2e/fake_claude.py` as `claude`; a
-change to what a session sees (hooks, MCP answers) gets a scenario there. The real CLI is never
+change to what a session sees (hooks, MCP answers) gets a scenario there. For runs on cards the
+server starts the fake itself (`runs` fixture): `FAKE_CLAUDE_SCENARIO`, `FAKE_CLAUDE_TRACE` and
+`FAKE_CLAUDE_AUTH` (the `claude auth status` answer) come from the environment; scenarios may use
+`turns` (steps per turn of a session), `spawn_child` and `exit`; argv and turn ends are traced. The real CLI is never
 run by tests unless `RELAYBAY_E2E_REAL_CLAUDE=1` is set, and `scripts/probe_claude.py` never in CI.
 
 All three checks must pass before you report a change as done; after changing a command, a

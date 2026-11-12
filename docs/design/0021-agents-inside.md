@@ -7,6 +7,14 @@
   [0017](0017-readiness-for-agents-inside.md); uses [0018](0018-brake-and-budgets.md),
   [0019](0019-session-messages.md), [0013](0013-policy-as-data.md), the pages planned in
   [0004](0004-navigation.md) and the autonomy rule of [0015](0015-intake-and-autonomy.md).
+- PR 1a shipped: the run on a card in one repository used in place (migrations 0030
+  `project_run_defaults` and `app_setting`, 0031 `run`, 0032 `run_turn`), the login check with the
+  doctor line and the Settings → Agents switch, project agent defaults, first turn, `--resume`,
+  waiting texts, Stop with the process tree, End, lost, linking by `RELAYBAY_RUN_ID` (the http
+  hook's `X-Relaybay-Run` header) and the Agent block; Start refuses while relaybay's hooks or MCP
+  server are not in the user settings. PR 1b brings `run_worktree` (0033), worktrees with
+  `--add-dir`, the project folder as cwd, the `--settings` / `--mcp-config` fallback and MCP
+  `run_start` / `run_status`. Behaviour: [SPEC](../SPEC.md#spec-run).
 - The probes of 0012 were run on 2026-11-10 and the design relies on them
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
   accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).
@@ -290,8 +298,9 @@ practice go ahead of the plan.
 Numbers follow 0029 and move if other migrations land first.
 
 **Probes.** All thirteen of [0012](0012-runner-and-embedded-terminal.md#probes-2026-11) were run on
-2026-11-10 on Windows; the design above relies on them. Not probed yet: worktrees outside the cwd
-with `--add-dir`, the MCP client timeout of a held permission prompt, and macOS and Linux.
+2026-11-10 on Windows; the design above relies on them. Worktrees outside the cwd with `--add-dir`
+passed on 2026-11-12 (probe 9 of 0012, re-run). Not probed yet: the MCP client timeout of a held
+permission prompt, and macOS and Linux.
 
 **Tests with the fake `claude`** (`tests/e2e`; the fake already takes `-p`, `--resume`,
 `--permission-mode` and `--allowedTools`):

@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Runs on a card: the card's Agent block starts your own unmodified `claude` on this machine, under your own sign-in, in one of the project's repositories. The first turn gets a brief built from the card; Continue resumes the same Claude Code session (`--resume`), a text sent during a turn waits for it, Stop kills the turn's whole process tree (a job object on Windows, a process group on macOS and Linux), End closes the run. The card shows the status, the Claude session id and each turn's tokens and denials. Start is refused with the reason while relaybay's hooks or MCP server are missing from the Claude Code user settings (`relaybay setup`), and a second open run on the card or in the same repository is refused.
+- The login check: before a run, `claude auth status` is asked for the sign-in method only (never the e-mail or organization). A subscription starts; signed out shows `claude`, then `/login`; an API key or another method starts only when Settings → Agents allows it. `relaybay doctor` has a `claude sign-in` item.
+- Settings → Agents (the `claude` in use, the sign-in, where hooks and MCP come from, the sign-in switch) and per-project Agent defaults on Stands & access (model, effort, permission mode, allowed tools, `--chrome`).
+- `claude_path` (`RELAYBAY_CLAUDE_PATH`): the `claude` a run starts; by default `claude` on PATH, then the usual install folders.
+- A run's hooks link to the run's own session row by `RELAYBAY_RUN_ID`; a `claude` started inside a turn gets a session of its own, never a guess onto a desktop session.
+
+### Changed
+
+- The http hook that `relaybay setup --mode http` writes also sends `X-Relaybay-Run: ${RELAYBAY_RUN_ID}`; apply setup again before starting runs with http hooks.
+
 ## [0.8.6] - 2026-11-12
 
 ### Fixed

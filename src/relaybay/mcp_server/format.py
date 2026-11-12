@@ -1071,6 +1071,18 @@ def event_detail(e: Event) -> str:
         return f"{p.get('target')}: {p.get('used')} of {p.get('max_tokens')} tokens"
     if e.kind in ("budget.set", "budget.removed"):
         return str(p.get("target", ""))
+    if e.kind == "run.defaults_set":
+        return f"{p.get('model')} · {p.get('effort')} · {p.get('permission_mode')}"
+    if e.kind == "settings.run_login_any":
+        return "other sign-ins allowed" if p.get("on") else "subscription sign-ins only"
+    if e.kind == "run.turn_ended":
+        turn = f"run {p.get('run_id')} turn {p.get('seq')}"
+        return f"{turn}: {p.get('outcome')}, {p.get('tokens')} tokens"
+    if e.kind in ("run.turn_started", "run.turn_queued"):
+        return f"run {p.get('run_id')} turn {p.get('seq')}"
+    if e.kind.startswith("run."):
+        reason = f": {p['reason']}" if p.get("reason") else ""
+        return f"run {p.get('run_id')}{reason}"
     if e.kind == "concurrency.over":
         return f"{p.get('running')} sessions running, cap {p.get('max_sessions')}"
     if e.kind == "rules.notice_read":

@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -343,3 +344,132 @@ def stand_factory(
 @pytest.fixture
 def stand(stand_factory: Callable[..., Stand]) -> Stand:
     return stand_factory()
+
+
+def alive(pid: int) -> bool:
+    """Whether a process still runs (a zombie child counts as gone)."""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    # `ps` on macOS and Linux; reaping here would take the exit code from the runner's wait.
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+@dataclass
+class Runs:
+    """Runs on cards against the stand: the server starts the fake `claude` itself, with the
+    scenario, trace and `auth status` answer the test writes into these files."""
+
+    stand: Stand
+    scenario_file: Path
+    trace_file: Path
+    auth_file: Path
+
+    def scenario(self, data: dict[str, Any]) -> None:
+        self.scenario_file.write_text(json.dumps(data), encoding="utf-8")
+
+    def auth(self, answer: dict[str, Any] | str, code: int = 0) -> None:
+        self.auth_file.write_text(json.dumps({"exit": code, "answer": answer}), encoding="utf-8")
+
+    def trace(self, kind: str) -> list[dict[str, Any]]:
+        if not self.trace_file.exists():
+            return []
+        entries = [json.loads(x) for x in self.trace_file.read_text("utf-8").splitlines()]
+        return [e for e in entries if e["kind"] == kind]
+
+    def rows(self, sql: str, *params: Any) -> list[sqlite3.Row]:
+        conn = sqlite3.connect(self.stand.settings.db_path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            return list(conn.execute(sql, params))
+        finally:
+            conn.close()
+
+    def runs(self, key: str = "acme-shop-1") -> list[sqlite3.Row]:
+        return self.rows(
+            "SELECT r.* FROM run r JOIN task t ON t.id = r.task_id WHERE t.key = ? ORDER BY r.id",
+            key,
+        )
+
+    def turns(self, run_id: int) -> list[sqlite3.Row]:
+        return self.rows("SELECT * FROM run_turn WHERE run_id = ? ORDER BY seq", run_id)
+
+    def wait_run(self, check: Callable[[sqlite3.Row], bool], key: str = "acme-shop-1") -> Any:
+        def found() -> sqlite3.Row | None:
+            rows = self.runs(key)
+            return rows[-1] if rows and check(rows[-1]) else None
+
+        return poll(found, what=f"the run of {key}")
+
+    def post(self, board: httpx.Client, path: str, **fields: str) -> str:
+        """An htmx post of the Agent block: the panel comes back, with the reason on a refusal."""
+        response = board.post(
+            path,
+            data={"csrf_token": csrf_token(self.stand.token), **fields},
+            headers={"Origin": self.stand.url, "HX-Request": "true"},
+        )
+        assert response.status_code == 200, response.text
+        return response.text
+
+    def start(self, board: httpx.Client, key: str = "acme-shop-1", **fields: str) -> str:
+        return self.post(board, f"/p/acme-shop/t/{key}/run/start", **fields)
+
+    def act(self, board: httpx.Client, run_id: int, action: str, **fields: str) -> str:
+        key = self.rows(
+            "SELECT t.key FROM run r JOIN task t ON t.id = r.task_id WHERE r.id = ?", run_id
+        )[0][0]
+        return self.post(board, f"/p/acme-shop/t/{key}/run/{run_id}/{action}", **fields)
+
+
+@pytest.fixture
+def runs(stand: Stand, monkeypatch: pytest.MonkeyPatch) -> Runs:
+    """A project with the stand's folder as its repository, card acme-shop-1, relaybay's MCP
+    server registered in the stand's Claude home (setup installed the hooks), and the fake's
+    files in the environment the server passes on to the `claude` it starts."""
+    made = Runs(
+        stand,
+        stand.root / "run-scenario.json",
+        stand.root / "run-trace.jsonl",
+        stand.root / "run-auth.json",
+    )
+    made.scenario({"turn": [{"text": "Done."}]})
+    made.auth(FAKE_AUTH)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", stand.env["CLAUDE_CONFIG_DIR"])
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", str(made.scenario_file))
+    monkeypatch.setenv("FAKE_CLAUDE_TRACE", str(made.trace_file))
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH", str(made.auth_file))
+    # A run's claude uses the server's home folder: the stand's Claude home is that folder.
+    monkeypatch.setenv("HOME", str(stand.claude_home))
+    monkeypatch.setenv("USERPROFILE", str(stand.claude_home))
+    entry = {"type": "http", "url": f"{stand.url}/mcp", "headers": {"Authorization": "Bearer x"}}
+    (stand.claude_home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"relaybay": entry}}), encoding="utf-8"
+    )
+    stand.mcp("project_upsert", slug="acme-shop", repo_path=str(stand.project_dir))
+    stand.mcp("task_create", project="acme-shop", title="Checkout", stage="dev")
+    return made
+
+
+FAKE_AUTH = {
+    "loggedIn": True,
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "subscriptionType": "max",
+    "email": "owner@example.invalid",
+    "orgName": "Acme Org",
+    "orgId": "org-123",
+}

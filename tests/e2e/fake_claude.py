@@ -9,7 +9,12 @@ Scenario keys, all optional:
   session_id, model, usage (per message), tools (names besides the MCP ones)
   configured_servers  [{name, status}]: servers listed in system/init without an --mcp-config
   turn                steps of the turn
+  turns               [[steps], [steps], ...]: the steps of each turn of a session, by how many
+                      turns that session had before (counted in $CLAUDE_CONFIG_DIR/fake-turns);
+                      the last list serves every later turn. Used instead of `turn`.
   on_stop_block       steps run when a Stop hook blocks; a later block continues with nothing
+  end_wait_file       after the result, wait for this file before the SessionEnd hooks (slow
+                      hooks while the process ends); traced as {"kind": "result"} first
 A step is one of:
   {"text": "..."}                                 an assistant message
   {"tool": "Bash", "input": {...}, "result": "..."}  a tool call; its command never runs.
@@ -18,10 +23,19 @@ A step is one of:
   {"mcp": "task_create", "arguments": {...}, "capture": {"key": "regex"}}
       a real MCP call; a failed one ends the run with exit code 1 so that no test passes over it.
   {"wait_file": "path", "timeout": 30}            wait until a test creates that file
+  {"spawn_child": "pidfile"}                      start a sleeping child that writes its pid there
+  {"exit": n}                                     exit with code n at once: no result, no hooks
 Strings may use ${session_id}, ${cwd} and captured names.
 
+The prompt is the positional argument, or stdin when it is missing (a `claude.cmd` shim gets it
+there). `claude auth status` prints the answer of `FAKE_CLAUDE_AUTH` (a JSON file
+`{"exit": n, "answer": {...}}`); without it, a subscription sign-in that also carries an e-mail
+and an organization, so a test can check relaybay keeps neither.
+
 What the session received goes as JSON lines to `FAKE_CLAUDE_TRACE`: `{"kind": "context", "event",
-"text"}`, `{"kind": "stop_block", "reason"}`, `{"kind": "stopped", "event", "reason"}`.
+"text"}`, `{"kind": "stop_block", "reason"}`, `{"kind": "stopped", "event", "reason"}`; each run
+also writes `{"kind": "argv", "argv", "prompt", "run_id", "started"}` first and
+`{"kind": "turn_end", "session_id", "started", "ended"}` when it ends normally.
 """
 
 import argparse
@@ -55,7 +69,28 @@ HOOK_TIMEOUT_DEFAULT = 60.0
 # Tools that need no approval in Manual mode; the rest are denied under -p unless approved.
 NO_APPROVAL_TOOLS = ("Read", "Glob", "Grep", "TodoWrite", "TaskCreate", "TaskUpdate", "Agent")
 EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
-PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")
+PERMISSION_MODES = (
+    "manual",
+    "default",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "dontAsk",
+    "bypassPermissions",
+)
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_AUTH = {
+    "exit": 0,
+    "answer": {
+        "loggedIn": True,
+        "authMethod": "claude.ai",
+        "apiProvider": "firstParty",
+        "subscriptionType": "max",
+        "email": "owner@example.invalid",
+        "orgName": "Acme Org",
+        "orgId": "org-123",
+    },
+}
 TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 
 
@@ -82,7 +117,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--resume")
     parser.add_argument("--mcp-config", nargs="+", default=[])
     parser.add_argument("--permission-mode", choices=PERMISSION_MODES, default="default")
-    parser.add_argument("--allowedTools", "--allowed-tools", nargs="+", default=[], dest="allowed")
+    parser.add_argument(
+        "--allowedTools", "--allowed-tools", nargs="+", action="extend", default=[], dest="allowed"
+    )
+    parser.add_argument("--model")
+    parser.add_argument("--effort", choices=EFFORTS)
+    parser.add_argument("--chrome", action="store_true")
     parser.add_argument("--bare", action="store_true")
     parser.add_argument("--version", action="store_true")
     args = parser.parse_args(argv)
@@ -137,6 +177,7 @@ class Run:
         self.parent: str | None = None
         self.stopped: str | None = None  # a hook's `continue: false`
         self.mcp: dict[str, dict[str, Any]] = {}
+        self.steps: list[dict[str, Any]] = []
         settings_file = config_dir / "settings.json"
         self.settings = (
             json.loads(settings_file.read_text(encoding="utf-8")) if settings_file.exists() else {}
@@ -431,6 +472,11 @@ class Run:
             self.call_mcp(step)
         elif "wait_file" in step:
             self.wait_file(Path(self.fill(step["wait_file"])), step.get("timeout", 30))
+        elif "spawn_child" in step:
+            self.spawn_child(Path(self.fill(step["spawn_child"])))
+        elif "exit" in step:
+            sys.stdout.flush()
+            os._exit(int(step["exit"]))
         else:
             raise ScenarioFailed(f"unknown step: {step}")
 
@@ -440,6 +486,34 @@ class Run:
             if time.monotonic() > deadline:
                 raise ScenarioFailed(f"{path} did not appear within {timeout} s")
             time.sleep(0.02)  # short: on Windows a long sleep is not cut by every signal
+
+    def spawn_child(self, pidfile: Path) -> None:
+        """A grandchild of the runner: a build or a server the agent started. It inherits no
+        pipe, so only the process tree ties it to the turn."""
+        code = (
+            "import os, sys, time; from pathlib import Path;"
+            " Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(600)"
+        )
+        no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            [sys.executable, "-c", code, str(pidfile)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=no_window,
+        )
+        self.wait_file(pidfile, 30)
+
+    def turn_steps(self, config_dir: Path) -> list[dict[str, Any]]:
+        """`turns` by the number of earlier turns of this session, else `turn`."""
+        turns = self.scenario.get("turns")
+        if not turns:
+            return self.scenario.get("turn", [])
+        counter = config_dir / "fake-turns" / self.session_id
+        counter.parent.mkdir(parents=True, exist_ok=True)
+        done = int(counter.read_text("utf-8")) if counter.exists() else 0
+        counter.write_text(str(done + 1), encoding="utf-8")
+        return turns[min(done, len(turns) - 1)]
 
     def call_tool(self, step: dict[str, Any]) -> None:
         tool = step["tool"]
@@ -502,7 +576,7 @@ class Run:
         if blocked:
             self.trace(kind="stopped", event="UserPromptSubmit", reason=blocked[0].get("reason"))
             return
-        self.run_steps(self.scenario.get("turn", []))
+        self.run_steps(self.steps)
         active = False
         pending = self.scenario.get("on_stop_block", [])
         for _ in range(STOP_BLOCK_LIMIT):
@@ -548,6 +622,10 @@ class Run:
         self.result()
 
     def end(self) -> None:
+        wait = self.scenario.get("end_wait_file")
+        if wait:
+            self.trace(kind="result")
+            self.wait_file(Path(self.fill(wait)), 60)
         self.run_hooks("SessionEnd", reason="other")
 
 
@@ -555,11 +633,30 @@ def _terminate(signum: int, frame: Any) -> None:
     raise Terminated
 
 
+def auth_status() -> int:
+    """`claude auth status`: the JSON answer and exit code of FAKE_CLAUDE_AUTH, or a
+    subscription sign-in."""
+    path = os.environ.get("FAKE_CLAUDE_AUTH")
+    auth = json.loads(Path(path).read_text("utf-8")) if path else DEFAULT_AUTH
+    answer = auth.get("answer")
+    if isinstance(answer, str):
+        sys.stdout.write(answer)
+    else:
+        sys.stdout.write(json.dumps(answer, indent=2) + "\n")
+    return int(auth.get("exit", 0))
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
+    words = sys.argv[1:] if argv is None else argv
+    if words[:2] == ["auth", "status"]:
+        return auth_status()
+    started = time.time()
+    args = parse_args(words)
     if args.version:
         print(VERSION)
         return 0
+    if args.prompt is None and sys.stdin is not None and not sys.stdin.isatty():
+        args.prompt = sys.stdin.read()
     # Never the real settings and transcripts of whoever runs the tests.
     config = os.environ.get("CLAUDE_CONFIG_DIR")
     scenario_file = os.environ.get("FAKE_CLAUDE_SCENARIO")
@@ -568,6 +665,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     run = Run(args, json.loads(Path(scenario_file).read_text("utf-8")), Path(config))
+    run.trace(
+        kind="argv",
+        argv=words,
+        prompt=args.prompt,
+        run_id=os.environ.get("RELAYBAY_RUN_ID"),
+        started=started,
+    )
+    run.steps = run.turn_steps(Path(config))
     signal.signal(signal.SIGTERM, _terminate)
     if sys.platform == "win32":
         # Windows has no SIGTERM between processes; a console break is the nearest thing.
@@ -583,6 +688,7 @@ def main(argv: list[str] | None = None) -> int:
         code = 1
     signal.signal(signal.SIGTERM, signal.SIG_IGN)  # exiting: only SessionEnd still runs
     run.end()
+    run.trace(kind="turn_end", session_id=run.session_id, started=started, ended=time.time())
     return code
 
 

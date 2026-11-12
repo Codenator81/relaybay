@@ -41,6 +41,13 @@ HOST_SESSION_HEADER = "X-Relaybay-Host-Session"
 ATTENDED_ENV = "CLAUDE_CODE_SESSION_ATTENDED"
 ATTENDED_FIELD = "relaybay_host_attended"
 ATTENDED_HEADER = "X-Relaybay-Host-Attended"
+# A run relaybay started (`relaybay.runner`) has its id in this variable; the forwarder adds it to
+# SessionStart as RUN_FIELD (http hooks send it as RUN_HEADER), so the turn's hooks land on the
+# run's own session row.
+RUN_ID_ENV = "RELAYBAY_RUN_ID"
+RUN_FIELD = "relaybay_run"
+RUN_HEADER = "X-Relaybay-Run"
+RUN_ID_MAX_DIGITS = 12
 # SessionEnd reasons after which the same window goes on with a new Claude Code id.
 CONTINUED_END_REASONS = ("clear", "resume")
 # The forwarder's spool: an event the server did not take is sent again later with the time it
@@ -78,6 +85,7 @@ class HookEvent:
     attended: bool | None = None
     transcript_path: str | None = None  # the session's transcript file (`*.jsonl`)
     spooled_at: str | None = None  # a replay from the forwarder's spool: when it happened (UTC)
+    run_id: int | None = None  # SessionStart: the relaybay run the process was started for
 
     @property
     def nested(self) -> bool:
@@ -110,6 +118,12 @@ def _attended(value: Any) -> bool | None:
     if value == "1":
         return True
     return False if value == "0" else None
+
+
+def _run_id(value: Any) -> int | None:
+    if not isinstance(value, str) or not value.isdigit() or len(value) > RUN_ID_MAX_DIGITS:
+        return None
+    return int(value)
 
 
 def _transcript_path(value: Any) -> str | None:
@@ -222,6 +236,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
         attended=_attended(payload.get(ATTENDED_FIELD)) if event == "SessionStart" else None,
         transcript_path=_transcript_path(payload.get("transcript_path")),
         spooled_at=_spooled_at(payload.get(SPOOLED_FIELD)),
+        run_id=_run_id(payload.get(RUN_FIELD)) if event == "SessionStart" else None,
     )
 
 

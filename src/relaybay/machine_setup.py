@@ -33,6 +33,8 @@ from relaybay.domain.hooks import (
     HOOK_PATH,
     HOST_SESSION_ENV,
     HOST_SESSION_HEADER,
+    RUN_HEADER,
+    RUN_ID_ENV,
     WAKE_PATH,
 )
 from relaybay.install import hook_executable, location_problem
@@ -273,8 +275,9 @@ def hook_handler(mode: str, base_url: str, token_path: Path, python: str | None 
                 "Authorization": f"Bearer ${{{TOKEN_ENV}}}",
                 HOST_SESSION_HEADER: f"${{{HOST_SESSION_ENV}}}",
                 ATTENDED_HEADER: f"${{{ATTENDED_ENV}}}",
+                RUN_HEADER: f"${{{RUN_ID_ENV}}}",
             },
-            "allowedEnvVars": [TOKEN_ENV, HOST_SESSION_ENV, ATTENDED_ENV],
+            "allowedEnvVars": [TOKEN_ENV, HOST_SESSION_ENV, ATTENDED_ENV, RUN_ID_ENV],
             "timeout": HTTP_TIMEOUT,
         }
     return {
