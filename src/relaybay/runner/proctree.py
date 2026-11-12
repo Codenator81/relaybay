@@ -237,8 +237,9 @@ class ProcessTree:
         if self.proc is None:
             return
         # The group id is the leader's pid, reserved while any member lives; an empty group
-        # (ProcessLookupError) has nothing left to stop.
-        with contextlib.suppress(ProcessLookupError):
+        # (ProcessLookupError) has nothing left to stop. macOS answers EPERM (PermissionError)
+        # when only zombies are left in the group: dead as well.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(self.proc.pid, sig)
 
     def close(self) -> None:

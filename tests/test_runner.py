@@ -7,10 +7,12 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from relaybay.domain.errors import ValidationError
+from relaybay.runner import proctree
 from relaybay.runner.auth import LoginState
 from relaybay.runner.claude_cli import (
     TurnSpec,
@@ -183,6 +185,22 @@ def test_process_tree_kill_takes_the_grandchild(tmp_path: Path) -> None:
         tree.close()
         if proc.poll() is None:
             proc.kill()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
+def test_a_group_with_nothing_left_alive_is_already_stopped(
+    monkeypatch: pytest.MonkeyPatch, error: type[OSError]
+) -> None:
+    # macOS answers EPERM to killpg when only zombies are left in the group.
+    def killpg(pid: int, sig: int) -> None:
+        raise error(1, "gone")
+
+    monkeypatch.setattr(proctree.os, "killpg", killpg)
+    tree = ProcessTree()
+    tree.proc = SimpleNamespace(pid=4242)  # type: ignore[assignment]
+    tree.terminate()
+    tree.kill()
 
 
 def test_process_tree_writes_stdin_text(tmp_path: Path) -> None:
