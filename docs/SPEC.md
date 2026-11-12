@@ -530,10 +530,11 @@ as badges. Any other first line is checked against the rules ([§6](#spec-rules-
 **Verified marks.** A claim line may carry `verified: <where>` (`verified: pytest on Windows`,
 `(verified: browser at /p/acme-shop)`): the `where` runs to the end of the line or to a closing
 bracket, a semicolon or a backtick (a `(…)` inside it stays whole), at most 200 characters. A
-mark starts a line or follows a space, `(`, `[` or a backtick, so `https://x/verified:abc` and
-`unverified:` are none; never after `not ` or `no ` ("Not verified: macOS" is a gap, not a mark);
-never inside a fenced code block; an empty `where` or `true`, `false`, `yes`, `no`, `none` is
-none. Marks are
+mark starts a line or follows a space, `(`, `[`, a backtick or markdown emphasis
+(`**Verified:** pytest` counts), so `https://x/verified:abc` and `unverified:` are none; never
+after `not `, `no `, `yet ` or `never ` ("Not verified: macOS" is a gap, not a mark); never inside
+a fenced code block; an empty `where` or `true`, `false`, `yes`, `no`, `none`, `n/a` is none.
+Marks are
 parsed when a report is written, from `report_add` and from a run's turn alike, and stored in
 `report_check` (the line, the `where`, the claim line without the mark; at most 100 per report). The
 card shows them under the report, a check with the `where`, the claim on hover. An M or L report

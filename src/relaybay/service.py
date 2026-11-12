@@ -1268,6 +1268,8 @@ class Service:
         if value is None:
             async with self._tx() as tx:
                 reports = await repo.all_report_bodies(tx.conn)
+                # A database that ran a build without the marker may hold marks already.
+                await tx.conn.execute("DELETE FROM report_check")
                 for report_id, body in reports:
                     checks = parse_checks(body)
                     if checks:

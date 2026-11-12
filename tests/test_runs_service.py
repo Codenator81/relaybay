@@ -975,3 +975,12 @@ async def test_the_board_view_of_a_long_turn_shows_its_last_lines(svc: Service) 
     _, turn, _, _, items = await svc.run_turn_detail(run.id, 1)
     assert turn.events == 400 and len(items) == 300 and items[0].seq == 101
     assert sum(len(i.text) for i in items) <= 200_000 + 300 * 160
+
+
+def test_marks_in_markdown_emphasis_count_and_soft_negations_do_not() -> None:
+    from relaybay.domain.reports import parse_checks
+
+    found = [c.where for c in parse_checks("**Verified:** pytest on Windows\n- **verified: CI**")]
+    assert found == ["pytest on Windows", "CI"]
+    body = "not yet verified: macOS\nnever verified: Linux\nverified: n/a"
+    assert parse_checks(body) == []
