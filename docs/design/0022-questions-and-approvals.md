@@ -5,8 +5,17 @@
   ([0005](0005-comments-to-agents.md)), the guard and access map ([0006](0006-environments-and-access.md)),
   policy as data ([0013](0013-policy-as-data.md)) and the Inbox and tray
   ([0020](0020-tray-notifications.md)).
-- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0036 `question`, 0037
-  `approval` (numbers as in 0021's plan).
+- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0037 `question`, 0038
+  `approval` (0036 went to `report_check` in PR 2; numbers as in 0021's plan).
+- PR 3 shipped: migration 0037 `question`; MCP `question_ask` (default required, at most 5 open
+  per card, the policy's secret check on every field, kind `look` always blocking with the URL and
+  the test account's name), `question_list`, `question_withdraw` (the asker or a coordinator); the
+  Inbox's Questions group and the card's Questions fold, answered with `POST
+  /questions/{id}/answer` (board only); the run set `waiting` at a turn's result with a blocking
+  question open; delivery as in the table below (a desktop session through an owner comment); a
+  non-blocking question closed `defaulted` at its deadline by a 15-second server check and on
+  reads; the tray kind `question`; `question.withdrawn` and `run.waiting` besides the events
+  below. Behaviour: [SPEC](../SPEC.md#spec-questions).
 
 ## Problem
 
@@ -57,8 +66,8 @@ A blocking question tells the agent to end its turn; the runner sees an open blo
 agent go on with the default; at `default_after` it closes as `defaulted`, visibly on the card, and a
 later answer from the owner is delivered as a change of course.
 
-**Events.** `question.asked`, `question.answered`, `question.defaulted`, `question.delivered`, with
-the text (board content, like a comment).
+**Events.** `question.asked`, `question.answered`, `question.defaulted`, `question.delivered`,
+`question.withdrawn`, with the text (board content, like a comment).
 
 ## Approvals
 

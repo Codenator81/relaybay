@@ -1,0 +1,41 @@
+{#- One question to the owner, on the card (place "card") and in the Inbox (place "inbox", with
+    its card). The owner answers with an option, a text, or both; a look question with "fine" or
+    its remarks. The look URL opens in the owner's own browser. -#}
+{%- macro question_item(q, place) -%}
+<li class="question-row question-{{ q.status }}" id="question-{{ q.id }}" data-question="{{ q.id }}">
+  <p class="question-head">
+    {% if place == "inbox" %}<a class="inbox-link" href="/p/{{ q.project_slug }}?task={{ q.task_key }}"><span class="card-key">{{ q.task_key }}</span> <span class="inbox-title">{{ q.task_title }}</span></a>{% endif %}
+    <span class="question-number">#{{ q.id }}</span>
+    {% if q.kind == "look" %}<span class="chip question-look-chip">look at this</span>{% endif %}
+    <span class="muted">{% if q.run_id %}run {{ q.run_id }}{% else %}desktop session{% endif %} · {{ q.asked_by }} · asked <time datetime="{{ q.asked_at }}" data-age>{{ q.asked_at|age }}</time></span>
+  </p>
+  <p class="question-state">
+    {%- if q.is_open -%}
+    {%- if q.blocking -%}<span class="chip question-blocks">{{ "blocks the run" if q.run_id else "blocking" }}</span>
+    {%- else -%}<span class="chip">goes on with the default at <time datetime="{{ q.default_after }}">{{ (q.default_after or "")[:16]|replace("T", " ") }} UTC</time></span>{%- endif -%}
+    {%- elif q.status == "defaulted" -%}<span class="chip question-defaulted">closed with the default <time datetime="{{ q.defaulted_at }}" data-age>{{ q.defaulted_at|age }}</time></span>
+    {%- elif q.status == "withdrawn" -%}<span class="chip">withdrawn by {{ q.withdrawn_by }} <time datetime="{{ q.withdrawn_at }}" data-age>{{ q.withdrawn_at|age }}</time></span>
+    {%- else -%}<span class="chip question-answered">answered <time datetime="{{ q.answered_at }}" data-age>{{ q.answered_at|age }}</time></span> <span class="muted">{% if q.delivered_at %}delivered <time datetime="{{ q.delivered_at }}" data-age>{{ q.delivered_at|age }}</time>{% elif q.comment_id %}waits as owner comment #{{ q.comment_id }}{% elif q.turn_seq and q.turn_outcome in ("cancelled", "failed_to_start", "lost") %}not delivered: turn {{ q.turn_seq }} {{ q.turn_outcome|replace("_", " ") }}; it goes with the run's next turn{% elif q.turn_seq %}waits as turn {{ q.turn_seq }}{% else %}not delivered yet{% endif %}</span>
+    {%- endif -%}
+  </p>
+  <p class="question-text">{{ q.text }}</p>
+  {% if q.look_url %}<p class="question-look"><a href="{{ q.look_url }}" target="_blank" rel="noopener noreferrer">{{ q.look_url }}</a>{% if q.look_account %} <span class="muted">· sign in as</span> <code>{{ q.look_account }}</code>{% endif %}</p>{% endif %}
+  <p class="muted question-default">{% if q.choices %}Options: {{ q.choices|join(", ") }} · {% endif %}default: {{ q.default }}</p>
+  {% if q.answer is not none %}<p class="question-answer-text"><span class="muted">{{ "Default taken" if q.answered_by == "default" else "Your answer" }}:</span> {{ q.answer }}</p>{% endif %}
+  {% if q.answerable %}
+  <form class="question-answer" method="post" action="/questions/{{ q.id }}/answer"
+        hx-post="/questions/{{ q.id }}/answer" hx-target="{{ '#inbox' if place == 'inbox' else '#questions-' ~ q.task_key }}" hx-swap="outerHTML" hx-disabled-elt="find button">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="from" value="{{ place }}">
+    {% if q.status == "defaulted" %}<p class="muted">An answer now reaches the agent as a change of course.</p>{% endif %}
+    <label class="field"><span>{{ "Remarks (the answer when you pick remarks)" if q.kind == "look" else "Answer (with an option, or alone)" }}</span>
+      <textarea name="text" rows="2" maxlength="4000"></textarea>
+    </label>
+    <div class="form-actions">
+      {% for c in q.choices %}<button type="submit" class="btn{% if loop.first %} primary{% endif %}" name="choice" value="{{ c }}">{{ c }}</button>{% endfor %}
+      {% if q.kind != "look" %}<button type="submit" class="btn{% if not q.choices %} primary{% endif %}">Send the text</button>{% endif %}
+    </div>
+  </form>
+  {% endif %}
+</li>
+{%- endmacro %}

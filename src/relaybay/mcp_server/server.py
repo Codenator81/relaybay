@@ -1212,6 +1212,125 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         found = await run(service.get_task(changed.task_id))
         return fmt.run_settings_saved(found, changed)
 
+    # --- questions to the owner ---------------------------------------------------------
+
+    @write
+    async def question_ask(
+        task: TaskRef,
+        text: Annotated[
+            str,
+            Field(
+                description="The question, or for kind look what to check on the screen. Never a"
+                " password or token."
+            ),
+        ],
+        default: Annotated[
+            str,
+            Field(
+                description="What you do when the owner does not answer: required, a question"
+                " without a default is refused."
+            ),
+        ],
+        options: Annotated[
+            list[str] | None,
+            Field(description="Short answers the owner picks from (at most 8). Optional."),
+        ] = None,
+        blocking: Annotated[
+            bool | None,
+            Field(
+                description="true: you end your turn and wait for the answer. Default false: you"
+                " go on with the default. A look question is always blocking."
+            ),
+        ] = None,
+        default_after: Annotated[
+            str | None,
+            Field(
+                description="For a non-blocking question: when it closes with its default, a"
+                " time with its zone (2026-12-01T15:00:00Z) or a duration (30m, 2h, 1d)."
+                " Default 1h."
+            ),
+        ] = None,
+        kind: Annotated[
+            str | None,
+            Field(
+                description="question (default) or look: the owner looks at a screen you"
+                " brought up and answers fine or remarks."
+            ),
+        ] = None,
+        url: Annotated[
+            str | None,
+            Field(description="For kind look: the http(s) address the owner opens."),
+        ] = None,
+        account: Annotated[
+            str | None,
+            Field(
+                description="For kind look: the name of the test account to sign in with, never"
+                " its password."
+            ),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Ask the owner a question on a card; it shows in the owner's Inbox and on the card, and
+        only the owner answers it, on the board. Every question carries a default; at most 5 are
+        open per card. A blocking one: end your turn, the answer comes as your next turn (a run)
+        or as an owner comment (a desktop session). kind look: bring up the screen first, pass
+        its url and the test account's name."""
+        asked, hint = await run(
+            service.ask_question(
+                task,
+                text,
+                default,
+                options=options or None,
+                blocking=blocking,
+                default_after=default_after or None,
+                kind=kind or None,
+                url=url or None,
+                account=account or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        found = await run(service.get_task(asked.task_id))
+        return fmt.question_asked(found, asked, hint)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def question_list(
+        task: Annotated[
+            str | None, Field(description="Task key: only this card's questions. Optional.")
+        ] = None,
+        status: Annotated[
+            str | None,
+            Field(description="open (default), answered, defaulted, withdrawn or all."),
+        ] = None,
+    ) -> str:
+        """Questions to the owner, newest first: open ones of all cards by default, with their
+        state, options, default and the owner's answer verbatim. Changes nothing but closes
+        questions past their deadline with their default."""
+        found, items = await run(service.list_questions(task or None, status or None))
+        return fmt.questions(found, items, status)
+
+    @write
+    async def question_withdraw(
+        question: Annotated[int, Field(description="The question's number, e.g. 7 for '#7'.")],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Withdraw an open question you asked (a coordinator may withdraw any): it leaves the
+        Inbox, and a run waiting only for it goes idle."""
+        gone = await run(
+            service.withdraw_question(
+                question,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.question_withdrawn(gone)
+
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(
         query: Annotated[str, Field(description="Words to look for (word forms match).")],

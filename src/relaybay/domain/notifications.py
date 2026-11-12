@@ -13,19 +13,21 @@ LABELS = {
     "review": ("review", "reviews"),
     "reply": ("reply", "replies"),
     "answer": ("answer", "answers"),
+    "question": ("question", "questions"),
     "permission": ("permission request", "permission requests"),
     "brake": ("brake", "brakes"),
     "budget": ("budget notice", "budget notices"),
     "server": ("server notice", "server notices"),
 }
 KINDS = tuple(LABELS)
-DEFAULT_KINDS = ("waiting", "review", "reply", "answer", "brake", "budget", "server")
+DEFAULT_KINDS = ("waiting", "review", "reply", "answer", "question", "brake", "budget", "server")
 # The events `classify` may answer for: the API reads only these.
 EVENT_KINDS = (
     "task.updated",
     "task.stage_changed",
     "comment.added",
     "intake.answer_received",
+    "question.asked",
     "session.status_changed",
     "brake.set",
     "budget.warned",
@@ -113,6 +115,18 @@ def classify(
             f"Reply on {key} from {event.actor}",
             p.get("excerpt") or title,
             _task_url(project, key),
+            key,
+        )
+    if event.kind == "question.asked":
+        # A non-blocking question goes on with its default: the Inbox shows it, no toast.
+        if not p.get("blocking"):
+            return None
+        what = "Look at this" if p.get("question_kind") == "look" else "Question"
+        return Notice(
+            "question",
+            f"{what} on {key} from {p.get('asked_by') or event.actor}",
+            str(p.get("text") or title),
+            "/inbox#inbox-questions",
             key,
         )
     if event.kind == "intake.answer_received":

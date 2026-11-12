@@ -14,16 +14,17 @@ from relaybay.domain.reports import parse_report
 
 RUN_STATUSES = ("queued", "running", "waiting", "idle", "stopped", "ended", "lost")
 OPEN_STATUSES = tuple(s for s in RUN_STATUSES if s != "ended")
-# None: a run that does not exist yet. `queued` and `waiting` are not produced yet; they lead on
-# like `idle`. A running run is stopped before it ends.
+# None: a run that does not exist yet. `queued` is not produced yet; it leads on like `idle`.
+# `waiting`: a turn ended with an open blocking question; the owner's answer starts the next turn,
+# a withdrawn question makes it idle. A running run is stopped before it ends.
 TRANSITIONS: dict[str | None, frozenset[str]] = {
     None: frozenset({"running"}),
-    "running": frozenset({"idle", "stopped", "lost"}),
+    "running": frozenset({"idle", "waiting", "stopped", "lost"}),
     "idle": frozenset({"running", "ended"}),
     "stopped": frozenset({"running", "ended"}),
     "lost": frozenset({"running", "ended"}),
     "queued": frozenset({"running", "ended"}),
-    "waiting": frozenset({"running", "ended"}),
+    "waiting": frozenset({"running", "idle", "ended"}),
     "ended": frozenset(),
 }
 TURN_OUTCOMES = ("success", "error", "stopped", "lost", "cancelled", "failed_to_start")

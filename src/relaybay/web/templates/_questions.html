@@ -1,0 +1,22 @@
+{#- A card's questions to the owner. Expects: t (the task), questions (QuestionView), error.
+    Refetched on live question events. -#}
+{%- from "_question_item.html" import question_item -%}
+<div class="questions" id="questions-{{ t.key }}" data-key="{{ t.key }}"
+     hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/questions" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  {% if questions.open %}
+  <ul class="question-list">
+    {% for q in questions.open %}{{ question_item(q, "card") }}{% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No open question. Agents ask with question_ask; you answer here or in the Inbox.</p>
+  {% endif %}
+  {% if questions.closed %}
+  <details class="question-closed">
+    <summary>Closed questions <span class="muted">({{ questions.closed|length }})</span></summary>
+    <ul class="question-list">
+      {% for q in questions.closed %}{{ question_item(q, "card") }}{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>

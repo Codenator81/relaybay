@@ -1,4 +1,5 @@
 {#- Inbox groups. Expects: inbox. Each row links to where the item is resolved. -#}
+{%- from "_question_item.html" import question_item -%}
 {%- macro task_row(t) -%}
 <a class="inbox-link" href="/p/{{ t.project_slug }}?task={{ t.key }}">
   <span class="card-key">{{ t.key }}</span>
@@ -10,7 +11,7 @@
   {% if not inbox.count %}
   <div class="empty">
     <p>Nothing needs you right now.</p>
-    <p>Tasks whose <em>waiting on</em> names you, agent replies to your comments, agents' proposals, rule warnings and unlinked hook sessions show up here.</p>
+    <p>Agents' questions, tasks whose <em>waiting on</em> names you, agent replies to your comments, agents' proposals, rule warnings and unlinked hook sessions show up here.</p>
   </div>
   {% endif %}
 
@@ -37,6 +38,16 @@
       {% if inbox.running_over is not none %}
       <li class="inbox-row"><p class="inbox-note">{{ inbox.running_over }} sessions running at once; your cap is {{ inbox.running_cap }} <span class="muted">· a warning, nothing is stopped · <a href="/sessions">Sessions</a></span></p></li>
       {% endif %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inbox.questions %}
+  <section class="panel inbox-group" id="inbox-questions">
+    <h2>Questions <span class="col-count">{{ inbox.questions|length }}</span></h2>
+    <p class="muted inbox-hint">Agents' questions to you, the oldest first. Only your answer here or on the card closes one; the agent gets it verbatim.</p>
+    <ul class="inbox-list question-list">
+      {% for q in inbox.questions %}{{ question_item(q, "inbox") }}{% endfor %}
     </ul>
   </section>
   {% endif %}

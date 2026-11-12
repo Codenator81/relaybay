@@ -369,8 +369,10 @@ folder or a key variable.
   `stopped` (Stop, the server stopping, or the process failing to start) or `lost` (the process
   exited without a `result`, not by Stop; or a `running` row found when the server starts);
   `idle`, `stopped`, `lost` → `running` (Continue, or the next waiting text); any of those →
-  `ended` (End; a running turn is stopped first). `ended` is final. `queued` and `waiting` are
-  allowed by the table but not produced yet. Stop, lost and End cancel the texts that waited,
+  `ended` (End; a running turn is stopped first). `ended` is final. `running` → `waiting` when a
+  turn's `result` comes while a blocking question of the run is open and no text waits
+  ([questions](#spec-questions)); `waiting` → `running` (the owner's answer, or a text) or `idle`
+  (the question withdrawn). `queued` is allowed by the table but not produced yet. Stop, lost and End cancel the texts that waited,
   also when Stop comes after the turn's `result` while the process still ends (its `SessionEnd`
   hooks run then): the turn keeps its outcome, the run goes `stopped`. A run left `running` with no
   process behind it (its end could not be stored) is marked `lost` by Stop or End, which then
@@ -503,6 +505,79 @@ folder or a key variable.
   `run.settings_changed` event with who and, per changed value, from and to; it is listed on the
   Audit page with the changes. Nothing changed: no event.
 
+<a id="spec-questions"></a>
+
+**Questions to the owner.** An agent's question is an object on its card (`question`,
+[§11](#spec-data); [design 0022](design/0022-questions-and-approvals.md#questions)), never a
+paragraph of a report. MCP `question_ask(task, text, default, options?, blocking?, default_after?,
+kind?, url?, account?, session, hook_session?)`:
+
+- **The caller.** `session` is required: the answer goes back to who asked. A run's session (the
+  name the run header gives, `<card> run <n>`) asks for its open run, on that run's card only; any
+  other session asks for itself (a desktop session). Refused on a card in `done`.
+- **Every question carries a default** (what the agent does without an answer): one without it is
+  refused. **At most 5 open questions per card.** Options: at most 8, each up to 200 characters;
+  text up to 2,000; default up to 500.
+- **Blocking or not.** `blocking` is false by default: the agent goes on with the default, and the
+  question closes with it (`defaulted`, answered by `default`) at `default_after`: a time with its
+  zone or a duration (`30m`, `2h`, `1d`), one minute to 30 days ahead, one hour when left out. A
+  blocking question takes no `default_after`; the agent ends its turn, and the answer tells it what
+  next. The deadline is checked by the server every 15 seconds and on every read of questions (the
+  Inbox, the card, `question_list`), so a restart only delays it.
+- **"Look at this"** (`kind` `look`), for the owner's visual acceptance of a headless turn: the
+  agent brings up the stand, then asks with `url` (http or https, without a user or password) and
+  `account`, the name of the test account to sign in with (one line, never `user:password`). It is
+  always blocking (`blocking` false is refused), its options are `fine` and `remarks` (others are
+  refused); the remarks are the answer text.
+- **No secrets.** The text, the default, each option, the URL and the account go through the
+  policy's secret check (the detectors and allow patterns of
+  [secret rules](#spec-policy)), as an environment's notes do: an account is named, never its
+  secret; the refusal names the field and the detector, never the value.
+- `question_list(task?, status?)`: newest first, open ones of all cards by default (`answered`,
+  `defaulted`, `withdrawn` or `all` too), with the state, options, default, the look URL and
+  account, and the answer verbatim. `question_withdraw(question, session, hook_session?)`: only the
+  asking session or a coordinator (checked like `run_start`), only an open question. **No MCP tool
+  answers a question**: only the owner's button on the board, `POST /questions/{id}/answer` (cookie
+  and CSRF).
+
+**The owner's answer.** An option, a text, or both (`<option>: <text>`); for a look question
+`fine`, or `remarks` with the remarks as the whole answer (remarks without text are refused). An
+open or `defaulted` question takes an answer, an answered or withdrawn one does not. The agent
+gets one text: `Owner's answer to question N ("<question>"): <answer>`, the answer verbatim (the
+question's text on one line, cut at 300 characters); after a default it gains the line `This changes
+course: the question had closed with its default ("<default>") at <time> UTC.` Delivery:
+
+| The question's asker is | The answer goes |
+|---|---|
+| an open run, no turn running (`waiting`, `idle`, `stopped`, `lost`) | at once as the next turn, with `--resume` (the first turn after a restart checks the sign-in again) |
+| an open run with a turn running | a turn that waits and starts when this one ends; the hooks of the running turn (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`) say once `Owner's answer to question N ("…") is waiting: it comes as your next turn when this one ends.` |
+| an open run with the owner in the desktop app | a turn that waits for Back to the program |
+| a desktop session, or a run that has ended | an owner comment on the card with that text, delivered through the hooks and the wake-up poll like any owner comment ([§4](#spec-hooks-comments)) |
+
+A run's answer counts as delivered when the process of the turn that carries it starts; an
+owner comment's when the hooks hand it over (`question.delivered`). An answer whose turn ended
+before its process got it (cancelled by Stop or End, failed to start, or lost when the server
+stopped before the process started) goes first in the text of the run's next turn the owner sends
+(or the next answer), so it is never dropped; the card says "not delivered" until then. When the
+run ends instead, such answers go to the card as owner comments. A double click of the owner's
+next text is recognised after those answer lines too. **Only the owner's answer carries that
+line:** a coordinator's `run_start` brief (given, or built from the card) with a line starting
+`Owner's answer to question` (any case, with or without the apostrophe) is refused, so an agent
+never reads a forged answer as the owner's.
+
+**Waiting.** At a turn's `result`, an open blocking question of the run with no text waiting sets
+the run to `waiting` ("waiting for the owner's answer to question N", event `run.waiting`) and the
+card's `waiting_on` to the owner (the first of `owner_names`) with `next_step` "Answer question N on
+the board: …". A desktop session's blocking question does the same to the card when it is asked.
+When the last blocking question of the card is answered or withdrawn and the card still waits on
+the owner, `waiting_on` goes back to the asker and `next_step` says it goes on. A withdrawn
+question ends its run's wait (`idle`, "question N withdrawn").
+
+**Events** (with the question's text, as board content like a comment's): `question.asked` (options,
+default, deadline, URL and account), `question.answered` (the answer, and `change_of_course` after
+a default), `question.defaulted`, `question.delivered` (to which session), `question.withdrawn`;
+all on the Activity page and, with the changes, on the Audit page.
+
 <a id="spec-run-login"></a>
 
 **Login check.** relaybay never signs in for the user and never touches credentials: it runs
@@ -602,8 +677,10 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `project.pulse_set`, the `intake.*` and `backlog.*` events ([§12](#spec-intake)),
 `run.started`, `run.turn_started`, `run.turn_queued`, `run.turn_ended`, `run.stopped`, `run.ended`,
 `run.lost`, `run.opened_in_desktop`, `run.returned`, `run.settings_changed` (with `changed`: per
-value `from` and `to`) (all with `project`, `key` and `run_id`), `run.defaults_set`,
-`settings.run_login_any`
+value `from` and `to`), `run.waiting` (all with `project`, `key` and `run_id`), `run.defaults_set`,
+`settings.run_login_any`, `question.asked`, `question.answered`, `question.defaulted`,
+`question.delivered`, `question.withdrawn` (with `question_id`, `run_id` and the text,
+[§1](#spec-questions))
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
@@ -777,6 +854,18 @@ session was opened in the desktop app, the Claude session line links to it. The 
 `/p/<slug>/t/<key>/run/start` and
 `/p/<slug>/t/<key>/run/<id>/send|stop|end|desktop|back|settings`, board only (cookie and CSRF; a Bearer request is
 refused, `403`); a refusal comes back inside the block.
+
+<a id="spec-board-questions"></a>
+
+**Questions fold.** Above Agent, a **Questions** fold loaded from `/p/<slug>/t/<key>/questions`
+and refetched on the card's `question.*` events (not while an answer is being typed): the card's
+open questions, the oldest first, as in the Inbox ([below](#spec-board-inbox)), then the closed ones
+folded (answered with when it was delivered, or "waits as turn N", "waits as owner comment #N",
+"not delivered: turn N cancelled"; closed with the default; withdrawn by whom). A question closed
+with its default still takes an answer, which the agent gets as a change of course. The answer is
+`POST /questions/{id}/answer` with `choice` and/or `text` and `from` (`card` or `inbox`, the panel
+an htmx post swaps; a plain form post is redirected back with a flash), board only (cookie and
+CSRF; a Bearer request is refused, `403`).
 
 <a id="spec-board-run-defaults"></a>
 
@@ -961,6 +1050,16 @@ With `require_tracker_log = true` a done task without the tracker mark is never 
 
 **Inbox** ("Needs you") lists, grouped, with a count per group:
 
+- **Questions:** the open questions of all cards, the oldest first ([§1](#spec-questions)): the
+  card, the run (or "desktop session"), who asks, "blocks the run" (or "blocking") or "goes on with
+  the default at <time> UTC", its age, the text, a look question's URL as a link that opens in the
+  owner's own browser (`target="_blank"`, which the desktop program hands to the default browser)
+  and the test account's name, the options and default; a button per option and a text field
+  ("Send the text" for a free answer). An answer swaps the Inbox; a refusal shows its reason there.
+  Each question counts as one row; a card waiting on the owner for its open question is not
+  counted again under Waiting on you. While an answer is being typed (in the Inbox, the task
+  page or the task dialog), live refreshes that would swap it away wait until it is sent or
+  emptied, then run once.
 - **Answers:** open tasks with the "answer received" mark ([§12](#spec-intake-answer)).
 - **Intake:** new messages that match no task, with Tie to a task, Propose a task, Dismiss and
   Trust this source ([§12](#spec-intake-board)).
@@ -997,7 +1096,7 @@ Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?tas
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
 `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
-`policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `intake.*` except `intake.wake` and `intake.forwarded`, `backlog.*`, `brake.*`, `budget.*`, `concurrency.over`), at most once per 2 s. With
+`policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `intake.*` except `intake.wake` and `intake.forwarded`, `backlog.*`, `brake.*`, `budget.*`, `concurrency.over`, `question.*` except `question.delivered`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -1221,6 +1320,7 @@ keep a thread going for its own sake.
 | Usage | `usage_summary`, `budget_get` |
 | Brake | `brake_status`, `brake_set` ([§2](#spec-brake)) |
 | Runs | `run_start`, `run_settings` (coordinators only), `run_status`, `run_events` ([§1](#spec-run)) |
+| Questions | `question_ask`, `question_list`, `question_withdraw` (the asker or a coordinator); none answers ([§1](#spec-questions)) |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Intake | `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources` ([§12](#spec-intake-mcp)) |
@@ -2736,6 +2836,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0034_run_with_owner` | `run.with_owner_at`, `run.with_owner_by` (the run is with the owner in the Claude desktop app: no turn starts), `run.desktop_opened_at` ([§1](#spec-run)). Columns, not a status, so the status CHECK of 0031 stays. Additive only |
 | `0035_run_event` | `run_event` (turn, seq unique per turn, type, subtype, `parent_tool_use_id`, read at, length, truncated, the masked line compressed with zlib); `run_turn.report_id` (the report the turn's result became) ([§1](#spec-run)). Additive only |
 | `0036_report_check` | `report_check` (report, line, `where` as `location`, claim); an index on report and line ([§1](#spec-report-marks)). Additive only, no backfill: older reports have no marks |
+| `0037_question` | `question` (task, run or session, asked by, kind `question` / `look`, text, options JSON, default, blocking, look URL and account, `default_after`, asked at, status `open` / `answered` / `defaulted` / `withdrawn`, answer, answered by `owner` / `default`, answered / defaulted / withdrawn at, withdrawn by, the turn or owner comment that carries the answer, told / delivered at); checks that a look question blocks and has its URL and that a blocking one has no deadline; indexes per task, run, comment and on the open ones by deadline ([§1](#spec-questions)). Additive only |
 
 The archive is computed, not stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).
@@ -2971,6 +3072,7 @@ this version or newer). What becomes a notice:
 | `review` | `task.stage_changed` to `review` or `test` | `Waiting for your acceptance: <key>` | the task's title |
 | `reply` | `comment.added` by an agent | `Reply on <key> from <session>` | the comment's first 200 characters |
 | `answer` | `intake.answer_received` | `Answer received: <key>` | `From <source>: <task title>` |
+| `question` | `question.asked` of a blocking question (a look question always is); a non-blocking one goes on with its default and is in the Inbox only | `Question on <key> from <session>`, or `Look at this on <key> from <session>` | the question's text |
 | `permission` | `session.status_changed` to `waiting` (the `Notification` hook, which an idle prompt raises too); off by default | `<session> is waiting` | the session's activity |
 | `brake` | `brake.set` not by the owner and not a budget's own (`budget` tells that one) | `Brake on <target>` | the reason |
 | `budget` | `budget.warned`, `budget.exceeded` | `Budget nearly spent: <target>`, `Budget spent: <target>`, or with the `stop` action `Budget spent, agents stopped: <target>` | `<used> of <limit> tokens` |
@@ -2983,8 +3085,8 @@ start and on Restart server. The "keeps failing" notification of the watchdog do
 
 *Grouping.* At most one toast per 20 s window, the first at once. One item shows its title and text;
 several show the title `relaybay` and `3 need you: 2 reviews, 1 reply`. The same task and kind count
-once in a window, with the newest text; a `review` absorbs a `waiting` of the same task, since a move
-to review usually sets both. Everything new is read before anything is shown, so a downtime ends in one
+once in a window, with the newest text; a `review` or a `question` absorbs a `waiting` of the same
+task, since a move to review and a blocking question usually set both. Everything new is read before anything is shown, so a downtime ends in one
 toast. A balloon's title stops at 63 and its text at 255 UTF-16 units, ending in `...`.
 
 *Quiet mode.* The tray's **Quiet notifications** (`notify_quiet`): no toast, an accent-coloured dot in

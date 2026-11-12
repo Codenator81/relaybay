@@ -219,7 +219,13 @@ EVENT_KINDS = (
     "run.opened_in_desktop",
     "run.returned",
     "run.settings_changed",
+    "run.waiting",
     "run.defaults_set",
+    "question.asked",
+    "question.answered",
+    "question.defaulted",
+    "question.delivered",
+    "question.withdrawn",
     "settings.run_login_any",
 )
 CSRF_HEADER = "x-relaybay-csrf"
@@ -1634,6 +1640,65 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 await service.end_run(own, actor="owner")
 
         return await run_write(request, slug, key, csrf, write)
+
+    # --- Questions to the owner: answered only here, on the board -------------------------
+
+    async def questions_panel(
+        request: Request, task: Task, error: str | None = None
+    ) -> HTMLResponse:
+        fresh = await service.get_task(task.key)
+        return render(
+            request,
+            "_questions.html",
+            t=fresh,
+            questions=await service.card_questions(fresh),
+            error=error,
+        )
+
+    @router.get("/p/{slug}/t/{key}/questions", response_class=HTMLResponse)
+    async def questions_fragment(request: Request, slug: str, key: str):
+        return await questions_panel(request, await find_task(slug, key))
+
+    @router.post("/questions/{question_id}/answer", response_class=HTMLResponse)
+    async def question_answer(
+        request: Request,
+        question_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+        choice: Annotated[str, Form()] = "",
+        text: Annotated[str, Form()] = "",
+        place: Annotated[str, Form(alias="from")] = "card",
+    ):
+        """The owner's answer, from the card or the Inbox: an htmx swap of that panel (with the
+        reason on a refusal), or a redirect back for a plain form post."""
+        board_only(request, csrf)
+        question = await service.get_question(question_id)
+        task = await service.get_task(question.task_id)
+        htmx = "hx-request" in request.headers
+        inbox_side = place == "inbox"
+        back = "/inbox" if inbox_side else f"/p/{task.project_slug}?task={task.key}"
+        error = None
+        try:
+            await service.answer_question(
+                question_id, choice=choice or None, text=text or None, actor="owner"
+            )
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            if not htmx:
+                return flash_redirect(request, back, error=str(exc))
+            error = str(exc)
+        if not htmx:
+            return flash_redirect(request, back, message=f"Question {question_id} answered.")
+        if inbox_side:
+            return render(
+                request,
+                "_inbox.html",
+                inbox=await inbox(),
+                inbox_projects=await project_rows(),
+                error=error,
+                message=None if error else f"Question {question_id} answered.",
+            )
+        return await questions_panel(request, task, error=error)
 
     @router.get("/files/{attachment_id}")
     async def attachment_file(attachment_id: int) -> Response:

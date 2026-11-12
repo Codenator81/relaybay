@@ -38,6 +38,7 @@ from relaybay.domain import environments as envs
 from relaybay.domain import limits as agent_limits
 from relaybay.domain import memory as mem
 from relaybay.domain import messages as message_text
+from relaybay.domain import questions as qrules
 from relaybay.domain import run_events as run_lines
 from relaybay.domain import runs as run_rules
 from relaybay.domain import usage as usage_data
@@ -138,6 +139,7 @@ from relaybay.domain.plan import (
 )
 from relaybay.domain.plan import STEP_DETAILS_MAX as PLAN_DETAILS_MAX
 from relaybay.domain.plan import clean_step_title as clean_plan_title
+from relaybay.domain.questions import Question
 from relaybay.domain.reports import REPORT_SIZES, ReportCheck, parse_checks, parse_report
 from relaybay.domain.review import (
     CAPTION_MAX,
@@ -261,6 +263,11 @@ AUDIT_CHANGE_KINDS = (
     NO_LIVE_ON,
     NO_LIVE_OFF,
     "run.settings_changed",
+    "question.asked",
+    "question.answered",
+    "question.defaulted",
+    "question.delivered",
+    "question.withdrawn",
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -434,14 +441,17 @@ class Inbox:
     running_over: int | None = None  # sessions running while above the concurrency cap
     running_cap: int = 0
     message_loops: list[SessionMessage] = field(default_factory=list)  # replies refused
+    questions: list[Question] = field(default_factory=list)  # open, of all cards
 
     @property
     def count(self) -> int:
         return (
-            len(self.intake)
+            len(self.questions)
+            + len(self.intake)
             + len(self.answers)
             + (1 if self.backlog_new else 0)
-            + len(self.waiting)
+            # A card waiting on the owner for its open question counts once, as the question.
+            + len({t.id for t in self.waiting} - {q.task_id for q in self.questions})
             + len(self.rule_warnings)
             + len(self.not_logged)
             + len(self.unlinked)
@@ -2038,6 +2048,8 @@ class Service:
                 comment_id=comment.id,
                 session=session.name,
             )
+        carried = await repo.undelivered_answers_of_comments(tx.conn, [c.id for c in comments])
+        await self._answers_delivered(tx, carried, session.name)
 
     async def _take_undelivered(
         self, session: Session, budget: int = CONTEXT_MAX, *, alone: bool = True
@@ -2148,7 +2160,7 @@ class Service:
             accepted = await self._take_plan_acceptances(session, budget)
             budget -= sum(len(line) + 1 for line in accepted)
             shown, total = await self._take_undelivered(session, budget, alone=not accepted)
-            parts = [*accepted]
+            parts = [*accepted, *await self._take_waiting_answers(session)]
             if shown:
                 parts.append(comment_text.delivery_text(shown, total))
             if reminder:
@@ -2184,6 +2196,7 @@ class Service:
             contexts += accepted
             budget -= sum(len(line) + 1 for line in accepted)
             shown, total = await self._take_undelivered(exact, budget, alone=not accepted)
+            contexts += await self._take_waiting_answers(exact)
             if shown:
                 contexts.append(comment_text.delivery_text(shown, total))
             contexts += await self._message_parts(exact, *contexts)
@@ -2419,6 +2432,7 @@ class Service:
             await self._concurrency_over(now),
             self.max_concurrent_sessions,
             await repo.open_message_loops(self._r),
+            await self.open_questions(),
         )
 
     def update_notice(self) -> updates.UpdateNotice | None:
@@ -10354,6 +10368,8 @@ class Service:
             text = run_rules.clean_prompt(brief, "brief")
         else:
             text = await self.run_brief(task)
+        if coordinator:
+            qrules.check_no_answer_line(text, "The brief")
         cwd_repo, choices = await self._run_choices(
             task, defaults, repo_id=repo_id, cwd=cwd, repos=repos, coordinator=coordinator
         )
@@ -10922,6 +10938,9 @@ class Service:
             if pid is not None:
                 runs.checked_since_start.add(run.id)
                 await repo.set_turn_pid(tx.conn, turn.id, pid)
+                await self._answers_delivered(
+                    tx, await repo.undelivered_answers_of_turn(tx.conn, turn.id), run.session_name
+                )
                 return
             run = await self.get_run(run_id, tx.conn)
             task = await self.get_task(run.task_id, tx.conn)
@@ -11043,8 +11062,13 @@ class Service:
             if outcome in ("success", "error") and not stopped:
                 subtype = result.subtype if result is not None else "unknown"
                 why = None if outcome == "success" else f"the turn ended with an error ({subtype})"
-                await self._set_run_status(tx, run, "idle", why)
-                if not run.with_owner:
+                blocking = await repo.open_blocking_questions(tx.conn, run_id=run.id)
+                queued = None if run.with_owner else await repo.next_queued_turn(tx.conn, run.id)
+                if blocking and queued is None:
+                    await self._run_waits(tx, run, task, blocking, why)
+                else:
+                    await self._set_run_status(tx, run, "idle", why)
+                if queued is not None:
                     queued_id = await self._start_next_queued(tx, run, task, "relaybay")
                     if queued_id is not None:
                         follow = (run.id, queued_id)
@@ -11086,7 +11110,6 @@ class Service:
             and run.id not in runs.checked_since_start
         ):
             await self._run_preflight(runs)  # the first turn after a restart checks again
-        launch = False
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
             if not run.is_open:
@@ -11095,26 +11118,43 @@ class Service:
             repeat = await self._repeated_send(tx, run.id, prompt, actor)
             if repeat is not None:
                 return repeat
-            turn_id = await repo.insert_turn(tx.conn, run.id, prompt, actor, "owner", tx.now)
-            turn = await repo.get_turn(tx.conn, turn_id)
-            assert turn is not None
-            # With the owner in the desktop app: the text waits for Back to the program.
-            if (
-                not run.with_owner
-                and run.status != "running"
-                and await repo.active_turn(tx.conn, run.id) is None
-            ):
-                await repo.start_turn(tx.conn, turn_id, tx.now)
-                await self._set_run_status(tx, run, "running", None)
-                await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
-                launch = True
-            else:
-                await self._run_event(tx, "run.turn_queued", actor, task, run.id, seq=turn.seq)
+            turn_id, launch = await self._queue_turn(tx, run, task, prompt, actor)
         if launch:
             await self._spawn_turn(run.id, turn_id)
         found = await repo.get_turn(self._r, turn_id)
         assert found is not None
         return found
+
+    async def _queue_turn(
+        self, tx: _Tx, run: Run, task: Task, text: str | None, actor: str
+    ) -> tuple[int, bool]:
+        """A new turn of the owner's on the run: started at once when no turn runs and the run is
+        not with the owner, else it waits. The owner's answers that no turn's process got yet
+        (their turn was cancelled) go first in its text. Returns the turn's id and whether the
+        caller spawns it after the commit."""
+        pending = await repo.pending_answers(tx.conn, run.id)
+        parts = [qrules.answer_line(q) for q in pending]
+        if text:
+            parts.append(text)
+        turn_id = await repo.insert_turn(
+            tx.conn, run.id, "\n\n".join(parts), actor, "owner", tx.now
+        )
+        if pending:
+            await repo.put_answers_on_turn(tx.conn, [q.id for q in pending], turn_id)
+        turn = await repo.get_turn(tx.conn, turn_id)
+        assert turn is not None
+        # With the owner in the desktop app: the text waits for Back to the program.
+        if (
+            not run.with_owner
+            and run.status != "running"
+            and await repo.active_turn(tx.conn, run.id) is None
+        ):
+            await repo.start_turn(tx.conn, turn_id, tx.now)
+            await self._set_run_status(tx, run, "running", None)
+            await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
+            return turn_id, True
+        await self._run_event(tx, "run.turn_queued", actor, task, run.id, seq=turn.seq)
+        return turn_id, False
 
     @staticmethod
     async def _repeated_send(tx: _Tx, run_id: int, prompt: str, actor: str) -> RunTurn | None:
@@ -11122,15 +11162,12 @@ class Service:
         click), so the second send adds nothing."""
         turns = await repo.list_turns(tx.conn, run_id)
         last = turns[-1] if turns else None
-        if (
-            last is None
-            or last.ended_at is not None
-            or (last.prompt, last.sent_by)
-            != (
-                prompt,
-                actor,
-            )
-        ):
+        if last is None or last.ended_at is not None or last.sent_by != actor:
+            return None
+        # The owner's answers that waited for a turn go first in its text: compare the rest.
+        carried = sorted(await repo.list_questions(tx.conn, turn_id=last.id), key=lambda q: q.id)
+        head = "".join(qrules.answer_line(q) + "\n\n" for q in carried)
+        if not last.prompt.startswith(head) or last.prompt[len(head) :] != prompt:
             return None
         queued = datetime.fromisoformat(last.queued_at)
         age = datetime.fromisoformat(tx.now) - queued
@@ -11189,6 +11226,18 @@ class Service:
                 with_owner_by=None,
             )
             await self._run_event(tx, "run.ended", actor, task, run.id)
+            # No next turn will carry them: the owner's answers go to the card's session instead.
+            for q in await repo.pending_answers(tx.conn, run.id):
+                comment = await self._insert_comment(
+                    tx,
+                    task,
+                    author_kind="owner",
+                    author=actor,
+                    session_id=None,
+                    body=qrules.answer_line(q),
+                    in_reply_to=None,
+                )
+                await repo.update_question(tx.conn, q.id, {"comment_id": comment.id})
         return await self.get_run(run_id)
 
     async def _recover_runs(self) -> None:
@@ -11222,3 +11271,407 @@ class Service:
         if known and cc_id not in known:
             return None
         return await self._link_hook_session(tx, session, cc_id, from_window=True)
+
+    # --- questions to the owner -----------------------------------------------
+
+    async def get_question(
+        self, question_id: int, conn: aiosqlite.Connection | None = None
+    ) -> Question:
+        found = await repo.get_question(conn or self._r, question_id)
+        if found is None:
+            raise NotFoundError(f"Question {question_id} not found.")
+        return found
+
+    async def _question_event(
+        self, tx: _Tx, kind: str, actor: str, task: Task, q: Question, **payload: Any
+    ) -> None:
+        await tx.event(
+            kind,
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=q.session_id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            question_id=q.id,
+            run_id=q.run_id,
+            question_kind=q.kind,
+            blocking=q.blocking,
+            text=q.text,
+            asked_by=q.asked_by,
+            **payload,
+        )
+
+    async def _set_card(self, tx: _Tx, task: Task, actor: str, **changes: Any) -> None:
+        await self._update_task_tx(
+            tx,
+            task.id,
+            changes,
+            expected_version=None,
+            session=None,
+            session_title=None,
+            hook_session=None,
+            actor=actor,
+        )
+
+    async def _card_waits_on_owner(self, tx: _Tx, task: Task, q: Question, actor: str) -> None:
+        await self._set_card(
+            tx,
+            task,
+            actor,
+            waiting_on=self.owner_names[0],
+            next_step=f'Answer question {q.id} on the board: "{qrules.quoted(q.text)}"',
+        )
+
+    async def _card_after_question(
+        self, tx: _Tx, task: Task, q: Question, next_step: str, actor: str
+    ) -> None:
+        """Hand the card back to the agent once no blocking question of it waits on the owner,
+        unless someone else already changed who it waits on."""
+        if not q.blocking:
+            return
+        task = await self.get_task(task.id, tx.conn)
+        owners = {name.strip().casefold() for name in self.owner_names}
+        if (task.waiting_on or "").strip().casefold() not in owners:
+            return
+        others = await repo.open_blocking_questions(tx.conn, task_id=task.id)
+        if others:
+            # Still waiting on the owner: the next step names a question that is still open.
+            await self._card_waits_on_owner(tx, task, others[0], actor)
+            return
+        await self._set_card(tx, task, actor, waiting_on=q.asked_by, next_step=next_step)
+
+    async def _run_waits(
+        self, tx: _Tx, run: Run, task: Task, blocking: list[Question], why: str | None
+    ) -> None:
+        """A turn ended while blocking questions of the run are open: the run waits for the
+        owner, and so does the card."""
+        ids = ", ".join(str(q.id) for q in blocking)
+        noun = "question" if len(blocking) == 1 else "questions"
+        reason = f"waiting for the owner's answer to {noun} {ids}"
+        if why:
+            reason = f"{why}; {reason}"
+        await self._set_run_status(tx, run, "waiting", reason)
+        await self._run_event(
+            tx, "run.waiting", "relaybay", task, run.id, reason=reason, questions=ids
+        )
+        await self._card_waits_on_owner(tx, task, blocking[0], "relaybay")
+
+    async def _answers_delivered(
+        self, tx: _Tx, carried: list[Question], session_name: str | None
+    ) -> None:
+        """The owner's answers reached the agent: a turn's process started with them, or the
+        hooks handed over the owner comment that carries them."""
+        for q in carried:
+            await repo.update_question(tx.conn, q.id, {"delivered_at": tx.now})
+            task = await self.get_task(q.task_id, tx.conn)
+            await self._question_event(
+                tx, "question.delivered", session_name or q.asked_by, task, q, session=session_name
+            )
+
+    async def _take_waiting_answers(self, session: Session) -> list[str]:
+        """For a run's running turn: one line per owner's answer queued as its next turn, told
+        once. Only a read when nothing waits, as on every tool call."""
+        if session.kind != "run" or not await repo.untold_answers(self._r, session.id):
+            return []
+        async with self._tx() as tx:
+            waiting = await repo.untold_answers(tx.conn, session.id)
+            for q in waiting:
+                await repo.update_question(tx.conn, q.id, {"told_at": tx.now})
+        return [qrules.waiting_line(q) for q in waiting]
+
+    async def ask_question(
+        self,
+        ref: str,
+        text: str,
+        default: str,
+        *,
+        options: list[str] | None = None,
+        blocking: bool | None = None,
+        default_after: str | None = None,
+        kind: str | None = None,
+        url: str | None = None,
+        account: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Question, str]:
+        """`question_ask`: a question for the owner on a card, with its default. A run's session
+        asks for its run; any other session for itself. Returns the question and what the agent
+        does next."""
+        if (session or "").strip() in ("", "-"):
+            raise ValidationError(
+                "question_ask needs your session: the answer goes back to who asked. Nothing asked."
+            )
+        what = qrules.clean_kind(kind)
+        body = qrules.clean_text(text)
+        fallback = qrules.clean_default(default)
+        link: str | None = None
+        login: str | None = None
+        if what == "look":
+            if blocking is False:
+                raise ValidationError("A look question is always blocking. Nothing asked.")
+            if qrules.clean_options(options) not in ([], list(qrules.LOOK_OPTIONS)):
+                raise ValidationError(
+                    "A look question's options are fine and remarks; leave options out."
+                )
+            choices: list[str] = []
+            stops = True
+            link = qrules.clean_url(url)
+            login = qrules.clean_account(account)
+        else:
+            if (url or "").strip() not in ("", "-") or (account or "").strip() not in ("", "-"):
+                raise ValidationError("url and account are for look questions (kind look).")
+            choices = qrules.clean_options(options)
+            stops = bool(blocking)
+        async with self._tx() as tx:
+            task = await self.get_task(ref, tx.conn)
+            if task.stage == Stage.DONE:
+                raise ValidationError(f"{task.key} is done: nothing to ask on it.")
+            due = qrules.deadline(default_after, stops, datetime.fromisoformat(tx.now))
+            project = await self.get_project(task.project_slug, tx.conn)
+            rules = await self._secret_rules(tx.conn, project)
+            _scan(rules, text=body, default=fallback, url=link, account=login)
+            for option in choices:
+                envs.check_secret("option", option, rules)
+            if await repo.count_open_questions(tx.conn, task.id) >= qrules.OPEN_MAX:
+                raise ValidationError(
+                    f"{task.key} already has {qrules.OPEN_MAX} open questions: wait for the owner,"
+                    " or withdraw one with question_withdraw. Nothing asked."
+                )
+            caller = await self._session(tx, session, session_title, hook_session)
+            assert caller is not None
+            run = await repo.run_of_session(tx.conn, caller.id) if caller.kind == "run" else None
+            if run is not None and not run.is_open:
+                run = None
+            if run is not None and run.task_id != task.id:
+                raise ValidationError(
+                    f"Run {run.id} works on {run.task_key}: ask on that card. Nothing asked."
+                )
+            question_id = await repo.insert_question(
+                tx.conn,
+                {
+                    "task_id": task.id,
+                    "run_id": run.id if run else None,
+                    "session_id": caller.id,
+                    "asked_by": caller.name,
+                    "kind": what,
+                    "text": body,
+                    "options": choices,
+                    "default_answer": fallback,
+                    "blocking": int(stops),
+                    "look_url": link,
+                    "look_account": login,
+                    "default_after": due,
+                },
+                tx.now,
+            )
+            q = await self.get_question(question_id, tx.conn)
+            await self._question_event(
+                tx,
+                "question.asked",
+                caller.name,
+                task,
+                q,
+                session=caller.name,
+                options=q.choices,
+                default=fallback,
+                default_after=due,
+                url=link,
+                account=login,
+            )
+            if stops and run is None:
+                # A desktop session ends its turn itself; a run waits at its turn's result.
+                await self._card_waits_on_owner(tx, task, q, caller.name)
+        return q, qrules.asked_hint(q, run is not None)
+
+    async def list_questions(
+        self, ref: str | None = None, status: str | None = None, limit: int = 100
+    ) -> tuple[Task | None, list[Question]]:
+        """`question_list`: the questions of all cards, or of one, with one status (`open` by
+        default) or `all`; newest first."""
+        await self.close_overdue_questions()
+        wanted = (status or "").strip().lower() or "open"
+        if wanted not in (*qrules.STATUSES, "all"):
+            raise ValidationError(
+                f"status must be one of {', '.join(qrules.STATUSES)} or all; got {wanted!r}."
+            )
+        task = await self.get_task(ref) if ref else None
+        found = await repo.list_questions(
+            self._r,
+            task_id=task.id if task else None,
+            statuses=None if wanted == "all" else (wanted,),
+            limit=max(1, min(limit, 200)),
+        )
+        return task, found
+
+    async def open_questions(self) -> list[Question]:
+        """The Inbox's questions: the open ones of all cards, the oldest first."""
+        await self.close_overdue_questions()
+        found = await repo.list_questions(self._r, statuses=("open",))
+        return sorted(found, key=lambda q: q.id)
+
+    async def card_questions(self, task: Task) -> qrules.QuestionView:
+        """The card's questions: the open ones, oldest first, and the closed ones, newest first."""
+        await self.close_overdue_questions()
+        every = await repo.list_questions(self._r, task_id=task.id, limit=50)
+        return qrules.QuestionView(
+            open=sorted((q for q in every if q.is_open), key=lambda q: q.id),
+            closed=[q for q in every if not q.is_open],
+        )
+
+    async def withdraw_question(
+        self,
+        question_id: int,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> Question:
+        """`question_withdraw`: only the asking session or a coordinator, only an open one."""
+        async with self._tx() as tx:
+            # Asked before the call's own hook_session is linked, or it would prove itself.
+            coordinator = await self._is_coordinator(tx.conn, session, hook_session)
+            q = await self.get_question(question_id, tx.conn)
+            caller = await self._session(tx, session, session_title, hook_session)
+            if caller is None or (caller.id != q.session_id and not coordinator):
+                raise ValidationError(
+                    f"Only the session that asked question {q.id} ({q.asked_by}) or a coordinator"
+                    " withdraws it. Nothing changed."
+                )
+            if not q.is_open:
+                raise ValidationError(f"Question {q.id} is {q.status}: only an open one goes.")
+            task = await self.get_task(q.task_id, tx.conn)
+            await repo.update_question(
+                tx.conn,
+                q.id,
+                {"status": "withdrawn", "withdrawn_at": tx.now, "withdrawn_by": caller.name},
+            )
+            q = await self.get_question(q.id, tx.conn)
+            await self._question_event(tx, "question.withdrawn", caller.name, task, q)
+            run = await repo.get_run(tx.conn, q.run_id) if q.run_id else None
+            if (
+                run is not None
+                and run.status == "waiting"
+                and not await repo.open_blocking_questions(tx.conn, run_id=run.id)
+            ):
+                await self._set_run_status(tx, run, "idle", f"question {q.id} withdrawn")
+            await self._card_after_question(
+                tx, task, q, f"{q.asked_by} goes on: question {q.id} withdrawn", caller.name
+            )
+        return q
+
+    async def answer_question(
+        self,
+        question_id: int,
+        *,
+        choice: str | None = None,
+        text: str | None = None,
+        actor: str = "owner",
+    ) -> Question:
+        """The owner's answer on the board. A run gets it as its next turn, at once when no turn
+        runs, else when the running one ends (or after Back to the program); a desktop session
+        and an ended run get it as an owner comment through the hooks."""
+        q = await self.get_question(question_id)
+        if not q.answerable:
+            raise ValidationError(f"Question {q.id} is {q.status}: it takes no answer.")
+        answer = qrules.compose_answer(q, choice, text)
+        runs = self.runs
+        run = await repo.get_run(self._r, q.run_id) if q.run_id else None
+        if (
+            run is not None
+            and run.is_open
+            and runs is not None
+            and not run.with_owner
+            and not runs.is_running(run.id)
+            and run.id not in runs.checked_since_start
+        ):
+            await self._run_preflight(runs)  # the first turn after a restart checks again
+        launch: tuple[int, int] | None = None
+        async with self._tx() as tx:
+            q = await self.get_question(question_id, tx.conn)
+            if not q.answerable:
+                raise ValidationError(f"Question {q.id} is {q.status}: it takes no answer.")
+            task = await self.get_task(q.task_id, tx.conn)
+            await repo.update_question(
+                tx.conn,
+                q.id,
+                {
+                    "status": "answered",
+                    "answer": answer,
+                    "answered_by": "owner",
+                    "answered_at": tx.now,
+                },
+            )
+            q = await self.get_question(q.id, tx.conn)
+            await self._question_event(
+                tx,
+                "question.answered",
+                actor,
+                task,
+                q,
+                answer=answer,
+                change_of_course=q.defaulted_at is not None,
+            )
+            run = await repo.get_run(tx.conn, q.run_id) if q.run_id else None
+            if run is not None and run.is_open:
+                turn_id, started = await self._queue_turn(tx, run, task, None, actor)
+                if started:
+                    launch = (run.id, turn_id)
+            else:
+                comment = await self._insert_comment(
+                    tx,
+                    task,
+                    author_kind="owner",
+                    author=actor,
+                    session_id=None,
+                    body=qrules.answer_line(q),
+                    in_reply_to=None,
+                )
+                await repo.update_question(tx.conn, q.id, {"comment_id": comment.id})
+            await self._card_after_question(
+                tx,
+                task,
+                q,
+                f"{q.asked_by} goes on with the owner's answer to question {q.id}",
+                actor,
+            )
+        if launch is not None:
+            await self._spawn_turn(*launch)
+        return await self.get_question(question_id)
+
+    async def close_overdue_questions(self) -> int:
+        """Non-blocking questions past their deadline close with their default, visibly. Asked
+        on reads and by the server's loop; the deadline is in the database, so a restart only
+        delays it."""
+        if not await repo.overdue_questions(self._r, now_iso()):
+            return 0
+        async with self._tx() as tx:
+            due = await repo.overdue_questions(tx.conn, tx.now)
+            for q in due:
+                await repo.update_question(
+                    tx.conn,
+                    q.id,
+                    {
+                        "status": "defaulted",
+                        "answer": q.default,
+                        "answered_by": "default",
+                        "answered_at": tx.now,
+                        "defaulted_at": tx.now,
+                    },
+                )
+                task = await self.get_task(q.task_id, tx.conn)
+                await self._question_event(
+                    tx, "question.defaulted", "relaybay", task, q, default=q.default
+                )
+        return len(due)
+
+    async def question_loop(self, interval: float = qrules.CHECK_SECONDS) -> None:
+        """The server's check for questions past their deadline."""
+        while True:
+            try:
+                await self.close_overdue_questions()
+            except Exception:
+                logger.exception("Closing questions past their deadline failed; trying again")
+            await asyncio.sleep(interval)

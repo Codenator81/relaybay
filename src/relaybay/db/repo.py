@@ -44,6 +44,7 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
+from relaybay.domain.questions import Question
 from relaybay.domain.reports import ReportCheck
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
@@ -4999,3 +5000,192 @@ async def open_worktrees(conn: aiosqlite.Connection) -> list[tuple[RunWorktree, 
         (),
     )
     return [(_worktree(r), r["task_key"]) for r in rows]
+
+
+# --- questions ---------------------------------------------------------------
+
+_QUESTION_SELECT = """
+SELECT q.*, t.key AS task_key, t.title AS task_title, p.slug AS project_slug,
+       rt.seq AS turn_seq, rt.outcome AS turn_outcome
+FROM question q
+JOIN task t ON t.id = q.task_id
+JOIN project p ON p.id = t.project_id
+LEFT JOIN run_turn rt ON rt.id = q.turn_id
+"""
+# Answered by the owner for a run and not handed to a turn's process: never put on a turn, or put
+# on one that ended before its process got it (cancelled, failed to start, or lost: delivered_at
+# is set with the pid, so a lost turn without it never ran), and not sent on as an owner comment
+# (the run ended).
+_PENDING = (
+    " WHERE q.run_id = ? AND q.status = 'answered' AND q.delivered_at IS NULL"
+    " AND q.comment_id IS NULL AND (q.turn_id IS NULL OR rt.outcome IN ('cancelled',"
+    " 'failed_to_start', 'lost'))"
+)
+
+
+def _question(row: aiosqlite.Row) -> Question:
+    return Question(
+        id=row["id"],
+        task_id=row["task_id"],
+        run_id=row["run_id"],
+        session_id=row["session_id"],
+        asked_by=row["asked_by"],
+        kind=row["kind"],
+        text=row["text"],
+        options=json.loads(row["options"] or "[]"),
+        default=row["default_answer"],
+        blocking=bool(row["blocking"]),
+        look_url=row["look_url"],
+        look_account=row["look_account"],
+        default_after=row["default_after"],
+        asked_at=row["asked_at"],
+        status=row["status"],
+        answer=row["answer"],
+        answered_by=row["answered_by"],
+        answered_at=row["answered_at"],
+        defaulted_at=row["defaulted_at"],
+        withdrawn_at=row["withdrawn_at"],
+        withdrawn_by=row["withdrawn_by"],
+        turn_id=row["turn_id"],
+        comment_id=row["comment_id"],
+        told_at=row["told_at"],
+        delivered_at=row["delivered_at"],
+        task_key=row["task_key"],
+        task_title=row["task_title"],
+        project_slug=row["project_slug"],
+        turn_seq=row["turn_seq"],
+        turn_outcome=row["turn_outcome"],
+    )
+
+
+async def insert_question(conn: aiosqlite.Connection, values: dict[str, Any], now: str) -> int:
+    row = {**values, "options": json.dumps(values.get("options") or []), "asked_at": now}
+    row["status"] = "open"
+    columns = ", ".join(row)
+    cur = await conn.execute(
+        f"INSERT INTO question ({columns}) VALUES ({', '.join('?' for _ in row)})",
+        tuple(row.values()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_question(conn: aiosqlite.Connection, question_id: int) -> Question | None:
+    row = await _one(conn, _QUESTION_SELECT + " WHERE q.id = ?", (question_id,))
+    return _question(row) if row else None
+
+
+async def list_questions(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: int | None = None,
+    turn_id: int | None = None,
+    statuses: tuple[str, ...] | None = None,
+    limit: int = 200,
+) -> list[Question]:
+    """Newest first."""
+    where, params = [], []
+    if task_id is not None:
+        where.append("q.task_id = ?")
+        params.append(task_id)
+    if turn_id is not None:
+        where.append("q.turn_id = ?")
+        params.append(turn_id)
+    if statuses:
+        where.append(f"q.status IN ({', '.join('?' for _ in statuses)})")
+        params.extend(statuses)
+    sql = _QUESTION_SELECT + (f" WHERE {' AND '.join(where)}" if where else "")
+    rows = await _all(conn, sql + " ORDER BY q.id DESC LIMIT ?", (*params, limit))
+    return [_question(r) for r in rows]
+
+
+async def count_open_questions(conn: aiosqlite.Connection, task_id: int) -> int:
+    row = await _one(
+        conn, "SELECT COUNT(*) FROM question WHERE task_id = ? AND status = 'open'", (task_id,)
+    )
+    return int(row[0])
+
+
+async def update_question(
+    conn: aiosqlite.Connection, question_id: int, changes: dict[str, Any]
+) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(f"UPDATE question SET {sets} WHERE id = ?", (*changes.values(), question_id))
+
+
+async def open_blocking_questions(
+    conn: aiosqlite.Connection, *, run_id: int | None = None, task_id: int | None = None
+) -> list[Question]:
+    column, value = ("q.run_id", run_id) if run_id is not None else ("q.task_id", task_id)
+    rows = await _all(
+        conn,
+        _QUESTION_SELECT
+        + f" WHERE {column} = ? AND q.status = 'open' AND q.blocking = 1 ORDER BY q.id",
+        (value,),
+    )
+    return [_question(r) for r in rows]
+
+
+async def overdue_questions(conn: aiosqlite.Connection, now: str) -> list[Question]:
+    rows = await _all(
+        conn,
+        _QUESTION_SELECT
+        + " WHERE q.status = 'open' AND q.blocking = 0 AND q.default_after <= ? ORDER BY q.id",
+        (now,),
+    )
+    return [_question(r) for r in rows]
+
+
+async def pending_answers(conn: aiosqlite.Connection, run_id: int) -> list[Question]:
+    rows = await _all(conn, _QUESTION_SELECT + _PENDING + " ORDER BY q.id", (run_id,))
+    return [_question(r) for r in rows]
+
+
+async def put_answers_on_turn(
+    conn: aiosqlite.Connection, question_ids: list[int], turn_id: int
+) -> None:
+    marks = ", ".join("?" for _ in question_ids)
+    await conn.execute(
+        f"UPDATE question SET turn_id = ? WHERE id IN ({marks})", (turn_id, *question_ids)
+    )
+
+
+async def undelivered_answers_of_turn(conn: aiosqlite.Connection, turn_id: int) -> list[Question]:
+    rows = await _all(
+        conn,
+        _QUESTION_SELECT + " WHERE q.turn_id = ? AND q.delivered_at IS NULL ORDER BY q.id",
+        (turn_id,),
+    )
+    return [_question(r) for r in rows]
+
+
+async def undelivered_answers_of_comments(
+    conn: aiosqlite.Connection, comment_ids: list[int]
+) -> list[Question]:
+    marks = ", ".join("?" for _ in comment_ids)
+    rows = await _all(
+        conn,
+        _QUESTION_SELECT
+        + f" WHERE q.comment_id IN ({marks}) AND q.delivered_at IS NULL ORDER BY q.id",
+        tuple(comment_ids),
+    )
+    return [_question(r) for r in rows]
+
+
+async def untold_answers(conn: aiosqlite.Connection, session_id: int) -> list[Question]:
+    """Answers queued on a run's next turn that its running turn has not been told about."""
+    rows = await _all(
+        conn,
+        _QUESTION_SELECT
+        + " WHERE q.session_id = ? AND q.run_id IS NOT NULL AND q.status = 'answered'"
+        " AND q.delivered_at IS NULL AND q.told_at IS NULL AND q.turn_id IS NOT NULL"
+        " AND rt.started_at IS NULL AND rt.ended_at IS NULL ORDER BY q.id",
+        (session_id,),
+    )
+    return [_question(r) for r in rows]
+
+
+async def run_of_session(conn: aiosqlite.Connection, session_id: int) -> Run | None:
+    row = await _one(
+        conn, _RUN_SELECT + " WHERE r.session_id = ? ORDER BY r.id DESC LIMIT 1", (session_id,)
+    )
+    return _run(row) if row else None

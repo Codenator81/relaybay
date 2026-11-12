@@ -327,6 +327,14 @@ def test_a_move_to_review_that_also_sets_waiting_on_is_one_thing(stand: Stand) -
     assert stand.toasts[1][0] == "review: SHOP-2"
 
 
+def test_a_blocking_question_that_also_sets_waiting_on_is_one_thing(stand: Stand) -> None:
+    stand.tick(item("question"), item("waiting"))
+    assert stand.toasts == [("question: SHOP-1", "Fix the login")]
+    stand.now += WINDOW
+    stand.tick(item("waiting", "SHOP-2"), item("question", "SHOP-2"))
+    assert stand.toasts[1][0] == "question: SHOP-2"
+
+
 def test_a_long_downtime_ends_in_one_summary(stand: Stand) -> None:
     stand.notifier._save()
     later = stand.fresh()  # the program started again

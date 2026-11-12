@@ -33,7 +33,10 @@
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
     "budget.exceeded", "concurrency.over",
     "run.started", "run.turn_started", "run.turn_queued", "run.turn_ended", "run.stopped",
-    "run.ended", "run.lost", "run.opened_in_desktop", "run.returned", "run.settings_changed"
+    "run.ended", "run.lost", "run.opened_in_desktop", "run.returned", "run.settings_changed",
+    "run.waiting",
+    "question.asked", "question.answered", "question.defaulted", "question.delivered",
+    "question.withdrawn"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -51,7 +54,8 @@
     "intake.proposed", "intake.dismissed", "intake.source_trusted", "intake.source_untrusted",
     "backlog.added", "backlog.updated", "backlog.planned",
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
-    "budget.exceeded", "concurrency.over"
+    "budget.exceeded", "concurrency.over",
+    "question.asked", "question.answered", "question.defaulted", "question.withdrawn"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -121,7 +125,9 @@
           // A card whose column is refetched anyway would be swapped twice.
           var col = target.closest(".col");
           if (col && col !== target && pending.has(col)) return;
-          htmx.trigger(target, "rb:refresh");
+          // Not bubbling: a nested panel's refresh must not reach the `.task-view` around it,
+          // which would refetch the whole view (and a half-typed answer in it) as well.
+          target.dispatchEvent(new CustomEvent("rb:refresh", { bubbles: false }));
         });
         pending.clear();
       }, 50);
@@ -136,7 +142,13 @@
     if (!el || throttled.has(el.id)) return;
     throttled.set(el.id, window.setTimeout(function () {
       throttled.delete(el.id);
-      queue(document.getElementById(el.id));
+      var target = document.getElementById(el.id);
+      // The Inbox may hold an answer begun while this refresh waited.
+      if (target && target.id === "inbox") {
+        unlessAnswering(target, "inbox", function () { queue(document.getElementById("inbox")); });
+      } else {
+        queue(target);
+      }
     }, THROTTLE_MS));
   }
 
@@ -179,6 +191,47 @@
       function (f) { return f.value.trim(); });
     if (!typing) queue(panel);
   }
+  // Question events refetch the card's questions, unless an answer is being typed, and its
+  // Agent block (a withdrawn question ends a run's wait).
+  function isQuestion(kind) { return kind.indexOf("question.") === 0; }
+  function answerDraft(root) {
+    return Array.prototype.some.call(root.querySelectorAll(".question-answer textarea"),
+      function (f) { return f.value.trim(); });
+  }
+  // Refreshes that would swap away a half-typed answer wait, by name, until it is sent or
+  // emptied; then each runs once.
+  var heldForAnswer = new Map();
+  function unlessAnswering(root, name, refresh) {
+    if (answerDraft(root)) heldForAnswer.set(name, refresh); else refresh();
+  }
+  function releaseHeld() {
+    if (answerDraft(document)) return;
+    var held = Array.from(heldForAnswer.values());
+    heldForAnswer.clear();
+    held.forEach(function (refresh) { refresh(); });
+  }
+  document.addEventListener("focusout", function (event) {
+    if (event.target.closest && event.target.closest(".question-answer")) releaseHeld();
+  });
+  document.addEventListener("input", function (event) {
+    var field = event.target;
+    if (field.closest && field.closest(".question-answer") && !field.value.trim()) releaseHeld();
+  });
+  document.addEventListener("htmx:afterSettle", function (event) {
+    if (heldForAnswer.size && event.target.closest &&
+        (event.target.closest(".questions") || event.target.id === "inbox")) {
+      releaseHeld();
+    }
+  });
+  function queueQuestions(key) {
+    var panel = key ? document.getElementById("questions-" + key) : null;
+    if (panel) {
+      unlessAnswering(panel, "questions-" + key, function () {
+        queue(document.getElementById("questions-" + key));
+      });
+    }
+    queueRun(key);
+  }
   // A review panel is refetched only while none of its comment boxes holds text.
   function queueReview(key) {
     var panel = reviewPanel(key);
@@ -204,7 +257,12 @@
 
     if (INBOX_KINDS.indexOf(data.kind) !== -1) {
       queueThrottled(document.getElementById("inbox-badge"));
-      queueThrottled(document.getElementById("inbox"));
+      var inbox = document.getElementById("inbox");
+      if (inbox) {
+        unlessAnswering(inbox, "inbox", function () {
+          queueThrottled(document.getElementById("inbox"));
+        });
+      }
     }
     if (data.kind.indexOf("brake.") === 0) queue(document.getElementById("brake-banner"));
     if (data.kind.indexOf("budget.") === 0 || data.kind.indexOf("brake.") === 0) {
@@ -238,18 +296,26 @@
       if (isComment(data.kind)) {
         queue(thread(data.key));
       } else if (isMessage(data.kind)) {
-        queue(document.querySelector(".task-view"));
+        unlessAnswering(document, "task-view", function () {
+          queue(document.querySelector(".task-view"));
+        });
       } else if (isReview(data.kind)) {
         queueReview(data.key);
       } else if (isPlan(data.kind)) {
         queue(planPanel(data.key));
       } else if (isRun(data.kind)) {
         queueRun(data.key);
-      } else if (commentDraft(document)) {
-        queue(document.querySelector(".task-view"));
-        queue(thread(data.key));
+      } else if (isQuestion(data.kind)) {
+        queueQuestions(data.key);
       } else {
-        reloadPage();
+        unlessAnswering(document, "task-page", function () {
+          if (commentDraft(document)) {
+            queue(document.querySelector(".task-view"));
+            queue(thread(data.key));
+          } else {
+            reloadPage();
+          }
+        });
       }
       return;
     }
@@ -302,7 +368,7 @@
     var audit = document.getElementById("audit");
     if (audit) {
       if (audit.dataset.live && (data.kind === "live.action" || (audit.dataset.changes &&
-          /^(policy\.|environment\.|session\.no_live_)/.test(data.kind)))) {
+          /^(policy\.|environment\.|session\.no_live_|question\.)/.test(data.kind)))) {
         prependActivity(audit);
       }
       return;
@@ -320,9 +386,10 @@
       else if (isReview(data.kind)) queueReview(data.key);
       else if (isPlan(data.kind)) queue(planPanel(data.key));
       else if (isRun(data.kind)) queueRun(data.key);
+      else if (isQuestion(data.kind)) queueQuestions(data.key);
       else refreshDialog();
     }
-    if (isRun(data.kind)) return;
+    if (isRun(data.kind) || isQuestion(data.kind)) return;
     if (isReview(data.kind) || isPlan(data.kind)) {
       // The card shows the plan's steps, not the agent's todo.
       if (data.kind !== "session.todo_updated") queue(card(data.key) || column(data.stage));
@@ -467,6 +534,10 @@
   }
 
   function refreshDialog() {
+    if (answerDraft(dialog)) {
+      heldForAnswer.set("dialog", function () { if (dialog && dialog.open) refreshDialog(); });
+      return;
+    }
     queue(dialog.querySelector(".task-view"));
     queue(dialog.querySelector(".comment-thread"));
     queueReview(dialog.dataset.key);
