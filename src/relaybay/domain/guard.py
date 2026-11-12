@@ -284,6 +284,21 @@ def _segments(text: str) -> list[str]:
     return _SEGMENT_RE.findall(text)[:SEGMENTS_MAX]
 
 
+def commands(text: str) -> list[tuple[str, list[str]]]:
+    """Each command segment of a call with its words from the command on: leading variable
+    assignments and wrappers (`sudo`, `env`, `time`…) skipped, quotes removed."""
+    found = []
+    for segment in _segments(text):
+        words = _words(segment)
+        start = 0
+        while start < len(words) and (
+            _ASSIGNMENT_WORD_RE.match(words[start]) or words[start] in _WRAPPERS
+        ):
+            start += 1
+        found.append((segment, words[start:]))
+    return found
+
+
 def mutating_rules(
     call: ToolCall, rules: tuple[Rule, ...] = MUTATING_RULES, tool_names: bool = True
 ) -> list[tuple[str, str | None]]:

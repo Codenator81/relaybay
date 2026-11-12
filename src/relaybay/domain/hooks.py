@@ -120,6 +120,11 @@ def _attended(value: Any) -> bool | None:
     return False if value == "0" else None
 
 
+def run_of_payload(payload: Any) -> int | None:
+    """The relaybay run a hook event's process was started for, from any event's payload."""
+    return _run_id(payload.get(RUN_FIELD)) if isinstance(payload, dict) else None
+
+
 def _run_id(value: Any) -> int | None:
     if not isinstance(value, str) or not value.isdigit() or len(value) > RUN_ID_MAX_DIGITS:
         return None

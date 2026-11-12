@@ -5,8 +5,8 @@
   ([0005](0005-comments-to-agents.md)), the guard and access map ([0006](0006-environments-and-access.md)),
   policy as data ([0013](0013-policy-as-data.md)) and the Inbox and tray
   ([0020](0020-tray-notifications.md)).
-- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0037 `question`, 0038
-  `approval` (0036 went to `report_check` in PR 2; numbers as in 0021's plan).
+- Size: questions about 2 agent-days, approvals about 2.5. Migrations 0037 `question`, 0039
+  `approval` (0036 went to `report_check` in PR 2 and 0038 to the manual archive).
 - PR 3 shipped: migration 0037 `question`; MCP `question_ask` (default required, at most 5 open
   per card, the policy's secret check on every field, kind `look` always blocking with the URL and
   the test account's name), `question_list`, `question_withdraw` (the asker or a coordinator); the
@@ -16,6 +16,22 @@
   non-blocking question closed `defaulted` at its deadline by a 15-second server check and on
   reads; the tray kind `question`; `question.withdrawn` and `run.waiting` besides the events
   below. Behaviour: [SPEC](../SPEC.md#spec-questions).
+- PR 4 shipped: migration 0039 `approval`; the policy key `approvals` (`push`, `merge`, `test`
+  true and `commit` false by default, `live` true and not droppable, `desktop` false: in 0.9 only
+  the program's runs are checked; `disable` and `ignore` narrow the patterns, never on live); the
+  guard's check after the level (`git push` with its branch and mode: plain, force, delete, and
+  `--tags` and the like as targets of their own; `gh pr merge`; the stand changes of the access
+  map, together with the git actions of the same call), denying with a request opened; an
+  approved call run alone, from the run's folder, uses its approval in the same transaction and
+  is answered `allow` for a run not with the owner in every mode but `bypassPermissions` (the
+  owner's approval is stronger than auto mode's classifier; a refusal after it is spent, opens no
+  request and shows in the report), no decision otherwise; one run with other commands is denied
+  and the approval kept; an approval expires after `approvals.valid_minutes` (120); requests from a turn's `permission_denials`, read line by line; MCP `approval_request`
+  and `approval_list`; the Inbox's Approvals group and the card's fold, decided with `POST
+  /approvals/{id}/decide` (board only); delivery and `waiting` as for questions; a card that goes
+  to done withdraws its open questions and expires its requests; the tray kind `approval`.
+  "Inside a turn" stays the upgrade; the denial plus a new turn is the default. Behaviour:
+  [SPEC](../SPEC.md#spec-approvals).
 
 ## Problem
 
@@ -126,6 +142,19 @@ is open, so the MCP client's timeout must be known before the owner's wait can b
 the denial plus a new turn stays the default.
 
 **Events.** `approval.requested`, `approval.decided`, `approval.used`; all on the Audit page.
+`approval.expired` when the card goes to done with a request open or an approval unused.
+
+**Who is checked, and what a failure of the check does** (the coordinator's decision of
+2026-11-12 for 0.9):
+
+| Actor | Action | Approved and run alone | On a check error |
+|---|---|---|---|
+| A run of the program, not with the owner | push, PR merge, a change on a test or live stand | `allow` (no decision in `bypassPermissions`); used once | denied: "approval check unavailable" (the run found by the session's id) |
+| A run held by the owner in the desktop app | the same | used, no decision | denied, as above |
+| A run of the program | any other call | — | goes on, as with a guard error |
+| A desktop session (checked only with `approvals.desktop: true`) | the same guarded actions | used, no decision | goes on, as with a guard error |
+| A session whose kind cannot be read (the database fails too) | a call that looks guarded | — | denied |
+| A session on no card | any | not checked | not checked |
 
 ## Risks
 

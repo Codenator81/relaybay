@@ -16,6 +16,7 @@ CC_ID_MAX = 200
 DENIED_MAX = 50
 REPORT_TEXT_MAX = 100_000  # the result text a turn's report keeps
 REFUSAL_INPUT_MAX = 300
+CALL_TEXT_MAX = 8 * 1024  # as much of a refused call as the guard reads
 TRUNCATED_MARK = "[relaybay: line truncated]"
 
 
@@ -27,7 +28,9 @@ class Init:
 @dataclass(frozen=True, slots=True)
 class Refusal:
     tool: str
-    input: str  # masked, at most REFUSAL_INPUT_MAX characters
+    input: str  # masked, on one line, at most REFUSAL_INPUT_MAX characters
+    # Masked with its lines kept, at most CALL_TEXT_MAX: what the approval check reads.
+    text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,11 +90,15 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
-def _refusal_input(value: Any) -> str:
+def _refusal_text(value: Any) -> str:
     if isinstance(value, dict) and isinstance(value.get("command"), str):
         value = value["command"]
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    return _cut(" ".join(text.split()), REFUSAL_INPUT_MAX)
+    return text[:CALL_TEXT_MAX]
+
+
+def _refusal_input(value: Any) -> str:
+    return _cut(" ".join(_refusal_text(value).split()), REFUSAL_INPUT_MAX)
 
 
 def _item(message: dict[str, Any], masked: dict[str, Any]) -> StreamItem | None:
@@ -106,7 +113,7 @@ def _item(message: dict[str, Any], masked: dict[str, Any]) -> StreamItem | None:
     denials = masked.get("permission_denials")
     denials = denials if isinstance(denials, list) else []
     refusals = [
-        Refusal(name, _refusal_input(d.get("tool_input")))
+        Refusal(name, _refusal_input(d.get("tool_input")), _refusal_text(d.get("tool_input")))
         for d in denials[:DENIED_MAX]
         if isinstance(d, dict) and (name := _text(d.get("tool_name"), 200))
     ]

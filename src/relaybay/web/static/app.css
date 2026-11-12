@@ -1734,3 +1734,16 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .question-blocks { border: 1px solid var(--warn); }
 .question-answer textarea { width: 100%; }
 .question-closed > summary { cursor: pointer; font-size: 13px; }
+
+/* --- approvals ------------------------------------------------------------------------- */
+.approval-list { list-style: none; margin: 0; padding-left: 0; }
+.approval-row { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.approval-row.approval-open { border-left: 3px solid var(--warn); }
+.approval-row > p { margin: 4px 0; }
+.approval-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.approval-number { font-weight: 600; }
+.approval-summary, .approval-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-rollback code, .approval-state code { overflow-wrap: anywhere; }
+.approval-waits { border: 1px solid var(--warn); }
+.approval-decide input[type=text] { width: 100%; }
+.approval-closed > summary { cursor: pointer; font-size: 13px; }

@@ -9,6 +9,7 @@ from typing import Any
 import aiosqlite
 
 from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
+from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import UNASSIGNED, BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
 from relaybay.domain.environments import (
@@ -5208,3 +5209,248 @@ async def run_of_session(conn: aiosqlite.Connection, session_id: int) -> Run | N
         conn, _RUN_SELECT + " WHERE r.session_id = ? ORDER BY r.id DESC LIMIT 1", (session_id,)
     )
     return _run(row) if row else None
+
+
+# --- approvals ---------------------------------------------------------------------------------
+
+_APPROVAL_SELECT = """
+SELECT a.*, t.key AS task_key, t.title AS task_title, p.slug AS project_slug,
+       rt.seq AS turn_seq, rt.outcome AS turn_outcome
+FROM approval a
+JOIN task t ON t.id = a.task_id
+JOIN project p ON p.id = t.project_id
+LEFT JOIN run_turn rt ON rt.id = a.turn_id
+"""
+# Decided for a run and not handed to a turn's process yet: as `_PENDING` for answers.
+_PENDING_DECISIONS = (
+    " WHERE a.run_id = ? AND a.decision IS NOT NULL AND a.status != 'expired'"
+    " AND a.delivered_at IS NULL"
+    " AND a.comment_id IS NULL AND (a.turn_id IS NULL OR rt.outcome IN ('cancelled',"
+    " 'failed_to_start', 'lost'))"
+)
+
+
+def _approval(row: aiosqlite.Row) -> Approval:
+    return Approval(
+        id=row["id"],
+        task_id=row["task_id"],
+        run_id=row["run_id"],
+        session_id=row["session_id"],
+        requested_by=row["requested_by"],
+        requested_via=row["requested_via"],
+        action=row["action"],
+        mode=row["mode"],
+        repository=row["repository"],
+        branch=row["branch"],
+        pr=row["pr"],
+        environment_id=row["environment_id"],
+        environment=row["environment"],
+        summary=row["summary"],
+        rollback=row["rollback"],
+        requested_at=row["requested_at"],
+        status=row["status"],
+        decision=row["decision"],
+        decided_by=row["decided_by"],
+        decided_at=row["decided_at"],
+        decision_text=row["decision_text"],
+        valid_until=row["valid_until"],
+        used_at=row["used_at"],
+        used_by=row["used_by"],
+        used_session=row["used_session"],
+        expired_at=row["expired_at"],
+        expired_reason=row["expired_reason"],
+        turn_id=row["turn_id"],
+        comment_id=row["comment_id"],
+        told_at=row["told_at"],
+        delivered_at=row["delivered_at"],
+        task_key=row["task_key"],
+        task_title=row["task_title"],
+        project_slug=row["project_slug"],
+        turn_seq=row["turn_seq"],
+        turn_outcome=row["turn_outcome"],
+    )
+
+
+async def insert_approval(conn: aiosqlite.Connection, values: dict[str, Any], now: str) -> int:
+    row = {**values, "requested_at": now, "status": "open"}
+    columns = ", ".join(row)
+    cur = await conn.execute(
+        f"INSERT INTO approval ({columns}) VALUES ({', '.join('?' for _ in row)})",
+        tuple(row.values()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def get_approval(conn: aiosqlite.Connection, approval_id: int) -> Approval | None:
+    row = await _one(conn, _APPROVAL_SELECT + " WHERE a.id = ?", (approval_id,))
+    return _approval(row) if row else None
+
+
+async def list_approvals(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: int | None = None,
+    turn_id: int | None = None,
+    statuses: tuple[str, ...] | None = None,
+    limit: int = 200,
+) -> list[Approval]:
+    """Newest first."""
+    where, params = [], []
+    if task_id is not None:
+        where.append("a.task_id = ?")
+        params.append(task_id)
+    if turn_id is not None:
+        where.append("a.turn_id = ?")
+        params.append(turn_id)
+    if statuses:
+        where.append(f"a.status IN ({', '.join('?' for _ in statuses)})")
+        params.extend(statuses)
+    sql = _APPROVAL_SELECT + (f" WHERE {' AND '.join(where)}" if where else "")
+    rows = await _all(conn, sql + " ORDER BY a.id DESC LIMIT ?", (*params, limit))
+    return [_approval(r) for r in rows]
+
+
+async def open_approvals(
+    conn: aiosqlite.Connection, *, run_id: int | None = None, task_id: int | None = None
+) -> list[Approval]:
+    """Requests that wait for the owner, oldest first."""
+    column, value = ("a.run_id", run_id) if run_id is not None else ("a.task_id", task_id)
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + f" WHERE {column} = ? AND a.status = 'open' ORDER BY a.id",
+        (value,),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def usable_approvals(conn: aiosqlite.Connection, task_ids: list[int]) -> list[Approval]:
+    """Approved and not used yet, on any of the cards; the oldest first."""
+    if not task_ids:
+        return []
+    marks = ", ".join("?" for _ in task_ids)
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + f" WHERE a.task_id IN ({marks}) AND a.status = 'approved' ORDER BY a.id",
+        tuple(task_ids),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def update_approval(
+    conn: aiosqlite.Connection, approval_id: int, changes: dict[str, Any]
+) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(f"UPDATE approval SET {sets} WHERE id = ?", (*changes.values(), approval_id))
+
+
+async def use_approval(
+    conn: aiosqlite.Connection, approval_id: int, used_by: str, session: str | None, now: str
+) -> bool:
+    """Mark an approved approval used; False when another call took it first."""
+    cur = await conn.execute(
+        "UPDATE approval SET status = 'used', used_at = ?, used_by = ?, used_session = ?"
+        " WHERE id = ? AND status = 'approved'",
+        (now, used_by, session, approval_id),
+    )
+    return cur.rowcount == 1
+
+
+async def expire_approvals(
+    conn: aiosqlite.Connection, task_id: int, reason: str, now: str
+) -> list[Approval]:
+    """Close the card's open requests and its approved, unused approvals; returns them."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT
+        + " WHERE a.task_id = ? AND a.status IN ('open', 'approved') ORDER BY a.id",
+        (task_id,),
+    )
+    await conn.execute(
+        "UPDATE approval SET status = 'expired', expired_at = ?, expired_reason = ?"
+        " WHERE task_id = ? AND status IN ('open', 'approved')",
+        (now, reason, task_id),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def stale_approvals(conn: aiosqlite.Connection, now: str) -> list[Approval]:
+    """Approved, unused approvals past their `valid_until`."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT
+        + " WHERE a.status = 'approved' AND a.valid_until IS NOT NULL AND a.valid_until <= ?"
+        " ORDER BY a.id",
+        (now,),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def expire_approval(
+    conn: aiosqlite.Connection, approval_id: int, reason: str, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE approval SET status = 'expired', expired_at = ?, expired_reason = ?"
+        " WHERE id = ? AND status IN ('open', 'approved')",
+        (now, reason, approval_id),
+    )
+
+
+async def used_since(conn: aiosqlite.Connection, run_id: int, since: str) -> list[Approval]:
+    """The run's approvals used at or after `since` (a turn's start)."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + " WHERE a.run_id = ? AND a.status = 'used' AND a.used_at >= ?"
+        " ORDER BY a.id",
+        (run_id, since),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def pending_decisions(conn: aiosqlite.Connection, run_id: int) -> list[Approval]:
+    rows = await _all(conn, _APPROVAL_SELECT + _PENDING_DECISIONS + " ORDER BY a.id", (run_id,))
+    return [_approval(r) for r in rows]
+
+
+async def put_decisions_on_turn(
+    conn: aiosqlite.Connection, approval_ids: list[int], turn_id: int
+) -> None:
+    marks = ", ".join("?" for _ in approval_ids)
+    await conn.execute(
+        f"UPDATE approval SET turn_id = ? WHERE id IN ({marks})", (turn_id, *approval_ids)
+    )
+
+
+async def undelivered_decisions_of_turn(conn: aiosqlite.Connection, turn_id: int) -> list[Approval]:
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + " WHERE a.turn_id = ? AND a.delivered_at IS NULL ORDER BY a.id",
+        (turn_id,),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def undelivered_decisions_of_comments(
+    conn: aiosqlite.Connection, comment_ids: list[int]
+) -> list[Approval]:
+    marks = ", ".join("?" for _ in comment_ids)
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT
+        + f" WHERE a.comment_id IN ({marks}) AND a.delivered_at IS NULL ORDER BY a.id",
+        tuple(comment_ids),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def untold_decisions(conn: aiosqlite.Connection, session_id: int) -> list[Approval]:
+    """Decisions queued on a run's next turn that its running turn has not been told about."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT
+        + " WHERE a.session_id = ? AND a.run_id IS NOT NULL AND a.decision IS NOT NULL"
+        " AND a.status != 'expired'"
+        " AND a.delivered_at IS NULL AND a.told_at IS NULL AND a.turn_id IS NOT NULL"
+        " AND rt.started_at IS NULL AND rt.ended_at IS NULL ORDER BY a.id",
+        (session_id,),
+    )
+    return [_approval(r) for r in rows]

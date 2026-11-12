@@ -168,7 +168,18 @@ def test_parse_line_reads_init_and_result_only() -> None:
     }
     parsed = parse_line(json.dumps(result))
     assert parsed == Result(
-        "success", False, 3, 1200, 1, 2, 3, 4, 1, ["Bash"], "", [Refusal("Bash", "git push")]
+        "success",
+        False,
+        3,
+        1200,
+        1,
+        2,
+        3,
+        4,
+        1,
+        ["Bash"],
+        "",
+        [Refusal("Bash", "git push", "git push")],
     )
     assert parse_line(json.dumps({"type": "assistant", "message": {}})) is None
     assert parse_line("not json") is None

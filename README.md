@@ -187,6 +187,13 @@ program as its client:
   verbatim; a desktop session gets it as an owner comment. A non-blocking question closes with its
   default at its deadline. "Look at this" questions carry the URL of a screen the agent brought up
   and the test account's name, never a password.
+- **Approvals** — a run's push, PR merge or change on a stand waits for your **Approve** on the
+  board: the guard denies the call and opens a request (or the agent asks with
+  `approval_request`), the request shows in your Inbox, on the card and in the tray, and your
+  decision reaches the agent as its next turn or an owner comment. One approval allows one
+  matching call, run alone, and a push approval names its branch. What needs one is policy data
+  per project (`approvals`; desktop sessions only with `approvals.desktop`); a change on live
+  always does.
 - **Desktop program** — an installer per OS puts relaybay in the tray with the board in its own
   window (on Linux in the browser) and the server inside: start at login, Restart server and Logs
   in the tray menu, a daily update check with **Update to X.Y.Z** that downloads and checks the

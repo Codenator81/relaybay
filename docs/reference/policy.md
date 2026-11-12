@@ -72,6 +72,20 @@ JSON Schema: [`policy.schema.json`](policy.schema.json) (the same file as
 | `guard.patterns` | list of object, at most 50 | Custom mutating patterns (replaces the list). |
 | `guard.patterns+` | list of object, at most 50 | Patterns to add; one with an inherited id replaces it. |
 | `guard.patterns-` | list of string, at most 50 | Ids of inherited patterns to remove. |
+| `approvals` | object | Which agent actions need the owner's approval on the board (one approval allows one matching call). Independent of the guard's mode. |
+| `approvals.commit` | boolean | git commit needs an approval naming its branch (default false). |
+| `approvals.push` | boolean | git push needs an approval naming its branch (default true). |
+| `approvals.merge` | boolean | gh pr merge needs an approval naming the pull request (default true). |
+| `approvals.test` | boolean | A change on a test stand (deploy, SQL, kubectl, ssh with a write) needs an approval (default true). |
+| `approvals.live` | boolean | A change on a live stand always needs an approval: only true is accepted, a policy cannot drop it. |
+| `approvals.valid_minutes` | integer | An approved approval not used within this many minutes expires (default 120). |
+| `approvals.desktop` | boolean | Check desktop sessions too, not only the program's runs (default false). |
+| `approvals.disable` | list of one of `git-push`, `gh-pr-merge`, `git-commit`, at most 10 | Built-in action patterns to switch off, by id (replaces the list). |
+| `approvals.disable+` | list of one of `git-push`, `gh-pr-merge`, `git-commit`, at most 10 | Pattern ids to add to the inherited list. |
+| `approvals.disable-` | list of one of `git-push`, `gh-pr-merge`, `git-commit`, at most 10 | Pattern ids to remove from the inherited list. |
+| `approvals.ignore` | list of string (at most 200 characters), at most 50 | Regular expressions: a command segment that matches one is never an action that needs an approval (replaces the list). |
+| `approvals.ignore+` | list of string (at most 200 characters), at most 50 | Ignore patterns to add. |
+| `approvals.ignore-` | list of string (at most 200 characters), at most 50 | Ignore patterns to remove. |
 | `secrets` | object | What counts as a secret in environment fields, access entries and proposals. |
 | `secrets.disable` | list of one of `private-key`, `github-token`, `github-pat`, `gitlab-token`, `openai-key`, `aws-access-key`, `slack-token`, `jwt`, `url-credentials`, `password-flag`, `curl-user`, `auth-header`, `token-header`, `sshpass`, `mysql-password`, `docker-login-password`, `redis-password`, `secret-assignment`, `secret-field-name`, `user-password`, at most 50 | Built-in secret detectors to switch off, by id (replaces the list). The journal still masks them. |
 | `secrets.disable+` | list of one of `private-key`, `github-token`, `github-pat`, `gitlab-token`, `openai-key`, `aws-access-key`, `slack-token`, `jwt`, `url-credentials`, `password-flag`, `curl-user`, `auth-header`, `token-header`, `sshpass`, `mysql-password`, `docker-login-password`, `redis-password`, `secret-assignment`, `secret-field-name`, `user-password`, at most 50 | Detector ids to add to the inherited list. |
@@ -140,6 +154,17 @@ relaybay's behaviour without a policy file.
     "disable": [],
     "patterns": []
   },
+  "approvals": {
+    "commit": false,
+    "push": true,
+    "merge": true,
+    "test": true,
+    "live": true,
+    "desktop": false,
+    "valid_minutes": 120,
+    "disable": [],
+    "ignore": []
+  },
   "secrets": {
     "disable": [],
     "allow": [],
@@ -175,6 +200,17 @@ Agents ask on test and stay off live; the guard blocks.
     "disable": [],
     "patterns": []
   },
+  "approvals": {
+    "commit": false,
+    "push": true,
+    "merge": true,
+    "test": true,
+    "live": true,
+    "desktop": false,
+    "valid_minutes": 120,
+    "disable": [],
+    "ignore": []
+  },
   "secrets": {
     "disable": [],
     "allow": [],
@@ -209,6 +245,17 @@ A trusted machine: full access everywhere, the guard only journals, test secrets
     "mode": "log",
     "disable": [],
     "patterns": []
+  },
+  "approvals": {
+    "commit": false,
+    "push": true,
+    "merge": true,
+    "test": true,
+    "live": true,
+    "desktop": false,
+    "valid_minutes": 120,
+    "disable": [],
+    "ignore": []
   },
   "secrets": {
     "disable": [],
