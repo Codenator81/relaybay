@@ -1234,6 +1234,28 @@ async def untold_plan_acceptances(
     return [_task(r) for r in rows]
 
 
+async def untold_board_acceptances(
+    conn: aiosqlite.Connection,
+    session_id: int,
+    actors: tuple[str, ...],
+    told_kind: str,
+    since: str,
+) -> list[Task]:
+    """Tasks of any project whose plan one of `actors` accepted not before `since` and that
+    acceptance was not told to this session yet: what a coordinator session is told."""
+    marks = ", ".join("?" for _ in actors)
+    rows = await _all(
+        conn,
+        _TASK_SELECT + f"WHERE t.plan_status = 'accepted' AND t.plan_accepted_by IN ({marks})"
+        " AND t.plan_accepted_at >= ?"
+        " AND NOT EXISTS (SELECT 1 FROM event d WHERE d.task_id = t.id AND d.kind = ?"
+        " AND d.session_id = ? AND d.ts >= t.plan_accepted_at)"
+        " ORDER BY t.id",
+        (*actors, since, told_kind, session_id),
+    )
+    return [_task(r) for r in rows]
+
+
 async def unread_owner_count(conn: aiosqlite.Connection, session_id: int) -> int:
     row = await _one(conn, "SELECT COUNT(*) FROM comment c" + _BOUND_OWNER, (session_id,))
     return int(row[0])

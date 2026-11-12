@@ -117,7 +117,7 @@ program as its client:
   "sent / delivered / read" live, `Stop` reminds the agent (at most twice) until it acknowledges,
   and agents answer with `comment_add` (their replies land in your Inbox). An opt-in
   wake-up hook (`relaybay setup --apply --wake`, Claude Code 2.1.309+) wakes an idle session for a new
-  comment.
+  comment or your acceptance of its plan.
 - **Intake and backlog** — a watcher you run (Telegram and e-mail examples in `examples/intake/`)
   posts chat and mail messages; relaybay ties them to the waiting task and marks it "answer
   received", and only a trusted source on a task with autonomy on lets the agent go on by itself.

@@ -174,7 +174,8 @@ relaybay setup --apply --no-wake               # take only the wake-up hook out 
 ```
 
 It is an `asyncRewake` command hook that runs in the background after every turn and waits up to 25
-minutes for a comment; when one arrives it exits 2 with the comment, which wakes the session.
+minutes for a comment (or a session message, or your acceptance of its plan on the board); when one
+arrives it exits 2 with it, which wakes the session.
 On an older Claude Code (or one whose version setup cannot read) it also needs `--force-wake`: a
 build that ignored `asyncRewake` would run the hook in the foreground and every turn would end only
 after up to 30 minutes. If you see that, remove it with `--no-wake`. Details:

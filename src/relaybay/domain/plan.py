@@ -342,6 +342,9 @@ REMINDER_TAIL = (
 ACCEPTANCE_TOLD = "plan.acceptance_delivered"
 # Hours: an older acceptance is not told any more (after an upgrade, or to a long idle session).
 ACCEPTANCE_TELL_HOURS = 2
+# Characters of one hook answer the acceptance lines may take; the rest waits for the next hook,
+# so a coordinator told of many acceptances still gets its owner comments.
+ACCEPTANCE_ROOM = 2000
 
 
 def acceptance_line(task_key: str, plan: Plan) -> str:
@@ -353,6 +356,16 @@ def acceptance_line(task_key: str, plan: Plan) -> str:
     if step is None:
         return f"{head}: all steps are done."
     return f"{head}: go on with step {step.position}."
+
+
+def coordinator_acceptance_line(task_key: str, plan: Plan, bound_to: str | None) -> str:
+    """What a coordinator session's next hook says when the owner accepted a plan on the board."""
+    total = len(plan.steps)
+    bound = f", bound to {bound_to}" if bound_to else ", no session bound"
+    return (
+        f"Owner accepted the plan of {task_key} ({total} step{'' if total == 1 else 's'})"
+        f" on the board{bound}."
+    )
 
 
 def reminder_text(lines: list[str]) -> str | None:

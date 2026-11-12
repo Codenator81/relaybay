@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The owner's plan acceptance on the board now reaches the bound session when it is idle: the
+  wake-up hook wakes it with the `Owner accepted the plan of …` line, as it does for an owner
+  comment. Before, only a tool or prompt hook told it, so a session that had asked for the
+  acceptance and ended its turn heard nothing.
+- Board: the rule warnings of a card move have a close button (×, keyboard reachable; the focus
+  then goes to the moved card's menu button) and stay
+  until the owner closes them or moves again; the "needs an accepted plan" line goes away once that
+  task's plan is accepted.
+
+### Added
+
+- Coordinator sessions (`coordinators` in the config) are told each plan acceptance on the board,
+  in any project, once, through the same hooks: `Owner accepted the plan of <key> (<n> steps) on the
+  board, bound to <session>.` Acceptance lines take at most 2000 characters of one hook answer;
+  the rest, and an owner comment that no longer fits beside them, come with the next hook.
+
 ## [0.8.5] - 2026-11-10
 
 ### Fixed

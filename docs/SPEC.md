@@ -564,7 +564,10 @@ longer sorts its cards.
   sets the closed time, `task.stage_changed` with its warnings, actor `board`), in one transaction
   with the placing. Rule warnings show above the columns; a refusal (a rule in `strict` mode, a
   neighbour that left the column meanwhile: `<key> is no longer in this column: the board changed
-  meanwhile. Try again.`) puts the card back and shows `Not moved: <reason>`.
+  meanwhile. Try again.`) puts the card back and shows `Not moved: <reason>`. The notice stays until
+  the owner closes it (the × button, `aria-label="Dismiss this notice"`) or the next move replaces
+  it; live refreshes do not bring it back. When the plan of the moved task is accepted
+  (`plan.accepted`), its "needs an accepted plan" line goes away; other lines stay.
 - A changed order writes one `task.reordered` (`key`, `stage`, `position` from 1), which refreshes
   the column on every open board; a drop on the same place writes nothing. The rank is not an edit:
   `version` and the updated time stay, so an open edit form still saves. The event is left out of
@@ -1205,10 +1208,21 @@ After the upgrade to `0008` no session gets comment text until its agent writes 
 - When the owner accepts a plan on the board, the next `UserPromptSubmit`, `PreToolUse` or
   `PostToolUse` of the session bound to that task (linked as above) starts its answer with
   `Owner accepted the plan of <key> (<n> steps): go on with step <first step not done>.` (or
-  `…: all steps are done.`), once (`plan.acceptance_delivered`). Not for an acceptance over MCP
+  `…: all steps are done.`), once (`plan.acceptance_delivered`). An idle session (it asked for the
+  acceptance and ended its turn) is woken with the same line by the wake-up hook
+  ([below](#spec-hooks-wake)). Not for an acceptance over MCP
   (`plan_accept` by the coordinator), nor for one made before the session was bound or more than
   2 hours ago (`ACCEPTANCE_TELL_HOURS`: after an upgrade or a long idle time it is stale); a plan
   turned back to `draft` is not told.
+- A session named in `coordinators` (linked as above) is told every such acceptance on the board,
+  in any project, on the same events and once per session:
+  `Owner accepted the plan of <key> (<n> steps) on the board, bound to <session>.` (or `…, no
+  session bound.`); for a task bound to the coordinator itself since before the acceptance it gets
+  the line above instead (bound after it: this line). Within the same 2 hours; acceptances over MCP
+  are not told.
+- Acceptance lines take at most 2000 characters of one answer (`ACCEPTANCE_ROOM`), oldest task
+  first; the rest stay untold until the next hook. Next to them an owner comment that does not fit
+  in what is left waits for the next hook too (it is not marked delivered).
 - An idle session receives the comment with its next prompt. The coordinator sees `comment.added`
   (with a 200-character excerpt) in `events_since` and can forward it.
 
@@ -1252,7 +1266,8 @@ the rest of the 8000-character budget. When the session start adds the task cont
 <base>/hooks/claude-code/wait --token-file <data dir>/token --wait` as a command hook with
 `"asyncRewake": true` and a 1800 s timeout. Claude Code runs it in the background; it posts the
 `Stop` input to `POST /hooks/claude-code/wait`, which holds the request up to 25 minutes. When an
-undelivered owner comment exists for the exactly linked session while it is idle (and relaybay did
+undelivered owner comment, a session message or an untold plan acceptance on the board
+([above](#spec-hooks-comments)) exists for the exactly linked session while it is idle (and relaybay did
 not block this turn's `Stop`), the server marks it delivered and answers `200` `{"wake": "<the same
 lines>"}`; the hook writes them to stderr and exits `2`, which the hooks reference documents as
 waking Claude with stderr as a system reminder. Otherwise it answers `204` and the hook exits `0`
