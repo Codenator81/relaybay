@@ -432,7 +432,7 @@ Stop agents at their next tool call, for coordinator sessions only. It cannot in
 
 ### `run_start`
 
-Start the user's own claude on a card, for coordinator sessions only: cards in plan or dev with no brake on them, each repository in a new worktree, the project's permission profile. Anyone else is refused; a side task goes to backlog_add.
+Start the user's own claude on a card, for coordinator sessions only: cards in plan or dev with no brake on them or on you, each repository in a new worktree, the project's permission profile. Anyone else is refused; a side task goes to backlog_add.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

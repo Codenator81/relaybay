@@ -304,12 +304,13 @@ def copy_plan(source: str, names: Sequence[str]) -> tuple[list[str], list[str]]:
             continue
         total += src.stat().st_size
         plan.append(name)
-    if len(plan) > COPY_MAX_FILES or total > COPY_MAX_BYTES:
-        raise ValidationError(
-            f"{source} has {len(plan)} untracked files ({total // (1024 * 1024)} MB) to copy into"
-            f" a new worktree, more than {COPY_MAX_FILES} files or {COPY_MAX_BYTES // 2**20} MB:"
-            f" list what a worktree needs in a {INCLUDE_FILE} file of the repository."
-        )
+        if len(plan) > COPY_MAX_FILES or total > COPY_MAX_BYTES:
+            # Stop at the first file past a limit: a listed node_modules is not walked to its end.
+            raise ValidationError(
+                f"{source} has more than {COPY_MAX_FILES} untracked files or"
+                f" {COPY_MAX_BYTES // 2**20} MB to copy into a new worktree: list what a worktree"
+                f" needs in a {INCLUDE_FILE} file of the repository."
+            )
     return plan, skipped
 
 

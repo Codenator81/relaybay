@@ -1114,8 +1114,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         hook_session: HookSession = None,
     ) -> str:
         """Start the user's own claude on a card, for coordinator sessions only: cards in plan or
-        dev with no brake on them, each repository in a new worktree, the project's permission
-        profile. Anyone else is refused; a side task goes to backlog_add."""
+        dev with no brake on them or on you, each repository in a new worktree, the project's
+        permission profile. Anyone else is refused; a side task goes to backlog_add."""
         started = await run(
             service.start_run_mcp(
                 task,
