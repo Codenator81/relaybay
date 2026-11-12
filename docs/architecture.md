@@ -168,10 +168,12 @@ question      id, task_id, run_id, session_id (who asked), asked_by, kind (quest
               it), told_at, delivered_at
               -- a look question blocks and has its URL; a blocking one has no default_after
 approval      id, task_id, run_id, session_id (who asked), requested_by, requested_via
-              (agent|guard|denial), action (commit|push|merge|deploy|sql), repository, branch, pr,
+              (agent|guard|denial), action (commit|push|merge|deploy|sql),
+              mode (plain|force|delete), repository, branch, pr,
               environment_id, environment, summary, rollback, requested_at,
-              status (open|approved|refused|used), decision, decided_by, decided_at,
+              status (open|approved|refused|used|expired), decision, decided_by, decided_at,
               decision_text, used_at, used_by (the call: tool and masked input), used_session,
+              expired_at, expired_reason,
               turn_id (the run turn carrying the decision), comment_id (the owner comment carrying
               it), told_at, delivered_at
               -- one approval allows one call: used_at is set with the guard's allow, in one tx

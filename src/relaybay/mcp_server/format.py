@@ -1123,6 +1123,8 @@ def event_detail(e: Event) -> str:
         if e.kind == "approval.decided":
             line = f": {arules.quoted(str(p['text']))}" if p.get("text") else ""
             return f"{what} -> {p.get('decision')}{line}"
+        if e.kind == "approval.expired":
+            return f"{what} expired: {p.get('reason')}"
         if e.kind == "approval.used":
             return f"{what} used by {arules.quoted(str(p.get('used_by') or ''))}"
         return f"{what} ({p.get('via') or 'agent'})"
@@ -1568,6 +1570,8 @@ def _approval_state(a: Approval) -> str:
     if a.status == "open":
         return "open, waits for the owner"
     when = (a.decided_at or "")[:16]
+    if a.status == "expired":
+        return f"expired {(a.expired_at or '')[:16]}Z: {a.expired_reason}"
     if a.status == "refused":
         return f"refused by the owner {when}Z"
     if a.status == "used":

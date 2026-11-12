@@ -3,6 +3,7 @@ a tool call is read as an action and its target, which approval covers which cal
 texts that carry the owner's decision back. Only the owner's button decides; no MCP tool does,
 and the guard reads only the approval row."""
 
+import dataclasses
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -12,8 +13,10 @@ from relaybay.domain import guard
 from relaybay.domain.errors import ValidationError
 
 ACTIONS = ("commit", "push", "merge", "deploy", "sql")
-STATUSES = ("open", "approved", "refused", "used")
+STATUSES = ("open", "approved", "refused", "used", "expired")
 VIAS = ("agent", "guard", "denial")
+# A push: plain, forced (`-f`, `--force-with-lease`, `+ref`) or deleting a branch.
+PUSH_MODES = ("plain", "force", "delete")
 OPEN_MAX = 10  # open requests per card: the guard stops opening more and only denies
 SUMMARY_MAX = 2000
 ROLLBACK_MAX = 1000
@@ -23,9 +26,14 @@ USED_BY_MAX = 200
 QUOTE_MAX = 120
 # The built-in action patterns, by id; a policy switches one off with approvals.disable.
 RULE_IDS = ("git-push", "gh-pr-merge", "git-commit")
-# Actions a project decides on; deploy and SQL follow the stand's kind (approvals.test, live).
-PROJECT_ACTIONS = ("commit", "push", "merge")
-DEFAULT_REQUIRED = {"commit": False, "push": True, "merge": True, "test": True, "live": True}
+DEFAULT_REQUIRED = {
+    "commit": False,
+    "push": True,
+    "merge": True,
+    "test": True,
+    "live": True,
+    "desktop": False,
+}
 # A line that reads like the owner's decision: only a decision from the board carries one.
 _DECISION_LINE_RE = re.compile(r"^\s*the owner (approved|refused)\b", re.I | re.M)
 # A word the guard cannot read as a plain name: shell expansion, a glob, a substitution.
@@ -33,11 +41,44 @@ _UNSAFE_RE = re.compile(r"[$`*?(){}\[\]<>|;&!~\\]")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/@+-][A-Za-z0-9._/@+#-]{0,199}$")
 _PR_URL_RE = re.compile(r"/pull/(\d{1,9})(?:[/?#]|$)")
 _NUMBER_RE = re.compile(r"^#?(\d{1,9})$")
+# A run's call that looks like a push or a merge the guard could not read (a wrapper, a
+# subshell, a script): denied as "could not tell".
+_PUSH_HINT_RE = re.compile(r"\bgit(\.exe)?\b.*\bpush\b", re.I | re.S)
+_MERGE_HINT_RE = re.compile(r"\bgh(\.exe)?\b.*\b(merge|pulls/\d+/merge)\b", re.I | re.S)
+# A segment that moves the shell elsewhere: the current branch is not the cwd's after it.
+_MOVES = frozenset({"cd", "pushd", "popd", "chdir", "set-location", "sl"})
+_LOCATION_RE = re.compile(r"(^|\s)GIT_(DIR|WORK_TREE)=", re.I)
+# `2>&1`, `&>file`: a redirection, not a command separator.
+_REDIRECT_AMP_RE = re.compile(r"\d*>&\d+|&>>?")
+_REDIRECT_WORD_RE = re.compile(r"^\d*(>>?|<)(.*)$")
 # git's options before the subcommand that take a value as the next word.
 _GIT_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"})
+# git subcommands the hint above must not catch: "push" in a message or a path.
+_GIT_READ = frozenset(
+    {
+        "add",
+        "blame",
+        "branch",
+        "checkout",
+        "commit",
+        "diff",
+        "fetch",
+        "grep",
+        "log",
+        "ls-files",
+        "pull",
+        "remote",
+        "rev-parse",
+        "show",
+        "stash",
+        "status",
+        "switch",
+    }
+)
 # git push / gh pr merge options that take a value as the next word.
 _PUSH_VALUE = frozenset({"-o", "--push-option", "--repo", "--receive-pack", "--exec"})
-_PUSH_SPECIAL = ("--all", "--branches", "--mirror", "--tags")
+_PUSH_SPECIAL = ("--all", "--branches", "--mirror", "--tags", "--follow-tags")
+_PUSH_FORCE = ("--force", "--force-with-lease", "--force-if-includes")
 _MERGE_VALUE = frozenset(
     {
         "-R",
@@ -62,8 +103,9 @@ class Matcher(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ApprovalRules:
-    """What the effective policy says: which actions need the owner's approval, the built-in
-    patterns switched off, and the patterns of calls that are never an action."""
+    """What the effective policy says: which actions need the owner's approval (and whether
+    desktop sessions are checked at all), the built-in patterns switched off, and the patterns
+    of calls that are never an action (never on live)."""
 
     required: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_REQUIRED))
     disabled: frozenset[str] = frozenset()
@@ -71,6 +113,10 @@ class ApprovalRules:
 
     def needs(self, action: str) -> bool:
         return bool(self.required.get(action, DEFAULT_REQUIRED.get(action, True)))
+
+    @property
+    def desktop(self) -> bool:
+        return self.needs("desktop")
 
     def stand_needs(self, kind: str) -> bool:
         """A change on a stand: always on live, on test as the policy says, never on local."""
@@ -83,7 +129,8 @@ class ApprovalRules:
 class Need:
     """One action a tool call takes that may need an approval. `branch` or `pr` is CURRENT
     when the call names none: the service reads the current branch of `folders` (relative to
-    the call's cwd, `git -C`)."""
+    the call's cwd, `git -C`), unless the call moved elsewhere (`located` false). None: the
+    guard cannot tell. `segment`: the command segment of the call it came from."""
 
     action: str
     branch: str | None = None
@@ -93,6 +140,9 @@ class Need:
     environment: str | None = None
     folders: tuple[str, ...] = ()
     rule: str = ""
+    mode: str = "plain"
+    located: bool = True
+    segment: int = 0
 
     @property
     def resolved(self) -> bool:
@@ -108,7 +158,9 @@ class Need:
         return True
 
     def what(self) -> str:
-        return describe(self.action, self.branch, self.pr, self.environment, self.repository)
+        return describe(
+            self.action, self.branch, self.pr, self.environment, self.repository, self.mode
+        )
 
 
 @dataclass(slots=True)
@@ -120,6 +172,7 @@ class Approval:
     requested_by: str
     requested_via: str
     action: str
+    mode: str
     repository: str | None
     branch: str | None
     pr: str | None
@@ -136,6 +189,8 @@ class Approval:
     used_at: str | None
     used_by: str | None
     used_session: str | None
+    expired_at: str | None
+    expired_reason: str | None
     turn_id: int | None
     comment_id: int | None
     told_at: str | None
@@ -152,7 +207,9 @@ class Approval:
 
     @property
     def what(self) -> str:
-        return describe(self.action, self.branch, self.pr, self.environment, self.repository)
+        return describe(
+            self.action, self.branch, self.pr, self.environment, self.repository, self.mode
+        )
 
     @property
     def target(self) -> str:
@@ -194,9 +251,14 @@ def describe(
     pr: str | None,
     environment: str | None,
     repository: str | None,
+    mode: str = "plain",
 ) -> str:
     """The action and its target in a few words: `push of feat/x in backend`."""
     target = describe_target(action, branch, pr, environment, repository)
+    if action == "push" and mode == "force":
+        return f"force push of {target}"
+    if action == "push" and mode == "delete":
+        return f"push deleting {target}"
     return {
         "push": f"push of {target}",
         "commit": f"commit on {target}",
@@ -209,23 +271,51 @@ def describe(
 # --- reading a tool call -----------------------------------------------------------------------
 
 
-def _git(words: list[str]) -> tuple[str, list[str], tuple[str, ...]] | None:
-    """git's subcommand, its arguments and the `-C` folders before it."""
-    if not words or words[0].rsplit("/", 1)[-1].lower() not in ("git", "git.exe"):
+def program(word: str) -> str:
+    """A command word without its folder (`/usr/bin/git`, `C:\\Git\\cmd\\git.exe` → `git`)."""
+    name = re.split(r"[\\/]", word)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _plain(words: list[str]) -> list[str]:
+    """The words without redirections (`2>/dev/null`, `> log`, `< in`)."""
+    out: list[str] = []
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+            continue
+        found = _REDIRECT_WORD_RE.match(word)
+        if found:
+            skip = not found.group(2)  # the target is the next word
+            continue
+        out.append(word)
+    return out
+
+
+def _git(words: list[str]) -> tuple[str, list[str], tuple[str, ...], bool] | None:
+    """git's subcommand, its arguments, the `-C` folders before it, and whether it was pointed
+    at another repository (`--git-dir`, `--work-tree`)."""
+    if not words or program(words[0]) != "git":
         return None
     folders: list[str] = []
+    elsewhere = False
     i = 1
     while i < len(words) and words[i].startswith("-"):
         word = words[i]
+        if word.startswith(("--git-dir", "--work-tree")):
+            elsewhere = True
         if word in _GIT_VALUE:
             if word == "-C" and i + 1 < len(words):
                 folders.append(words[i + 1])
             i += 2
             continue
+        if word.startswith("-C") and len(word) > 2:
+            folders.append(word[2:])
         i += 1
     if i >= len(words):
         return None
-    return words[i], words[i + 1 :], tuple(folders)
+    return words[i], words[i + 1 :], tuple(folders), elsewhere
 
 
 def _branch_of(refspec: str) -> str | None:
@@ -239,15 +329,24 @@ def _branch_of(refspec: str) -> str | None:
     for prefix in ("refs/heads/", "refs/tags/"):
         if spec.startswith(prefix):
             spec = spec[len(prefix) :]
-    if spec.upper() == "HEAD":
+    if spec.upper() == "HEAD" or spec == "@":
         return CURRENT
     return spec if _BRANCH_RE.match(spec) else None
 
 
-def _push_branches(args: list[str]) -> list[str | None] | None:
-    """The branches a `git push` pushes; None for a dry run (no push at all)."""
+def _refspec_mode(refspec: str, force: bool, delete: bool) -> str:
+    if delete or (refspec.startswith(":") and len(refspec) > 1):
+        return "delete"
+    return "force" if force or refspec.startswith("+") else "plain"
+
+
+def _push_targets(args: list[str]) -> list[tuple[str | None, str]] | None:
+    """(branch, mode) of each thing a `git push` pushes; None for a dry run (no push at all).
+    `--tags`, `--follow-tags`, `--all`, `--mirror` are targets of their own, also next to
+    refspecs."""
     positional: list[str] = []
     special: list[str] = []
+    force = delete = False
     i = 0
     while i < len(args):
         word = args[i]
@@ -258,6 +357,10 @@ def _push_branches(args: list[str]) -> list[str | None] | None:
             return None
         if word in _PUSH_SPECIAL:
             special.append(word)
+        elif word.startswith(_PUSH_FORCE):
+            force = True
+        elif word == "--delete":
+            delete = True
         elif word in _PUSH_VALUE:
             i += 1
         elif word.startswith("--"):
@@ -266,6 +369,10 @@ def _push_branches(args: list[str]) -> list[str | None] | None:
             for k, letter in enumerate(word[1:]):
                 if letter == "n":
                     return None
+                if letter == "f":
+                    force = True
+                if letter == "d":
+                    delete = True
                 if letter == "o":
                     if k == len(word) - 2:
                         i += 1  # `-o value`; `-ovalue` has it attached
@@ -273,27 +380,38 @@ def _push_branches(args: list[str]) -> list[str | None] | None:
         else:
             positional.append(word)
         i += 1
-    refspecs = positional[1:]
-    if refspecs:
-        return [_branch_of(r) for r in refspecs]
-    if special:
-        return list(special)
-    return [CURRENT]
+    targets: list[tuple[str | None, str]] = [
+        (_branch_of(r), _refspec_mode(r, force, delete)) for r in positional[1:]
+    ]
+    targets += [(s, "force" if s == "--mirror" else "plain") for s in special]
+    if not targets:
+        targets.append((CURRENT, "delete" if delete else "force" if force else "plain"))
+    return targets
 
 
-def _merge_target(args: list[str]) -> str | None:
-    """What `gh pr merge` merges: a PR number, or a branch name; CURRENT without one."""
+def _merge_target(args: list[str]) -> tuple[str | None, str | None]:
+    """What `gh pr merge` merges (a PR number or a branch name; CURRENT without one) and the
+    repository its `-R` names."""
+    repository: str | None = None
+    target: str | None = CURRENT
+    picked = False
     i = 0
     while i < len(args):
         word = args[i]
+        if word in ("-R", "--repo") and i + 1 < len(args):
+            repository = args[i + 1]
+        elif word.startswith("--repo="):
+            repository = word.split("=", 1)[1]
         if word in _MERGE_VALUE:
             i += 2
             continue
         if word.startswith("-"):
             i += 1
             continue
-        return clean_pr(word)
-    return CURRENT
+        if not picked:
+            target, picked = clean_pr(word), True
+        i += 1
+    return target, repository
 
 
 def clean_pr(text: str) -> str | None:
@@ -305,38 +423,116 @@ def clean_pr(text: str) -> str | None:
     if text.startswith(("http://", "https://")):
         found = _PR_URL_RE.search(urlsplit(text).path)
         return found.group(1) if found else None
-    branch = _branch_of(text)
-    return branch
+    return _branch_of(text)
 
 
-def call_needs(call: guard.ToolCall, rules: ApprovalRules) -> list[Need]:
-    """The git actions a Bash call takes (push, PR merge, commit), each needed or not by the
-    policy, one need per branch pushed. A segment that matches an ignore pattern is skipped."""
+def _gh(words: list[str]) -> list[str] | None:
+    """`gh`'s words after its global `-R` / `--repo`, which stay as `-R value` at the end."""
+    if not words or program(words[0]) != "gh":
+        return None
+    rest: list[str] = []
+    repo: list[str] = []
+    i = 1
+    while i < len(words):
+        word = words[i]
+        if word in ("-R", "--repo") and i + 1 < len(words) and not rest:
+            repo = ["-R", words[i + 1]]
+            i += 2
+            continue
+        rest.append(word)
+        i += 1
+    return rest + repo
+
+
+def segments(call: guard.ToolCall) -> list[tuple[str, list[str]]]:
+    """The command segments of a call with their words, `2>&1` and `&>` read as redirections;
+    an MCP call is one segment."""
+    if call.is_mcp:
+        return [(call.text, [])]
+    return guard.commands(_REDIRECT_AMP_RE.sub(" ", call.text))
+
+
+def segment_needs(
+    call: guard.ToolCall, rules: ApprovalRules, strict: bool = False
+) -> list[tuple[str, list[Need]]]:
+    """Each command segment of a Bash call with the git actions it takes (push, PR merge,
+    commit), needed or not by the policy, one need per thing pushed. A segment that matches an
+    ignore pattern is skipped. `strict` (a run): a segment that looks like a push or a merge the
+    guard cannot read gives a need it cannot tell (denied)."""
     if call.is_mcp:
         return []
-    found: list[Need] = []
-    for segment, words in guard.commands(call.text):
+    out: list[tuple[str, list[Need]]] = []
+    moved = False
+    for index, (segment, raw) in enumerate(segments(call)):
+        words = _plain(raw)
+        found: list[Need] = []
         if any(p.search(segment) for p in rules.ignore):
+            out.append((segment, found))
             continue
+        here = not moved and not _LOCATION_RE.search(segment)
+        read = False
         git = _git(words)
+        gh = _gh(words)
         if git is not None:
-            sub, args, folders = git
-            if sub == "push" and "git-push" not in rules.disabled:
-                branches = _push_branches(args)
-                for branch in branches or []:
-                    found.append(Need("push", branch=branch, folders=folders, rule="git push"))
+            sub, args, folders, elsewhere = git
+            located = here and not elsewhere
+            read = sub in _GIT_READ
+            if sub == "push":
+                read = True
+                for branch, mode in _push_targets(args) or []:
+                    if "git-push" not in rules.disabled:
+                        found.append(
+                            Need(
+                                "push",
+                                branch=branch,
+                                folders=folders,
+                                rule="git push",
+                                mode=mode,
+                                located=located,
+                                segment=index,
+                            )
+                        )
             elif sub == "commit" and "git-commit" not in rules.disabled and "--dry-run" not in args:
-                found.append(Need("commit", branch=CURRENT, folders=folders, rule="git commit"))
-            continue
-        name = words[0].rsplit("/", 1)[-1].lower() if words else ""
-        if (
-            name in ("gh", "gh.exe")
-            and words[1:3] == ["pr", "merge"]
-            and "gh-pr-merge" not in rules.disabled
-        ):
-            target = _merge_target(words[3:])
-            found.append(Need("merge", pr=target, rule="gh pr merge"))
-    return [n for n in found if rules.needs(n.action)]
+                found.append(
+                    Need(
+                        "commit",
+                        branch=CURRENT,
+                        folders=folders,
+                        rule="git commit",
+                        located=located,
+                        segment=index,
+                    )
+                )
+        elif gh is not None and gh[:2] == ["pr", "merge"]:
+            read = True
+            if "gh-pr-merge" not in rules.disabled:
+                target, repository = _merge_target(gh[2:])
+                found.append(
+                    Need(
+                        "merge",
+                        pr=target,
+                        repository=repository,
+                        rule="gh pr merge",
+                        located=here,
+                        segment=index,
+                    )
+                )
+        elif words and program(words[0]) in _MOVES:
+            moved = True
+        found = [n for n in found if rules.needs(n.action)]
+        if strict and not found and not read:
+            if _PUSH_HINT_RE.search(segment) and "git-push" not in rules.disabled:
+                found.append(Need("push", rule="git push", segment=index))
+            elif _MERGE_HINT_RE.search(segment) and "gh-pr-merge" not in rules.disabled:
+                found.append(Need("merge", rule="gh pr merge", segment=index))
+            found = [n for n in found if rules.needs(n.action)]
+        out.append((segment, found))
+    return out
+
+
+def call_needs(call: guard.ToolCall, rules: ApprovalRules, strict: bool = False) -> list[Need]:
+    """The git needs of every segment of a Bash call, in order."""
+    return [n for _, needs in segment_needs(call, rules, strict) for n in needs]
 
 
 def stand_needs(
@@ -346,66 +542,76 @@ def stand_needs(
 ) -> list[Need]:
     """Changes the call makes on a test or live stand, by the guard's mutating rules and the
     environment's identifiers, whatever the guard's mode and the agent's level: a deploy, or an
-    SQL change for a database rule. One need per environment; segments the environment's
-    policy ignores are skipped."""
+    SQL change for a database rule. One need per environment and segment (an MCP call is one
+    segment). On test, segments the environment's policy ignores are skipped and the rules the
+    guard switched off do not count; on live neither narrows anything."""
     found: list[Need] = []
+    texts = [s for s, _ in segments(call)]
     for env in environments:
         policy = policy_of(env)
         rules: ApprovalRules = policy.approvals
         if not rules.stand_needs(env.kind):
             continue
-        text = call.text
-        if rules.ignore:
-            kept = [
-                s for s, _ in guard.commands(text) if not any(p.search(s) for p in rules.ignore)
-            ]
-            text = "\n".join(kept)
-        if not text.strip():
-            continue
-        scoped = guard.ToolCall(call.tool, text, call.is_mcp)
-        changes = guard.mutating_rules(scoped, policy.rules, policy.mcp_tool_names)
-        if not changes:
-            continue
-        for identifier, capability in env.identifiers()[: guard.IDENTIFIERS_MAX]:
-            if not guard.mentions(text, identifier):
+        live = env.kind == "live"
+        mutating = policy.rules
+        if live:
+            custom = tuple(r for r in policy.rules if r.id not in guard.RULE_IDS)
+            mutating = guard.MUTATING_RULES + custom
+        for index, text in enumerate(texts):
+            if not live and any(p.search(text) for p in rules.ignore):
                 continue
-            applicable = [
-                (name, cap)
-                for name, cap in changes
-                if capability is None or cap is None or cap == capability
-            ]
-            if applicable:
-                name, cap = applicable[0]
-                found.append(
-                    Need(
-                        "sql" if cap == "db" or capability == "db" else "deploy",
-                        environment_id=env.id,
-                        environment=f"{env.project_slug}/{env.name}",
-                        rule=name,
+            scoped = guard.ToolCall(call.tool, text, call.is_mcp)
+            changes = guard.mutating_rules(scoped, mutating, live or policy.mcp_tool_names)
+            if not changes:
+                continue
+            for identifier, capability in env.identifiers()[: guard.IDENTIFIERS_MAX]:
+                if not guard.mentions(text, identifier):
+                    continue
+                applicable = [
+                    (name, cap)
+                    for name, cap in changes
+                    if capability is None or cap is None or cap == capability
+                ]
+                if applicable:
+                    name, cap = applicable[0]
+                    found.append(
+                        Need(
+                            "sql" if cap == "db" or capability == "db" else "deploy",
+                            environment_id=env.id,
+                            environment=f"{env.project_slug}/{env.name}",
+                            rule=name,
+                            segment=index,
+                        )
                     )
-                )
-                break
+                    break
     return found
 
 
 def covers(approval: Approval, need: Need) -> bool:
-    """Whether an approved approval is for this action and target. A repository counts only
-    when both name one."""
+    """Whether an approval is for this action and target. An approval that names a repository
+    covers only a call in that repository; a push covers only the same mode (a plain push
+    approval allows no force push or delete)."""
     if approval.action != need.action:
         return False
     if need.action in ("deploy", "sql"):
         if approval.environment_id is not None and need.environment_id is not None:
             return approval.environment_id == need.environment_id
         return (approval.environment or "").casefold() == (need.environment or "").casefold()
-    if (
-        approval.repository
-        and need.repository
-        and approval.repository.casefold() != need.repository.casefold()
+    if approval.repository and (
+        not need.repository or approval.repository.casefold() != need.repository.casefold()
     ):
         return False
     if need.action == "merge":
         return approval.pr == need.pr
-    return approval.branch == need.branch
+    return approval.branch == need.branch and approval.mode == need.mode
+
+
+def same_target(approval: Approval, need: Need) -> bool:
+    """An open request for the same thing as `need` (a request is filled in, not repeated):
+    `covers` with a repository that only one of them names counting as the same."""
+    if approval.repository and need.repository is None:
+        need = dataclasses.replace(need, repository=approval.repository)
+    return covers(approval, need)
 
 
 # --- the agent's request -----------------------------------------------------------------------
@@ -457,10 +663,20 @@ def clean_decision_text(value: Any) -> str | None:
     return text
 
 
-def parse_target(action: str, value: Any) -> tuple[str | None, str | None, str | None, str | None]:
-    """(repository, branch, pr, environment) from the agent's target: for push and commit
-    `<branch>` or `<repository>:<branch>`; for merge a PR number, `#12`, its URL or the
-    branch, optionally `<repository>#12`; for deploy and sql an environment's name."""
+@dataclass(frozen=True, slots=True)
+class Target:
+    repository: str | None = None
+    branch: str | None = None
+    pr: str | None = None
+    environment: str | None = None
+    mode: str = "plain"
+
+
+def parse_target(action: str, value: Any) -> Target:
+    """The agent's target: for push and commit `<branch>` or `<repository>:<branch>` (for a
+    push `+<branch>` is a force push and `:<branch>` deletes it, as in a refspec); for merge a
+    PR number, `#12`, its URL or the branch, optionally `<repository>#12`; for deploy and sql an
+    environment's name."""
     text = _text(value, "target", TARGET_MAX)
     if not text:
         raise ValidationError(
@@ -468,7 +684,7 @@ def parse_target(action: str, value: Any) -> tuple[str | None, str | None, str |
             " (deploy, sql). Nothing requested."
         )
     if action in ("deploy", "sql"):
-        return None, None, None, text
+        return Target(environment=text)
     repository: str | None = None
     if action == "merge":
         if not text.startswith(("http://", "https://")) and "#" in text[1:]:
@@ -479,16 +695,22 @@ def parse_target(action: str, value: Any) -> tuple[str | None, str | None, str |
             raise ValidationError(
                 f"target for a merge is a PR number, #12, its URL or its branch; got {text!r}."
             )
-        return repository, None, pr, None
-    if ":" in text:
-        repository, _, text = text.partition(":")
-        repository = repository.strip() or None
+        return Target(repository=repository, pr=pr)
+    mode = "plain"
+    head, sep, tail = text.partition(":")
+    if sep and head.strip() and not head.strip().startswith("+"):
+        repository, text = head.strip(), tail.strip()
+    if action == "push" and text.startswith(":") and len(text) > 1:
+        mode, text = "delete", text[1:]
+    elif action == "push" and text.startswith("+"):
+        mode, text = "force", text[1:]
     branch = _branch_of(text.strip())
-    if not branch or branch == CURRENT:
+    if not branch or branch == CURRENT or text.startswith(("+", ":")):
         raise ValidationError(
-            f"target for a {action} names its branch (feat/x, or backend:feat/x); got {text!r}."
+            f"target for a {action} names its branch (feat/x, backend:feat/x; +feat/x for a force"
+            f" push, :feat/x to delete it); got {text!r}."
         )
-    return repository, branch, None, None
+    return Target(repository=repository, branch=branch, mode=mode)
 
 
 # --- texts to the agent ------------------------------------------------------------------------
@@ -505,7 +727,10 @@ def decision_line(a: Approval) -> str:
         return (
             f"The owner refused {a.what} (approval {a.id}): {a.decision_text or 'no reason given'}"
         )
-    line = f"The owner approved {a.what} (approval {a.id}): one matching call may go through now."
+    line = (
+        f"The owner approved {a.what} (approval {a.id}): one matching call may go through now;"
+        " run it alone, as its own command."
+    )
     if a.decision_text:
         line += f" The owner's note: {a.decision_text}"
     return line
@@ -524,8 +749,9 @@ def deny_reason(need: Need, approval_id: int | None, in_run: bool) -> str:
     then = "your next turn" if in_run else "an owner comment through your hooks"
     if approval_id is None:
         return (
-            f"relaybay guard: {need.what()} needs the owner's approval and no request could be"
-            " opened (too many open on the card). Ask with approval_request, then end your turn."
+            f"relaybay guard: {need.what()} needs the owner's approval, and the card already has"
+            f" {OPEN_MAX} open requests. End your turn and say in your report what waits for the"
+            " owner."
         )
     return (
         f"relaybay guard: {need.what()} needs the owner's approval: waiting for the owner's"
@@ -534,20 +760,44 @@ def deny_reason(need: Need, approval_id: int | None, in_run: bool) -> str:
     )
 
 
+def alone_reason(approvals: list[Approval]) -> str:
+    """An approved action run together with other commands: denied, the approval kept."""
+    named = ", ".join(f"approval {a.id} ({a.what})" for a in approvals)
+    return (
+        f"relaybay guard: the owner approved {named}, for that action only: run the approved"
+        " action alone, as its own command (no other commands, no cd before it). The approval is"
+        " kept."
+    )
+
+
 def unknown_reason(need: Need) -> str:
     what = "branch" if need.action in ("push", "commit") else "pull request"
     return (
         f"relaybay guard: a {need.action} needs the owner's approval, and relaybay could not tell"
-        f" which {what} it is for. Name it in the command (git push origin <branch>, gh pr merge"
-        " <number>) and ask with approval_request."
+        f" which {what} it is for. Run it as a plain command from the repository's folder that"
+        " names it (git push origin <branch>, gh pr merge <number>), and ask with"
+        " approval_request."
     )
+
+
+UNAVAILABLE_REASON = (
+    "relaybay guard: approval check unavailable (an internal error): a push, a merge or a change"
+    " on a stand is denied until it works again. Tell the owner."
+)
+
+
+def guarded_hint(call: guard.ToolCall) -> bool:
+    """A call that may be a guarded action, read without the database (the check failed)."""
+    if _PUSH_HINT_RE.search(call.text) or _MERGE_HINT_RE.search(call.text):
+        return True
+    return bool(guard.mutating_rules(call))
 
 
 def requested_hint(a: Approval, in_run: bool) -> str:
     then = "it comes as your next turn" if in_run else "it comes as an owner comment"
     return (
         f"End your turn now; the owner decides on the board and {then}. An approval allows one"
-        " matching call."
+        " matching call, run alone."
     )
 
 

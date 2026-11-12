@@ -552,13 +552,13 @@ Withdraw an open question you asked (a coordinator may withdraw any): it leaves 
 
 ### `approval_request`
 
-Ask the owner to approve one action on a card: it shows in the owner's Inbox and on the card, and only the owner decides, on the board. The guard denies a call that needs an approval until one is given; one approval allows exactly one matching call (a push approval names its branch). End your turn after asking: the decision comes as your next turn (a run) or as an owner comment (a desktop session). An open request for the same action and target is updated instead of a second one.
+Ask the owner to approve one action on a card: it shows in the owner's Inbox and on the card, and only the owner decides, on the board. The guard denies a call that needs an approval until one is given; one approval allows exactly one matching call, run alone as its own command (a push approval names its branch; a force push or a delete needs one that says so). End your turn after asking: the decision comes as your next turn (a run) or as an owner comment (a desktop session). An open request for the same action and target is updated instead of a second one.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `action` | string | yes | push, merge, commit, deploy or sql: what you want to do. |
-| `target` | string | yes | Where: for push and commit the branch (feat/x, or backend:feat/x with the repository); for merge the PR (12, #12 or its URL); for deploy and sql the environment's name (test, live). |
+| `target` | string | yes | Where: for push and commit the branch (feat/x, or backend:feat/x with the repository; +feat/x for a force push, :feat/x to delete the branch); for merge the PR (12, #12 or its URL); for deploy and sql the environment's name (test, live). |
 | `summary` | string | yes | What goes where: the commits, the files, the CI state. Never a password or token. |
 | `rollback` | string or null | no | The command that undoes it: required for a deploy. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
@@ -572,7 +572,7 @@ Approval requests and the owner's decisions, newest first: open ones of all card
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string or null | no | Task key: only this card's approvals. Optional. |
-| `status` | string or null | no | open (default), approved, refused, used or all. |
+| `status` | string or null | no | open (default), approved, refused, used, expired or all. |
 
 ### `memory_search`
 

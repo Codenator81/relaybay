@@ -78,6 +78,7 @@ JSON Schema: [`policy.schema.json`](policy.schema.json) (the same file as
 | `approvals.merge` | boolean | gh pr merge needs an approval naming the pull request (default true). |
 | `approvals.test` | boolean | A change on a test stand (deploy, SQL, kubectl, ssh with a write) needs an approval (default true). |
 | `approvals.live` | boolean | A change on a live stand always needs an approval: only true is accepted, a policy cannot drop it. |
+| `approvals.desktop` | boolean | Check desktop sessions too, not only the program's runs (default false). |
 | `approvals.disable` | list of one of `git-push`, `gh-pr-merge`, `git-commit`, at most 10 | Built-in action patterns to switch off, by id (replaces the list). |
 | `approvals.disable+` | list of one of `git-push`, `gh-pr-merge`, `git-commit`, at most 10 | Pattern ids to add to the inherited list. |
 | `approvals.disable-` | list of one of `git-push`, `gh-pr-merge`, `git-commit`, at most 10 | Pattern ids to remove from the inherited list. |
@@ -158,6 +159,7 @@ relaybay's behaviour without a policy file.
     "merge": true,
     "test": true,
     "live": true,
+    "desktop": false,
     "disable": [],
     "ignore": []
   },
@@ -202,6 +204,7 @@ Agents ask on test and stay off live; the guard blocks.
     "merge": true,
     "test": true,
     "live": true,
+    "desktop": false,
     "disable": [],
     "ignore": []
   },
@@ -246,6 +249,7 @@ A trusted machine: full access everywhere, the guard only journals, test secrets
     "merge": true,
     "test": true,
     "live": true,
+    "desktop": false,
     "disable": [],
     "ignore": []
   },

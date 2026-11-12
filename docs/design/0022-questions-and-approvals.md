@@ -17,14 +17,19 @@
   reads; the tray kind `question`; `question.withdrawn` and `run.waiting` besides the events
   below. Behaviour: [SPEC](../SPEC.md#spec-questions).
 - PR 4 shipped: migration 0039 `approval`; the policy key `approvals` (`push`, `merge`, `test`
-  true and `commit` false by default, `live` true and not droppable, `disable` and `ignore` to
-  narrow the patterns); the guard's check after the level (`git push` with its branch, `gh pr
-  merge`, the stand changes of the access map), denying with a request opened, and answering
-  `allow` for a covered call while marking its approval used in the same transaction; requests from
-  a turn's `permission_denials`; MCP `approval_request` and `approval_list`; the Inbox's Approvals
-  group and the card's fold, decided with `POST /approvals/{id}/decide` (board only); delivery and
-  `waiting` as for questions; the tray kind `approval`. "Inside a turn" stays the upgrade; the denial
-  plus a new turn is the default. Behaviour: [SPEC](../SPEC.md#spec-approvals).
+  true and `commit` false by default, `live` true and not droppable, `desktop` false: in 0.9 only
+  the program's runs are checked; `disable` and `ignore` narrow the patterns, never on live); the
+  guard's check after the level (`git push` with its branch and mode: plain, force, delete, and
+  `--tags` and the like as targets of their own; `gh pr merge`; the stand changes of the access
+  map, together with the git actions of the same call), denying with a request opened; an
+  approved call run alone uses its approval in the same transaction and is answered `allow` only
+  in Manual mode (no decision otherwise), one run with other commands is denied and the approval
+  kept; requests from a turn's `permission_denials`, read line by line; MCP `approval_request`
+  and `approval_list`; the Inbox's Approvals group and the card's fold, decided with `POST
+  /approvals/{id}/decide` (board only); delivery and `waiting` as for questions; a card that goes
+  to done withdraws its open questions and expires its requests; the tray kind `approval`.
+  "Inside a turn" stays the upgrade; the denial plus a new turn is the default. Behaviour:
+  [SPEC](../SPEC.md#spec-approvals).
 
 ## Problem
 
@@ -135,6 +140,17 @@ is open, so the MCP client's timeout must be known before the owner's wait can b
 the denial plus a new turn stays the default.
 
 **Events.** `approval.requested`, `approval.decided`, `approval.used`; all on the Audit page.
+`approval.expired` when the card goes to done with a request open or an approval unused.
+
+**Who is checked, and what a failure of the check does** (the coordinator's decision of
+2026-11-12 for 0.9):
+
+| Actor | Action | On a check error |
+|---|---|---|
+| A run of the program | push, PR merge, a change on a test or live stand | denied: "approval check unavailable" |
+| A run of the program | any other call | goes on, as with a guard error |
+| A desktop session (checked only with `approvals.desktop: true`) | any | goes on, as with a guard error |
+| A session on no card | any | not checked |
 
 ## Risks
 

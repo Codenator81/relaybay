@@ -1385,8 +1385,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str,
             Field(
                 description="Where: for push and commit the branch (feat/x, or backend:feat/x"
-                " with the repository); for merge the PR (12, #12 or its URL); for deploy and"
-                " sql the environment's name (test, live)."
+                " with the repository; +feat/x for a force push, :feat/x to delete the"
+                " branch); for merge the PR (12, #12 or its URL); for deploy and sql the"
+                " environment's name (test, live)."
             ),
         ],
         summary: Annotated[
@@ -1406,8 +1407,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     ) -> str:
         """Ask the owner to approve one action on a card: it shows in the owner's Inbox and on
         the card, and only the owner decides, on the board. The guard denies a call that needs
-        an approval until one is given; one approval allows exactly one matching call (a push
-        approval names its branch). End your turn after asking: the decision comes as your next
+        an approval until one is given; one approval allows exactly one matching call, run alone
+        as its own command (a push approval names its branch; a force push or a delete needs one
+        that says so). End your turn after asking: the decision comes as your next
         turn (a run) or as an owner comment (a desktop session). An open request for the same
         action and target is updated instead of a second one."""
         asked, hint, updated = await run(
@@ -1432,7 +1434,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         ] = None,
         status: Annotated[
             str | None,
-            Field(description="open (default), approved, refused, used or all."),
+            Field(description="open (default), approved, refused, used, expired or all."),
         ] = None,
     ) -> str:
         """Approval requests and the owner's decisions, newest first: open ones of all cards by

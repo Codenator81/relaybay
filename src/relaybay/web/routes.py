@@ -231,6 +231,7 @@ EVENT_KINDS = (
     "approval.requested",
     "approval.decided",
     "approval.used",
+    "approval.expired",
     "settings.run_login_any",
 )
 CSRF_HEADER = "x-relaybay-csrf"

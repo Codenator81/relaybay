@@ -104,6 +104,10 @@
           "type": "boolean",
           "description": "A change on a live stand always needs an approval: only true is accepted, a policy cannot drop it."
         },
+        "desktop": {
+          "type": "boolean",
+          "description": "Check desktop sessions too, not only the program's runs (default false)."
+        },
         "disable": {
           "$ref": "#/$defs/approvalRuleIds",
           "description": "Built-in action patterns to switch off, by id (replaces the list)."

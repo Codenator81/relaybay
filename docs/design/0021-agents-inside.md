@@ -37,7 +37,8 @@
   `question` ([0022](0022-questions-and-approvals.md#questions); behaviour:
   [SPEC](../SPEC.md#spec-questions)).
 - PR 4 shipped: migration 0039 `approval`; approvals as objects with the policy key `approvals`
-  (live never droppable), the guard's check of `git push` (with its branch), `gh pr merge` and
+  (live never droppable; in 0.9 for the program's runs only, desktop sessions with
+  `approvals.desktop`), the guard's check of `git push` (with its branch), `gh pr merge` and
   stand changes, one approval per call marked used with the allow, requests from a turn's
   `permission_denials`, MCP `approval_request` / `approval_list` (no tool decides), the Inbox and
   the card, the decision as the next turn or an owner comment, the tray kind `approval`

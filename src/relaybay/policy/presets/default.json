@@ -12,6 +12,7 @@
     "merge": true,
     "test": true,
     "live": true,
+    "desktop": false,
     "disable": [],
     "ignore": []
   },

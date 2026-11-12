@@ -5238,6 +5238,7 @@ def _approval(row: aiosqlite.Row) -> Approval:
         requested_by=row["requested_by"],
         requested_via=row["requested_via"],
         action=row["action"],
+        mode=row["mode"],
         repository=row["repository"],
         branch=row["branch"],
         pr=row["pr"],
@@ -5254,6 +5255,8 @@ def _approval(row: aiosqlite.Row) -> Approval:
         used_at=row["used_at"],
         used_by=row["used_by"],
         used_session=row["used_session"],
+        expired_at=row["expired_at"],
+        expired_reason=row["expired_reason"],
         turn_id=row["turn_id"],
         comment_id=row["comment_id"],
         told_at=row["told_at"],
@@ -5348,6 +5351,24 @@ async def use_approval(
         (now, used_by, session, approval_id),
     )
     return cur.rowcount == 1
+
+
+async def expire_approvals(
+    conn: aiosqlite.Connection, task_id: int, reason: str, now: str
+) -> list[Approval]:
+    """Close the card's open requests and its approved, unused approvals; returns them."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT
+        + " WHERE a.task_id = ? AND a.status IN ('open', 'approved') ORDER BY a.id",
+        (task_id,),
+    )
+    await conn.execute(
+        "UPDATE approval SET status = 'expired', expired_at = ?, expired_reason = ?"
+        " WHERE task_id = ? AND status IN ('open', 'approved')",
+        (now, reason, task_id),
+    )
+    return [_approval(r) for r in rows]
 
 
 async def pending_decisions(conn: aiosqlite.Connection, run_id: int) -> list[Approval]:
