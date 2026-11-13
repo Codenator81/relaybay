@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-13
+
 ### Fixed
 
 - An approved push could be lost to a slow approval check: the command hook gave the guard one 0.3 s try while the check reads the branch with git, so on a slow machine Claude Code refused the push and the approval was already used. The hook now waits up to 5 s for a call that may need an approval (a push, a PR merge, a stand change; its `PreToolUse` and `PostToolUse`), the hook entries' timeout is 10 s for command and http hooks (an older setup's 3 s or 2 s shows as `hook timeout` in `relaybay check` and doctor, and the desktop program points to Settings → Reconnect; run `relaybay setup` again to update it), the forwarder's check of the body reads only what comes before the tool's output and stays fast on a large one, and the approval check keeps git within 1.5 s per read and 3 s in all, reuses a branch read while the `HEAD` file is unchanged, and denies "could not tell the branch, run it again" when git is too slow. An approval is now reserved for the call it allows (by its `tool_use_id`) and spent only when that call may have run: its `PostToolUse`, or the end of its turn (or a lost turn) without a refusal of it. A call in the turn's `permission_denials` (a classifier's refusal included) releases every approval it held, with no new request and a report line saying it stays for one more try; the third release expires it ("released 3 times"). Event `approval.released`; migration 0041.
@@ -946,7 +948,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.8.6...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.9.0
 [0.8.6]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.6
 [0.8.5]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.5
 [0.8.4]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.4

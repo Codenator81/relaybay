@@ -348,9 +348,10 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.5.0** — intake from chats and e-mail with an autonomy switch, the backlog.
 - **0.6.0** — the desktop program: installers, tray, window, autostart, updates.
 - **0.6.1** — desktop fixes: the program follows the machine's theme, the window keeps its state.
-- **0.9, agents inside** — runs on a card with your own `claude` (the first part is in), then
-  questions and approvals on the board, slots and memory limits; the embedded terminal in 0.10,
-  the coordinator and schedules in 0.11.
+- **0.9.0, agents inside** — runs on a card with your own `claude` turn by turn, worktrees per
+  repository, the session handed to the desktop app and back, full turn reports with `verified`
+  marks, questions and approvals on the board, slots and memory limits, card close and retention;
+  the embedded terminal comes in 0.10, the coordinator and schedules in 0.11.
 - **0.7+, workers** — scheduled workers per project.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.

@@ -1,6 +1,6 @@
 # 0021 — Agents inside the program
 
-- Status: **Proposed**, 2026-11-10. The overall design of agents started and steered by relaybay,
+- Status: **Accepted**, 2026-11-10; 0.9 shipped 2026-11-13 (PR 69-83). The overall design of agents started and steered by relaybay,
   releases 0.9 to 0.12. Details live in [0012](0012-runner-and-embedded-terminal.md) (runner,
   terminal, probes), [0022](0022-questions-and-approvals.md) (questions and approvals as objects)
   and [0023](0023-coordinator-and-schedules.md) (coordinator and schedules). Closes the direction of
