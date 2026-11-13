@@ -179,7 +179,7 @@ def test_parse_line_reads_init_and_result_only() -> None:
         1,
         ["Bash"],
         "",
-        [Refusal("Bash", "git push", "git push")],
+        [Refusal("Bash", "git push", "git push", "t1")],  # the id names the refused call
     )
     assert parse_line(json.dumps({"type": "assistant", "message": {}})) is None
     assert parse_line("not json") is None

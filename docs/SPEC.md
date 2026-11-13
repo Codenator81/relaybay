@@ -751,19 +751,48 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
     10 open requests on the card nothing opens and the reason says to end the turn and report.
   - **Covered, but with other commands** (another segment, a pipe, a `cd` before it): `deny` with
     "run the approved action alone, as its own command"; the approval is kept.
+  - **Covered only by an approval held for another call** (below): `deny` with "approval N (…)
+    is held for a call that has not finished yet"; nothing opens.
   - **Covered and alone** (one segment; for a run, from the run's working folder or a worktree,
-    and for a git action in a repository the run knows): each approval is marked `used` (when, by
-    which call: the tool and its masked input, and by which session) in one transaction, so one
-    approval allows exactly one call. A run not with the owner is answered `allow` ("the owner
+    and for a git action in a repository the run knows): each approval is **reserved** for this
+    call in one transaction (`reserved_for`: the call's `tool_use_id` from its `PreToolUse`, with
+    the call and the session), so one approval allows exactly one call: a reserved approval
+    covers no other call, and of two calls racing for it only one reserves it (the other is
+    denied, "another call holds this approval"). It stays `approved` until the call ran: the
+    call's `PostToolUse` (by its `tool_use_id`) marks it **`used`** (when, by which call: the tool
+    and its masked input, and by which session; `approval.used`). A call without a `tool_use_id`
+    uses it at once. A run not with the owner is answered `allow` ("the owner
     approved this on the board: approval N (…)") in every mode but `bypassPermissions`: the
     owner's explicit approval is stronger than Claude Code's own checks (auto mode's classifier,
     a mode that refuses Bash). A run with the owner in the desktop app, a run in
     `bypassPermissions` and a desktop session get no decision; Claude Code decides as usual. The
     `approval.used` event says which (`decision` `allow` or `none`, with the approval's id), on
     the Audit page.
-  - **Spent, refused anyway:** an approval used by a call that Claude Code (or another hook) then
-    refused is spent; the refusal opens no new request and shows in the turn's report as
-    "approved call refused by Claude Code (approval N, …)".
+  - **Released when the call did not run:** at the end of a run's turn, an approval still held
+    for one of its calls is released when the call is in the turn's `permission_denials` (by its
+    `tool_use_id`, every approval held for that id: one push may hold several; a denial without
+    an id counts only for an approval held without one, by the call it names): Claude Code
+    refused it after relaybay's
+    answer (auto mode's classifier, another hook) or without it (the answer came too late and
+    Manual mode refused). Both read the same, so both count as "the call did not run". The
+    approval is `approved` and unreserved again, still within `valid_until`
+    (`approval.released` with the reason), no new request opens, and the turn's report says
+    "approved call refused by Claude Code (approval N, …): the approval stays for one more try".
+    A held call that is not in the denials counts `used` (it may have run with its `PostToolUse`
+    lost, and the turn's lines may not be stored), so an approval never lets the same action
+    through twice; so does a held call of a turn that was lost (no process behind a running
+    run, or the server stopped during the turn). A desktop session's held call that got no
+    `PostToolUse` by the session's `Stop` or `SessionEnd` counts `used` too: relaybay reads no
+    refusals there. The
+    **third** release expires the approval (`expired`, "released 3 times", `approval.expired`),
+    and the report line says "approval exhausted, a new request is needed". A reserved approval
+    expires by `valid_until` like any other.
+  - **The branch in time:** the check reads the current branch with `git rev-parse` at most
+    1.5 s per read and 3 s for all reads of one call, so it answers within the hook client's 5 s
+    wait (the wait for a worker thread counts in it); a read is reused for 5 s while the working
+    tree's `HEAD` file holds the same bytes (a checkout rewrites it), and is kept only when
+    `HEAD` held the same bytes before and after git ran. When git does not answer in time the call is denied with "could not
+    tell the branch, run it again" and the approval is not reserved.
   - **On a done card** nothing opens: the call is denied with "<card> is done".
   - A call whose level denies or asks is answered by the level and uses no approval.
   - **On an internal error** of the check: a call that looks like a guarded action (a push or
@@ -773,7 +802,8 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
     desktop sessions, go on as with a guard error.
 - **From a denial.** At a turn's `result`, each entry of `permission_denials` (Bash, or another
   server's MCP tool) whose call needs an approval the guard can read, whose level does not block
-  it, for which no approval was used in that turn and no request of the card is open, opens
+  it, that is not a call an approval was held for (above) and for which no request of the card
+  is open, opens
   one on a card not in done (`requested_via` `denial`, summary
   "From a permission denial in turn N: …"). The call is read with its lines (masked, up to 8 KB),
   so each line is its own command. A denial no approval rule covers (Claude Code's own auto mode
@@ -821,8 +851,9 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
   a run that waited only for them goes `idle`.
 - **Events** `approval.requested` (the action, the target, the summary, the rollback, `via`;
   `updated` when an open request was filled in), `approval.decided` (the decision and the line),
-  `approval.used` (the call), `approval.expired` (the reason); all on the Activity page and, with
-  the changes, on the Audit page.
+  `approval.used` (the call), `approval.released` (the reason, the call, how many releases),
+  `approval.expired` (the reason); all on the Activity page and, with the changes, on the Audit
+  page. On the board an approval held for a call shows "approved, held for a running call".
 
 The check is a seat belt, not access control: an agent with a shell can push another way (a file
 it runs, an alias, another tool), and the patterns read text only; live access stays read-only
@@ -1835,7 +1866,9 @@ the digests' "changes since" leave such events out, the board refreshes the card
 **Never in the way when relaybay is down.** The command hook (`<python> -I -m relaybay.hook_client
 --url … --token-file …`, standard library only) prints nothing on failure (only the server's JSON
 answer on success), never uses a system proxy and always exits 0. It prints the server's answer
-only when it is a `200` with a JSON object. http hook entries use a 2 s timeout and get the same
+only when it is a `200` with a JSON object. http hook entries use a 10 s timeout (the approval
+check of a push answers within 3 s of git reads plus the database; every other event at once, and
+a server that is down refuses at once; a hung one makes each event wait up to 10 s) and get the same
 JSON body; failures do not block the session, but Claude Code shows a non-blocking "hook error"
 notice, and nothing is retried or spooled for them. `relaybay hook` is the same forwarder behind
 the CLI.
@@ -1844,11 +1877,14 @@ the CLI.
 
 **Retry and spool (command hooks).** The forwarder reads the event name (and the tool name of a
 `PostToolUse`) from the raw body. `PreToolUse` (the guard) and every other `PostToolUse` (an
-activity ping) get one try with a 0.3 s timeout and are never kept. State-bearing events —
+activity ping) get one try with a 0.3 s timeout and are never kept; a call that may need an
+approval (by a rough check of the raw body: `git` with `push`, `gh` with `merge`, a program of
+the guard's mutating rules, another server's MCP tool) gets its one try with a 5 s timeout
+instead, its `PreToolUse` and its `PostToolUse`, because the approval check reads git. State-bearing events —
 `SessionStart`, `SessionEnd`, `Stop`, `UserPromptSubmit`, `Notification` and a `PostToolUse` of
 `TaskCreate`, `TaskUpdate` or `TodoWrite` — get one retry after 0.2 s, each try with a 1.0 s
 timeout, the whole run inside 2.0 s counted from the forwarder's start (Claude Code ends the command
-after 3 s; the interpreter's start-up and the spool write come on top). When neither try gets an
+after 10 s; the interpreter's start-up and the spool write come on top). When neither try gets an
 answer (refused, reset, timed out; an HTTP error is an answer) the event is appended to
 `hook-spool.jsonl` in the desktop config folder (`RELAYBAY_CONFIG_DIR`, else `%LOCALAPPDATA%\relaybay`,
 `~/Library/Application Support/relaybay` or `$XDG_CONFIG_HOME/relaybay`, worked out with the
@@ -2021,7 +2057,8 @@ with matcher `*`). An installation without `PostToolUse` shows as "some events a
 check until apply runs again. With `--wake`, one more group in `Stop` for the wake-up hook.
 
 - `command` mode (default): runs the interpreter that runs relaybay, `<python> -I -m
-  relaybay.hook_client --url <base>/hooks/claude-code --token-file <data dir>/token`, 3 s timeout;
+  relaybay.hook_client --url <base>/hooks/claude-code --token-file <data dir>/token`, 10 s timeout
+  (the 5 s wait of a call that may need an approval, plus the start-up);
   from the installed program ([§13](#spec-desktop-setup)) the forwarder next to it instead,
   `<install folder>/relaybay-hook --url <base>/hooks/claude-code --token-file <token file>`.
   Needs nothing on `PATH` and no environment variable. Shell quoting: single quotes on macOS and
@@ -2091,7 +2128,10 @@ need Settings → Agents to allow it" for an API key or another method), `deskto
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
 (the hash of the global rules from the settings; fails when the running server started with another
 one, reported in `/healthz`, i.e. it needs a restart; versions accepted since do not count), then the Claude Code items of the check (`hooks in user
-settings`, `command hook runs` or `RELAYBAY_TOKEN for http hooks`, `MCP registered for Claude
+settings`, `hook timeout` (fails for relaybay hook entries that wait less than this version
+needs: 10 s for command and for http hooks; an older setup wrote 3 s and 2 s; for command hooks
+the desktop program's start-up notice points to Settings → Reconnect, as for a forwarder that
+does not run), `command hook runs` or `RELAYBAY_TOKEN for http hooks`, `MCP registered for Claude
 Code`). Output: one `[ok]` / `[FAIL]` line per item, or with `--json` a list of
 `{ok, name, detail}` (the shape of `setup --check --json`); exit code `1` when an item fails. Invalid
 settings come out as one failed `settings` item.
@@ -3158,6 +3198,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0038_task_archive` | `task.archived_at`, `task.archived_by` (archived by hand), `task.unarchived_at` (the last "Back from the archive") ([§2](#spec-board-archive)). Additive only, no backfill |
 | `0039_approval` | `approval` (task, run or session, requested by and via `agent` / `guard` / `denial`, action `commit` / `push` / `merge` / `deploy` / `sql`, a push's mode `plain` / `force` / `delete`, repository, branch, PR, environment, summary, rollback, requested at, status `open` / `approved` / `refused` / `used` / `expired`, decision, decided by and at, the owner's line, valid until, used at / by / session, expired at and why, the turn or owner comment that carries the decision, told / delivered at); checks that a push or commit names its branch, a merge its PR, a deploy or SQL change its environment, an approved deploy its rollback, and that the status matches the decision and the use; indexes per task, run, comment and on the open and approved ones ([§1](#spec-approvals)). Additive only |
 | `0040_run_lifecycle` | `run.secret_seen_at`, `run.touched_live_at`, `run.transcript_path`, `run.deleted_at`; `project.run_retention` (days as text, or `off`; default `30`); `run_worktree.kept_reason`, `run_worktree.question_id` (the owner's question whether to remove it), `run_worktree.kept_at` (the owner's keep); an index on `run_event.ts` for the retention and one on the question of a kept worktree ([§1](#spec-run-lifecycle)). Additive only |
+| `0041_approval_reservation` | `approval.reserved_at`, `approval.reserved_for` (the call's `tool_use_id`), `approval.reserved_call`, `approval.reserved_session_id` (the approval held for one call until it ran), `approval.released_count` (default 0; the third release expires it); a partial index on `reserved_for` of the held ones ([§1](#spec-approvals)). Additive only |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

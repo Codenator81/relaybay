@@ -238,6 +238,7 @@ EVENT_KINDS = (
     "approval.requested",
     "approval.decided",
     "approval.used",
+    "approval.released",
     "approval.expired",
     "settings.run_login_any",
     "settings.run_limits",

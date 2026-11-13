@@ -14,6 +14,7 @@
     {%- elif a.status == "refused" -%}<span class="chip approval-refused">refused <time datetime="{{ a.decided_at }}" data-age>{{ a.decided_at|age }}</time></span>
     {%- elif a.status == "expired" -%}<span class="chip">expired <time datetime="{{ a.expired_at }}" data-age>{{ a.expired_at|age }}</time></span> <span class="muted">{{ a.expired_reason }}</span>
     {%- elif a.status == "used" -%}<span class="chip approval-used">approved, used <time datetime="{{ a.used_at }}" data-age>{{ a.used_at|age }}</time></span> <span class="muted">by <code>{{ a.used_by }}</code></span>
+    {%- elif a.reserved -%}<span class="chip approval-approved">approved, held for a running call</span> <span class="muted"><code>{{ a.reserved_call }}</code></span>
     {%- else -%}<span class="chip approval-approved">approved <time datetime="{{ a.decided_at }}" data-age>{{ a.decided_at|age }}</time>, not used yet</span>
     {%- endif -%}
     {%- if a.decision %} <span class="muted">{% if a.delivered_at %}delivered <time datetime="{{ a.delivered_at }}" data-age>{{ a.delivered_at|age }}</time>{% elif a.comment_id %}waits as owner comment #{{ a.comment_id }}{% elif a.turn_seq and a.turn_outcome in ("cancelled", "failed_to_start", "lost") %}not delivered: turn {{ a.turn_seq }} {{ a.turn_outcome|replace("_", " ") }}; it goes with the run's next turn{% elif a.turn_seq %}waits as turn {{ a.turn_seq }}{% else %}not delivered yet{% endif %}</span>{% endif %}
