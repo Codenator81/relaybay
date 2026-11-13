@@ -9,7 +9,7 @@ A live board and MCP server for people who run many Claude Code sessions across 
 Sessions report their work through MCP tools; you watch **projects → tasks → stages → reports** update
 in the browser, on the desktop or on your phone.
 
-> **Status: 0.6, early.** relaybay is built for my own workflow first and changes quickly; Windows is
+> **Status: 0.9, early.** relaybay is built for my own workflow first and changes quickly; Windows is
 > what it runs on every day, macOS and Linux are beta. Expect rough edges; issues and ideas are welcome.
 
 ![The relaybay board updating live while sessions report their work](https://raw.githubusercontent.com/Codenator81/relaybay/main/docs/assets/board.gif)
@@ -22,6 +22,22 @@ in the browser, on the desktop or on your phone.
   you accept or reject step by step, and your comments reach the agent in its next turn.
 - **Local and plain.** One process, SQLite, bound to `127.0.0.1`, token-protected, no telemetry;
   an installer for Windows, macOS and Linux, or `uvx relaybay` from the command line.
+
+### The case of the missing "yes"
+
+Tuesday, 6 p.m. Eleven sessions open in the desktop app, each in its own project. One of them asked
+a question at noon and has been waiting ever since. Which one? The chat list says "idle" eleven
+times. The coordinator session has the answer, but only the first lines of each report, and it is
+retelling them from memory. A push went out that nobody remembers approving. A plan was accepted
+and the session that wrote it never heard.
+
+The suspects: too many chats, too few witnesses. The desktop app is a fine room for one
+conversation; Projects keep the files of one job together. Neither keeps the record of what
+eleven agents asked, were told and were allowed to do.
+
+relaybay is that record. Every task is a card, every question has a default and an owner's answer,
+every push waits for a button on the board, and every turn's report lands in full. Case closed —
+and the next one starts on the card, not in a chat you have to find first.
 
 ## Quick start
 
