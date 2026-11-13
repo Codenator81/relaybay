@@ -323,8 +323,11 @@ each of them one flag with one value; never `--bare`, `--setting-sources`, `--st
 `claude` is a batch shim (`claude.cmd`, `claude.bat`), the text goes on stdin instead, and a turn
 whose other arguments hold `" % ^ & | < > !` or a line break is refused (cmd.exe would read them).
 A text that starts with `-` gets a leading space, so it is never read as an option. The process gets
-the server's environment without the host session's variables (`CLAUDE_CODE_HOST_SESSION_ID`,
-`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`), plus `RELAYBAY_RUN_ID`
+the server's environment without the variables of a Claude Code session the server may run in
+(`CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT` and every `CLAUDE_CODE_*`, `CLAUDE_AGENT_SDK_*` and
+`CLAUDE_PREVIEW_*` variable, such as `CLAUDE_CODE_CHILD_SESSION`, which would turn the run's
+transcript off; a provider, shell or output setting the user exports, such as
+`CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_GIT_BASH_PATH`, stays), plus `RELAYBAY_RUN_ID`
 and `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`; relaybay never sets the Claude Code config
 folder or a key variable.
 

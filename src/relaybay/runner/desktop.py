@@ -17,7 +17,7 @@ from pathlib import Path
 
 from relaybay.domain.errors import ValidationError
 from relaybay.domain.hooks import RUN_ID_ENV
-from relaybay.runner.claude_cli import HOST_VARIABLES, UNSAFE_BATCH_CHARS
+from relaybay.runner.claude_cli import UNSAFE_BATCH_CHARS, is_host_variable
 
 DESKTOP_TIMEOUT_SECONDS = 60.0
 REASON_MAX = 500
@@ -56,7 +56,7 @@ def terminal_command(claude_session_id: str) -> str:
 def desktop_env(base: Mapping[str, str]) -> dict[str, str]:
     """The server's environment without the host session's variables and without the run's id:
     the desktop session is the owner's, its hooks report as an ordinary session."""
-    return {k: v for k, v in base.items() if k not in HOST_VARIABLES and k != RUN_ID_ENV}
+    return {k: v for k, v in base.items() if not is_host_variable(k) and k != RUN_ID_ENV}
 
 
 def take_reason(stderr_file: Path) -> str:

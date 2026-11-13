@@ -147,6 +147,33 @@ def test_child_env_drops_the_host_session_and_sets_the_run() -> None:
     }
 
 
+def test_child_env_drops_a_host_sessions_markers_and_keeps_the_users_own() -> None:
+    # A server started from inside a Claude Code session: its child marker would turn off the
+    # run's transcript ("Transcript saving is off").
+    base = {
+        "PATH": "/usr/bin",
+        "CLAUDE_CODE_CHILD_SESSION": "1",
+        "CLAUDE_CODE_SESSION_ID": "abc",
+        "CLAUDE_CODE_MESSAGING_TOKEN": "secret-ish",
+        "CLAUDE_CODE_DESKTOP_APP_VERSION": "9.9",
+        "CLAUDE_AGENT_SDK_VERSION": "1",
+        "CLAUDE_PREVIEW_CLASSIFIER_FLOOR": "x",
+        "CLAUDE_PID": "123",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_GIT_BASH_PATH": "C:/Git/bin/bash.exe",
+        "CLAUDE_CONFIG_DIR": "/home/dev/.claude-alt",
+    }
+    env = child_env(base, 3)
+    assert env == {
+        "PATH": "/usr/bin",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_GIT_BASH_PATH": "C:/Git/bin/bash.exe",
+        "CLAUDE_CONFIG_DIR": "/home/dev/.claude-alt",
+        "RELAYBAY_RUN_ID": "3",
+        "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
+    }
+
+
 def test_parse_line_reads_init_and_result_only() -> None:
     init = {"type": "system", "subtype": "init", "session_id": "cc-1", "tools": ["Bash"]}
     assert parse_line(json.dumps(init) + "\n") == Init("cc-1")
