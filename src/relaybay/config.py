@@ -35,6 +35,12 @@ from relaybay.domain.plan import DEFAULT_DRAFT_HINT_HOURS, DEFAULT_REMINDER_EVER
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.review import DEFAULT_FILE_MAX_MB, DEFAULT_TASK_MAX_MB
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
+from relaybay.domain.runs import (
+    DEFAULT_MAX_RUNNING,
+    DEFAULT_MIN_MEMORY_MB,
+    MAX_RUNNING_MAX,
+    MIN_MEMORY_MAX,
+)
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
@@ -326,6 +332,26 @@ class Settings:
             env="RELAYBAY_MAX_CONCURRENT_SESSIONS",
         ),
     )
+    max_running_turns: int = field(
+        default=DEFAULT_MAX_RUNNING,
+        metadata=_doc(
+            "Turns of runs on cards that run at once, over all runs (whole number from 1 to"
+            f" {MAX_RUNNING_MAX}); a turn past it waits in the queue with its reason. Settings"
+            " → Agents overrides it.",
+            key="max_running_turns",
+            env="RELAYBAY_MAX_RUNNING_TURNS",
+        ),
+    )
+    min_free_memory_mb: int = field(
+        default=DEFAULT_MIN_MEMORY_MB,
+        metadata=_doc(
+            "Free memory in MB a turn of a run needs to start (whole number >= 0; 0 is no"
+            " check); below it the turn waits in the queue with its reason. Settings → Agents"
+            " overrides it.",
+            key="min_free_memory_mb",
+            env="RELAYBAY_MIN_FREE_MEMORY_MB",
+        ),
+    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
@@ -514,6 +540,8 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         ("update_check_hours", 1, HOURS_MAX),
         ("backup_keep", 0, None),
         ("max_concurrent_sessions", 0, None),
+        ("max_running_turns", 1, MAX_RUNNING_MAX),
+        ("min_free_memory_mb", 0, MIN_MEMORY_MAX),
     ):
         if key in data:
             value = data[key]

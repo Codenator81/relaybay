@@ -118,7 +118,8 @@ def test_a_look_answer_during_the_turn_waits_and_the_hooks_say_so(runs: Runs) ->
         assert first["started_at"] and second["started_at"] is None  # queued behind the turn
         go.write_text("go", encoding="utf-8")
         poll(lambda: len([t for t in runs.turns(run["id"]) if t["ended_at"]]) == 2, what="turn 2")
-    told = [c["text"] for c in runs.trace("context") if c["event"] == "PostToolUse"]
+    # Told once, by whichever tool hook comes first after the answer (PreToolUse or PostToolUse).
+    told = [c["text"] for c in runs.trace("context") if c["event"] in ("PreToolUse", "PostToolUse")]
     waiting = f"Owner's answer to question {q['id']}"
     assert sum(waiting in text and "is waiting" in text for text in told) == 1
     assert runs.trace("argv")[1]["prompt"].endswith("): The total is cut off on a phone")

@@ -6,6 +6,7 @@ import base64
 import binascii
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -187,7 +188,7 @@ from relaybay.domain.rules import (
     verified_marks_problem,
     warning_text,
 )
-from relaybay.domain.runs import Run, RunDefaults, RunTurn, RunView
+from relaybay.domain.runs import Run, RunDefaults, RunTurn, RunView, RunWorktree
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.switcher import (
@@ -228,7 +229,8 @@ from relaybay.policy import (
 )
 from relaybay.runner import auth as run_auth
 from relaybay.runner import desktop as run_desktop
-from relaybay.runner import worktrees
+from relaybay.runner import memory as run_memory
+from relaybay.runner import transcripts, worktrees
 from relaybay.runner.claude_cli import TurnSpec, build_command
 from relaybay.runner.layers import LayerState, run_files, user_layer_state, write_run_files
 from relaybay.runner.manager import RunManager, RunnerConfig
@@ -279,6 +281,15 @@ AUDIT_CHANGE_KINDS = (
     "approval.decided",
     "approval.used",
     "approval.expired",
+    "run.turn_queued",
+    "run.start_anyway",
+    "run.worktree_removed",
+    "run.worktree_kept",
+    "run.secret_seen",
+    "run.touched_live",
+    "run.traces_deleted",
+    "run.events_expired",
+    "settings.run_limits",
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -309,6 +320,15 @@ def _note(text: str) -> None:
 
 
 REPORT_MARKS_FROM_KEY = "report_marks_from"
+
+
+def _reason_kind(reason: str | None) -> str:
+    """`waiting for memory: 1.2 GB free, …` -> `waiting for memory`; a brake keeps its target."""
+    return (reason or "").split(":", 1)[0]
+
+
+def _cut_text(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _first_line(text: str) -> str:
@@ -479,6 +499,7 @@ class Inbox:
     message_loops: list[SessionMessage] = field(default_factory=list)  # replies refused
     questions: list[Question] = field(default_factory=list)  # open, of all cards
     approvals: list[Approval] = field(default_factory=list)  # open requests, of all cards
+    queued: list[Run] = field(default_factory=list)  # runs whose turn waits in the queue
 
     @property
     def count(self) -> int:
@@ -486,6 +507,7 @@ class Inbox:
         return (
             len(self.questions)
             + len(self.approvals)
+            + len(self.queued)
             + len(self.intake)
             + len(self.answers)
             + (1 if self.backlog_new else 0)
@@ -1049,6 +1071,12 @@ RUN_SETTINGS_NOT_COORDINATOR = (
     " changes a run on the card. Nothing changed."
 )
 CLAUDE_SESSION_RE = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+RUN_CHECK_SECONDS = 15.0  # how often queued turns, closes and the retention are looked at
+RETENTION_SECONDS = 3600.0  # how often old run lines are deleted
+# The options of relaybay's question about a worktree a card's close kept.
+WORKTREE_REMOVE = "remove"
+WORKTREE_KEEP = "keep"
+SERVER_STOPPING = "waiting for the server to start again"
 
 
 @dataclass(slots=True)
@@ -1193,6 +1221,8 @@ class Service:
         max_concurrent_sessions: int = 0,
         rules_table: dict[str, Any] | None = None,
         runner: RunnerConfig | None = None,
+        max_running_turns: int = run_rules.DEFAULT_MAX_RUNNING,
+        min_free_memory_mb: int = run_rules.DEFAULT_MIN_MEMORY_MB,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -1292,6 +1322,17 @@ class Service:
         self._pulse_noted: set[int] = set()
         # The turns of runs on cards; None without a runner config (runs are then refused).
         self.runs: RunManager | None = RunManager(self, runner) if runner is not None else None
+        # config.toml's limits; the owner's values from Settings -> Agents win over them.
+        self.max_running_turns = max_running_turns
+        self.min_free_memory_mb = min_free_memory_mb
+        # Free memory in MB (None: not readable here); tests put their own reader here.
+        self.memory_reader: Callable[[], int | None] | None = None
+        # Closings of cards gone to done (end the run, remove worktrees, delete traces).
+        self._closings: dict[int, asyncio.Task[None]] = {}
+        self._brake_stops: set[asyncio.Task[None]] = set()
+        self._braked_runs: set[int] = set()  # a brake stop of these is under way
+        self._trace_failures: dict[int, list[str]] = {}  # per run: what its last delete left
+        self._retention_at: float | None = None  # monotonic time of the last retention pass
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1335,6 +1376,10 @@ class Service:
         self.report_marks_from = int(value)
 
     async def close(self) -> None:
+        # A card's close that is under way finishes first: it may be removing a worktree.
+        pending = [*self._closings.values(), *self._brake_stops]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         if self.runs is not None:
             await self.runs.close()  # the turns end `stopped` while the database is still open
         for timer in [*self._activity_timers.values(), *self._status_timers.values()]:
@@ -1375,6 +1420,8 @@ class Service:
         await conn.execute("COMMIT")
         for event in events:
             self.bus.publish(event)
+            if event.kind == "task.stage_changed" and event.payload.get("to") == Stage.DONE.value:
+                self._schedule_close(event.task_id, event.actor)
 
     def desktop_link(self, external_id: str) -> str:
         return self.desktop_link_template.replace("{id}", external_id)
@@ -2320,6 +2367,12 @@ class Service:
         actor = session.name if session else "hook"
         command = guard_command(call, test_secrets)
         async with self._tx() as tx:
+            if session is not None and session.kind == "run":
+                # Its lines and transcript go when the card closes, allowed call or not.
+                for run in await repo.open_runs_of_session(tx.conn, session.id):
+                    if await repo.mark_run(tx.conn, run.id, "touched_live_at", tx.now):
+                        task = await self.get_task(run.task_id, tx.conn)
+                        await self._run_event(tx, "run.touched_live", "relaybay", task, run.id)
             bound = await repo.open_tasks_of_session(tx.conn, session.id) if session else []
             for touch in touches:
                 env = touch.environment
@@ -2497,6 +2550,7 @@ class Service:
             await repo.open_message_loops(self._r),
             await self.open_questions(),
             await self.open_approval_requests(),
+            await self.queued_runs(),
         )
 
     def update_notice(self) -> updates.UpdateNotice | None:
@@ -2859,11 +2913,52 @@ class Service:
 
     async def brake_stop(self, payload: Any) -> dict[str, Any] | None:
         """The stop of a `PreToolUse` under the brake, or None. Reads only: the receiver asks it
-        before it writes the event, so a slow or failing write cannot lose the stop."""
+        before it writes the event, so a slow or failing write cannot lose the stop. A refused
+        call of a run's turn also has the turn's process tree killed, in the background."""
         hook = parse_hook(payload)
         if hook is None or hook.event != "PreToolUse":
             return None
-        return await self._brake_answer(payload, hook)
+        answer = await self._brake_answer(payload, hook)
+        if answer is not None and self.runs is not None:
+            for run_id in await self._runs_of_hook(payload, hook):
+                if run_id not in self._braked_runs:
+                    self._braked_runs.add(run_id)
+                    stop = asyncio.create_task(self._stop_braked_run(run_id))
+                    self._brake_stops.add(stop)
+                    stop.add_done_callback(self._brake_stops.discard)
+        return answer
+
+    async def _runs_of_hook(self, payload: Any, hook: HookEvent) -> set[int]:
+        """The runs a refused call may come from: the open run of the hook's session row (a
+        command hook carries the run id on SessionStart only, which linked the row) and the run
+        an http hook names in its header. Each is checked again before anything is killed."""
+        found: set[int] = set()
+        named = run_of_payload(payload)
+        if named is not None:
+            found.add(named)
+        try:
+            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            if session is not None and session.kind == "run":
+                found.update(r.id for r in await repo.open_runs_of_session(self._r, session.id))
+        except Exception:
+            logger.exception("Finding the run of a braked call failed; only its own stop holds")
+        return found
+
+    async def _stop_braked_run(self, run_id: int) -> None:
+        """Kill the turn of a run whose call the brake refused, when a brake holds the run itself
+        (the run id came with the hook, so it is checked here, not trusted)."""
+        try:
+            runs = self.runs
+            run = await repo.get_run(self._r, run_id)
+            if runs is None or run is None or not run.is_open or not runs.is_running(run.id):
+                return
+            brake = await self._run_brake(self._r, run)
+            if brake is not None:
+                await runs.stop(run.id, run_rules.brake_reason(brake.target, brake.reason))
+        except Exception:
+            logger.exception("Stopping braked run %d failed; its turn may still run", run_id)
+        finally:
+            self._braked_runs.discard(run_id)
 
     async def _limit_lines(self, hook: HookEvent) -> list[str]:
         """Context lines of the brake (on the owner's prompt, which is never blocked) and of a
@@ -4037,6 +4132,8 @@ class Service:
             )
             if diff["stage"] == Stage.DONE:
                 await self._close_owner_items(tx, task, actor)
+            elif task.stage == Stage.DONE:
+                await self._withdraw_worktree_questions(tx, task, actor)
         # An automatic unlog has its own event; a new issue's reset is an ordinary change.
         others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
         others |= linked
@@ -10143,8 +10240,10 @@ class Service:
         self, slug: str, conn: aiosqlite.Connection | None = None
     ) -> RunDefaults:
         project = await self.get_project(slug, conn)
-        found = await repo.get_run_defaults(conn or self._r, project.id)
-        return found or RunDefaults(project.id)
+        found = await repo.get_run_defaults(conn or self._r, project.id) or RunDefaults(project.id)
+        retention = await repo.get_project_retention(conn or self._r, project.id)
+        found.retention = retention or run_rules.DEFAULT_RETENTION
+        return found
 
     async def set_run_defaults(
         self, slug: str, values: dict[str, Any], *, actor: str = "owner"
@@ -10167,7 +10266,13 @@ class Service:
                 chrome=bool(values.get("chrome", current.chrome)),
                 folder=run_rules.clean_folder(values.get("folder", current.folder)),
             )
+            retention = await repo.get_project_retention(tx.conn, project.id)
+            new.retention = run_rules.clean_retention(
+                values.get("retention"), retention or run_rules.DEFAULT_RETENTION
+            )
             await repo.upsert_run_defaults(tx.conn, new, tx.now, actor)
+            if new.retention != retention:
+                await repo.set_project_retention(tx.conn, project.id, new.retention, tx.now)
             await tx.event(
                 "run.defaults_set",
                 actor,
@@ -10179,10 +10284,9 @@ class Service:
                 allowed_tools=new.allowed_tools,
                 chrome=new.chrome,
                 folder=new.folder,
+                retention=new.retention,
             )
-            saved = await repo.get_run_defaults(tx.conn, project.id)
-            assert saved is not None
-            return saved
+            return await self.run_defaults(slug, tx.conn)
 
     async def run_login_any(self) -> bool:
         return await repo.get_app_setting(self._r, run_rules.LOGIN_ANY_KEY) == "1"
@@ -10343,9 +10447,12 @@ class Service:
             raise NotFoundError(f"Run #{run_id} not found.")
         return run
 
-    async def _run_preflight(self, runs: RunManager) -> tuple[str, LayerState | None]:
+    async def _run_preflight(
+        self, runs: RunManager, run_id: int | None = None
+    ) -> tuple[str, LayerState | None]:
         """The sign-in and the user layer, right before a turn; returns the sign-in method and
-        where relaybay's hooks and MCP server come from."""
+        where relaybay's hooks and MCP server come from. `run_id`: counted as checked since this
+        server started, so its next turn does not ask `claude auth status` again."""
         if runs.claude() is None:
             raise ValidationError(self._claude_missing())
         state = await runs.login(force=True)
@@ -10358,6 +10465,8 @@ class Service:
         layers = await self.run_layers()
         if layers is not None and layers.refusal:
             raise ValidationError(layers.refusal)
+        if run_id is not None:
+            runs.checked_since_start.add(run_id)
         return state.method or "unknown", layers
 
     async def _run_choices(
@@ -10506,7 +10615,7 @@ class Service:
         specs = worktrees.plan_worktrees(task.key, run_id, choices, self._worktree_root())
         cwd_folder = defaults.folder if cwd_repo is None else None
         await self._worktree_conflict(self._r, specs, cwd_folder)
-        method, layers = await self._run_preflight(runs)
+        method, layers = await self._run_preflight(runs, run_id)
         hooks_source = layers.hooks_source if layers is not None else "user"
         mcp_source = layers.mcp_source if layers is not None else "user"
         claude = runs.claude()
@@ -10534,8 +10643,9 @@ class Service:
         # The paths as made: a taken run folder moves to a numbered one.
         by_repo = {spec.repo_id: spec for spec in made}
         cwd_path = (defaults.folder or "") if cwd_repo is None else by_repo[cwd_repo].path
+        free = await self._free_memory()
         try:
-            turn_id = await self._insert_run(
+            launches = await self._insert_run(
                 task,
                 run_id,
                 made,
@@ -10554,11 +10664,12 @@ class Service:
                     "mcp_source": mcp_source,
                 },
                 text=text,
+                free_mb=free,
             )
         except BaseException:
             await asyncio.shield(asyncio.to_thread(worktrees.remove_created, made, git))
             raise
-        await self._spawn_turn(run_id, turn_id)
+        await self._spawn_all(launches)
         return await self.get_run(run_id)
 
     async def _insert_run(
@@ -10573,8 +10684,11 @@ class Service:
         cwd_repo: int | None,
         values: dict[str, Any],
         text: str,
-    ) -> int:
-        """The one transaction of a Start; returns turn 1's id."""
+        free_mb: int | None,
+    ) -> list[tuple[int, int]]:
+        """The one transaction of a Start: the run is written `queued` with turn 1, then the
+        queue starts what the slots, memory and brakes allow (turn 1 too, unless it waits).
+        Returns the turns to spawn after the commit."""
         async with self._tx() as tx:
             task = await self.get_task(task.id, tx.conn)
             if await repo.open_run_of_task(tx.conn, task.id) is not None:
@@ -10591,7 +10705,7 @@ class Service:
                     "cwd": cwd_path,
                     "cwd_repo_id": cwd_repo,
                     **values,
-                    "status": "running",
+                    "status": "queued",
                     "started_by": actor,
                     "started_by_kind": caller_kind,
                 },
@@ -10630,8 +10744,7 @@ class Service:
             assert session is not None
             await self._bind(tx, task, session, actor)
             prompt = self._run_header(task, run_id, name, cwd_path, made) + text
-            turn_id = await repo.insert_turn(tx.conn, run_id, prompt, actor, caller_kind, tx.now)
-            await repo.start_turn(tx.conn, turn_id, tx.now)
+            await repo.insert_turn(tx.conn, run_id, prompt, actor, caller_kind, tx.now)
             await self._run_event(
                 tx,
                 "run.started",
@@ -10642,8 +10755,7 @@ class Service:
                 mode=values["permission_mode"],
                 worktrees=sum(1 for s in made if s.create),
             )
-            await self._run_event(tx, "run.turn_started", actor, task, run_id, seq=1)
-        return turn_id
+            return await self._dispatch(tx, free_mb, actor)
 
     async def start_run_mcp(
         self,
@@ -10952,8 +11064,9 @@ class Service:
         runs = self._run_manager()
         queued = await repo.next_queued_turn(self._r, run_id)
         if queued is not None and run_id not in runs.checked_since_start:
-            await self._run_preflight(runs)  # the first turn after a restart checks again
-        follow: int | None = None
+            await self._run_preflight(runs, run_id)  # the first turn after a restart checks again
+        free = await self._free_memory()
+        launches: list[tuple[int, int]] = []
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
             if not run.with_owner:
@@ -10966,20 +11079,200 @@ class Service:
             if event:
                 await self._run_event(tx, "run.returned", actor, task, run.id)
             if run.is_open and run.status != "running":
-                follow = await self._start_next_queued(tx, run, task, actor)
-        if follow is not None:
-            await self._spawn_turn(run_id, follow)
+                launches = await self._dispatch(tx, free, actor)
+        await self._spawn_all(launches)
 
-    async def _start_next_queued(self, tx: _Tx, run: Run, task: Task, actor: str) -> int | None:
-        """Mark the first waiting text started and the run running; its id, None if none waits.
-        The caller spawns it after the commit."""
-        queued = await repo.next_queued_turn(tx.conn, run.id)
-        if queued is None or await repo.active_turn(tx.conn, run.id) is not None:
+    # --- limits before each turn: slots, free memory, the brake ----------------------------
+
+    async def run_limits(self, conn: aiosqlite.Connection | None = None) -> tuple[int, int]:
+        """(turns that may run at once, MB of free memory a turn needs; 0 is no check): the
+        owner's values from Settings -> Agents, else config.toml's."""
+        conn = conn or self._r
+        top = await repo.get_app_setting(conn, run_rules.MAX_RUNNING_KEY)
+        need = await repo.get_app_setting(conn, run_rules.MIN_MEMORY_KEY)
+        return (
+            int(top) if top is not None else self.max_running_turns,
+            int(need) if need is not None else self.min_free_memory_mb,
+        )
+
+    async def set_run_limits(
+        self, max_running_turns: Any, min_free_memory_mb: Any, *, actor: str = "owner"
+    ) -> tuple[int, int]:
+        """The owner's limits in Settings -> Agents (board only). Turns that wait start at once
+        when the new limits let them."""
+        top = run_rules.clean_limit(
+            max_running_turns, "Turns at once", 1, run_rules.MAX_RUNNING_MAX
+        )
+        need = run_rules.clean_limit(
+            min_free_memory_mb, "Free memory before a turn", 0, run_rules.MIN_MEMORY_MAX
+        )
+        async with self._tx() as tx:
+            for key, value in ((run_rules.MAX_RUNNING_KEY, top), (run_rules.MIN_MEMORY_KEY, need)):
+                await repo.set_app_setting(tx.conn, key, str(value), tx.now, actor)
+            await tx.event(
+                "settings.run_limits", actor, max_running_turns=top, min_free_memory_mb=need
+            )
+        await self.dispatch_queued(actor)
+        return top, need
+
+    async def _free_memory(self) -> int | None:
+        reader = self.memory_reader or run_memory.free_mb
+        return await asyncio.to_thread(reader)
+
+    async def free_memory_now(self) -> int | None:
+        """For Settings -> Agents: this machine's free memory in MB, None when unreadable."""
+        return await self._free_memory()
+
+    async def _run_brake(self, conn: aiosqlite.Connection, run: Run) -> agent_limits.Brake | None:
+        """The open brake that holds a run: all agents, its project (or one whose folder it
+        works in), its card or its session; a stop budget's brake too."""
+        brakes = await repo.open_brakes(conn)
+        if not brakes:
             return None
-        await repo.start_turn(tx.conn, queued.id, tx.now)
+        at_cwd = self._projects_at_cwd(await repo.projects_with_repo_path(conn), run.cwd)
+        projects = {run.project_id, *(p.id for p in at_cwd)}
+        for brake in brakes:
+            if (
+                brake.scope == "all"
+                or (brake.scope == "project" and brake.project_id in projects)
+                or (brake.scope == "task" and brake.task_id == run.task_id)
+                or (
+                    brake.scope == "session"
+                    and run.session_id is not None
+                    and brake.session_id == run.session_id
+                )
+            ):
+                return brake
+        return None
+
+    async def _dispatch(self, tx: _Tx, free_mb: int | None, actor: str) -> list[tuple[int, int]]:
+        """Start the waiting turns the limits allow, first queued first over all runs: no brake
+        on the run, a free slot (turns running over all runs, counted in this transaction, so
+        two starts cannot both take the last one) and `free_mb` (read before the transaction;
+        None: not readable, no check) at least the need. A turn that may not start stays queued
+        with its reason on the run. Each start takes the need off the reading, so one reading
+        does not start several turns that together need more. While the server stops nothing
+        starts: a turn that would have stays queued for the next server. Returns (run, turn) to
+        spawn after the commit."""
+        if self.runs is not None and self.runs.closing:
+            for run, turn_id in await repo.queued_runs(tx.conn):
+                if run.status != "queued":
+                    await self._hold_turn(tx, run, turn_id, SERVER_STOPPING)
+            return []
+        top, need = await self.run_limits(tx.conn)
+        running = await repo.count_running_turns(tx.conn)
+        launches: list[tuple[int, int]] = []
+        for run, turn_id in await repo.queued_runs(tx.conn):
+            brake = await self._run_brake(tx.conn, run)
+            if brake is not None:
+                reason = run_rules.brake_reason(brake.target, brake.reason)
+            elif running >= top:
+                reason = run_rules.slot_reason(running, top)
+            elif need and free_mb is not None and free_mb < need:
+                reason = run_rules.memory_reason(free_mb, need)
+            else:
+                task = await self.get_task(run.task_id, tx.conn)
+                await self._start_queued_turn(tx, run, task, turn_id, actor)
+                running += 1
+                if free_mb is not None:
+                    free_mb -= need
+                launches.append((run.id, turn_id))
+                continue
+            await self._hold_turn(tx, run, turn_id, reason)
+        return launches
+
+    async def _start_queued_turn(
+        self, tx: _Tx, run: Run, task: Task, turn_id: int, actor: str
+    ) -> None:
+        turn = await repo.get_turn(tx.conn, turn_id)
+        assert turn is not None
+        await repo.start_turn(tx.conn, turn_id, tx.now)
         await self._set_run_status(tx, run, "running", None)
-        await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=queued.seq)
-        return queued.id
+        await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
+
+    async def _hold_turn(self, tx: _Tx, run: Run, turn_id: int, reason: str) -> None:
+        """The run waits with its reason; a `run.turn_queued` event only when the kind of
+        reason changes (slot, memory, brake), so the periodic re-check does not journal every
+        change of the free memory or of the running count: those only update the reason."""
+        if run.status == "queued" and run.status_reason == reason:
+            return
+        if run.status == "queued" and _reason_kind(run.status_reason) == _reason_kind(reason):
+            await repo.update_run(tx.conn, run.id, {"status_reason": reason}, tx.now)
+            return
+        task = await self.get_task(run.task_id, tx.conn)
+        turn = await repo.get_turn(tx.conn, turn_id)
+        assert turn is not None
+        await self._set_run_status(tx, run, "queued", reason)
+        await self._run_event(
+            tx, "run.turn_queued", "relaybay", task, run.id, seq=turn.seq, reason=reason
+        )
+
+    async def dispatch_queued(self, actor: str = "relaybay") -> int:
+        """Start what waits and may start now (the periodic re-check of memory and brakes, a
+        changed limit); returns how many turns started."""
+        if self.runs is None or not await repo.queued_runs(self._r):
+            return 0
+        free = await self._free_memory()
+        async with self._tx() as tx:
+            launches = await self._dispatch(tx, free, actor)
+        await self._spawn_all(launches)
+        return len(launches)
+
+    async def queued_runs(self) -> list[Run]:
+        """The Inbox's runs whose next turn waits for a slot, memory or a brake."""
+        return [run for run, _ in await repo.queued_runs(self._r) if run.status == "queued"]
+
+    @staticmethod
+    def _check_anyway(run: Run) -> None:
+        if not run.is_open:
+            raise ValidationError(f"Run {run.id} has ended.")
+        if run.with_owner:
+            raise ValidationError(f"Run {run.id} is with the owner in the desktop app.")
+        if run.status != "queued":
+            raise ValidationError(
+                f"Run {run.id} is {run.status}: no turn of it waits in the queue."
+            )
+
+    async def start_anyway(self, run_id: int, *, actor: str = "owner") -> Run:
+        """Start anyway (the board only): the run's waiting turn starts past the slot limit and
+        the memory check, never past a brake, which only the owner's release lifts. Journaled
+        with what it went past."""
+        runs = self._run_manager()
+        run = await self.get_run(run_id)
+        self._check_anyway(run)
+        if run.id not in runs.checked_since_start:
+            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
+        free = await self._free_memory()
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            self._check_anyway(run)
+            brake = await self._run_brake(tx.conn, run)
+            if brake is not None:
+                raise ValidationError(
+                    f"Run {run.id} is under the brake ({brake.target}): Start anyway does not go"
+                    " past a brake; release it in the banner first."
+                )
+            turn = await repo.next_queued_turn(tx.conn, run.id)
+            if turn is None or await repo.active_turn(tx.conn, run.id) is not None:
+                raise ValidationError(f"No turn of run {run.id} waits in the queue.")
+            task = await self.get_task(run.task_id, tx.conn)
+            top, need = await self.run_limits(tx.conn)
+            await self._run_event(
+                tx,
+                "run.start_anyway",
+                actor,
+                task,
+                run.id,
+                seq=turn.seq,
+                reason=run.status_reason,
+                running=await repo.count_running_turns(tx.conn),
+                max_running_turns=top,
+                free_mb=free,
+                min_free_memory_mb=need,
+            )
+            await self._start_queued_turn(tx, run, task, turn.id, actor)
+        await self._spawn_all([(run.id, turn.id)])
+        return await self.get_run(run_id)
 
     async def _run_event(
         self, tx: _Tx, kind: str, actor: str, task: Task, run_id: int, **payload: Any
@@ -11007,30 +11300,47 @@ class Service:
         await repo.update_run(tx.conn, run.id, values, tx.now)
         run.status = new
 
-    async def _spawn_turn(self, run_id: int, turn_id: int) -> None:
-        """Start the process of a turn already marked started; a failure ends it visibly.
-        Callers await it right after the commit that marked the turn started, so the reservation
-        below is taken before anything else can run."""
+    async def _spawn_all(self, launches: list[tuple[int, int]]) -> None:
+        """Spawn turns marked started. Called right after the commit that marked them: every
+        run's slot is reserved before the first spawn awaits, so a Stop of any of them waits
+        for its process instead of seeing none."""
+        if not launches:
+            return
         runs = self._run_manager()
-        reserved = runs.reserve(run_id)
+        held = {run_id: runs.reserve(run_id) for run_id, _ in launches}
+        for run_id, turn_id in launches:
+            await self._spawn_turn(run_id, turn_id, held[run_id])
+
+    async def _spawn_turn(self, run_id: int, turn_id: int, reserved: bool) -> None:
+        """Start the process of a turn already marked started; a failure ends it visibly.
+        `reserved`: what `reserve` answered right after the commit that marked it started."""
+        runs = self._run_manager()
         try:
             run = await self.get_run(run_id)
             turn = await repo.get_turn(self._r, turn_id)
             folders = await repo.list_run_worktrees(self._r, run_id)
         except BaseException:
-            runs.release(run_id)
+            if reserved:
+                runs.release(run_id)
             raise
         assert turn is not None
         if run.status != "running" or turn.ended_at is not None:
             # Stopped, ended or lost before the process existed: nothing to start.
-            runs.release(run_id)
+            if reserved:
+                runs.release(run_id)
             return
         claude = runs.claude()
         error = self._claude_missing() if claude is None else None
         if not reserved:
             error = "the server is stopping" if runs.closing else "a turn of this run is running"
+        if claude is not None and reserved and run.id not in runs.checked_since_start:
+            # Started by the queue after a restart: the sign-in is checked first, as on Send.
+            try:
+                await self._run_preflight(runs, run.id)
+            except ValidationError as exc:
+                error = str(exc)
         pid = None
-        if claude is not None and reserved:
+        if claude is not None and reserved and error is None:
             try:
                 settings_file, mcp_file = await asyncio.to_thread(
                     write_run_files,
@@ -11076,22 +11386,47 @@ class Service:
             await repo.cancel_queued(tx.conn, run.id, tx.now)
             await self._set_run_status(tx, run, "stopped", error)
             await self._run_event(tx, "run.stopped", "relaybay", task, run.id, reason=error)
+        await self.dispatch_queued()  # its slot is free again
 
     async def turn_init(self, turn_id: int, claude_session_id: str) -> None:
-        """The turn's `system/init`: the Claude Code session id every later turn resumes."""
+        """The turn's `system/init`: the Claude Code session id every later turn resumes, and
+        where Claude Code keeps that session's transcript."""
         async with self._tx() as tx:
             turn = await repo.get_turn(tx.conn, turn_id)
             run = await repo.get_run(tx.conn, turn.run_id) if turn is not None else None
             if run is not None and run.claude_session_id != claude_session_id:
+                path = transcripts.transcript_path(self._claude_data(), run.cwd, claude_session_id)
                 await repo.update_run(
-                    tx.conn, run.id, {"claude_session_id": claude_session_id}, tx.now
+                    tx.conn,
+                    run.id,
+                    {"claude_session_id": claude_session_id, "transcript_path": str(path)},
+                    tx.now,
                 )
 
+    def _claude_data(self) -> Path:
+        """Claude Code's data folder, where a run's transcript is (`CLAUDE_CONFIG_DIR`, else
+        `~/.claude`; the runner's `claude_dir` in tests)."""
+        configured = self.runs.config.claude_dir if self.runs is not None else None
+        return transcripts.data_folder(configured)
+
     async def turn_events(self, turn_id: int, events: list[run_lines.StreamEvent]) -> None:
-        """A batch of a turn's stream-json lines, masked and compressed by the runner. No board
-        event: the card shows them when asked, and the turn's end refreshes it."""
+        """A batch of a turn's stream-json lines, masked and compressed by the runner, stored
+        unless the project's retention is off. A line the masking changed marks the run "saw a
+        secret" (once, with an event). No board event for the lines: the card shows them when
+        asked, and the turn's end refreshes it."""
         async with self._tx() as tx:
-            await repo.insert_run_events(tx.conn, turn_id, events)
+            found = await repo.run_of_turn_retention(tx.conn, turn_id)
+            if found is None:
+                return
+            run_id, retention = found
+            if any(e.secret for e in events) and await repo.mark_run(
+                tx.conn, run_id, "secret_seen_at", tx.now
+            ):
+                run = await self.get_run(run_id, tx.conn)
+                task = await self.get_task(run.task_id, tx.conn)
+                await self._run_event(tx, "run.secret_seen", "relaybay", task, run_id)
+            if retention != run_rules.RETENTION_OFF:
+                await repo.insert_run_events(tx.conn, turn_id, events)
 
     async def _turn_report(
         self,
@@ -11157,8 +11492,8 @@ class Service:
     ) -> None:
         """A turn's process ended. The run goes idle (a result came), stopped (Stop, also after
         a result while the process was still ending) or lost; Stop and lost cancel the texts
-        that waited, otherwise the next one starts."""
-        follow: tuple[int, int] | None = None
+        that waited. Its slot is free: the queue starts what may start, this run's next text
+        among them."""
         denied: list[tuple[arules.Need, str]] = []
         spent: dict[int, str] = {}
         if result is not None and result.refusals:
@@ -11170,6 +11505,7 @@ class Service:
                 denied, spent = await self._denied_needs(run, ended, result)
             except Exception:
                 logger.exception("Reading the denials of turn %d for approvals failed", turn_id)
+        free = await self._free_memory()
         async with self._tx() as tx:
             turn = await repo.get_turn(tx.conn, turn_id)
             assert turn is not None
@@ -11221,18 +11557,14 @@ class Service:
                     await self._run_waits(tx, run, task, blocking, why, requests)
                 else:
                     await self._set_run_status(tx, run, "idle", why)
-                if queued is not None:
-                    queued_id = await self._start_next_queued(tx, run, task, "relaybay")
-                    if queued_id is not None:
-                        follow = (run.id, queued_id)
             else:
                 new = "lost" if outcome == "lost" else "stopped"
                 await self._set_run_status(tx, run, new, reason)
                 await repo.cancel_queued(tx.conn, run.id, tx.now)
                 await self._run_event(tx, f"run.{new}", "relaybay", task, run.id, reason=reason)
                 await self._end_run_session(tx, run)
-        if follow is not None:
-            await self._spawn_turn(*follow)
+            launches = await self._dispatch(tx, free, "relaybay")
+        await self._spawn_all(launches)
 
     async def _end_run_session(self, tx: _Tx, run: Run) -> None:
         """A killed turn sends no SessionEnd (Windows kills hard): the row ends here."""
@@ -11262,7 +11594,8 @@ class Service:
             and not runs.is_running(run.id)
             and run.id not in runs.checked_since_start
         ):
-            await self._run_preflight(runs)  # the first turn after a restart checks again
+            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
+        free = await self._free_memory()
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
             if not run.is_open:
@@ -11271,20 +11604,20 @@ class Service:
             repeat = await self._repeated_send(tx, run.id, prompt, actor)
             if repeat is not None:
                 return repeat
-            turn_id, launch = await self._queue_turn(tx, run, task, prompt, actor)
-        if launch:
-            await self._spawn_turn(run.id, turn_id)
+            turn_id, launches = await self._queue_turn(tx, run, task, prompt, actor, free)
+        await self._spawn_all(launches)
         found = await repo.get_turn(self._r, turn_id)
         assert found is not None
         return found
 
     async def _queue_turn(
-        self, tx: _Tx, run: Run, task: Task, text: str | None, actor: str
-    ) -> tuple[int, bool]:
-        """A new turn of the owner's on the run: started at once when no turn runs and the run is
-        not with the owner, else it waits. The owner's answers that no turn's process got yet
-        (their turn was cancelled) go first in its text. Returns the turn's id and whether the
-        caller spawns it after the commit."""
+        self, tx: _Tx, run: Run, task: Task, text: str | None, actor: str, free_mb: int | None
+    ) -> tuple[int, list[tuple[int, int]]]:
+        """A new turn of the owner's on the run. When no turn of the run runs and it is not with
+        the owner, the queue decides (`_dispatch`): it starts now, or waits for a slot, memory
+        or a brake with its reason; else it waits for the running turn or for Back to the
+        program. The owner's answers that no turn's process got yet (their turn was cancelled)
+        go first in its text. Returns the turn's id and the turns to spawn after the commit."""
         pending = await repo.pending_answers(tx.conn, run.id)
         decided = await repo.pending_decisions(tx.conn, run.id)
         parts = [qrules.answer_line(q) for q in pending]
@@ -11306,12 +11639,9 @@ class Service:
             and run.status != "running"
             and await repo.active_turn(tx.conn, run.id) is None
         ):
-            await repo.start_turn(tx.conn, turn_id, tx.now)
-            await self._set_run_status(tx, run, "running", None)
-            await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
-            return turn_id, True
+            return turn_id, await self._dispatch(tx, free_mb, actor)
         await self._run_event(tx, "run.turn_queued", actor, task, run.id, seq=turn.seq)
-        return turn_id, False
+        return turn_id, []
 
     @staticmethod
     async def _repeated_send(tx: _Tx, run_id: int, prompt: str, actor: str) -> RunTurn | None:
@@ -11362,29 +11692,33 @@ class Service:
             await self._end_run_session(tx, run)
         return True
 
-    async def end_run(self, run_id: int, *, actor: str = "owner") -> Run:
-        """No more turns: a running one is stopped first, waiting texts are cancelled."""
+    async def end_run(self, run_id: int, *, actor: str = "owner", reason: str | None = None) -> Run:
+        """No more turns: a running one is stopped first, waiting texts are cancelled. `reason`:
+        the run's status reason instead of "ended by <actor>"."""
         runs = self._run_manager()
         run = await self.get_run(run_id)
         if not run.is_open:
             raise ValidationError(f"Run {run.id} has already ended.")
+        why = reason or f"ended by {actor}"
         if runs.is_running(run.id):
-            await runs.stop(run.id, f"ended by {actor}")
+            await runs.stop(run.id, why)
         await self._lose_orphan(runs, run)
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
             task = await self.get_task(run.task_id, tx.conn)
             await repo.cancel_queued(tx.conn, run.id, tx.now)
+            if not run.is_open:  # ended meanwhile (a card's close and the owner's End)
+                return run
             await self._set_run_status(
                 tx,
                 run,
                 "ended",
-                f"ended by {actor}",
+                why,
                 ended_by=actor,
                 with_owner_at=None,
                 with_owner_by=None,
             )
-            await self._run_event(tx, "run.ended", actor, task, run.id)
+            await self._run_event(tx, "run.ended", actor, task, run.id, reason=why)
             # No next turn will carry them: the owner's answers go to the card's session instead.
             for q in await repo.pending_answers(tx.conn, run.id):
                 comment = await self._insert_comment(
@@ -11433,6 +11767,338 @@ class Service:
         if known and cc_id not in known:
             return None
         return await self._link_hook_session(tx, session, cc_id, from_window=True)
+
+    # --- a card's close: the run ends, its worktrees go, its traces too --------------------
+
+    def _schedule_close(self, task_id: int | None, actor: str) -> None:
+        """After the commit that moved a card to done; one close per card at a time (the
+        periodic sweep finishes what a close left)."""
+        if task_id is None or task_id in self._closings:
+            return
+        closing = asyncio.create_task(self._close_logged(task_id, actor))
+        self._closings[task_id] = closing
+        closing.add_done_callback(lambda _: self._closings.pop(task_id, None))
+
+    async def _close_logged(self, task_id: int, actor: str) -> None:
+        try:
+            await self.close_card(task_id, actor)
+        except Exception:
+            logger.exception(
+                "Closing the runs of card #%d failed; the next sweep tries again", task_id
+            )
+
+    async def settle_closings(self) -> None:
+        """Wait for the closes under way (tests, and the board before it answers)."""
+        while self._closings:
+            await asyncio.gather(*list(self._closings.values()), return_exceptions=True)
+
+    async def close_card(self, task_id: int, actor: str = "relaybay") -> None:
+        """A card in done: its open run ends (a running turn is stopped first), each worktree
+        a run of it created is removed or kept with its reason and a question, and a run that
+        saw a secret or touched a live stand loses its lines and its transcript. Every step is
+        recorded on the card and in the journal; nothing a run did not create is touched."""
+        task = await repo.get_task_by_id(self._r, task_id)
+        if task is None or task.stage != Stage.DONE:
+            return
+        for run in await repo.runs_of_task(self._r, task.id):
+            if run.is_open and self.runs is not None:
+                await self.end_run(run.id, actor=actor, reason="the card went to done")
+            await self._close_worktrees(run.id)
+            await self._delete_traces(run.id)
+
+    async def close_done_cards(self) -> None:
+        """The sweep: cards in done whose close did not finish (the server stopped meanwhile)."""
+        for task_id in await repo.done_cards_to_close(self._r):
+            self._schedule_close(task_id, "relaybay")
+        await self.settle_closings()
+
+    async def _worktree_event(
+        self, tx: _Tx, kind: str, actor: str, run_id: int, w: RunWorktree, **payload: Any
+    ) -> None:
+        run = await self.get_run(run_id, tx.conn)
+        task = await self.get_task(run.task_id, tx.conn)
+        await self._run_event(
+            tx,
+            kind,
+            actor,
+            task,
+            run_id,
+            repository=w.repo_name,
+            path=w.path,
+            branch=w.branch,
+            **payload,
+        )
+
+    async def _close_worktrees(self, run_id: int) -> None:
+        """Remove each worktree the run created with `git worktree remove` (no --force: git
+        itself refuses one with changes), after the check for work left in it. One with work
+        left, or one git refuses, is kept with its reason and a question to the owner."""
+        git = worktrees.find_git()
+        for w in await repo.list_run_worktrees(self._r, run_id):
+            if not w.created_by_run or w.removed_at is not None or w.kept_at is not None:
+                continue
+            if w.kept_reason is not None and await self._asked(w):
+                continue
+            if not await asyncio.to_thread(os.path.lexists, w.path):
+                async with self._tx() as tx:
+                    await repo.update_run_worktree(tx.conn, w.id, {"removed_at": tx.now})
+                    await self._worktree_event(
+                        tx, "run.worktree_removed", "relaybay", run_id, w, note="already gone"
+                    )
+                continue
+            if git is None:
+                await self._keep_worktree(run_id, w, "git is not on PATH, so it was not checked")
+                continue
+            try:
+                reason = await asyncio.to_thread(
+                    worktrees.work_left, w.path, w.branch, w.source_path, w.copied, git
+                )
+                if reason is None:
+                    refused = await asyncio.to_thread(
+                        functools.partial(
+                            worktrees.remove_worktree,
+                            w.path,
+                            w.source_path,
+                            w.copied,
+                            git,
+                            force=False,
+                            stash=self._stash(w),
+                        )
+                    )
+                    reason = f"git worktree remove refused: {refused}" if refused else None
+            except ValidationError as exc:  # git did not answer in time
+                reason = str(exc)
+            if reason is not None:
+                await self._keep_worktree(run_id, w, reason)
+                continue
+            async with self._tx() as tx:
+                await repo.update_run_worktree(tx.conn, w.id, {"removed_at": tx.now})
+                await self._worktree_event(tx, "run.worktree_removed", "relaybay", run_id, w)
+
+    def _stash(self, w: RunWorktree) -> Path:
+        """Where the copies of a worktree wait while git removes it: the run's own folder in the
+        data folder (the same disk as the worktrees)."""
+        home = self.runs.config.home if self.runs is not None else self.db_path.parent
+        return home / "runs" / str(w.run_id) / f"copies-{w.id}"
+
+    async def _withdraw_worktree_questions(self, tx: _Tx, task: Task, actor: str) -> None:
+        """A card that leaves done: relaybay's open questions about its kept worktrees go (a
+        "remove" would act on a card that is worked on again); the next close asks anew."""
+        for question_id in await repo.open_worktree_questions(tx.conn, task.id):
+            await repo.update_question(
+                tx.conn,
+                question_id,
+                {"status": "withdrawn", "withdrawn_at": tx.now, "withdrawn_by": "relaybay"},
+            )
+            q = await self.get_question(question_id, tx.conn)
+            await self._question_event(
+                tx, "question.withdrawn", actor, task, q, reason="the card left done"
+            )
+
+    async def _asked(self, w: RunWorktree, conn: aiosqlite.Connection | None = None) -> bool:
+        """The question about a kept worktree waits for the owner. A card that went back and
+        to done again withdrew it: the worktree is looked at again and asked about anew."""
+        if w.question_id is None:
+            return False
+        q = await repo.get_question(conn or self._r, w.question_id)
+        return q is not None and q.is_open
+
+    async def _keep_worktree(self, run_id: int, w: RunWorktree, reason: str) -> None:
+        """Kept with its reason, and a blocking question to the owner on the card: remove or
+        keep (the default)."""
+        async with self._tx() as tx:
+            current = await repo.get_run_worktree(tx.conn, w.id)
+            if current is None or current.removed_at is not None or current.kept_at is not None:
+                return
+            if current.kept_reason is not None and await self._asked(current, tx.conn):
+                return
+            await repo.update_run_worktree(tx.conn, w.id, {"kept_reason": reason})
+            await self._worktree_event(
+                tx, "run.worktree_kept", "relaybay", run_id, w, reason=reason
+            )
+            run = await self.get_run(run_id, tx.conn)
+            task = await self.get_task(run.task_id, tx.conn)
+            text = qrules.clean_text(
+                _cut_text(
+                    f"The card is done, but the worktree of {w.repo_name} at {w.path} (branch"
+                    f" {w.branch}) was kept: {reason}. Remove it? {WORKTREE_REMOVE}: relaybay"
+                    " runs git worktree remove --force on it, the branch stays;"
+                    f" {WORKTREE_KEEP}: it stays as it is.",
+                    qrules.TEXT_MAX,
+                )
+            )
+            question_id = await repo.insert_question(
+                tx.conn,
+                {
+                    "task_id": task.id,
+                    "run_id": None,
+                    "session_id": None,
+                    "asked_by": "relaybay",
+                    "kind": "question",
+                    "text": text,
+                    "options": [WORKTREE_REMOVE, WORKTREE_KEEP],
+                    "default_answer": WORKTREE_KEEP,
+                    "blocking": 1,
+                    "look_url": None,
+                    "look_account": None,
+                    "default_after": None,
+                },
+                tx.now,
+            )
+            await repo.update_run_worktree(tx.conn, w.id, {"question_id": question_id})
+            q = await self.get_question(question_id, tx.conn)
+            await self._question_event(
+                tx,
+                "question.asked",
+                "relaybay",
+                task,
+                q,
+                options=q.choices,
+                default=q.default,
+                default_after=None,
+            )
+
+    async def _remove_on_answer(self, worktree_id: int, actor: str) -> None:
+        """The owner answered remove: `git worktree remove --force` (the owner decided, so the
+        work left in it goes); the branch stays. A refusal stays on the card."""
+        w = await repo.get_run_worktree(self._r, worktree_id)
+        if w is None or w.removed_at is not None or not w.created_by_run:
+            return
+        run = await self.get_run(w.run_id)
+        task = await self.get_task(run.task_id)
+        in_use = [
+            key
+            for other, key in await repo.open_worktrees(self._r)
+            if other.id != w.id and worktrees.path_key(other.path) == worktrees.path_key(w.path)
+        ]
+        hold = None  # not removed, and not the owner's keep either: the next close asks again
+        if task.stage != Stage.DONE:
+            hold = f"not removed: {task.key} is no longer done"
+        elif in_use:
+            hold = f"not removed: an open run on {in_use[0]} works in it"
+        if hold is not None:
+            async with self._tx() as tx:
+                await self._worktree_event(tx, "run.worktree_kept", actor, w.run_id, w, reason=hold)
+            return
+        git = worktrees.find_git()
+        refused: str | None = "git is not on PATH"
+        if git is not None:
+            try:
+                refused = await asyncio.to_thread(
+                    functools.partial(
+                        worktrees.remove_worktree,
+                        w.path,
+                        w.source_path,
+                        w.copied,
+                        git,
+                        force=True,
+                        stash=self._stash(w),
+                    )
+                )
+            except ValidationError as exc:
+                refused = str(exc)
+        async with self._tx() as tx:
+            if refused is None:
+                await repo.update_run_worktree(tx.conn, w.id, {"removed_at": tx.now})
+                await self._worktree_event(
+                    tx, "run.worktree_removed", actor, w.run_id, w, forced=True
+                )
+            else:
+                why = f"git worktree remove --force refused: {refused}"
+                await repo.update_run_worktree(
+                    tx.conn, w.id, {"kept_reason": why, "kept_at": tx.now}
+                )
+                await self._worktree_event(tx, "run.worktree_kept", actor, w.run_id, w, reason=why)
+
+    async def _delete_traces(self, run_id: int) -> None:
+        """A run that saw a secret or touched a live stand: its stored lines and what Claude Code
+        keeps of its session (`transcripts.find`: the transcript, the session's folder,
+        `file-history/<id>/`, `session-env/<id>/`, only under Claude Code's data folder) are
+        deleted, with one event naming what went. While a file or folder could not be deleted
+        `deleted_at` stays unset, so the sweep tries again; the event repeats only when what
+        failed changes."""
+        run = await self.get_run(run_id)
+        if run.deleted_at is not None or not (run.secret_seen_at or run.touched_live_at):
+            return
+        why = " and ".join(
+            w
+            for w, on in (
+                ("saw a secret", run.secret_seen_at),
+                ("touched live", run.touched_live_at),
+            )
+            if on
+        )
+        deleted: list[str] = []
+        failed: list[str] = []
+        if run.claude_session_id:
+            session = (
+                await repo.get_session_by_id(self._r, run.session_id) if run.session_id else None
+            )
+            known = [run.transcript_path, session.transcript_path if session else None]
+            found = await asyncio.to_thread(
+                transcripts.find, self._claude_data(), run.claude_session_id, known
+            )
+            deleted, failed = await asyncio.to_thread(transcripts.delete, found)
+        async with self._tx() as tx:
+            lines = await repo.delete_run_events(tx.conn, run.id)
+            if not failed:
+                await repo.update_run(tx.conn, run.id, {"deleted_at": tx.now}, tx.now)
+                self._trace_failures.pop(run.id, None)
+            elif self._trace_failures.get(run.id) == failed and not (lines or deleted):
+                return  # the same files still refuse: the last event says so
+            else:
+                self._trace_failures[run.id] = failed
+            task = await self.get_task(run.task_id, tx.conn)
+            await self._run_event(
+                tx,
+                "run.traces_deleted",
+                "relaybay",
+                task,
+                run.id,
+                reason=why,
+                lines=lines,
+                transcripts=deleted,
+                failed=failed,
+            )
+
+    async def retention_pass(self, now: datetime | None = None) -> int:
+        """Each project's runs keep their lines `run_retention` days; "off" keeps none. One
+        event per project that lost lines; returns how many went."""
+        moment = now or datetime.now(UTC)
+        total = 0
+        for project_id, slug, retention in await repo.project_retentions(self._r):
+            before = None
+            if retention != run_rules.RETENTION_OFF:
+                cutoff = moment - timedelta(days=int(retention))
+                before = cutoff.isoformat(timespec="milliseconds")
+            async with self._tx() as tx:
+                lines = await repo.delete_project_events(tx.conn, project_id, before)
+                if lines:
+                    await tx.event(
+                        "run.events_expired",
+                        "relaybay",
+                        project_id=project_id,
+                        project=slug,
+                        lines=lines,
+                        retention=retention,
+                    )
+            total += lines
+        return total
+
+    async def run_loop(self, interval: float = RUN_CHECK_SECONDS) -> None:
+        """The server's re-check of runs: queued turns whose memory recovered or whose brake was
+        released, cards in done whose close did not finish, and (hourly) the retention."""
+        while True:
+            try:
+                await self.dispatch_queued()
+                await self.close_done_cards()
+                last = self._retention_at
+                if last is None or time.monotonic() - last >= RETENTION_SECONDS:
+                    self._retention_at = time.monotonic()
+                    await self.retention_pass()
+            except Exception:
+                logger.exception("Checking runs failed; the next pass tries again")
+            await asyncio.sleep(interval)
 
     # --- questions to the owner -----------------------------------------------
 
@@ -11785,8 +12451,10 @@ class Service:
             and not runs.is_running(run.id)
             and run.id not in runs.checked_since_start
         ):
-            await self._run_preflight(runs)  # the first turn after a restart checks again
-        launch: tuple[int, int] | None = None
+            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
+        free = await self._free_memory()
+        launches: list[tuple[int, int]] = []
+        remove: int | None = None  # the worktree the owner's "remove" names
         async with self._tx() as tx:
             q = await self.get_question(question_id, tx.conn)
             if not q.answerable:
@@ -11813,10 +12481,15 @@ class Service:
                 change_of_course=q.defaulted_at is not None,
             )
             run = await repo.get_run(tx.conn, q.run_id) if q.run_id else None
+            kept = await repo.worktree_of_question(tx.conn, q.id) if q.run_id is None else None
             if run is not None and run.is_open:
-                turn_id, started = await self._queue_turn(tx, run, task, None, actor)
-                if started:
-                    launch = (run.id, turn_id)
+                _, launches = await self._queue_turn(tx, run, task, None, actor, free)
+            elif kept is not None:
+                # relaybay asked it when the card closed: the answer is for relaybay itself.
+                if (q.answer or "").split(":", 1)[0].strip() == WORKTREE_REMOVE:
+                    remove = kept.id
+                else:
+                    await repo.update_run_worktree(tx.conn, kept.id, {"kept_at": tx.now})
             else:
                 comment = await self._insert_comment(
                     tx,
@@ -11828,15 +12501,17 @@ class Service:
                     in_reply_to=None,
                 )
                 await repo.update_question(tx.conn, q.id, {"comment_id": comment.id})
-            await self._card_after_question(
-                tx,
-                task,
-                q,
-                f"{q.asked_by} goes on with the owner's answer to question {q.id}",
-                actor,
-            )
-        if launch is not None:
-            await self._spawn_turn(*launch)
+            if kept is None:
+                await self._card_after_question(
+                    tx,
+                    task,
+                    q,
+                    f"{q.asked_by} goes on with the owner's answer to question {q.id}",
+                    actor,
+                )
+        await self._spawn_all(launches)
+        if remove is not None:
+            await self._remove_on_answer(remove, actor)
         return await self.get_question(question_id)
 
     async def close_overdue_questions(self) -> int:
@@ -12490,8 +13165,9 @@ class Service:
             and not runs.is_running(run.id)
             and run.id not in runs.checked_since_start
         ):
-            await self._run_preflight(runs)  # the first turn after a restart checks again
-        launch: tuple[int, int] | None = None
+            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
+        free = await self._free_memory()
+        launches: list[tuple[int, int]] = []
         decision = "approved" if approve else "refused"
         async with self._tx() as tx:
             a = await self.get_approval(approval_id, tx.conn)
@@ -12522,9 +13198,7 @@ class Service:
             )
             run = await repo.get_run(tx.conn, a.run_id) if a.run_id else None
             if run is not None and run.is_open:
-                turn_id, started = await self._queue_turn(tx, run, task, None, actor)
-                if started:
-                    launch = (run.id, turn_id)
+                _, launches = await self._queue_turn(tx, run, task, None, actor, free)
             else:
                 comment = await self._decision_comment(tx, task, a, actor)
                 await repo.update_approval(tx.conn, a.id, {"comment_id": comment.id})
@@ -12535,6 +13209,5 @@ class Service:
                 f"{a.requested_by} goes on: the owner {decision} {a.what} (approval {a.id})",
                 actor,
             )
-        if launch is not None:
-            await self._spawn_turn(*launch)
+        await self._spawn_all(launches)
         return await self.get_approval(approval_id)

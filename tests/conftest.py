@@ -43,6 +43,13 @@ def no_update_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RELAYBAY_UPDATE_CHECK", "false")
 
 
+@pytest.fixture(autouse=True)
+def plenty_of_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runs check this machine's free memory before each turn: tests do not depend on what is
+    free where they run. The memory tests set their own reader."""
+    monkeypatch.setattr("relaybay.runner.memory.free_mb", lambda: 64 * 1024)
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return load_settings(home=tmp_path, environ={})

@@ -222,6 +222,13 @@ EVENT_KINDS = (
     "run.returned",
     "run.settings_changed",
     "run.waiting",
+    "run.start_anyway",
+    "run.worktree_removed",
+    "run.worktree_kept",
+    "run.secret_seen",
+    "run.touched_live",
+    "run.traces_deleted",
+    "run.events_expired",
     "run.defaults_set",
     "question.asked",
     "question.answered",
@@ -233,6 +240,7 @@ EVENT_KINDS = (
     "approval.used",
     "approval.expired",
     "settings.run_login_any",
+    "settings.run_limits",
 )
 CSRF_HEADER = "x-relaybay-csrf"
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
@@ -1578,7 +1586,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 raise
             return await run_panel(request, task, error=str(exc))
         if not htmx:
-            return RedirectResponse(f"/p/{slug}?task={task.key}", status_code=303)
+            # Start anyway from the Inbox goes back there.
+            back = "/inbox" if form.get("from") == "inbox" else f"/p/{slug}?task={task.key}"
+            return RedirectResponse(back, status_code=303)
         return await run_panel(request, task)
 
     async def run_of(task: Task, run_id: int) -> int:
@@ -1625,7 +1635,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         action: str,
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ):
-        if action not in ("send", "stop", "end", "desktop", "back", "settings"):
+        if action not in ("send", "stop", "end", "desktop", "back", "settings", "anyway"):
             raise HTTPException(status_code=404)
 
         async def write(task: Task, form: Any) -> None:
@@ -1638,6 +1648,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 await service.open_in_desktop(own, actor="owner")
             elif action == "back":
                 await service.return_run(own, actor="owner")
+            elif action == "anyway":
+                await service.start_anyway(own, actor="owner")
             elif action == "settings":
                 await service.set_run_settings(
                     own,
@@ -2063,7 +2075,14 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         async def write(form: Any) -> None:
             values = {
                 name: str(form.get(name) or "")
-                for name in ("model", "effort", "permission_mode", "allowed_tools", "folder")
+                for name in (
+                    "model",
+                    "effort",
+                    "permission_mode",
+                    "allowed_tools",
+                    "folder",
+                    "retention",
+                )
             }
             await service.set_run_defaults(
                 slug, {**values, "chrome": form.getlist("chrome")[-1:] == ["1"]}, actor="owner"
@@ -2613,10 +2632,28 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             layers=await service.run_layers(),
             login_any=await service.run_login_any(),
             fix_command=run_auth.FIX_COMMAND,
+            limits=await service.run_limits(),
+            config_limits=(settings.max_running_turns, settings.min_free_memory_mb),
+            free_mb=await service.free_memory_now(),
             message=flash.get("message"),
+            error=flash.get("error"),
             last_event_id=last_event_id,
         )
         return shown_once(request, response)
+
+    @router.post("/settings/agents/limits", response_class=HTMLResponse)
+    async def agents_limits(
+        request: Request,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+        max_running_turns: Annotated[str, Form()] = "",
+        min_free_memory_mb: Annotated[str, Form()] = "",
+    ):
+        board_only(request, csrf)
+        try:
+            await service.set_run_limits(max_running_turns, min_free_memory_mb, actor="owner")
+        except ValidationError as exc:
+            return flash_redirect(request, "/settings/agents#limits", error=str(exc))
+        return flash_redirect(request, "/settings/agents#limits", message="Saved.")
 
     @router.post("/settings/agents/login-methods", response_class=HTMLResponse)
     async def agents_login_methods(

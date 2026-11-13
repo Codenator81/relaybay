@@ -44,6 +44,14 @@
   the card, the decision as the next turn or an owner comment, the tray kind `approval`
   ([0022](0022-questions-and-approvals.md#approvals); behaviour:
   [SPEC](../SPEC.md#spec-approvals)).
+- PR 5 shipped: migration 0040 `run_lifecycle`; `max_running_turns` and `min_free_memory_mb`
+  (config.toml, editable in Settings → Agents) checked before each turn with the brake, a turn
+  `queued` with its reason on the card and in the Inbox, FIFO over all runs, **Start anyway** past
+  the slot limit and the memory check (never past a brake); free memory by platform code (C5); a
+  braked run's turn killed after its refused call; a card to done ends its run, removes the
+  worktrees it created and asks about one with work left; "saw a secret" and "touched live" runs
+  lose their lines and transcript on close; per-project retention (C3) (behaviour:
+  [SPEC](../SPEC.md#spec-run-limits), [lifecycle](../SPEC.md#spec-run-lifecycle)).
 - The probes of 0012 were run on 2026-11-10 and the design relies on them
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
   accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).
@@ -166,7 +174,12 @@ braked run takes no new turn, and the current one is killed after its next refus
 
 **Lifecycle.** A card moved to done ends its run and removes each worktree the run created (`git
 worktree remove`, never one it did not create). A worktree with uncommitted changes or commits not on
-any remote is kept, listed on the card, and a question asks the owner whether to remove it. `run_event` is kept by the project's retention
+any remote is kept, listed on the card, and a question asks the owner whether to remove it.
+Decided by the coordinator on 2026-11-12: files git ignores (`node_modules`, `dist`, caches) go
+with the worktree without a question; the worktree is kept and the owner asked only when the copied
+Claude files changed (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/` including new files in it,
+`.mcp.json`, the `.worktreeinclude` files) or there are untracked files git does not ignore,
+uncommitted changes or commits on no remote. `run_event` is kept by the project's retention
 policy; a run marked "saw a secret" or one that touched a live environment has its events and its
 Claude Code transcript deleted when the card closes.
 

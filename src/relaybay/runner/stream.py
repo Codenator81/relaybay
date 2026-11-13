@@ -80,8 +80,20 @@ def mask(value: Any) -> Any:
     return value
 
 
+# Claude Code's own fields whose name says "key" but whose value names a source, never a secret
+# (`system/init` on every turn: "apiKeySource": "none"): masked by shape only, so a run is not
+# marked "saw a secret" for them.
+SOURCE_FIELDS = frozenset({"apiKeySource"})
+
+
 def _field(name: str, value: Any) -> Any:
-    if isinstance(value, str) and value and is_secret_field(name) and not is_reference(value):
+    if (
+        isinstance(value, str)
+        and value
+        and is_secret_field(name)
+        and name not in SOURCE_FIELDS
+        and not is_reference(value)
+    ):
         return "***"
     return mask(value)
 
@@ -145,8 +157,10 @@ def read_line(raw: str, seq: int) -> tuple[StreamEvent | None, StreamItem | None
     except (ValueError, RecursionError):  # not JSON, or nested deeper than Python follows
         message = masked = None
     if not isinstance(message, dict):
-        head = _masked_head(raw.rstrip("\r\n"), cut=len(raw) > HEAD_MAX)
-        event = StreamEvent(seq, "invalid", None, None, now(), len(raw), False, pack({"raw": head}))
+        head, secret = _masked_head(raw.rstrip("\r\n"), cut=len(raw) > HEAD_MAX)
+        event = StreamEvent(
+            seq, "invalid", None, None, now(), len(raw), False, pack({"raw": head}), secret
+        )
         return event, None
     event = StreamEvent(
         seq,
@@ -157,6 +171,7 @@ def read_line(raw: str, seq: int) -> tuple[StreamEvent | None, StreamItem | None
         len(raw),
         False,
         pack(masked),
+        masked != message,
     )
     return event, _item(message, masked)
 
@@ -175,20 +190,21 @@ def _unescape(text: str) -> str:
     return _ESCAPE.sub(one, text)
 
 
-def _masked_head(text: str, cut: bool) -> str:
+def _masked_head(text: str, cut: bool) -> tuple[str, bool]:
     """At most HEAD_MAX characters of a line that is not stored parsed, JSON escapes decoded,
-    masked. A `cut` text goes back to its last separator first: half a secret is too short to be
-    masked, so it is dropped."""
+    masked, and whether the masking replaced something. A `cut` text goes back to its last
+    separator first: half a secret is too short to be masked, so it is dropped."""
     text = _unescape(text[:HEAD_MAX])
     if cut:
         last = max(text.rfind(c) for c in ' \n\t",')
         text = text[:last] if last > 0 else ""
-    return redact(text)
+    masked = redact(text)
+    return masked, masked != text
 
 
 def truncated_event(head: str, size: int, seq: int) -> StreamEvent:
     """A line over LINE_MAX: its masked head with the marker; the rest was never held."""
-    text = _masked_head(head, cut=True)
+    text, secret = _masked_head(head, cut=True)
     found = _TYPE.search(head[:HEAD_MAX])
     parent = _PARENT.search(head[:HEAD_MAX])
     data = pack({"head": text, "note": TRUNCATED_MARK, "size": size})
@@ -201,6 +217,7 @@ def truncated_event(head: str, size: int, seq: int) -> StreamEvent:
         size,
         True,
         data,
+        secret,
     )
 
 

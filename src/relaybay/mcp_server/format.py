@@ -1107,7 +1107,31 @@ def event_detail(e: Event) -> str:
         )
         return f"run {p.get('run_id')}: {moves}"
     if e.kind in ("run.turn_started", "run.turn_queued"):
-        return f"run {p.get('run_id')} turn {p.get('seq')}"
+        reason = f": {p['reason']}" if p.get("reason") else ""
+        return f"run {p.get('run_id')} turn {p.get('seq')}{reason}"
+    if e.kind == "run.start_anyway":
+        return f"run {p.get('run_id')} turn {p.get('seq')} started past: {p.get('reason')}"
+    if e.kind in ("run.worktree_removed", "run.worktree_kept"):
+        what = f"run {p.get('run_id')}: {p.get('repository')} {p.get('path')}"
+        if e.kind == "run.worktree_kept":
+            return f"{what} kept: {p.get('reason')}"
+        how = " with --force" if p.get("forced") else f" ({p['note']})" if p.get("note") else ""
+        return f"{what} removed{how}"
+    if e.kind == "run.traces_deleted":
+        files = len(p.get("transcripts") or [])
+        failed = f", {len(p['failed'])} not deleted" if p.get("failed") else ""
+        return (
+            f"run {p.get('run_id')} ({p.get('reason')}): {p.get('lines')} lines,"
+            f" {files} transcript file{'s' if files != 1 else ''}{failed}"
+        )
+    if e.kind == "run.events_expired":
+        kept = "retention off" if p.get("retention") == "off" else f"{p.get('retention')} days"
+        return f"{p.get('lines')} lines of runs ({kept})"
+    if e.kind == "settings.run_limits":
+        return (
+            f"{p.get('max_running_turns')} turns at once,"
+            f" {p.get('min_free_memory_mb')} MB free before a turn"
+        )
     if e.kind.startswith("run."):
         reason = f": {p['reason']}" if p.get("reason") else ""
         return f"run {p.get('run_id')}{reason}"
@@ -1251,8 +1275,16 @@ def run_status(task: Task, view: RunView | None) -> str:
     for w in view.worktrees:
         if w.created_by_run:
             copied = summary(w.copied)
+            state = (
+                f"; removed {w.removed_at[:19]}Z"
+                if w.removed_at
+                else f"; kept: {w.kept_reason}"
+                if w.kept_reason
+                else ""
+            )
             lines.append(
-                f"- {w.repo_name}: {w.path} (new worktree, branch {w.branch}; copied: {copied})"
+                f"- {w.repo_name}: {w.path} (new worktree, branch {w.branch}; copied:"
+                f" {copied}{state})"
             )
         else:
             lines.append(f"- {w.repo_name}: {w.path} (the repository itself)")
@@ -1332,9 +1364,14 @@ def run_settings_saved(task: Task, run: Run) -> str:
 
 
 def run_started(task: Task, run: Run) -> str:
+    waits = (
+        f" Its first turn waits in the queue: {run.status_reason}; it starts by itself."
+        if run.status == "queued"
+        else ""
+    )
     return (
         f"Run {run.id} started on {task.key} ({run.status}); its session is"
-        f" {run.session_name}. Follow it with run_status; the owner steers it on the card."
+        f" {run.session_name}.{waits} Follow it with run_status; the owner steers it on the card."
     )
 
 

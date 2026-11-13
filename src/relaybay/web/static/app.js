@@ -35,7 +35,9 @@
     "budget.exceeded", "concurrency.over",
     "run.started", "run.turn_started", "run.turn_queued", "run.turn_ended", "run.stopped",
     "run.ended", "run.lost", "run.opened_in_desktop", "run.returned", "run.settings_changed",
-    "run.waiting",
+    "run.waiting", "run.start_anyway", "run.worktree_removed", "run.worktree_kept",
+    "run.secret_seen", "run.touched_live", "run.traces_deleted", "run.events_expired",
+    "settings.run_limits",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn",
     "approval.requested", "approval.decided", "approval.used", "approval.expired"
@@ -59,7 +61,8 @@
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
     "budget.exceeded", "concurrency.over",
     "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
-    "approval.requested", "approval.decided", "approval.expired"
+    "approval.requested", "approval.decided", "approval.expired",
+    "run.turn_queued", "run.turn_started", "run.start_anyway", "run.ended"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",

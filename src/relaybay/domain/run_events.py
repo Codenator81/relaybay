@@ -40,6 +40,7 @@ class StreamEvent:
     size: int
     truncated: bool
     data: bytes
+    secret: bool = False  # the masking replaced something in it: the run "saw a secret"
 
 
 @dataclass(frozen=True, slots=True)

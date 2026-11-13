@@ -2,7 +2,8 @@
 {#- Settings → Agents: which claude a run on a card starts, how it is signed in, whether
     relaybay's hooks and MCP server are in the user's settings, and the owner's switch for
     sign-ins that are not a subscription. Expects: available, claude, claude_setting, login,
-    login_line, layers, login_any, fix_command, optional message. -#}
+    login_line, layers, login_any, fix_command, limits (turns at once, MB a turn needs),
+    config_limits (config.toml's), free_mb (None: not readable here), optional message, error. -#}
 {% block title %}Agents · relaybay{% endblock %}
 {% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/settings/integrations">Settings</a><span class="crumb-sep">/</span><span class="crumb">Agents</span>{% endblock %}
 {% block content %}
@@ -10,6 +11,7 @@
   <h1>Agents</h1>
   {% with tab = "agents" %}{% include "_settings_tabs.html" %}{% endwith %}
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   <section class="panel" id="agents">
     <h2>Runs on cards</h2>
     <p>A card's Agent block starts your own unmodified <code>claude</code> on this machine, under your own sign-in, one turn at a time. relaybay never signs in for you and never reads credentials; it asks <code>claude auth status</code> for the sign-in method only.</p>
@@ -26,6 +28,23 @@
       {% endif %}
     </dl>
     {% endif %}
+  </section>
+  <section class="panel" id="limits">
+    <h2>Limits</h2>
+    <p class="muted">Before each turn of a run: a free slot (turns running now over all runs) and enough free memory. Otherwise the turn waits in the queue with its reason, on the card and in the Inbox, and starts by itself when a slot frees or memory recovers; <em>Start anyway</em> starts it past both. This machine has {% if free_mb is none %}free memory relaybay cannot read (no check is made){% else %}{{ "%.1f"|format(free_mb / 1024) }} GB free now{% endif %}.</p>
+    <form method="post" action="/settings/agents/limits">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <div class="field-row">
+        <label class="field"><span>Turns at once</span>
+          <input type="number" name="max_running_turns" min="1" max="50" required value="{{ limits[0] }}">
+        </label>
+        <label class="field"><span>Free memory before a turn, MB (0: no check)</span>
+          <input type="number" name="min_free_memory_mb" min="0" required value="{{ limits[1] }}">
+        </label>
+      </div>
+      <p class="muted">config.toml: <code>max_running_turns = {{ config_limits[0] }}</code>, <code>min_free_memory_mb = {{ config_limits[1] }}</code>; what you save here wins over them.</p>
+      <button type="submit" class="btn primary">Save</button>
+    </form>
   </section>
   <section class="panel" id="login-methods">
     <h2>Sign-in methods</h2>

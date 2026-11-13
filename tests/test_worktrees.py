@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -234,3 +235,21 @@ def test_add_all_checks_a_repository_in_place_exists(tmp_path: Path) -> None:
         add_all([spec], None, "acme-shop-1", 1)
     with pytest.raises(ValidationError, match="git is not on PATH"):
         add_all([WorktreeSpec(1, "api", str(tmp_path), str(tmp_path / "w"), True)], None, "k-1", 1)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows only")
+def test_a_leftover_junction_is_dropped_never_followed(tmp_path: Path) -> None:
+    from relaybay.runner.worktrees import _drop_leftover_links
+
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    (outside / "keep.txt").write_text("keep\n", encoding="utf-8")
+    left = tmp_path / "wt" / "run-1"
+    (left / "node_modules").mkdir(parents=True)
+    link = left / "node_modules" / "linked"
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True
+    )
+    _drop_leftover_links(left)
+    assert not left.exists()
+    assert (outside / "keep.txt").exists() and (outside / "inner").is_dir()

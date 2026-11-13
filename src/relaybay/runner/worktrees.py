@@ -23,6 +23,8 @@ from relaybay.machine_setup import run_quiet
 
 logger = logging.getLogger("relaybay")
 COPY_DEFAULT = ("CLAUDE.md", "CLAUDE.local.md", ".claude", ".mcp.json")
+# Claude files at a worktree's top: new or changed ones are the agent's work, ignored or not.
+CLAUDE_FILES = frozenset({"CLAUDE.md", "CLAUDE.local.md", ".mcp.json"})
 INCLUDE_FILE = ".worktreeinclude"
 COPY_MAX_FILES = 2000
 COPY_MAX_BYTES = 64 * 1024 * 1024
@@ -429,6 +431,234 @@ def remove_created(specs: Sequence[WorktreeSpec], git: str | None, run: Runner =
             )
         with contextlib.suppress(OSError):
             Path(spec.path).parent.rmdir()  # the run's folder, once empty
+
+
+REASON_ENTRIES = 5  # changed files named in a kept worktree's reason
+STATUS_ARGS = (
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all",
+    "--ignored=matching",
+    "--ignore-submodules=none",
+)
+
+
+def _status_entries(text: str) -> list[tuple[str, str]]:
+    """(code, path) of `git status --porcelain=v1 -z`: `XY path`, a rename followed by its
+    source; an ignored folder git did not walk ends in "/"."""
+    entries, parts, i = [], text.split("\0"), 0
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        entries.append((entry[:2], entry[3:]))
+        if entry[0] in "RC":
+            i += 1  # the rename's source
+    return entries
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """Both regular files (no link) with the same bytes."""
+    try:
+        return (
+            not a.is_symlink() and a.is_file() and b.is_file() and a.read_bytes() == b.read_bytes()
+        )
+    except OSError:
+        return False
+
+
+def _files_under(root: Path, folder: str) -> list[str]:
+    """The names (relative, with "/") of everything in an ignored folder, links not followed."""
+    names = []
+    for here, dirs, files in os.walk(root / folder, followlinks=False):
+        rel = Path(here).relative_to(root).as_posix()
+        names += [f"{rel}/{name}" for name in files]
+        # A link to a folder is not walked: it is one entry, and it is new.
+        names += [f"{rel}/{name}" for name in dirs if (Path(here) / name).is_symlink()]
+        dirs[:] = [d for d in dirs if not (Path(here) / d).is_symlink()]
+    return names
+
+
+def _changed_files(path: str, source: str, copied: Sequence[str], text: str) -> list[str]:
+    """What the run left in the worktree: tracked changes, untracked files that git does not
+    ignore, and the copied Claude files (each copy that differs from the source now or is gone,
+    and a new file inside an ignored folder that holds copies, such as `.claude/`). Any other
+    ignored file (node_modules, build output, caches) goes with the worktree, as `git worktree
+    remove` does. Sorted, so the reason reads the same on every system."""
+    root, ours = Path(path), set(copied)
+    holders = {
+        PurePosixPath(n).parents[i].as_posix() + "/"
+        for n in copied
+        for i in range(len(PurePosixPath(n).parts) - 1)
+    }
+
+    def claude_file(name: str) -> bool:
+        # A Claude file or one inside a folder that holds copies (`.claude/`), at any depth of
+        # the listing: git lists an ignored folder whole, or file by file when it has a tracked
+        # file in it.
+        top = name.rstrip("/")
+        return (
+            top in CLAUDE_FILES
+            or top == ".claude"
+            or top.startswith(".claude/")
+            or any(name.startswith(h) or name == h.rstrip("/") for h in holders)
+        )
+
+    def new_or_changed(name: str) -> bool:
+        return name not in ours or not _same_file(root / name, Path(source) / name)
+
+    changed: list[str] = []
+    for code, name in _status_entries(text):
+        if code == "!!" and claude_file(name):
+            if name.endswith("/"):
+                changed += [f for f in _files_under(root, name.rstrip("/")) if new_or_changed(f)]
+            elif new_or_changed(name):
+                changed.append(name)
+        elif code in ("??", "!!") and name in ours:
+            continue  # compared below
+        elif code == "!!":
+            continue  # ignored output of the run: removed with the worktree
+        else:
+            changed.append(name)
+    for name in copied:
+        if not _same_file(root / name, Path(source) / name) and name not in changed:
+            changed.append(name)
+    return sorted(changed)
+
+
+def work_left(
+    path: str,
+    branch: str | None,
+    source: str,
+    copied: Sequence[str],
+    git: str,
+    run: Runner = run_quiet,
+) -> str | None:
+    """Why a worktree the run created must not be removed without the owner: tracked changes,
+    untracked files git does not ignore, a copied Claude file that differs from the source or
+    is gone (or a new file in a copied folder such as `.claude/`), commits on its HEAD that are on
+    no remote and on no other local branch (the run's branch stays when the worktree goes), or a
+    git that cannot tell. None: nothing would be lost."""
+    done = _git(git, path, list(STATUS_ARGS), run)
+    if done.returncode != 0:
+        return f"git status failed: {_first_line(done)}"
+    changed = _changed_files(path, source, copied, done.stdout or "")
+    head = _git(git, path, ["rev-parse", "--abbrev-ref", "HEAD"], run)
+    current = (head.stdout or "").strip() if head.returncode == 0 else ""
+    mine = [n for n in {branch, current} if n and n != "HEAD"]
+    args = ["rev-list", "--count", "HEAD", "--not", "--remotes"]
+    args += [f"--exclude={name}" for name in mine] + ["--branches"]
+    ahead = _git(git, path, args, run)
+    if ahead.returncode != 0:
+        return f"git rev-list failed: {_first_line(ahead)}"
+    commits = int((ahead.stdout or "0").strip() or "0")
+    parts = []
+    if changed:
+        shown = ", ".join(changed[:REASON_ENTRIES])
+        more = f" and {len(changed) - REASON_ENTRIES} more" if len(changed) > REASON_ENTRIES else ""
+        parts.append(f"uncommitted changes ({shown}{more})")
+    if commits:
+        parts.append(f"{commits} commit{'s' if commits != 1 else ''} not on any remote")
+    return "; ".join(parts) or None
+
+
+def _stash_copies(path: str, source: str, copied: Sequence[str], stash: Path) -> list[str]:
+    """Move the copied files that still match the source out of the worktree into `stash` (a
+    folder of the run in the data folder), so that git sees it clean; never through a link.
+    Returns what was moved, for `_unstash`."""
+    root = Path(path)
+    moved = []
+    for name in copied:
+        if not _safe_relative(name) or _inside_symlink(root, PurePosixPath(name).parent.as_posix()):
+            continue
+        target = root / name
+        if not _same_file(target, Path(source) / name):
+            continue
+        dest = stash / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(target, dest)
+        moved.append(name)
+    folders = {
+        PurePosixPath(n).parents[i] for n in moved for i in range(len(PurePosixPath(n).parts) - 1)
+    }
+    for folder in sorted(folders, key=lambda f: len(f.parts), reverse=True):
+        with contextlib.suppress(OSError):
+            (root / folder).rmdir()  # only an emptied one
+    return moved
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or bool(getattr(os.path, "isjunction", lambda _p: False)(path))
+
+
+def _drop_leftover_links(root: Path) -> None:
+    """git on Windows leaves a junction (e.g. inside `node_modules/`) behind after a removal it
+    reports as done: drop such links, never what they point to (a junction is never walked
+    into), then the folders emptied by it."""
+    if not root.is_dir() or _is_link(root):
+        return
+    own: list[Path] = []
+    for here, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        own.append(Path(here))
+        keep = []
+        for name in dirs:
+            item = Path(here) / name
+            if _is_link(item):
+                with contextlib.suppress(OSError):
+                    item.rmdir()  # removes the link itself, not its target
+                with contextlib.suppress(OSError):
+                    item.unlink()
+            else:
+                keep.append(name)
+        dirs[:] = keep
+        for name in files:
+            item = Path(here) / name
+            if item.is_symlink():
+                with contextlib.suppress(OSError):
+                    item.unlink()
+    for folder in sorted(own, key=lambda f: len(f.parts), reverse=True):
+        with contextlib.suppress(OSError):
+            folder.rmdir()  # only an emptied one
+
+
+def _unstash(path: str, moved: Sequence[str], stash: Path) -> None:
+    for name in moved:
+        target = Path(path) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(stash / name, target)
+
+
+def remove_worktree(
+    path: str,
+    source: str,
+    copied: Sequence[str],
+    git: str,
+    *,
+    force: bool,
+    stash: Path,
+    run: Runner = run_quiet,
+) -> str | None:
+    """`git worktree remove` of a worktree the run created; None when it is gone, else git's
+    first line. Without `force` the copies that still match the source are moved to `stash`
+    first, so git itself refuses a worktree with anything else in it, and are moved back when
+    git refuses; `force` only on the owner's answer. The branch stays; the run's folder goes too
+    once empty, and so does `stash`."""
+    moved = [] if force else _stash_copies(path, source, copied, stash)
+    args = ["worktree", "remove", *(["--force"] if force else []), path]
+    done = _git(git, source, args, run)
+    if done.returncode != 0:
+        _unstash(path, moved, stash)
+        refused = _first_line(done)
+    else:
+        refused = None
+        _drop_leftover_links(Path(path))
+        with contextlib.suppress(OSError):
+            Path(path).parent.rmdir()
+    if stash.is_dir() and not stash.is_symlink():
+        shutil.rmtree(stash)  # relaybay's own folder: only the copies just moved, now spare
+    return refused
 
 
 def find_git(which: Callable[..., Any] = shutil.which) -> str | None:
