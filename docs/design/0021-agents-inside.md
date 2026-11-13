@@ -174,7 +174,12 @@ braked run takes no new turn, and the current one is killed after its next refus
 
 **Lifecycle.** A card moved to done ends its run and removes each worktree the run created (`git
 worktree remove`, never one it did not create). A worktree with uncommitted changes or commits not on
-any remote is kept, listed on the card, and a question asks the owner whether to remove it. `run_event` is kept by the project's retention
+any remote is kept, listed on the card, and a question asks the owner whether to remove it.
+Decided by the coordinator on 2026-11-12: files git ignores (`node_modules`, `dist`, caches) go
+with the worktree without a question; the worktree is kept and the owner asked only when the copied
+Claude files changed (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/` including new files in it,
+`.mcp.json`, the `.worktreeinclude` files) or there are untracked files git does not ignore,
+uncommitted changes or commits on no remote. `run_event` is kept by the project's retention
 policy; a run marked "saw a secret" or one that touched a live environment has its events and its
 Claude Code transcript deleted when the card closes.
 

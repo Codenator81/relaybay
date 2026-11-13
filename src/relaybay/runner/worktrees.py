@@ -23,6 +23,8 @@ from relaybay.machine_setup import run_quiet
 
 logger = logging.getLogger("relaybay")
 COPY_DEFAULT = ("CLAUDE.md", "CLAUDE.local.md", ".claude", ".mcp.json")
+# Claude files at a worktree's top: new or changed ones are the agent's work, ignored or not.
+CLAUDE_FILES = frozenset({"CLAUDE.md", "CLAUDE.local.md", ".mcp.json"})
 INCLUDE_FILE = ".worktreeinclude"
 COPY_MAX_FILES = 2000
 COPY_MAX_BYTES = 64 * 1024 * 1024
@@ -480,31 +482,50 @@ def _files_under(root: Path, folder: str) -> list[str]:
 
 
 def _changed_files(path: str, source: str, copied: Sequence[str], text: str) -> list[str]:
-    """What the run left in the worktree: tracked changes, untracked files, ignored files it
-    made, and each copied file that differs from the source now or is gone. An ignored folder
-    that holds copies is looked into file by file; any other ignored entry counts whole."""
+    """What the run left in the worktree: tracked changes, untracked files that git does not
+    ignore, and the copied Claude files (each copy that differs from the source now or is gone,
+    and a new file inside an ignored folder that holds copies, such as `.claude/`). Any other
+    ignored file (node_modules, build output, caches) goes with the worktree, as `git worktree
+    remove` does. Sorted, so the reason reads the same on every system."""
     root, ours = Path(path), set(copied)
     holders = {
         PurePosixPath(n).parents[i].as_posix() + "/"
         for n in copied
         for i in range(len(PurePosixPath(n).parts) - 1)
     }
+
+    def claude_file(name: str) -> bool:
+        # A Claude file or one inside a folder that holds copies (`.claude/`), at any depth of
+        # the listing: git lists an ignored folder whole, or file by file when it has a tracked
+        # file in it.
+        top = name.rstrip("/")
+        return (
+            top in CLAUDE_FILES
+            or top == ".claude"
+            or top.startswith(".claude/")
+            or any(name.startswith(h) or name == h.rstrip("/") for h in holders)
+        )
+
+    def new_or_changed(name: str) -> bool:
+        return name not in ours or not _same_file(root / name, Path(source) / name)
+
     changed: list[str] = []
     for code, name in _status_entries(text):
-        if code == "!!" and name.endswith("/") and name in holders:
-            changed += [
-                f
-                for f in _files_under(root, name.rstrip("/"))
-                if f not in ours or not _same_file(root / f, Path(source) / f)
-            ]
+        if code == "!!" and claude_file(name):
+            if name.endswith("/"):
+                changed += [f for f in _files_under(root, name.rstrip("/")) if new_or_changed(f)]
+            elif new_or_changed(name):
+                changed.append(name)
         elif code in ("??", "!!") and name in ours:
             continue  # compared below
+        elif code == "!!":
+            continue  # ignored output of the run: removed with the worktree
         else:
             changed.append(name)
     for name in copied:
         if not _same_file(root / name, Path(source) / name) and name not in changed:
             changed.append(name)
-    return changed
+    return sorted(changed)
 
 
 def work_left(
@@ -516,9 +537,9 @@ def work_left(
     run: Runner = run_quiet,
 ) -> str | None:
     """Why a worktree the run created must not be removed without the owner: tracked changes,
-    untracked files, ignored files the run made (build output too: git would delete it), a
-    copied file that differs from the source or is gone, commits on its HEAD that are on no
-    remote and on no other local branch (the run's branch stays when the worktree goes), or a
+    untracked files git does not ignore, a copied Claude file that differs from the source or
+    is gone (or a new file in a copied folder such as `.claude/`), commits on its HEAD that are on
+    no remote and on no other local branch (the run's branch stays when the worktree goes), or a
     git that cannot tell. None: nothing would be lost."""
     done = _git(git, path, list(STATUS_ARGS), run)
     if done.returncode != 0:
@@ -568,6 +589,40 @@ def _stash_copies(path: str, source: str, copied: Sequence[str], stash: Path) ->
     return moved
 
 
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or bool(getattr(os.path, "isjunction", lambda _p: False)(path))
+
+
+def _drop_leftover_links(root: Path) -> None:
+    """git on Windows leaves a junction (e.g. inside `node_modules/`) behind after a removal it
+    reports as done: drop such links, never what they point to (a junction is never walked
+    into), then the folders emptied by it."""
+    if not root.is_dir() or _is_link(root):
+        return
+    own: list[Path] = []
+    for here, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        own.append(Path(here))
+        keep = []
+        for name in dirs:
+            item = Path(here) / name
+            if _is_link(item):
+                with contextlib.suppress(OSError):
+                    item.rmdir()  # removes the link itself, not its target
+                with contextlib.suppress(OSError):
+                    item.unlink()
+            else:
+                keep.append(name)
+        dirs[:] = keep
+        for name in files:
+            item = Path(here) / name
+            if item.is_symlink():
+                with contextlib.suppress(OSError):
+                    item.unlink()
+    for folder in sorted(own, key=lambda f: len(f.parts), reverse=True):
+        with contextlib.suppress(OSError):
+            folder.rmdir()  # only an emptied one
+
+
 def _unstash(path: str, moved: Sequence[str], stash: Path) -> None:
     for name in moved:
         target = Path(path) / name
@@ -598,6 +653,7 @@ def remove_worktree(
         refused = _first_line(done)
     else:
         refused = None
+        _drop_leftover_links(Path(path))
         with contextlib.suppress(OSError):
             Path(path).parent.rmdir()
     if stash.is_dir() and not stash.is_symlink():

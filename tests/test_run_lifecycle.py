@@ -576,12 +576,12 @@ async def test_an_edited_or_new_ignored_file_keeps_the_worktree(
     await svc.settle_closings()
     kept = await repo.get_run_worktree(svc._r, w.id)
     assert kept.removed_at is None
-    assert kept.kept_reason == "uncommitted changes (.claude/notes.md, .claude/STATUS.md)"
+    assert kept.kept_reason == "uncommitted changes (.claude/STATUS.md, .claude/notes.md)"
     assert on_disk(w.path, ".claude", "notes.md") and on_disk(w.path, "CLAUDE.local.md")
 
 
 @needs_git
-async def test_unchanged_ignored_copies_do_not_keep_a_worktree_but_build_output_does(
+async def test_ignored_build_output_goes_with_the_worktree_an_untracked_file_keeps_it(
     svc: Service, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     global_excludes(tmp_path, monkeypatch)
@@ -591,8 +591,8 @@ async def test_unchanged_ignored_copies_do_not_keep_a_worktree_but_build_output_
     await svc.settle_closings()
     assert (await repo.get_run_worktree(svc._r, w.id)).removed_at is not None
     assert on_disk(str(api), ".claude", "STATUS.md")  # the source keeps its own
-    # A second run whose worktree holds ignored build output: work left, git would delete it.
-    write(api / ".gitignore", "dist/\n")
+    # A second run whose worktree holds ignored build output: it goes with the worktree.
+    write(api / ".gitignore", "dist/\nnode_modules/\n")
     git(api, "add", ".gitignore")
     git(api, "commit", "-q", "--no-verify", "--no-gpg-sign", "-m", "ignore dist")
     [api_repo] = await repo.list_project_repos(svc._r, (await svc.get_project("acme-shop")).id)
@@ -600,9 +600,22 @@ async def test_unchanged_ignored_copies_do_not_keep_a_worktree_but_build_output_
     [w2] = await repo.list_run_worktrees(svc._r, second.id)
     (Path(w2.path) / "dist").mkdir()
     write(Path(w2.path) / "dist" / "app.js", "built\n")
+    (Path(w2.path) / "node_modules" / "x").mkdir(parents=True)
+    write(Path(w2.path) / "node_modules" / "x" / "index.js", "dep\n")
     await svc.set_stage("acme-shop-2", "done", actor="owner")
     await svc.settle_closings()
-    assert (await repo.get_run_worktree(svc._r, w2.id)).kept_reason == "uncommitted changes (dist/)"
+    gone = await repo.get_run_worktree(svc._r, w2.id)
+    assert gone.removed_at is not None and gone.kept_reason is None
+    assert not on_disk(w2.path)
+    # A third run with an untracked file git does not ignore: kept, and the owner is asked.
+    await svc.create_task("acme-shop", "Third", stage="dev")
+    third = await svc.start_run("acme-shop-3", repos=[(api_repo.id, True)])
+    [w3] = await repo.list_run_worktrees(svc._r, third.id)
+    write(Path(w3.path) / "new_module.py", "x = 1\n")
+    await svc.set_stage("acme-shop-3", "done", actor="owner")
+    await svc.settle_closings()
+    kept = await repo.get_run_worktree(svc._r, w3.id)
+    assert kept.removed_at is None and kept.kept_reason == "uncommitted changes (new_module.py)"
 
 
 @needs_git
@@ -733,3 +746,28 @@ def test_a_session_folder_reached_through_a_link_is_not_deleted(tmp_path: Path) 
     write(data / f"{CC_A}.jsonl", "{}")
     assert not transcripts.own_transcript(crafted, data, CC_A)
     assert (elsewhere / CC_A).is_dir()
+
+
+@needs_git
+async def test_new_ignored_files_in_a_claude_folder_with_a_tracked_file_keep_the_worktree(
+    svc: Service, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ignore rules per file: `.claude/` holds a tracked settings.json, so git lists each
+    # ignored file in it on its own, not the folder.
+    excludes = tmp_path / "excludes"
+    excludes.write_text(".claude/settings.local.json\n.claude/notes.md\n.mcp.json\n", "utf-8")
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[core]\n\texcludesFile = {excludes.as_posix()}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    api = make_git_repo(tmp_path / "acme" / "api", {".claude/settings.json": "{}\n"})
+    await svc.upsert_project("acme-shop", repos=[{"name": "api", "path": str(api)}])
+    [api_repo] = await repo.list_project_repos(svc._r, (await svc.get_project("acme-shop")).id)
+    run = await svc.start_run("acme-shop-1", repos=[(api_repo.id, True)])
+    [w] = await repo.list_run_worktrees(svc._r, run.id)
+    write(Path(w.path) / ".claude" / "settings.local.json", '{"permissions": {}}\n')
+    write(Path(w.path) / ".mcp.json", "{}\n")
+    await svc.set_stage("acme-shop-1", "done", actor="owner")
+    await svc.settle_closings()
+    kept = await repo.get_run_worktree(svc._r, w.id)
+    assert kept.removed_at is None
+    assert kept.kept_reason == "uncommitted changes (.claude/settings.local.json, .mcp.json)"

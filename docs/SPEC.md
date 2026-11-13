@@ -572,13 +572,15 @@ worktree neither removed nor kept, or traces still to delete):
 
 - **The run ends** as End does: a running turn is stopped first, waiting texts are cancelled; the
   reason is "the card went to done".
+- **Ignored files go with the worktree.** Any other file git ignores (`node_modules/`, `dist/`,
+  caches) is not work: it is removed with the worktree, without a question.
 - **Worktrees.** Each worktree a run of the card created (`created_by_run`; never a repository used
-  in place, never anything else) is looked at. Work left is: a tracked change, an untracked file,
-  an ignored file or folder the run made (`git status --porcelain --untracked-files=all
-  --ignored=matching`: build output such as `dist/` or `node_modules/` counts, since git would
-  delete it; an ignored folder that holds copies is looked into file by file), a copied file that
-  differs from the source now or is gone (each file relaybay copied in is compared with the source
-  directly, ignored or not), and commits of its `HEAD` on no remote and on no other local branch
+  in place, never anything else) is looked at. Work left is: a tracked change, an untracked file
+  git does not ignore, a copied Claude file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/`,
+  `.mcp.json` or a `.worktreeinclude` file) that differs from the source now or is gone, or a new
+  file inside an ignored folder that holds copies such as `.claude/` (`git status --porcelain
+  --untracked-files=all --ignored=matching`; each copy is compared with the source directly), and
+  commits of its `HEAD` on no remote and on no other local branch
   (`git rev-list --count HEAD --not --remotes --exclude=<the run's branch> --exclude=<its current
   branch> --branches`; the branch stays when the worktree goes, so its commits are not lost either
   way). Nothing left: the copies, all still equal to the source, are moved to
