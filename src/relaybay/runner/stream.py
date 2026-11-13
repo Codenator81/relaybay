@@ -31,6 +31,7 @@ class Refusal:
     input: str  # masked, on one line, at most REFUSAL_INPUT_MAX characters
     # Masked with its lines kept, at most CALL_TEXT_MAX: what the approval check reads.
     text: str = ""
+    tool_use_id: str | None = None  # the refused call, as its PreToolUse named it
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,9 +125,18 @@ def _item(message: dict[str, Any], masked: dict[str, Any]) -> StreamItem | None:
     usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
     denials = masked.get("permission_denials")
     denials = denials if isinstance(denials, list) else []
+    # The ids from the line as read: the masking may take a long id for a secret.
+    raw = message.get("permission_denials")
+    raw = raw if isinstance(raw, list) and len(raw) == len(denials) else [None] * len(denials)
+    ids = [d.get("tool_use_id") if isinstance(d, dict) else None for d in raw]
     refusals = [
-        Refusal(name, _refusal_input(d.get("tool_input")), _refusal_text(d.get("tool_input")))
-        for d in denials[:DENIED_MAX]
+        Refusal(
+            name,
+            _refusal_input(d.get("tool_input")),
+            _refusal_text(d.get("tool_input")),
+            _text(ids[i], CC_ID_MAX),
+        )
+        for i, d in enumerate(denials[:DENIED_MAX])
         if isinstance(d, dict) and (name := _text(d.get("tool_name"), 200))
     ]
     text = masked.get("result")

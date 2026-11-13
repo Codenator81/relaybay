@@ -39,7 +39,9 @@
 - PR 4 shipped: migration 0039 `approval`; approvals as objects with the policy key `approvals`
   (live never droppable; in 0.9 for the program's runs only, desktop sessions with
   `approvals.desktop`), the guard's check of `git push` (with its branch), `gh pr merge` and
-  stand changes, one approval per call marked used with the allow, requests from a turn's
+  stand changes, one approval per call (reserved for the call at the allow, used once it ran,
+  released when Claude Code refused it, expired at the third release:
+  [0022](0022-questions-and-approvals.md#reserved-used-released)), requests from a turn's
   `permission_denials`, MCP `approval_request` / `approval_list` (no tool decides), the Inbox and
   the card, the decision as the next turn or an owner comment, the tray kind `approval`
   ([0022](0022-questions-and-approvals.md#approvals); behaviour:
@@ -242,6 +244,15 @@ not a determined agent.
   policy data (0013); by default a push and anything that touches a stand; a project may allow a push
   without approval; live always needs one and this is not configurable. **No live now** works on run
   sessions unchanged.
+- **One approval, one call that ran.** An approved call is answered `allow` and its approval is
+  reserved for that call (its `tool_use_id`), not spent: its `PostToolUse` (or its result in the
+  run's stream) marks it used. A call that did not run, refused by Claude Code after the allow or
+  because the answer came too late, releases it with no new request, so neither a lost answer nor
+  a classifier makes the owner approve twice, and no refusal opens a loop of requests; the third
+  release expires it ("released 3 times"; the agent's report says "approval exhausted, a new
+  request is needed"). The check answers within the hook client's 5 s wait for such a call (git
+  1.5 s per read, 3 s in all); git too slow denies "could not tell the branch, run it again"
+  without reserving ([0022](0022-questions-and-approvals.md#reserved-used-released)).
 - **Secrets.** Not in relaybay's database, with one exception that has to be decided: `run_event`
   holds what the agent's tools printed, and a tool can print a secret. Mitigation: the journal's
   secret masking is applied to every stored line, the "saw a secret" mark deletes on close, and the

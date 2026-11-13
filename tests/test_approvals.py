@@ -2,7 +2,9 @@
 the board, delivery to a run's next turn or a desktop session's hooks, requests from a turn's
 permission denials, the Inbox and the tray."""
 
+import asyncio
 import json
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta
@@ -13,6 +15,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
+from relaybay import service as service_module
 from relaybay.app import create_app
 from relaybay.config import Settings
 from relaybay.db import repo
@@ -25,7 +28,7 @@ from relaybay.domain.notifications import classify
 from relaybay.mcp_server.server import build_mcp
 from relaybay.policy import EffectivePolicy, Layer, PolicyError, preset
 from relaybay.runner.layers import LayerState
-from relaybay.runner.stream import Refusal, Result
+from relaybay.runner.stream import Refusal, Result, read_line
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, run_in_app
@@ -76,12 +79,23 @@ def pre(cc_id: str, cwd: str, command: str) -> dict[str, Any]:
     }
 
 
-async def decision(svc: Service, cc_id: str, cwd: str, command: str) -> tuple[str, str] | None:
-    """The PreToolUse answer's (decision, reason), or None when relaybay says nothing."""
+def post(payload: dict[str, Any]) -> dict[str, Any]:
+    """The PostToolUse of the call `payload` (a PreToolUse) asked for."""
+    return payload | {"hook_event_name": "PostToolUse", "tool_response": {"stdout": "ok"}}
+
+
+async def decision(
+    svc: Service, cc_id: str, cwd: str, command: str, runs: bool = True
+) -> tuple[str, str] | None:
+    """The PreToolUse answer's (decision, reason), or None when relaybay says nothing. With
+    `runs`, a call that was not denied then runs as in Claude Code: its PostToolUse follows."""
     payload = pre(cc_id, cwd, command)
     await svc.record_hook(payload)
     answer = await svc.hook_answer(payload)
     out = (answer or {}).get("hookSpecificOutput", {})
+    if runs and out.get("permissionDecision") != "deny":
+        await svc.record_hook(post(payload))
+        await svc.hook_answer(post(payload))
     if "permissionDecision" not in out:
         return None
     return out["permissionDecision"], out["permissionDecisionReason"]
@@ -844,21 +858,229 @@ async def test_a_failed_check_finds_the_run_without_the_payloads_run_id(
     assert await svc._approval_check_failed(pre(CC_A, CWD, "npm test"), hook_event) is None
 
 
-async def test_an_approved_call_refused_by_claude_code_is_spent_without_a_loop(
-    svc: Service,
-) -> None:
-    run = await started_run(svc)  # auto mode
+async def ask(svc: Service, cwd: str, command: str) -> tuple[dict[str, Any], tuple[str, str]]:
+    """A run's PreToolUse that Claude Code does not run (no PostToolUse): its payload and the
+    (decision, reason) relaybay answered."""
+    payload = pre(RUN_CC, cwd, command)
+    await svc.record_hook(payload)
+    out = ((await svc.hook_answer(payload)) or {}).get("hookSpecificOutput", {})
+    return payload, (out.get("permissionDecision", ""), out.get("permissionDecisionReason", ""))
+
+
+async def released(svc: Service) -> list[Any]:
+    return [e for e in await svc.events_since(0, limit=500) if e.kind == "approval.released"]
+
+
+async def test_an_allow_holds_the_approval_until_the_calls_post_tool_use(svc: Service) -> None:
+    run = await started_run(svc, mode="default")
     a = await approve(svc, run, "push", "feat/checkout")
-    await svc.send_to_run(run.id, "Push now")
+    payload, (answer, _) = await ask(svc, run.cwd, "git push origin feat/checkout")
+    assert answer == "allow"
+    held = await svc.get_approval(a.id)
+    assert held.status == "approved" and held.reserved
+    assert held.reserved_for == payload["tool_use_id"] and held.used_at is None
+    # While the call runs, the same push again is denied and opens nothing.
+    again = await decision(svc, RUN_CC, run.cwd, "git push origin feat/checkout")
+    assert again is not None and again[0] == "deny" and "held for a call" in again[1]
+    assert await repo.open_approvals(svc._r, task_id=1) == []
+    await svc.hook_answer(post(payload))
+    used = await svc.get_approval(a.id)
+    assert used.status == "used" and used.used_by == "Bash: git push origin feat/checkout"
+    assert used.used_session == run.session_name
+    [event] = [e for e in await svc.events_since(0, limit=500) if e.kind == "approval.used"]
+    assert event.payload["decision"] == "allow" and event.payload["approval_id"] == a.id
+
+
+async def test_a_lost_answer_does_not_spend_the_approval(svc: Service) -> None:
+    """The client gave up on a slow gate: Claude Code's Manual mode refused the push, and the
+    refusal names the call. The approval goes back, no new request, the push goes next time."""
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/checkout")
+    payload, (answer, _) = await ask(svc, run.cwd, "git push origin feat/checkout")
+    assert answer == "allow"  # what the client did not wait for
+    refusal = Refusal("Bash", "git push origin feat/checkout", tool_use_id=payload["tool_use_id"])
+    await finish_with(svc, run.id, [refusal])
+    back = await svc.get_approval(a.id)
+    assert (back.status, back.reserved, back.released_count) == ("approved", False, 1)
+    assert await repo.open_approvals(svc._r, task_id=1) == []  # no new request: no loop
+    [event] = await released(svc)
+    assert event.payload["reason"] == "Claude Code refused the call"
+    report = (await svc.task_detail("acme-shop-1")).reports[0]
+    assert f"(approval {a.id}, push of feat/checkout): the approval stays" in report.body_md
+    await svc.send_to_run(run.id, "Push again")
     allowed = await decision(svc, RUN_CC, run.cwd, "git push origin feat/checkout")
     assert allowed is not None and allowed[0] == "allow"
-    await finish_with(svc, run.id, [Refusal("Bash", "git push origin feat/checkout")])
-    assert await repo.open_approvals(svc._r, task_id=1) == []  # no new request
     assert (await svc.get_approval(a.id)).status == "used"
+
+
+async def test_a_classifier_denial_after_an_allow_releases_the_approval(svc: Service) -> None:
+    run = await started_run(svc)  # auto mode
+    a = await approve(svc, run, "push", "feat/checkout")
+    _, (answer, _) = await ask(svc, run.cwd, "git push origin feat/checkout")
+    assert answer == "allow"
+    # A refusal without a tool_use_id is matched by the call it names.
+    await finish_with(svc, run.id, [Refusal("Bash", "git push origin feat/checkout")])
+    back = await svc.get_approval(a.id)
+    assert (back.status, back.reserved, back.released_count) == ("approved", False, 1)
+    assert await repo.open_approvals(svc._r, task_id=1) == []
+
+
+async def test_the_third_release_expires_the_approval(svc: Service) -> None:
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/checkout")
+    for turn in range(arules.RELEASES_MAX):
+        if turn:
+            await svc.send_to_run(run.id, "Push again")
+        payload, (answer, _) = await ask(svc, run.cwd, "git push origin feat/checkout")
+        assert answer == "allow"
+        refusal = Refusal(
+            "Bash", "git push origin feat/checkout", tool_use_id=payload["tool_use_id"]
+        )
+        await finish_with(svc, run.id, [refusal])
+    gone = await svc.get_approval(a.id)
+    assert (gone.status, gone.expired_reason) == ("expired", "released 3 times")
+    assert len(await released(svc)) == arules.RELEASES_MAX - 1
     report = (await svc.task_detail("acme-shop-1")).reports[0]
-    assert f"approved call refused by Claude Code (approval {a.id}" in report.body_md
-    [used] = [e for e in await svc.events_since(0, limit=500) if e.kind == "approval.used"]
-    assert used.payload["decision"] == "allow" and used.payload["approval_id"] == a.id
+    assert "approval exhausted, a new request is needed" in report.body_md
+    denied = await decision(svc, RUN_CC, run.cwd, "git push origin feat/checkout")
+    assert denied is not None and denied[0] == "deny"  # a new request opens
+    assert len(await repo.open_approvals(svc._r, task_id=1)) == 1
+
+
+async def test_a_turn_end_settles_a_held_call_by_the_stream(svc: Service) -> None:
+    """No PostToolUse reached relaybay: the call's result in the stream says it ran (used); no
+    result and no refusal says it did not (released)."""
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/checkout")
+    payload, _ = await ask(svc, run.cwd, "git push origin feat/checkout")
+    turn_id = stub(svc).active.pop(run.id)
+    await svc.turn_init(turn_id, RUN_CC)
+    result_line = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": payload["tool_use_id"], "content": "ok"}
+            ],
+        },
+    }
+    event, _ = read_line(json.dumps(result_line), 1)
+    assert event is not None
+    await svc.turn_events(turn_id, [event])
+    await svc.turn_done(turn_id, "success", Result("success", False, 1, 10), 0, None)
+    assert (await svc.get_approval(a.id)).status == "used"
+
+    await svc.send_to_run(run.id, "Next")
+    b = await approve(svc, run, "push", "feat/other")
+    await ask(svc, run.cwd, "git push origin feat/other")
+    await stub(svc).finish(run.id, cc_id=RUN_CC)
+    # Not refused and no PostToolUse: it may have run (the lines may not even be stored), so it
+    # counts used and can never let the same push through twice.
+    assert (await svc.get_approval(b.id)).status == "used"
+    assert await released(svc) == []
+
+
+async def test_two_calls_racing_for_one_approval_only_one_holds_it(svc: Service) -> None:
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/checkout")
+    answers = await asyncio.gather(
+        *(ask(svc, run.cwd, "git push origin feat/checkout") for _ in range(2))
+    )
+    decisions = sorted(answer for _, (answer, _) in answers)
+    assert decisions == ["allow", "deny"]
+    held = await svc.get_approval(a.id)
+    winner = next(p for p, (answer, _) in answers if answer == "allow")
+    assert held.reserved_for == winner["tool_use_id"]
+    assert await repo.open_approvals(svc._r, task_id=1) == []
+
+
+async def test_a_held_approval_expires_by_its_valid_until(svc: Service) -> None:
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/checkout")
+    payload, _ = await ask(svc, run.cwd, "git push origin feat/checkout")
+    async with svc._tx() as tx:
+        await repo.update_approval(tx.conn, a.id, {"valid_until": "2020-01-01T00:00:00.000+00:00"})
+    assert await svc.expire_stale_approvals() == 1
+    await svc.hook_answer(post(payload))
+    gone = await svc.get_approval(a.id)
+    assert gone.status == "expired" and (gone.expired_reason or "").startswith("not used by")
+
+
+async def test_a_desktop_sessions_stop_counts_a_held_call_used(service: Service) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    await service.save_policy_layer("acme-shop", '{"approvals": {"desktop": true}}')
+    task = await service.create_task(
+        "acme-shop", "Checkout", stage="dev", session=DESKTOP_A, hook_session=CC_A
+    )
+    a, _, _ = await service.request_approval(
+        task.key, "push", "feat/checkout", "ready", session=DESKTOP_A, hook_session=CC_A
+    )
+    await service.decide_approval(a.id, True)
+    payload = pre(CC_A, CWD, "git push origin feat/checkout")
+    await service.record_hook(payload)
+    await service.hook_answer(payload)  # no decision: the person is asked; they say no
+    assert (await service.get_approval(a.id)).reserved
+    await service.hook_answer(hook("Stop", CC_A))
+    back = await service.get_approval(a.id)
+    # No refusal relaybay can read: it may have run, so it never goes through twice.
+    assert (back.status, back.reserved, back.released_count) == ("used", False, 0)
+
+
+# --- a slow git -------------------------------------------------------------------------------
+
+
+async def test_a_slow_branch_read_denies_in_time_and_keeps_the_approval(
+    svc: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from relaybay import hook_client
+    from relaybay.runner import worktrees
+
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/checkout")
+    seen: list[float] = []
+
+    def hung(git: str, folder: str, timeout: float = 5.0) -> Any:
+        seen.append(timeout)
+        time.sleep(timeout)  # as subprocess.run with this timeout would
+        raise worktrees.GitTooSlow("git took too long")
+
+    monkeypatch.setattr(worktrees, "branch_and_head", hung)
+    started = time.monotonic()
+    _, (answer, reason) = await ask(svc, run.cwd, "git push")  # the current branch
+    took = time.monotonic() - started
+    assert (answer, reason) == ("deny", arules.SLOW_REASON)
+    assert took < hook_client.GUARDED_TIMEOUT_SECONDS
+    assert seen and max(seen) <= service_module.GATE_BRANCH_TIMEOUT_SECONDS
+    kept = await svc.get_approval(a.id)
+    assert kept.status == "approved" and not kept.reserved
+    assert await repo.open_approvals(svc._r, task_id=1) == []
+
+
+async def test_a_branch_read_is_reused_while_head_says_the_same(
+    svc: Service, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from relaybay.runner import worktrees
+
+    run = await started_run(svc, mode="default")
+    await approve(svc, run, "push", "feat/checkout")
+    head = tmp_path / "HEAD"
+    head.write_bytes(b"ref: refs/heads/feat/checkout\n")
+    reads: list[str] = []
+
+    def slow(git: str, folder: str, timeout: float = 5.0) -> tuple[str, Path]:
+        reads.append(folder)
+        time.sleep(0.5)  # slower than the client's ping timeout
+        return ("feat/checkout" if b"feat/checkout" in head.read_bytes() else "main"), head
+
+    monkeypatch.setattr(worktrees, "branch_and_head", slow)
+    denied = await decision(svc, RUN_CC, run.cwd, "git push origin HEAD:main && git push")
+    assert denied is not None and denied[0] == "deny"
+    allowed = await decision(svc, RUN_CC, run.cwd, "git push")
+    assert allowed is not None and allowed[0] == "allow"
+    assert len(reads) == 1  # the second check reused the first read
+    head.write_bytes(b"ref: refs/heads/main\n")  # a checkout
+    await decision(svc, RUN_CC, run.cwd, "git push")
+    assert len(reads) == 2
 
 
 async def test_no_allow_for_a_run_with_the_owner_or_outside_its_folders(svc: Service) -> None:

@@ -40,7 +40,8 @@
     "settings.run_limits",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn",
-    "approval.requested", "approval.decided", "approval.used", "approval.expired"
+    "approval.requested", "approval.decided", "approval.used", "approval.released",
+    "approval.expired"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [

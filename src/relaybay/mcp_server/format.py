@@ -1149,6 +1149,8 @@ def event_detail(e: Event) -> str:
             return f"{what} -> {p.get('decision')}{line}"
         if e.kind == "approval.expired":
             return f"{what} expired: {p.get('reason')}"
+        if e.kind == "approval.released":
+            return f"{what} released: {p.get('reason')}"
         if e.kind == "approval.used":
             given = " (allow given)" if p.get("decision") == "allow" else ""
             return f"{what} used by {arules.quoted(str(p.get('used_by') or ''))}{given}"
@@ -1614,6 +1616,8 @@ def _approval_state(a: Approval) -> str:
         return f"refused by the owner {when}Z"
     if a.status == "used":
         return f"approved {when}Z, used {(a.used_at or '')[:16]}Z by {a.used_by}"
+    if a.reserved:
+        return f"approved by the owner {when}Z, held for a running call: {a.reserved_call}"
     return f"approved by the owner {when}Z, not used yet"
 
 

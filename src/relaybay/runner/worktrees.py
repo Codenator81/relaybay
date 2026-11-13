@@ -668,12 +668,27 @@ def find_git(which: Callable[..., Any] = shutil.which) -> str | None:
 BRANCH_TIMEOUT_SECONDS = 5.0
 
 
-def current_branch(git: str, folder: str, run: Runner = run_quiet) -> str | None:
-    """The branch checked out in `folder` (a read); None when it is not a repository, the HEAD
-    is detached or git does not answer in time."""
+class GitTooSlow(Exception):
+    """git did not answer within the time it was given."""
+
+
+def branch_and_head(
+    git: str, folder: str, timeout: float = BRANCH_TIMEOUT_SECONDS, run: Runner = run_quiet
+) -> tuple[str | None, Path | None]:
+    """The branch checked out in `folder` (a read) and the HEAD file of its working tree, which
+    changes whenever the branch does. (None, None) when it is not a repository; the branch is
+    None when the HEAD is detached. GitTooSlow when git does not answer within `timeout`."""
+    args = ["rev-parse", "--absolute-git-dir", "--abbrev-ref", "HEAD"]
     try:
-        done = _git(git, folder, ["rev-parse", "--abbrev-ref", "HEAD"], run, BRANCH_TIMEOUT_SECONDS)
-    except (ValidationError, OSError):
-        return None
-    name = (done.stdout or "").strip()
-    return name if done.returncode == 0 and name and name != "HEAD" else None
+        done = _git(git, folder, args, run, timeout)
+    except ValidationError as exc:
+        if isinstance(exc.__cause__, subprocess.TimeoutExpired):
+            raise GitTooSlow(str(exc)) from exc
+        return None, None
+    except OSError:
+        return None, None
+    lines = (done.stdout or "").strip().splitlines()
+    if done.returncode != 0 or len(lines) != 2:
+        return None, None
+    git_dir, name = (line.strip() for line in lines)
+    return (name if name and name != "HEAD" else None), Path(git_dir) / "HEAD"

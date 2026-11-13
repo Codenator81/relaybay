@@ -47,7 +47,10 @@ HTTP_HOOKS_MIN_VERSION = (2, 1, 63)
 # hook events in HOOK_EVENTS are older than that (unverified for earlier releases).
 MIN_CLAUDE_CODE_VERSION = (2, 0, 0)
 TOKEN_ENV = "RELAYBAY_TOKEN"
-COMMAND_TIMEOUT = 3  # seconds; the command keeps within hook_client.BUDGET_SECONDS (2 s)
+# Seconds. The command keeps within hook_client.BUDGET_SECONDS (2 s), except a call that may need
+# an approval: its one try waits hook_client.GUARDED_TIMEOUT_SECONDS (5 s), after a drain of the
+# spool within the budget for a PostToolUse, plus the interpreter's start-up.
+COMMAND_TIMEOUT = 10
 HTTP_TIMEOUT = 2
 # The wake-up hook waits up to WAKE_HOLD_SECONDS (25 min) for a comment; Claude Code enforces
 # `timeout` on an asyncRewake hook, so it must be longer than that.

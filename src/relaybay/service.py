@@ -280,6 +280,7 @@ AUDIT_CHANGE_KINDS = (
     "approval.requested",
     "approval.decided",
     "approval.used",
+    "approval.released",
     "approval.expired",
     "run.turn_queued",
     "run.start_anyway",
@@ -366,10 +367,19 @@ _APPROVAL_HINT_RE = re.compile(r"\b(git|gh)(\.exe)?\b", re.IGNORECASE)
 # mode that refuses Bash): an approved run call is answered `allow` in every other mode.
 # The mode in which an approved call needs no `allow`: Claude Code skips its checks there.
 _SKIPPING_MODES = ("bypassPermissions",)
+# The approval check answers within the hook client's GUARDED_TIMEOUT_SECONDS (5 s): one read of
+# the current branch waits at most GATE_BRANCH_TIMEOUT_SECONDS, all reads of one check together
+# GATE_GIT_SECONDS. A branch read is reused for BRANCH_CACHE_SECONDS while the HEAD file of its
+# working tree still says the same.
+GATE_BRANCH_TIMEOUT_SECONDS = 1.5
+GATE_GIT_SECONDS = 3.0
+BRANCH_CACHE_SECONDS = 5.0
+BRANCH_CACHE_MAX = 256  # folders
+TOOL_USE_ID_MAX = 200
 
 
 class _ApprovalTaken(Exception):
-    """Another call used the approval in the same moment: the transaction rolls back."""
+    """Another call reserved the approval in the same moment: the transaction rolls back."""
 
 
 @dataclass(slots=True)
@@ -1288,6 +1298,8 @@ class Service:
         # until uvicorn's graceful timeout cancels it with a 500.
         self.stopping = False
         self._waiter_seq = 0
+        # Per folder: (when read, the HEAD file, its bytes then, the branch).
+        self._branches: dict[str, tuple[float, Path, bytes, str | None]] = {}
         # FTS5 full-text search; False when this SQLite has no FTS5 (search uses LIKE then).
         self.search_fts = False
         # Plan reminders per session: tool events since the session started, the last text sent.
@@ -2239,6 +2251,14 @@ class Service:
             return _context("SessionStart", context)
         if hook.event == "PreToolUse":
             return await self._pre_tool_answer(payload, hook, session)
+        try:
+            if hook.event == "PostToolUse":
+                await self._use_reservations(payload)
+            elif hook.event in ("Stop", "SessionEnd"):
+                await self._release_session_reservations(hook)
+        except Exception:
+            # The approval stays held; it expires by its valid_until.
+            logger.exception("relaybay could not settle the approvals held for a call")
         lines = await self._limit_lines(hook) if hook.event in LIMIT_LINE_EVENTS else []
         if session is None:
             return _context(hook.event, "\n".join(lines)) if lines else None
@@ -11495,14 +11515,14 @@ class Service:
         that waited. Its slot is free: the queue starts what may start, this run's next text
         among them."""
         denied: list[tuple[arules.Need, str]] = []
-        spent: dict[int, str] = {}
+        refused: dict[int, Approval] = {}
         if result is not None and result.refusals:
             # Read before the transaction: the current branch comes from git.
             ended = await repo.get_turn(self._r, turn_id)
             assert ended is not None
             try:
                 run = await self.get_run(ended.run_id)
-                denied, spent = await self._denied_needs(run, ended, result)
+                denied, refused = await self._denied_needs(run, ended, result)
             except Exception:
                 logger.exception("Reading the denials of turn %d for approvals failed", turn_id)
         free = await self._free_memory()
@@ -11525,8 +11545,9 @@ class Service:
                     denied_tools=result.denied_tools,
                 )
             await repo.end_turn(tx.conn, turn.id, changes, tx.now)
+            notes = await self._settle_turn_reservations(tx, run, turn, refused)
             if result is not None:
-                await self._turn_report(tx, task, run, turn, outcome, result, spent)
+                await self._turn_report(tx, task, run, turn, outcome, result, notes)
             await self._requests_from_denials(tx, run, task, turn, denied)
             tokens = sum(
                 changes.get(k, 0)
@@ -12715,13 +12736,46 @@ class Service:
                 best = (len(root), name)
         return best[1] if best else None
 
+    async def _current_branch(self, git: str, folder: str, deadline: float | None) -> str | None:
+        """The branch checked out in `folder`, read with git, or reused from a read of the last
+        BRANCH_CACHE_SECONDS when the working tree's HEAD file holds the same bytes (a checkout
+        rewrites it). With `deadline` (time.monotonic()) git gets at most
+        GATE_BRANCH_TIMEOUT_SECONDS and never past it: worktrees.GitTooSlow."""
+        key = worktrees.path_key(folder)
+        cached = self._branches.get(key)
+        if cached is not None and time.monotonic() - cached[0] < BRANCH_CACHE_SECONDS:
+            try:
+                if cached[1].read_bytes() == cached[2]:
+                    return cached[3]
+            except OSError:
+                pass  # the HEAD file is gone: git reads it again
+        timeout = worktrees.BRANCH_TIMEOUT_SECONDS
+        if deadline is not None:
+            timeout = min(GATE_BRANCH_TIMEOUT_SECONDS, deadline - time.monotonic())
+            if timeout <= 0:
+                raise worktrees.GitTooSlow("no time left to read the branch")
+        branch, head = await asyncio.to_thread(worktrees.branch_and_head, git, folder, timeout)
+        if head is not None:
+            if len(self._branches) > BRANCH_CACHE_MAX:
+                self._branches.clear()
+            try:
+                self._branches[key] = (time.monotonic(), head, head.read_bytes(), branch)
+            except OSError:
+                self._branches.pop(key, None)
+        return branch
+
     async def _call_needs(
-        self, call: guard.ToolCall, scope: _ApprovalScope, cwd: str | None
+        self,
+        call: guard.ToolCall,
+        scope: _ApprovalScope,
+        cwd: str | None,
+        deadline: float | None = None,
     ) -> list[list[arules.Need]]:
         """The actions of a tool call that need the owner's approval, per command segment (an
         MCP call is one), their targets filled in: stand changes (deploy or SQL on test or live)
         and git actions (push, PR merge, commit), both. The current branch is read with git (no
-        transaction is open), never after the call moved elsewhere (`cd`, `--git-dir`)."""
+        transaction is open), never after the call moved elsewhere (`cd`, `--git-dir`); with
+        `deadline`, worktrees.GitTooSlow when git does not answer in time."""
         strict = scope.run is not None
         segments = (
             [(call.text, [])]
@@ -12743,7 +12797,7 @@ class Service:
                     if need.located and folder:
                         git = git or worktrees.find_git()
                         if git:
-                            branch = await asyncio.to_thread(worktrees.current_branch, git, folder)
+                            branch = await self._current_branch(git, folder, deadline)
                     changes["pr" if need.action == "merge" else "branch"] = branch
                 per[index].append(dataclasses.replace(need, **changes))
         return per
@@ -12807,10 +12861,13 @@ class Service:
         """PreToolUse: a call of a run (of a desktop session only when the policy says
         `approvals.desktop`) that takes an action the policy guards needs an approved, unused
         approval of its card for each such action. Not covered: denied, and a request opens if
-        none is open. Covered, and the call is that action alone: each approval is marked used
-        in the same transaction, and the answer is `allow` where Claude Code would otherwise
-        refuse (a run in Manual mode not with the owner), else no decision. Covered but run
-        with other commands: denied, the approvals kept. Only the approval rows count."""
+        none is open. Covered only by an approval held for another call: denied, nothing opens.
+        Covered, and the call is that action alone: each approval is reserved for this call
+        (its tool_use_id) in the same transaction, and the answer is `allow` where Claude Code
+        would otherwise refuse (a run in Manual mode not with the owner), else no decision; the
+        call's PostToolUse marks it used, a call that did not run releases it
+        (`_settle_turn_reservations`, `_release_session_reservations`). Covered but run with
+        other commands: denied, the approvals kept. Only the approval rows count."""
         call = guard.tool_call(payload)
         if call is None:
             return None
@@ -12823,7 +12880,10 @@ class Service:
         if scope is None or (scope.run is None and not scope.policy.approvals.desktop):
             return None
         await self.expire_stale_approvals()
-        per = await self._call_needs(call, scope, hook.cwd)
+        try:
+            per = await self._call_needs(call, scope, hook.cwd, time.monotonic() + GATE_GIT_SECONDS)
+        except worktrees.GitTooSlow:
+            return "deny", arules.SLOW_REASON
         needs = [n for segment in per for n in segment]
         if not needs:
             return None
@@ -12842,19 +12902,33 @@ class Service:
         )
         used = arules.used_by(call.tool, guard_command(call))
         in_run = run is not None
+        tool_use_id = payload.get("tool_use_id") if isinstance(payload, dict) else None
+        if not isinstance(tool_use_id, str) or not 0 < len(tool_use_id) <= TOOL_USE_ID_MAX:
+            tool_use_id = None
         try:
             async with self._tx() as tx:
                 usable = await repo.usable_approvals(tx.conn, [t.id for t in scope.tasks])
                 picked: list[Approval] = []
+                held: list[Approval] = []
                 missing: list[arules.Need] = []
                 for need in needs:
                     match = next(
-                        (a for a in usable if a not in picked and arules.covers(a, need)), None
+                        (
+                            a
+                            for a in usable
+                            if not a.reserved and a not in picked and arules.covers(a, need)
+                        ),
+                        None,
                     )
-                    if match is None:
-                        missing.append(need)
-                    else:
+                    holder = next(
+                        (a for a in usable if a.reserved and arules.covers(a, need)), None
+                    )
+                    if match is not None:
                         picked.append(match)
+                    elif holder is not None:
+                        held.append(holder)
+                    else:
+                        missing.append(need)
                 if missing and scope.tasks[0].stage == Stage.DONE:
                     return "deny", arules.done_reason(scope.tasks[0].key)
                 if missing:
@@ -12873,25 +12947,23 @@ class Service:
                             arules.deny_reason(need, opened.id if opened else None, in_run)
                         )
                     return "deny", " ".join(reasons)
+                if held:
+                    return "deny", arules.held_reason(held)
                 if not alone:
                     return "deny", arules.alone_reason(picked)
                 for a in picked:
-                    if not await repo.use_approval(tx.conn, a.id, used, session.name, tx.now):
-                        raise _ApprovalTaken
-                    task = await self.get_task(a.task_id, tx.conn)
-                    await self._approval_event(
-                        tx,
-                        "approval.used",
-                        session.name,
-                        task,
-                        a,
-                        used_by=used,
-                        decision="allow" if allow else "none",
+                    reserved = await repo.reserve_approval(
+                        tx.conn, a.id, tool_use_id, used, session.id, tx.now
                     )
+                    if not reserved:
+                        raise _ApprovalTaken
+                    if tool_use_id is None:
+                        # No PostToolUse could name this call: it is used now.
+                        await self._use_held(tx, a.id, "allow" if allow else "none", session.name)
         except _ApprovalTaken:
             return "deny", (
-                "relaybay guard: another call used this approval at the same moment. Ask again"
-                " with approval_request."
+                "relaybay guard: another call holds this approval at the same moment. Wait for"
+                " its result, then run it again if it did not go through."
             )
         if allow:
             named = "; ".join(f"approval {a.id} ({a.what})" for a in picked)
@@ -12924,25 +12996,142 @@ class Service:
         is_run = is_run or run_of_payload(payload) is not None
         return ("deny", arules.UNAVAILABLE_REASON) if is_run else None
 
+    # --- approvals held for a call --------------------------------------------------------------
+
+    async def _use_held(self, tx: _Tx, approval_id: int, decision: str, actor: str) -> None:
+        """The call an approval was held for ran: it is used (`approval.used`)."""
+        if not await repo.use_reserved(tx.conn, approval_id, tx.now):
+            return
+        a = await self.get_approval(approval_id, tx.conn)
+        task = await self.get_task(a.task_id, tx.conn)
+        await self._approval_event(
+            tx, "approval.used", actor, task, a, used_by=a.used_by, decision=decision
+        )
+
+    @staticmethod
+    async def _held_decision(conn: aiosqlite.Connection, a: Approval) -> str:
+        """What the gate answered the call an approval is held for: `allow` for a run's call
+        outside the owner's terminal in a mode that does not skip Claude Code's checks, else
+        `none`."""
+        if a.reserved_session_id is None:
+            return "none"
+        run = await repo.run_of_session(conn, a.reserved_session_id)
+        if run is None or run.with_owner or run.permission_mode in _SKIPPING_MODES:
+            return "none"
+        return "allow"
+
+    async def _release_held(self, tx: _Tx, a: Approval, reason: str, actor: str) -> str | None:
+        """The call an approval was held for did not run: the approval is free again
+        (`approval.released`, no new request), or, the RELEASES_MAX-th time, expired. The line
+        for the turn's report, or None when it was not held any more."""
+        count = await repo.release_approval(tx.conn, a.id)
+        if count is None:
+            return None
+        task = await self.get_task(a.task_id, tx.conn)
+        if count >= arules.RELEASES_MAX:
+            await repo.expire_approval(tx.conn, a.id, arules.EXHAUSTED_REASON, tx.now)
+            expired = await self.get_approval(a.id, tx.conn)
+            await self._approval_event(
+                tx, "approval.expired", actor, task, expired, reason=arules.EXHAUSTED_REASON
+            )
+            return arules.exhausted_note(expired)
+        released = await self.get_approval(a.id, tx.conn)
+        await self._approval_event(
+            tx,
+            "approval.released",
+            actor,
+            task,
+            released,
+            reason=reason,
+            call=a.reserved_call,
+            releases=count,
+        )
+        return arules.released_note(released)
+
+    async def _use_reservations(self, payload: Any) -> None:
+        """PostToolUse: the call ran, so the approvals held for it (by its tool_use_id) are
+        used. The common case reads one indexed row and writes nothing."""
+        tool_use_id = payload.get("tool_use_id") if isinstance(payload, dict) else None
+        if not isinstance(tool_use_id, str) or not 0 < len(tool_use_id) <= TOOL_USE_ID_MAX:
+            return
+        if not await repo.reserved_for_call(self._r, tool_use_id):
+            return
+        async with self._tx() as tx:
+            for a in await repo.reserved_for_call(tx.conn, tool_use_id):
+                session = (
+                    await repo.get_session_by_id(tx.conn, a.reserved_session_id)
+                    if a.reserved_session_id is not None
+                    else None
+                )
+                actor = session.name if session else "relaybay"
+                await self._use_held(tx, a.id, await self._held_decision(tx.conn, a), actor)
+
+    async def _release_session_reservations(self, hook: HookEvent) -> None:
+        """Stop or SessionEnd of a desktop session: a call an approval is still held for got no
+        PostToolUse in its turn. It may have run with its PostToolUse lost, so the approval
+        counts used (never twice through); a desktop session has no refusals relaybay can read.
+        A run's calls are settled at the turn's end (`_settle_turn_reservations`)."""
+        session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
+        if session is None or session.kind == "run":
+            return
+        if not await repo.reserved_by_session(self._r, session.id):
+            return
+        async with self._tx() as tx:
+            for a in await repo.reserved_by_session(tx.conn, session.id):
+                await self._use_held(tx, a.id, await self._held_decision(tx.conn, a), session.name)
+
+    async def _settle_turn_reservations(
+        self, tx: _Tx, run: Run, turn: RunTurn, refused: dict[int, Approval]
+    ) -> dict[int, str]:
+        """A run's turn ended: each approval still held for one of its calls is released when
+        Claude Code refused that call (`refused`: by the refusal's index in the turn's
+        permission denials), else used. The report line per refusal."""
+        held = await repo.reserved_by_run(tx.conn, run.id)
+        if not held:
+            return {}
+        actor = run.session_name or "relaybay"
+        notes: dict[int, str] = {}
+        released: set[int] = set()
+        for index, a in refused.items():
+            if a.id in released:
+                continue
+            note = await self._release_held(tx, a, "Claude Code refused the call", actor)
+            released.add(a.id)
+            if note is not None:
+                notes[index] = note
+        # Not refused: the call may have run without its PostToolUse reaching relaybay (and the
+        # turn's lines may not be stored at all): count it used, so an approval never lets the
+        # same action through twice. Only a refusal Claude Code reported gives it back.
+        for a in held:
+            if a.id not in released:
+                await self._use_held(tx, a.id, await self._held_decision(tx.conn, a), actor)
+        return notes
+
     async def _denied_needs(
         self, run: Run, turn: RunTurn, result: Result
-    ) -> tuple[list[tuple[arules.Need, str]], dict[int, str]]:
+    ) -> tuple[list[tuple[arules.Need, str]], dict[int, Approval]]:
         """The actions of a turn's permission denials that need an approval, with the call that
-        was denied, and a note per refusal of a call an approval of this turn allowed (Claude
-        Code refused it anyway: the approval is spent, no new request). A call the guard's level
-        blocks, one the guard cannot read, or one no approval rule covers (a refusal of Claude
-        Code's own mode) gives none."""
+        was denied, and per refusal of a call an approval was held for, that approval (Claude
+        Code refused the call: the approval goes back, no new request). The refusal names the
+        call by its tool_use_id; without one, a held approval that covers the call counts. A
+        call the guard's level blocks, one the guard cannot read, or one no approval rule
+        covers (a refusal of Claude Code's own mode) gives none."""
         session = await repo.get_session_by_id(self._r, run.session_id) if run.session_id else None
         if session is None:
             return [], {}
+        held = await repo.reserved_by_run(self._r, run.id)
+        refused: dict[int, Approval] = {}
+        for index, refusal in enumerate(result.refusals):
+            by_id = next((a for a in held if a.reserved_for == refusal.tool_use_id), None)
+            if refusal.tool_use_id is not None and by_id is not None:
+                refused[index] = by_id
         scope = await self._approval_scope(self._r, session, run=run)
         if scope is None:
-            return [], {}
-        since = turn.started_at or turn.queued_at
-        spent_on = await repo.used_since(self._r, run.id, since)
+            return [], refused
         found = []
-        notes: dict[int, str] = {}
         for index, refusal in enumerate(result.refusals):
+            if index in refused:
+                continue
             is_mcp = refusal.tool.startswith("mcp__")
             if refusal.tool != "Bash" and (
                 not is_mcp or refusal.tool.startswith(guard.OWN_TOOL_PREFIX)
@@ -12956,16 +13145,29 @@ class Service:
             top = guard.strongest(touches)
             if top is not None and top.decision in ("deny", "ask"):
                 continue
-            for segment in await self._call_needs(call, scope, run.cwd):
+            try:
+                segments = await self._call_needs(call, scope, run.cwd)
+            except worktrees.GitTooSlow:
+                continue  # the branch is unknown, as for a detached HEAD
+            for segment in segments:
                 for need in segment:
                     if not need.known:
                         continue
-                    used = next((a for a in spent_on if arules.covers(a, need)), None)
-                    if used is not None:
-                        notes[index] = arules.spent_note(used)
+                    holder = next(
+                        (
+                            a
+                            for a in held
+                            if (refusal.tool_use_id is None or a.reserved_for is None)
+                            and a not in refused.values()
+                            and arules.covers(a, need)
+                        ),
+                        None,
+                    )
+                    if holder is not None:
+                        refused[index] = holder
                         continue
                     found.append((need, arules.used_by(refusal.tool, refusal.input)))
-        return found, notes
+        return found, refused
 
     async def _requests_from_denials(
         self,

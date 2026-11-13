@@ -137,7 +137,8 @@ What it writes, and what it never touches:
   command from step 1.
 
 Hooks never get in the way when relaybay is not running. The command hook prints nothing and always
-exits 0, so the session sees nothing: a tool call gets one 0.3 s try, an event that carries state
+exits 0, so the session sees nothing: a tool call gets one 0.3 s try (5 s for a push, a merge
+or a change on a stand, whose approval check reads git), an event that carries state
 (session start and end, a prompt, the end of a turn, a todo change) one retry within 2 s, and then
 waits in a spool that the next run sends once relaybay answers again. http hook entries use a
 2 s timeout and failures do not block the session, but Claude Code shows a non-blocking "hook
