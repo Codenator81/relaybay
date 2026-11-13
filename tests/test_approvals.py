@@ -916,13 +916,56 @@ async def test_a_lost_answer_does_not_spend_the_approval(svc: Service) -> None:
 async def test_a_classifier_denial_after_an_allow_releases_the_approval(svc: Service) -> None:
     run = await started_run(svc)  # auto mode
     a = await approve(svc, run, "push", "feat/checkout")
-    _, (answer, _) = await ask(svc, run.cwd, "git push origin feat/checkout")
+    payload, (answer, _) = await ask(svc, run.cwd, "git push origin feat/checkout")
     assert answer == "allow"
-    # A refusal without a tool_use_id is matched by the call it names.
-    await finish_with(svc, run.id, [Refusal("Bash", "git push origin feat/checkout")])
+    refusal = Refusal("Bash", "git push origin feat/checkout", tool_use_id=payload["tool_use_id"])
+    await finish_with(svc, run.id, [refusal])
     back = await svc.get_approval(a.id)
     assert (back.status, back.reserved, back.released_count) == ("approved", False, 1)
     assert await repo.open_approvals(svc._r, task_id=1) == []
+
+
+async def test_a_refusal_without_an_id_does_not_release_a_call_held_by_its_id(
+    svc: Service,
+) -> None:
+    run = await started_run(svc)
+    a = await approve(svc, run, "push", "feat/checkout")
+    await ask(svc, run.cwd, "git push origin feat/checkout")
+    await finish_with(svc, run.id, [Refusal("Bash", "git push origin feat/checkout")])
+    # Not shown to be this call: it counts used, never twice through, and the refused push is
+    # an ordinary denial that asks again.
+    assert (await svc.get_approval(a.id)).status == "used"
+    [asked] = await repo.open_approvals(svc._r, task_id=1)
+    assert asked.requested_via == "denial"
+
+
+async def test_a_refused_call_that_held_two_approvals_releases_both(svc: Service) -> None:
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/a")
+    await svc.send_to_run(run.id, "and b")
+    b = await approve(svc, run, "push", "feat/b")
+    payload, (answer, _) = await ask(svc, run.cwd, "git push origin feat/a feat/b")
+    assert answer == "allow"
+    assert {
+        x.reserved_for for x in (await svc.get_approval(a.id), await svc.get_approval(b.id))
+    } == {payload["tool_use_id"]}
+    refusal = Refusal("Bash", "git push origin feat/a feat/b", tool_use_id=payload["tool_use_id"])
+    await finish_with(svc, run.id, [refusal])
+    for approval_id in (a.id, b.id):
+        back = await svc.get_approval(approval_id)
+        assert (back.status, back.reserved, back.released_count) == ("approved", False, 1)
+    report = (await svc.task_detail("acme-shop-1")).reports[0]
+    assert f"approval {a.id}" in report.body_md and f"approval {b.id}" in report.body_md
+
+
+async def test_a_lost_turn_settles_its_held_call(svc: Service) -> None:
+    run = await started_run(svc, mode="default")
+    a = await approve(svc, run, "push", "feat/checkout")
+    await ask(svc, run.cwd, "git push origin feat/checkout")
+    stub(svc).active.pop(run.id)  # the process is gone without an end
+    await svc.stop_run(run.id)
+    assert (await svc.get_run(run.id)).status == "lost"
+    assert (await svc.get_approval(a.id)).status == "used"
 
 
 async def test_the_third_release_expires_the_approval(svc: Service) -> None:
@@ -1066,21 +1109,33 @@ async def test_a_branch_read_is_reused_while_head_says_the_same(
     head = tmp_path / "HEAD"
     head.write_bytes(b"ref: refs/heads/feat/checkout\n")
     reads: list[str] = []
+    during: list[bytes] = []  # a checkout while git runs
 
     def slow(git: str, folder: str, timeout: float = 5.0) -> tuple[str, Path]:
         reads.append(folder)
-        time.sleep(0.5)  # slower than the client's ping timeout
-        return ("feat/checkout" if b"feat/checkout" in head.read_bytes() else "main"), head
+        branch = "feat/checkout" if b"feat/checkout" in head.read_bytes() else "main"
+        time.sleep(0.1)
+        if during:
+            head.write_bytes(during.pop())
+        return branch, head
 
     monkeypatch.setattr(worktrees, "branch_and_head", slow)
-    denied = await decision(svc, RUN_CC, run.cwd, "git push origin HEAD:main && git push")
-    assert denied is not None and denied[0] == "deny"
+    # The first read only learns where HEAD is; the second, with HEAD unchanged, is kept.
+    for command in ("git push origin HEAD:main && git push", "git status && git push"):
+        denied = await decision(svc, RUN_CC, run.cwd, command)
+        assert denied is not None and denied[0] == "deny"
+    assert len(reads) == 2
     allowed = await decision(svc, RUN_CC, run.cwd, "git push")
     assert allowed is not None and allowed[0] == "allow"
-    assert len(reads) == 1  # the second check reused the first read
+    assert len(reads) == 2  # reused
     head.write_bytes(b"ref: refs/heads/main\n")  # a checkout
     await decision(svc, RUN_CC, run.cwd, "git push")
-    assert len(reads) == 2
+    assert len(reads) == 3
+    head.write_bytes(b"ref: refs/heads/feat/other\n")
+    during.append(b"ref: refs/heads/feat/checkout\n")  # HEAD changes under git's read
+    await decision(svc, RUN_CC, run.cwd, "git push")
+    await decision(svc, RUN_CC, run.cwd, "git push")
+    assert len(reads) == 5  # the read that saw HEAD change was not kept
 
 
 async def test_no_allow_for_a_run_with_the_owner_or_outside_its_folders(svc: Service) -> None:

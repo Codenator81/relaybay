@@ -66,14 +66,17 @@ _EVENT_RE = re.compile(rb'"hook_event_name"\s*:\s*"([A-Za-z]+)"')
 _TOOL_RE = re.compile(rb'"tool_name"\s*:\s*"([A-Za-z_]+)"')
 # A call that may need the owner's approval, read roughly from the raw bytes: git with push, gh
 # with merge, a program of the guard's mutating rules (relaybay.domain.guard.MUTATING_RULES) or an
-# MCP tool other than relaybay's. A wider match only waits longer for a slow server.
+# MCP tool other than relaybay's. A wider match only waits longer for a slow server. Only the
+# body before its "tool_response" and at most GUARDED_SCAN_BYTES are read, and the gap between
+# the words is bounded, so the check stays linear on a large tool output.
 _GUARDED_RE = re.compile(
-    rb"\bgit(?:\.exe)?\b.*?\bpush\b|\bgh(?:\.exe)?\b.*?\bmerge\b"
+    rb'\bgit(?:\.exe)?\b[^"\n]{0,300}?\bpush\b|\bgh(?:\.exe)?\b[^"\n]{0,300}?\bmerge\b'
     rb"|\b(?:kubectl|helm|ssh|scp|rsync|sftp|psql|mysql|mariadb|sqlite3|sqlcmd|mongosh|mongo"
     rb"|redis-cli|clickhouse-client|cqlsh|pg_restore|mysqlimport|terraform)\b"
     rb'|"tool_name"\s*:\s*"mcp__(?!relaybay__)',
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
+GUARDED_SCAN_BYTES = 16 * 1024
 # The server answers the long poll within WAKE_HOLD_SECONDS; a little longer than that.
 WAIT_TIMEOUT_SECONDS = WAKE_HOLD_SECONDS + 60
 WAKE_EXIT_CODE = 2
@@ -136,7 +139,9 @@ def event_kind(body: bytes) -> str:
 
 def tool_timeout(body: bytes) -> float:
     """The one try's timeout of a tool call's event: longer for a call that may need an approval."""
-    return GUARDED_TIMEOUT_SECONDS if _GUARDED_RE.search(body) else TIMEOUT_SECONDS
+    response = body.find(b'"tool_response"')
+    head = body[: response if response >= 0 else len(body)][:GUARDED_SCAN_BYTES]
+    return GUARDED_TIMEOUT_SECONDS if _GUARDED_RE.search(head) else TIMEOUT_SECONDS
 
 
 def config_folder(environ: Mapping[str, str] = os.environ) -> Path:

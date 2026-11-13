@@ -161,6 +161,22 @@ def test_a_call_that_may_need_an_approval_gets_the_longer_try(
     assert machine_setup.COMMAND_TIMEOUT > hook_client.GUARDED_TIMEOUT_SECONDS + 2
 
 
+def test_the_guarded_check_stays_fast_on_a_large_body() -> None:
+    words = "git status " * 95_000  # about 1 MB of "git" with no push after it
+    bodies = [
+        json.dumps(hook("PostToolUse") | {"tool_response": {"stdout": words}}).encode(),
+        tool_body("PreToolUse", words, "Write"),
+    ]
+    for data in bodies:
+        assert len(data) > 1_000_000
+        started = time.perf_counter()
+        assert hook_client.tool_timeout(data) == hook_client.TIMEOUT_SECONDS
+        assert time.perf_counter() - started < 0.05
+    # The tool's output is not read: a push in it is not the call's.
+    pushed = hook("PostToolUse") | {"tool_response": {"stdout": "run git push origin main"}}
+    assert hook_client.tool_timeout(json.dumps(pushed).encode()) == hook_client.TIMEOUT_SECONDS
+
+
 def test_the_forwarder_waits_for_a_slow_approval_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -161,7 +161,7 @@ def test_http_handler_references_the_token_by_env_var(tmp_path: Path) -> None:
         "RELAYBAY_RUN_ID",
     ]
     assert handler["url"] == f"{BASE}/hooks/claude-code" and is_ours(handler)
-    assert handler["timeout"] <= 5
+    assert handler["timeout"] == machine_setup.HTTP_TIMEOUT
     assert not is_ours({"type": "http", "url": "http://localhost:9000/audit"})
     assert not is_ours({"type": "command", "command": "relaybay-unrelated"})
 

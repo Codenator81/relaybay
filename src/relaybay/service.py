@@ -378,6 +378,14 @@ BRANCH_CACHE_MAX = 256  # folders
 TOOL_USE_ID_MAX = 200
 
 
+def _read_or_none(path: Path) -> bytes | None:
+    """A small file's bytes, or None when it cannot be read (it is gone or being replaced)."""
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
 class _ApprovalTaken(Exception):
     """Another call reserved the approval in the same moment: the transaction rolls back."""
 
@@ -1298,8 +1306,8 @@ class Service:
         # until uvicorn's graceful timeout cancels it with a 500.
         self.stopping = False
         self._waiter_seq = 0
-        # Per folder: (when read, the HEAD file, its bytes then, the branch).
-        self._branches: dict[str, tuple[float, Path, bytes, str | None]] = {}
+        # Per folder: (when read, the HEAD file, its bytes when the read can be reused, the branch).
+        self._branches: dict[str, tuple[float, Path, bytes | None, str | None]] = {}
         # FTS5 full-text search; False when this SQLite has no FTS5 (search uses LIKE then).
         self.search_fts = False
         # Plan reminders per session: tool events since the session started, the last text sent.
@@ -11515,7 +11523,7 @@ class Service:
         that waited. Its slot is free: the queue starts what may start, this run's next text
         among them."""
         denied: list[tuple[arules.Need, str]] = []
-        refused: dict[int, Approval] = {}
+        refused: dict[int, list[Approval]] = {}
         if result is not None and result.refusals:
             # Read before the transaction: the current branch comes from git.
             ended = await repo.get_turn(self._r, turn_id)
@@ -11545,7 +11553,7 @@ class Service:
                     denied_tools=result.denied_tools,
                 )
             await repo.end_turn(tx.conn, turn.id, changes, tx.now)
-            notes = await self._settle_turn_reservations(tx, run, turn, refused)
+            notes = await self._settle_turn_reservations(tx, run, refused)
             if result is not None:
                 await self._turn_report(tx, task, run, turn, outcome, result, notes)
             await self._requests_from_denials(tx, run, task, turn, denied)
@@ -11708,6 +11716,7 @@ class Service:
             if active is not None:
                 await repo.end_turn(tx.conn, active.id, {"outcome": "lost"}, tx.now)
             await repo.cancel_queued(tx.conn, run.id, tx.now)
+            await self._settle_turn_reservations(tx, run, {})
             await self._set_run_status(tx, run, "lost", reason)
             await self._run_event(tx, "run.lost", "relaybay", task, run.id, reason=reason)
             await self._end_run_session(tx, run)
@@ -11765,6 +11774,7 @@ class Service:
                     continue
                 task = await self.get_task(run.task_id, tx.conn)
                 reason = "the server stopped while a turn ran"
+                await self._settle_turn_reservations(tx, run, {})
                 await self._set_run_status(tx, run, "lost", reason)
                 await self._run_event(tx, "run.lost", "relaybay", task, run.id, reason=reason)
                 await self._end_run_session(tx, run)
@@ -12739,29 +12749,37 @@ class Service:
     async def _current_branch(self, git: str, folder: str, deadline: float | None) -> str | None:
         """The branch checked out in `folder`, read with git, or reused from a read of the last
         BRANCH_CACHE_SECONDS when the working tree's HEAD file holds the same bytes (a checkout
-        rewrites it). With `deadline` (time.monotonic()) git gets at most
-        GATE_BRANCH_TIMEOUT_SECONDS and never past it: worktrees.GitTooSlow."""
+        rewrites it). A read is kept only when HEAD held the same bytes before and after git
+        ran, so the first read of a folder only learns where its HEAD file is. With `deadline`
+        (time.monotonic()) git gets at most GATE_BRANCH_TIMEOUT_SECONDS, and the read with its
+        wait for a thread never goes past the deadline: worktrees.GitTooSlow."""
         key = worktrees.path_key(folder)
         cached = self._branches.get(key)
-        if cached is not None and time.monotonic() - cached[0] < BRANCH_CACHE_SECONDS:
-            try:
-                if cached[1].read_bytes() == cached[2]:
-                    return cached[3]
-            except OSError:
-                pass  # the HEAD file is gone: git reads it again
+        if cached is not None and cached[2] is not None:
+            fresh = time.monotonic() - cached[0] < BRANCH_CACHE_SECONDS
+            if fresh and _read_or_none(cached[1]) == cached[2]:
+                return cached[3]
+        known = cached[1] if cached is not None else None
+        before = _read_or_none(known) if known is not None else None
         timeout = worktrees.BRANCH_TIMEOUT_SECONDS
         if deadline is not None:
             timeout = min(GATE_BRANCH_TIMEOUT_SECONDS, deadline - time.monotonic())
             if timeout <= 0:
                 raise worktrees.GitTooSlow("no time left to read the branch")
-        branch, head = await asyncio.to_thread(worktrees.branch_and_head, git, folder, timeout)
+        read = asyncio.to_thread(worktrees.branch_and_head, git, folder, timeout)
+        if deadline is None:
+            branch, head = await read
+        else:
+            try:
+                branch, head = await asyncio.wait_for(read, deadline - time.monotonic())
+            except TimeoutError as exc:
+                raise worktrees.GitTooSlow("the branch read did not finish in time") from exc
         if head is not None:
             if len(self._branches) > BRANCH_CACHE_MAX:
                 self._branches.clear()
-            try:
-                self._branches[key] = (time.monotonic(), head, head.read_bytes(), branch)
-            except OSError:
-                self._branches.pop(key, None)
+            after = _read_or_none(head)
+            steady = head == known and before is not None and before == after
+            self._branches[key] = (time.monotonic(), head, after if steady else None, branch)
         return branch
 
     async def _call_needs(
@@ -13081,24 +13099,28 @@ class Service:
                 await self._use_held(tx, a.id, await self._held_decision(tx.conn, a), session.name)
 
     async def _settle_turn_reservations(
-        self, tx: _Tx, run: Run, turn: RunTurn, refused: dict[int, Approval]
+        self, tx: _Tx, run: Run, refused: dict[int, list[Approval]]
     ) -> dict[int, str]:
-        """A run's turn ended: each approval still held for one of its calls is released when
-        Claude Code refused that call (`refused`: by the refusal's index in the turn's
-        permission denials), else used. The report line per refusal."""
+        """A run's turn ended (or was lost): each approval still held for one of its calls is
+        released when Claude Code refused that call (`refused`: by the refusal's index in the
+        turn's permission denials), else used. The report line per refusal."""
         held = await repo.reserved_by_run(tx.conn, run.id)
         if not held:
             return {}
         actor = run.session_name or "relaybay"
         notes: dict[int, str] = {}
         released: set[int] = set()
-        for index, a in refused.items():
-            if a.id in released:
-                continue
-            note = await self._release_held(tx, a, "Claude Code refused the call", actor)
-            released.add(a.id)
-            if note is not None:
-                notes[index] = note
+        for index, approvals in refused.items():
+            lines = []
+            for a in approvals:
+                if a.id in released:
+                    continue
+                note = await self._release_held(tx, a, "Claude Code refused the call", actor)
+                released.add(a.id)
+                if note is not None:
+                    lines.append(note)
+            if lines:
+                notes[index] = "; ".join(lines)
         # Not refused: the call may have run without its PostToolUse reaching relaybay (and the
         # turn's lines may not be stored at all): count it used, so an approval never lets the
         # same action through twice. Only a refusal Claude Code reported gives it back.
@@ -13109,22 +13131,26 @@ class Service:
 
     async def _denied_needs(
         self, run: Run, turn: RunTurn, result: Result
-    ) -> tuple[list[tuple[arules.Need, str]], dict[int, Approval]]:
+    ) -> tuple[list[tuple[arules.Need, str]], dict[int, list[Approval]]]:
         """The actions of a turn's permission denials that need an approval, with the call that
-        was denied, and per refusal of a call an approval was held for, that approval (Claude
-        Code refused the call: the approval goes back, no new request). The refusal names the
-        call by its tool_use_id; without one, a held approval that covers the call counts. A
-        call the guard's level blocks, one the guard cannot read, or one no approval rule
-        covers (a refusal of Claude Code's own mode) gives none."""
+        was denied, and per refusal of a call approvals were held for, those approvals (Claude
+        Code refused the call: they go back, no new request; one call may hold several, `git
+        push origin a b`). The refusal names the call by its tool_use_id; a refusal without
+        one counts only for an approval held without one, by the call it covers. A call the
+        guard's level blocks, one the guard cannot read, or one no approval rule covers (a
+        refusal of Claude Code's own mode) gives none."""
         session = await repo.get_session_by_id(self._r, run.session_id) if run.session_id else None
         if session is None:
             return [], {}
         held = await repo.reserved_by_run(self._r, run.id)
-        refused: dict[int, Approval] = {}
+        refused: dict[int, list[Approval]] = {}
         for index, refusal in enumerate(result.refusals):
-            by_id = next((a for a in held if a.reserved_for == refusal.tool_use_id), None)
-            if refusal.tool_use_id is not None and by_id is not None:
+            by_id = [
+                a for a in held if refusal.tool_use_id and a.reserved_for == refusal.tool_use_id
+            ]
+            if by_id:
                 refused[index] = by_id
+        taken = {a.id for found in refused.values() for a in found}
         scope = await self._approval_scope(self._r, session, run=run)
         if scope is None:
             return [], refused
@@ -13157,14 +13183,16 @@ class Service:
                         (
                             a
                             for a in held
-                            if (refusal.tool_use_id is None or a.reserved_for is None)
-                            and a not in refused.values()
+                            if refusal.tool_use_id is None
+                            and a.reserved_for is None
+                            and a.id not in taken
                             and arules.covers(a, need)
                         ),
                         None,
                     )
                     if holder is not None:
-                        refused[index] = holder
+                        refused.setdefault(index, []).append(holder)
+                        taken.add(holder.id)
                         continue
                     found.append((need, arules.used_by(refusal.tool, refusal.input)))
         return found, refused

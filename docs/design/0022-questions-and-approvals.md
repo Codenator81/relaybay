@@ -162,8 +162,8 @@ approval unused, when it is not used by `valid_until`, and at its third release.
 |---|---|---|
 | `PreToolUse` of a covered call run alone (`allow`, or no decision) | reserved for the call's `tool_use_id`; still `approved`; covers no other call (another one is denied "held for a call", nothing opens; of two racing calls one reserves it) | — |
 | That call's `PostToolUse` | `used` | `approval.used` (`allow` or `none`) |
-| A run's turn ends; the call is in `permission_denials` (by `tool_use_id`, else by its command): a classifier, another hook, or Manual mode after a lost answer | released: `approved` again, unreserved, within `valid_until`; no new request; the report says "the approval stays for one more try" | `approval.released` |
-| A run's turn ends; the call is not refused (it may have run with its `PostToolUse` lost) | `used`: never twice through | `approval.used` |
+| A run's turn ends; the call is in `permission_denials` (by `tool_use_id`, all approvals held for it; a denial without an id only for one held without an id, by its command): a classifier, another hook, or Manual mode after a lost answer | released: `approved` again, unreserved, within `valid_until`; no new request; the report says "the approval stays for one more try" | `approval.released` |
+| A run's turn ends, or is lost; the call is not refused (it may have run with its `PostToolUse` lost) | `used`: never twice through | `approval.used` |
 | A desktop session's `Stop` or `SessionEnd` with the call still held | `used`: relaybay reads no refusals there | `approval.used` |
 | The third release | `expired`, "released 3 times"; the report says "approval exhausted, a new request is needed" | `approval.expired` |
 | `valid_until` passes, reserved or not | `expired` | `approval.expired` |

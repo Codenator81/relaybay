@@ -770,7 +770,9 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
     the Audit page.
   - **Released when the call did not run:** at the end of a run's turn, an approval still held
     for one of its calls is released when the call is in the turn's `permission_denials` (by its
-    `tool_use_id`; without one, by the call it names): Claude Code refused it after relaybay's
+    `tool_use_id`, every approval held for that id: one push may hold several; a denial without
+    an id counts only for an approval held without one, by the call it names): Claude Code
+    refused it after relaybay's
     answer (auto mode's classifier, another hook) or without it (the answer came too late and
     Manual mode refused). Both read the same, so both count as "the call did not run". The
     approval is `approved` and unreserved again, still within `valid_until`
@@ -778,15 +780,18 @@ text in a turn, a file or a tool result that says "approved" changes nothing.
     "approved call refused by Claude Code (approval N, …): the approval stays for one more try".
     A held call that is not in the denials counts `used` (it may have run with its `PostToolUse`
     lost, and the turn's lines may not be stored), so an approval never lets the same action
-    through twice. A desktop session's held call that got no `PostToolUse` by the session's
-    `Stop` or `SessionEnd` counts `used` too: relaybay reads no refusals there. The
+    through twice; so does a held call of a turn that was lost (no process behind a running
+    run, or the server stopped during the turn). A desktop session's held call that got no
+    `PostToolUse` by the session's `Stop` or `SessionEnd` counts `used` too: relaybay reads no
+    refusals there. The
     **third** release expires the approval (`expired`, "released 3 times", `approval.expired`),
     and the report line says "approval exhausted, a new request is needed". A reserved approval
     expires by `valid_until` like any other.
   - **The branch in time:** the check reads the current branch with `git rev-parse` at most
     1.5 s per read and 3 s for all reads of one call, so it answers within the hook client's 5 s
-    wait; a read is reused for 5 s while the working tree's `HEAD` file holds the same bytes (a
-    checkout rewrites it). When git does not answer in time the call is denied with "could not
+    wait (the wait for a worker thread counts in it); a read is reused for 5 s while the working
+    tree's `HEAD` file holds the same bytes (a checkout rewrites it), and is kept only when
+    `HEAD` held the same bytes before and after git ran. When git does not answer in time the call is denied with "could not
     tell the branch, run it again" and the approval is not reserved.
   - **On a done card** nothing opens: the call is denied with "<card> is done".
   - A call whose level denies or asks is answered by the level and uses no approval.
@@ -1861,7 +1866,9 @@ the digests' "changes since" leave such events out, the board refreshes the card
 **Never in the way when relaybay is down.** The command hook (`<python> -I -m relaybay.hook_client
 --url … --token-file …`, standard library only) prints nothing on failure (only the server's JSON
 answer on success), never uses a system proxy and always exits 0. It prints the server's answer
-only when it is a `200` with a JSON object. http hook entries use a 2 s timeout and get the same
+only when it is a `200` with a JSON object. http hook entries use a 10 s timeout (the approval
+check of a push answers within 3 s of git reads plus the database; every other event at once, and
+a server that is down refuses at once; a hung one makes each event wait up to 10 s) and get the same
 JSON body; failures do not block the session, but Claude Code shows a non-blocking "hook error"
 notice, and nothing is retried or spooled for them. `relaybay hook` is the same forwarder behind
 the CLI.
@@ -2121,7 +2128,10 @@ need Settings → Agents to allow it" for an API key or another method), `deskto
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
 (the hash of the global rules from the settings; fails when the running server started with another
 one, reported in `/healthz`, i.e. it needs a restart; versions accepted since do not count), then the Claude Code items of the check (`hooks in user
-settings`, `command hook runs` or `RELAYBAY_TOKEN for http hooks`, `MCP registered for Claude
+settings`, `hook timeout` (fails for relaybay hook entries that wait less than this version
+needs: 10 s for command and for http hooks; an older setup wrote 3 s and 2 s; for command hooks
+the desktop program's start-up notice points to Settings → Reconnect, as for a forwarder that
+does not run), `command hook runs` or `RELAYBAY_TOKEN for http hooks`, `MCP registered for Claude
 Code`). Output: one `[ok]` / `[FAIL]` line per item, or with `--json` a list of
 `{ok, name, detail}` (the shape of `setup --check --json`); exit code `1` when an item fails. Invalid
 settings come out as one failed `settings` item.
