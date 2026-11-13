@@ -8,7 +8,6 @@ import os
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -270,14 +269,18 @@ def test_a_group_with_nothing_left_alive_is_already_stopped(
     monkeypatch: pytest.MonkeyPatch, error: type[OSError]
 ) -> None:
     # macOS answers EPERM to killpg when only zombies are left in the group.
+    called: list[int] = []
+
     def killpg(pid: int, sig: int) -> None:
+        called.append(pid)
         raise error(1, "gone")
 
     monkeypatch.setattr(proctree.os, "killpg", killpg)
     tree = ProcessTree()
-    tree.proc = SimpleNamespace(pid=4242)  # type: ignore[assignment]
+    tree.adopt(4242)
     tree.terminate()
     tree.kill()
+    assert called == [4242, 4242]
 
 
 def test_process_tree_writes_stdin_text(tmp_path: Path) -> None:

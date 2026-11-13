@@ -142,14 +142,15 @@ brake         id, scope (all|project|session|task), project_id, session_id, task
 project_run_defaults project_id PK, folder, model, effort, permission_mode, allowed_tools,
               chrome (0|1), updated_at, updated_by   -- no row: the defaults
 app_setting   key PK, value, updated_at, updated_by   -- run_login_any, run_max_running_turns,
-              run_min_free_memory_mb
+              run_min_free_memory_mb, terminal_enabled
 run           id, task_id, project_id, session_id (kind 'run'), cwd, cwd_repo_id, model, effort,
               permission_mode, allowed_tools, chrome, claude_session_id (UNIQUE),
               status (queued|running|waiting|idle|stopped|ended|lost), status_reason,
               auth_method (the method only), hooks_source, mcp_source (user|run), started_by,
               started_by_kind (owner|coordinator), created_at, updated_at, ended_at, ended_by,
-              with_owner_at, with_owner_by (with the owner in the Claude desktop app: no turn
-              starts), desktop_opened_at, secret_seen_at, touched_live_at, transcript_path,
+              with_owner_at, with_owner_by, with_owner_in (with the owner in the Claude
+              desktop app, or 'terminal' in the board's Terminal tab: no turn starts),
+              desktop_opened_at, secret_seen_at, touched_live_at, transcript_path,
               deleted_at (its lines and transcript deleted when the card closed)
               -- one open run per task (UNIQUE index WHERE ended_at IS NULL)
 run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, queued_at,

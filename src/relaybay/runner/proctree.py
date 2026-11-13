@@ -178,6 +178,7 @@ class ProcessTree:
     def __init__(self) -> None:
         self.proc: subprocess.Popen[str] | None = None
         self._job: int | None = None
+        self._group: int | None = None  # POSIX: the process group to signal
 
     def spawn(
         self, argv: list[str], cwd: str, env: Mapping[str, str], stdin_text: str | None
@@ -215,8 +216,24 @@ class ProcessTree:
                 raise
         else:
             proc = subprocess.Popen(argv, start_new_session=True, **options)
+            self._group = proc.pid
         self.proc = proc
         return proc
+
+    def adopt(self, pid: int) -> None:
+        """Take in a process another API started (the Terminal tab's PTY). Windows: it goes into
+        a new job, so its children started from now on die with it; one started before this call
+        is outside (pywinpty starts it running, there is no suspended start). POSIX: the process
+        leads its own session, so its group is signalled."""
+        if sys.platform == "win32":
+            self._job = _new_job()
+            try:
+                _assign(self._job, pid)
+            except BaseException:
+                self.close()
+                raise
+        else:
+            self._group = pid
 
     def terminate(self) -> None:
         """Windows: the whole job at once (no graceful stop exists for it). POSIX: SIGTERM to
@@ -234,13 +251,13 @@ class ProcessTree:
         self._signal_group(signal.SIGKILL)
 
     def _signal_group(self, sig: int) -> None:
-        if self.proc is None:
+        if self._group is None:
             return
         # The group id is the leader's pid, reserved while any member lives; an empty group
         # (ProcessLookupError) has nothing left to stop. macOS answers EPERM (PermissionError)
         # when only zombies are left in the group: dead as well.
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(self.proc.pid, sig)
+            os.killpg(self._group, sig)
 
     def close(self) -> None:
         """Windows: closing the job kills whatever is still in it."""

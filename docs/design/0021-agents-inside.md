@@ -1,6 +1,7 @@
 # 0021 — Agents inside the program
 
-- Status: **Accepted**, 2026-11-10; 0.9 shipped 2026-11-13 (PR 69-83). The overall design of agents started and steered by relaybay,
+- Status: **Accepted**, 2026-11-10; 0.9 shipped 2026-11-13 (PR 69-83); the 0.10 Terminal tab is
+  built (not released). The overall design of agents started and steered by relaybay,
   releases 0.9 to 0.12. Details live in [0012](0012-runner-and-embedded-terminal.md) (runner,
   terminal, probes), [0022](0022-questions-and-approvals.md) (questions and approvals as objects)
   and [0023](0023-coordinator-and-schedules.md) (coordinator and schedules). Closes the direction of
@@ -290,6 +291,15 @@ user's own terminal app with `claude --resume <id>`; the board then shows only h
 time. The terminal is off until the owner turns it on, loopback only, cookie, CSRF and Origin as the
 board. While it is open, headless turns for that run wait in its queue (probe 4 of 0012 decides the
 exact rule).
+
+**The rule, decided 2026-11-13 (built for 0.10).** An open Terminal tab is the run "with the
+owner" of PR 1c (`with_owner_in = 'terminal'`): no turn starts, texts queue, and closing the tab
+(or the TUI exiting) kills the process and then hands the run back like Back to the program. Do
+not weaken it: two writers on one Claude Code session fork its transcript; a headless turn run
+while the TUI was open passed and was later lost from the session's history (probe on Windows,
+claude 2.1.323). Tests hold it: no turn spawns while a terminal is open. The ConPTY probe
+rendered cleanly in Chromium and in the pywebview window; macOS and Linux (stdlib `pty`) are
+built but not probed.
 
 **Probes.** The probes of [0012](0012-runner-and-embedded-terminal.md#probes-2026-11) answered
 the headless questions on Windows. Still open, for 0.10: interactive `claude --resume` in a PTY while

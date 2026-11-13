@@ -4704,6 +4704,7 @@ def _run(row: aiosqlite.Row) -> Run:
         session_name=row["session_name"],
         with_owner_at=row["with_owner_at"],
         with_owner_by=row["with_owner_by"],
+        with_owner_in=row["with_owner_in"],
         desktop_opened_at=row["desktop_opened_at"],
         secret_seen_at=row["secret_seen_at"],
         touched_live_at=row["touched_live_at"],

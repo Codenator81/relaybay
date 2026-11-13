@@ -56,5 +56,16 @@
       <button type="submit" class="btn primary">Save</button>
     </form>
   </section>
+  <section class="panel" id="terminal">
+    <h2>Terminal tab</h2>
+    <p class="muted">A Terminal button on a run opens its Claude Code session (<code>claude --resume</code>) in a terminal on this board, in the run's folder. While it is open the run is with you: relaybay starts no turn of it and texts sent wait until the terminal closes. Only from this machine (loopback), only signed in here.</p>
+    {% if not terminal_available %}<p class="form-error">This install has no pseudo-terminal for it (on Windows the pywinpty package is missing).</p>{% endif %}
+    <form method="post" action="/settings/agents/terminal">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <input type="hidden" name="on" value="0">
+      <label class="field field-check"><input type="checkbox" name="on" value="1"{% if terminal_enabled %} checked{% endif %}> <span>Show the Terminal button on runs</span></label>
+      <button type="submit" class="btn primary">Save</button>
+    </form>
+  </section>
 </main>
 {% endblock %}

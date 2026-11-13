@@ -1095,6 +1095,10 @@ def event_detail(e: Event) -> str:
         return f"{p.get('model')} · {p.get('effort')} · {p.get('permission_mode')}"
     if e.kind == "settings.run_login_any":
         return "other sign-ins allowed" if p.get("on") else "subscription sign-ins only"
+    if e.kind == "settings.terminal_enabled":
+        return "Terminal tab on" if p.get("on") else "Terminal tab off"
+    if e.kind == "run.terminal_closed":
+        return f"run {p.get('run_id')}: {p.get('reason')}"
     if e.kind == "run.turn_ended":
         turn = f"run {p.get('run_id')} turn {p.get('seq')}"
         return f"{turn}: {p.get('outcome')}, {p.get('tokens')} tokens"
@@ -1269,7 +1273,12 @@ def run_status(task: Task, view: RunView | None) -> str:
         f" {r.created_at[:19]}Z.",
         f"Folder: {r.cwd}",
     ]
-    if r.is_open and r.with_owner and r.with_owner_at:
+    if r.is_open and r.in_terminal and r.with_owner_at:
+        lines.append(
+            f"With the owner in the board's Terminal tab since {r.with_owner_at[:19]}Z: no turn"
+            " starts; texts sent wait until the terminal closes."
+        )
+    elif r.is_open and r.with_owner and r.with_owner_at:
         lines.append(
             f"With the owner in the Claude desktop app since {r.with_owner_at[:19]}Z: no turn"
             " starts; texts sent wait until the owner hands the run back on the card."

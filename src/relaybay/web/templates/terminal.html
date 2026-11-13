@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{#- The Terminal tab of a run: its Claude Code session (`claude --resume`) in a PTY on this server,
+    shown by the vendored xterm.js over a WebSocket. Expects: t (the task), run, back (the card's
+    URL), base (this page's path; the token is minted at base + "/token"). -#}
+{% block title %}Terminal · run {{ run.id }} · {{ t.key }} · relaybay{% endblock %}
+{% block scripts %}
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v=5.5.0">
+  <script src="/static/vendor/xterm/xterm.js?v=5.5.0" defer></script>
+  <script src="/static/vendor/xterm/addon-fit.js?v=0.10.0" defer></script>
+  <script src="{{ static_url("terminal.js") }}" defer></script>
+{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ t.project_slug }}">{{ t.project_slug }}</a><span class="crumb-sep">/</span><a class="crumb" href="{{ back }}">{{ t.key }}</a><span class="crumb-sep">/</span><span class="crumb">Terminal</span>{% endblock %}
+{% block live %}{% endblock %}
+{% block content %}
+<main class="page terminal-page" id="terminal-page" data-path="{{ base }}" data-back="{{ back }}"
+      data-run="{{ run.id }}" data-csrf="{{ csrf_token }}" data-csrf-field="{{ csrf_field }}">
+  <div class="page-head">
+    <h1>Terminal of run {{ run.id }}</h1>
+    <span class="muted">{{ t.key }} {{ t.title }} · <code>{{ run.cwd }}</code></span>
+  </div>
+  <p class="terminal-hint" id="terminal-hint" hidden>Claude Code may ask whether you trust this folder: choose Yes (arrow down) — Enter alone closes the terminal.</p>
+  <p class="muted">While this terminal is open the run is with you: relaybay starts no turn of it and texts sent wait. Closing it (the button below, this tab, or <code>/exit</code>) hands the run back, and the first waiting text starts.</p>
+  <div class="terminal-bar">
+    <span class="terminal-status" id="terminal-status" role="status">Connecting…</span>
+    <button type="button" class="btn" id="terminal-paste" title="Paste from the clipboard (Ctrl+V works too)">Paste</button>
+    <button type="button" class="btn primary" id="terminal-close">Close the terminal</button>
+    <a class="btn" id="terminal-back" href="{{ back }}" hidden>Back to the card</a>
+  </div>
+  <div class="terminal-screen" id="terminal-screen"></div>
+</main>
+{% endblock %}
