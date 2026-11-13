@@ -66,6 +66,10 @@ LOGIN_ANY_KEY = "run_login_any"
 # The owner's limits from Settings -> Agents; without a row, config.toml's values hold.
 MAX_RUNNING_KEY = "run_max_running_turns"
 MIN_MEMORY_KEY = "run_min_free_memory_mb"
+# The owner's switch in Settings -> Agents for the Terminal tab on a run; off without a row.
+TERMINAL_KEY = "terminal_enabled"
+# `run.with_owner_in` of a run held by the Terminal tab (NULL: the Claude desktop app).
+TERMINAL = "terminal"
 DEFAULT_MAX_RUNNING = 2
 DEFAULT_MIN_MEMORY_MB = 1500
 MAX_RUNNING_MAX = 50
@@ -248,8 +252,9 @@ class Run:
     task_key: str = ""
     project_slug: str = ""
     session_name: str | None = None
-    with_owner_at: str | None = None  # handed to the owner in the Claude desktop app
+    with_owner_at: str | None = None  # handed to the owner: no turn of it starts
     with_owner_by: str | None = None
+    with_owner_in: str | None = None  # "terminal": the board's Terminal tab; None: desktop app
     desktop_opened_at: str | None = None
     secret_seen_at: str | None = None  # the masking replaced something in its lines
     touched_live_at: str | None = None  # the guard saw a call of it on a live stand
@@ -263,6 +268,10 @@ class Run:
     @property
     def with_owner(self) -> bool:
         return self.with_owner_at is not None
+
+    @property
+    def in_terminal(self) -> bool:
+        return self.with_owner and self.with_owner_in == TERMINAL
 
     @property
     def desktop_link(self) -> str | None:

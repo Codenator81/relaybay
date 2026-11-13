@@ -192,7 +192,9 @@ program as its client:
   process tree, and the card shows the status, the Claude session id and each turn's tokens. The
   run's hooks report to its own session row on the card; when `relaybay setup` did not install
   them, the run passes them itself. Between turns you can open the session in the Claude desktop
-  app (on Windows; elsewhere the card shows the `claude --resume` command) and hand it back, and
+  app (on Windows; elsewhere the card shows the `claude --resume` command) and hand it back, or,
+  once you switch it on in Settings → Agents, in a Terminal tab on the board (the same session
+  in a terminal on this machine; no turn starts while it is open), and
   change the permission mode, model and effort for the next turns. Coordinator sessions may start
   runs with `run_start` and lower a run's mode with `run_settings`; project
   defaults (model, effort, permission mode, allowed tools, project folder) are on Stands & access,
@@ -367,7 +369,7 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.9.0, agents inside** — runs on a card with your own `claude` turn by turn, worktrees per
   repository, the session handed to the desktop app and back, full turn reports with `verified`
   marks, questions and approvals on the board, slots and memory limits, card close and retention;
-  the embedded terminal comes in 0.10, the coordinator and schedules in 0.11.
+  the Terminal tab on a run comes in 0.10, the coordinator and schedules in 0.11.
 - **0.7+, workers** — scheduled workers per project.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.

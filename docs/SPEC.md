@@ -4,7 +4,7 @@ How relaybay behaves **now**: the concepts and every shipped feature. This page 
 plans; upcoming work lives in the [roadmap](ROADMAP.md) and the [design documents](design/index.md).
 When a feature ships, its final behaviour moves here in the same pull request.
 
-Version covered: `0.9.0`. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.9.0`, plus the Terminal tab of [Unreleased]. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:
@@ -504,6 +504,63 @@ folder or a key variable.
   action is the link `claude://claude.ai/epitaxy/local_<Claude Code session id>`
   (`run.desktop_opened_at`), Open in the desktop app the second. Events `run.opened_in_desktop`
   and `run.returned`, with who and when.
+- **Terminal tab** (0.10, off by default). With the owner's switch on (Settings → Agents, board
+  only, `app_setting` `terminal_enabled`, a `settings.terminal_enabled` event) an open run whose
+  Claude Code session is known and with no turn running shows **Terminal**: a page of its own
+  (`/p/<slug>/t/<key>/run/<id>/terminal`) runs `claude --resume <Claude Code session id>` in the
+  run's cwd, with an `--add-dir` for each other folder of the run, in a pseudo-terminal on the
+  server (Windows: ConPTY through pywinpty; macOS and Linux: the standard library's `pty` with a
+  subprocess in a session of its own that takes the slave as its controlling terminal, so the
+  TUI gets SIGHUP when the master closes, a server crash included; **not probed on these
+  systems**), shown by the vendored
+  xterm.js 5.5 with its fit add-on over a WebSocket at the same path. The environment is a turn's:
+  no host session markers (`CLAUDECODE`, `CLAUDE_CODE_*` of `HOST_VARIABLES`), with
+  `RELAYBAY_RUN_ID`, and `TERM=xterm-256color` on macOS and Linux. The process goes into the run's
+  process tree (Windows: a job object it is assigned to right after the start, so a child it
+  started before that is outside; macOS and Linux: its process group) and is killed when the tab
+  closes, the TUI exits, Back to the program, End, the switch turned off or the server stops. The
+  page fits the size after layout and sends it with the socket's URL (a fit before layout would
+  start a 2x1 PTY); resizes follow as messages. One terminal per run at a time; a reload of the
+  page asks for its token once more after 1.5 s when the old terminal is still being closed
+  (409). The button shows only when the switch is on, this install has a PTY and the server
+  listens on loopback only; otherwise Settings → Agents says why. `relaybay doctor` has a
+  `pseudo-terminal` item (runs `echo` in a PTY and reads it back), which the Windows CI smoke of
+  the frozen build requires.
+  **The hard rule**: from just before the process starts until it is dead the run is with the
+  owner (`run.with_owner_at`, `with_owner_by`, `with_owner_in = 'terminal'`): no turn starts,
+  texts sent wait, Start anyway is refused, the desktop app is refused; the queue also skips a run
+  whose terminal is open whatever the columns say. Closing the terminal kills the process, waits
+  for it, and only then hands the run back: the first waiting text starts with `--resume`, so the
+  session goes on with what the owner did there. The reason, so nobody weakens it: two writers on
+  one Claude Code session fork its transcript; a headless turn run while the TUI is open passes,
+  then is lost from the session's history (probe of 2026-11-13). When the check before a waiting
+  text refuses the hand-back (the sign-in expired, hooks missing), the process is gone but the
+  run stays with the owner: the run's reason says "Back to the program refused: …", the page
+  says it in the terminal (close code 4001) instead of "back with relaybay", the card says the
+  terminal closed, and Back to the program tries the hand-back again (a `run.returned`). A kill
+  that fails keeps the terminal open and the run held; the next close tries again. End or the
+  switch turned off while the process is starting: the start checks again once it runs and
+  closes it at once. End closes the terminal without a hand-back, so no waiting text starts. A server stop kills the terminals (`run.terminal_closed`,
+  "server stopped") and the next start hands their runs back (`run.returned` by relaybay).
+  **Access**: the WebSocket is not covered by the security middleware, so the route checks
+  everything itself before the handshake: the server listens on loopback only (`host` is
+  `127.0.0.1`, `localhost` or `::1`) and the `Host` is a loopback name; no `Authorization` header
+  (Bearer clients are refused); the board's session cookie; an `Origin` equal to the board's own
+  origin; a one-time token minted by a board-only POST (`…/terminal/token`, cookie + CSRF, 409
+  with the reason when the terminal could not open now), bound to the run, valid 30 s, spent by
+  its first use; the token is redacted from uvicorn's log lines, as `/login`'s. A refusal closes
+  before the handshake (the browser sees 403); a terminal that
+  does not start says why in the terminal and closes with code 4000, handing the run back. The
+  page alone allows inline styles (`style-src 'self' 'unsafe-inline'`: xterm.js writes style
+  elements); scripts stay `'self'`. **Trust hint**: in a folder Claude Code has not seen it asks
+  "Do you trust this folder?" with "No, exit" preselected, so the page shows above the terminal,
+  until the first connection of that run in that browser: choose Yes (arrow down), Enter alone
+  closes the terminal. **Paste**: xterm.js sends Ctrl+V to the TUI as ^V, so Ctrl+V and
+  Shift+Insert are left to the browser's own paste (xterm.js sends the pasted text), Ctrl+C with a
+  selection copies it, and a Paste button reads the clipboard where the window allows it. The
+  card shows "With you in the Terminal tab since …" with Back to the program (which closes the
+  terminal). Events `run.terminal_opened` (with the pid) and `run.terminal_closed` (with the
+  reason, the exit code and when it opened), with who and when, on the Audit page.
 - **Mode, model and effort between turns.** An open run with no turn running may change its
   permission mode, model and effort; the run's row is updated and the next turn passes them
   (`--permission-mode`, `--model`, `--effort` with `--resume`). While a turn runs the board's form is
@@ -960,14 +1017,15 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `live.action`, `document.updated`, `memory.added`, `memory.updated`, `block.updated`,
 `project.pulse_set`, the `intake.*` and `backlog.*` events ([§12](#spec-intake)),
 `run.started`, `run.turn_started`, `run.turn_queued`, `run.turn_ended`, `run.stopped`, `run.ended`,
-`run.lost`, `run.opened_in_desktop`, `run.returned`, `run.settings_changed` (with `changed`: per
+`run.lost`, `run.opened_in_desktop`, `run.returned`, `run.terminal_opened`,
+`run.terminal_closed`, `run.settings_changed` (with `changed`: per
 value `from` and `to`), `run.waiting`, `run.start_anyway` (with what it went past),
 `run.worktree_removed`, `run.worktree_kept` (with `repository`, `path`, `branch`, the reason or
 `forced`), `run.secret_seen`, `run.touched_live`, `run.traces_deleted` (with the reason, `lines`,
 `transcripts`, `failed`) (all with `project`, `key` and `run_id`; `run.turn_queued` carries the
 queue's `reason` when a limit holds the turn, [§1](#spec-run-limits)), `run.events_expired` (per
 project, with `lines` and `retention`), `run.defaults_set`, `settings.run_login_any`,
-`settings.run_limits`, `question.asked`, `question.answered`, `question.defaulted`,
+`settings.run_limits`, `settings.terminal_enabled`, `question.asked`, `question.answered`, `question.defaulted`,
 `question.delivered`, `question.withdrawn` (with `question_id`, `run_id` and the text,
 [§1](#spec-questions)), `approval.requested`, `approval.decided`, `approval.used` (with
 `approval_id`, `run_id`, `action`, `target` and `what`), `approval.expired`
@@ -1190,6 +1248,10 @@ subscription (off by default; board only, a `settings.run_login_any` event). **L
 free memory now and edits the [run limits](#spec-run-limits) (turns at once, 1 to 50; MB of free
 memory before a turn, 0 for no check) with `config.toml`'s values beside them; a save is board
 only, a `settings.run_limits` event, and starts the turns that the new limits let start.
+**Terminal tab** switches the Terminal button on runs ([§1](#spec-run), off by default; board
+only, a `settings.terminal_enabled` event; off closes the open terminals, each tried on its own,
+and names a run whose terminal could not be closed or handed back). It is only this
+switch, no `config.toml` key: the owner's word turns it on, not a file an agent can write.
 
 <a id="spec-board-repos"></a>
 
@@ -2127,7 +2189,8 @@ folder; it fails when the oldest event waits more than 10 minutes, [§4](#spec-h
 `token file` (present, not empty,
 on POSIX not readable by others), `Claude Code` (on `PATH`, version at least the minimum supported),
 `claude sign-in` (the [login check](#spec-run-login) line; red when not signed in, green with "runs
-need Settings → Agents to allow it" for an API key or another method), `desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
+need Settings → Agents to allow it" for an API key or another method), `desktop app` (informational), `pseudo-terminal` (the Terminal tab's PTY runs `echo` and reads it
+back; red when it cannot, as without pywinpty on Windows), then the server items of the check (`relaybay server`, `MCP with the
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
 (the hash of the global rules from the settings; fails when the running server started with another
 one, reported in `/healthz`, i.e. it needs a restart; versions accepted since do not count), then the Claude Code items of the check (`hooks in user
@@ -3202,6 +3265,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0039_approval` | `approval` (task, run or session, requested by and via `agent` / `guard` / `denial`, action `commit` / `push` / `merge` / `deploy` / `sql`, a push's mode `plain` / `force` / `delete`, repository, branch, PR, environment, summary, rollback, requested at, status `open` / `approved` / `refused` / `used` / `expired`, decision, decided by and at, the owner's line, valid until, used at / by / session, expired at and why, the turn or owner comment that carries the decision, told / delivered at); checks that a push or commit names its branch, a merge its PR, a deploy or SQL change its environment, an approved deploy its rollback, and that the status matches the decision and the use; indexes per task, run, comment and on the open and approved ones ([§1](#spec-approvals)). Additive only |
 | `0040_run_lifecycle` | `run.secret_seen_at`, `run.touched_live_at`, `run.transcript_path`, `run.deleted_at`; `project.run_retention` (days as text, or `off`; default `30`); `run_worktree.kept_reason`, `run_worktree.question_id` (the owner's question whether to remove it), `run_worktree.kept_at` (the owner's keep); an index on `run_event.ts` for the retention and one on the question of a kept worktree ([§1](#spec-run-lifecycle)). Additive only |
 | `0041_approval_reservation` | `approval.reserved_at`, `approval.reserved_for` (the call's `tool_use_id`), `approval.reserved_call`, `approval.reserved_session_id` (the approval held for one call until it ran), `approval.released_count` (default 0; the third release expires it); a partial index on `reserved_for` of the held ones ([§1](#spec-approvals)). Additive only |
+| `0042_run_terminal` | `run.with_owner_in` (`terminal`: the run is with the owner in the board's Terminal tab; NULL: the Claude desktop app of 0034); a start hands back a run still marked `terminal` ([§1](#spec-run)). Additive only |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

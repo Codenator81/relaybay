@@ -40,9 +40,13 @@ dependencies = [
     "mcp>=2,<3",
     "platformdirs>=4.2",
     "python-multipart>=0.0.9",
+    # The Terminal tab on a run: a ConPTY on Windows (macOS and Linux use the stdlib pty).
+    "pywinpty>=2.0.14,<4; sys_platform == 'win32'",
     "regex>=2024.11.6",
     "snowballstemmer>=2.2",
     "uvicorn>=0.30",
+    # The Terminal tab's WebSocket: uvicorn needs a WebSocket library to accept the upgrade.
+    "wsproto>=1.2",
 ]
 
 [project.urls]

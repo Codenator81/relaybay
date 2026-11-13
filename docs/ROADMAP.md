@@ -173,7 +173,7 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 
 | Item | Status | Design |
 |---|---|---|
-| A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | later | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
+| A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | built, not released | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
 
 ## 0.11 — the coordinator and schedules
 

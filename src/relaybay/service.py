@@ -230,6 +230,7 @@ from relaybay.policy import (
 from relaybay.runner import auth as run_auth
 from relaybay.runner import desktop as run_desktop
 from relaybay.runner import memory as run_memory
+from relaybay.runner import terminal as run_terminal
 from relaybay.runner import transcripts, worktrees
 from relaybay.runner.claude_cli import TurnSpec, build_command
 from relaybay.runner.layers import LayerState, run_files, user_layer_state, write_run_files
@@ -291,6 +292,9 @@ AUDIT_CHANGE_KINDS = (
     "run.traces_deleted",
     "run.events_expired",
     "settings.run_limits",
+    "run.terminal_opened",
+    "run.terminal_closed",
+    "settings.terminal_enabled",
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -1095,6 +1099,13 @@ RETENTION_SECONDS = 3600.0  # how often old run lines are deleted
 WORKTREE_REMOVE = "remove"
 WORKTREE_KEEP = "keep"
 SERVER_STOPPING = "waiting for the server to start again"
+TERMINAL_OFF = "The Terminal tab is off; the owner turns it on in Settings -> Agents."
+# What closing a terminal left: the run handed back, or held with the reason (`close_terminal`).
+TERMINAL_BACK = "the run is back with relaybay"
+TERMINAL_MISSING = (
+    "The Terminal tab needs a pseudo-terminal: on Windows the pywinpty package, which this"
+    " install lacks (reinstall relaybay)."
+)
 
 
 @dataclass(slots=True)
@@ -1182,6 +1193,10 @@ async def _make_worktrees(
 
         work.add_done_callback(undo)
         raise
+
+
+def _owner_place(run: Run) -> str:
+    return "in the Terminal tab" if run.in_terminal else "in the desktop app"
 
 
 def _add_dirs(cwd: str, paths: list[str]) -> tuple[str, ...]:
@@ -1273,6 +1288,8 @@ class Service:
         self.coordinators = [c.strip() for c in coordinators or [] if c.strip()]
         # Runs whose `claude --desktop` is being launched now (Back waits for it).
         self.desktop_launching: set[int] = set()
+        # The Terminal tab's `claude --resume` per run; tests put a fake backend in it.
+        self.terminals = run_terminal.TerminalManager(run_terminal.default_backend())
         # The first report id the missing-marks warning applies to: reports written before
         # migration 0036 never warn (set at start).
         self.report_marks_from = 0
@@ -1402,6 +1419,7 @@ class Service:
             await asyncio.gather(*pending, return_exceptions=True)
         if self.runs is not None:
             await self.runs.close()  # the turns end `stopped` while the database is still open
+        await self._close_terminals("server stopped")
         for timer in [*self._activity_timers.values(), *self._status_timers.values()]:
             timer.cancel()
         self._activity_timers.clear()
@@ -11069,7 +11087,7 @@ class Service:
         if not run.is_open:
             raise ValidationError(f"Run {run.id} has ended.")
         if run.with_owner:
-            raise ValidationError(f"Run {run.id} is already with the owner in the desktop app.")
+            raise ValidationError(f"Run {run.id} is already with the owner {_owner_place(run)}.")
         if running or run.status == "running":
             raise ValidationError(f"A turn of run {run.id} is running; wait or stop it.")
 
@@ -11079,6 +11097,18 @@ class Service:
         run = await self.get_run(run_id)
         if not run.with_owner:
             raise ValidationError(f"Run {run.id} is not with the owner.")
+        if self.terminals.busy(run.id):
+            if self.terminals.get(run.id) is None:
+                raise ValidationError(
+                    f"The terminal of run {run.id} is starting; try again in a moment."
+                )
+            outcome = await self.close_terminal(run.id, actor=actor, reason="Back to the program")
+            if outcome is not None and outcome != TERMINAL_BACK:
+                raise ValidationError(f"The terminal closed, but {outcome}.")
+            return await self.get_run(run_id)
+        if run.in_terminal:  # its terminal ended, the hand-back then was refused: try again
+            await self._hand_back(run.id, actor, event=True)
+            return await self.get_run(run_id)
         if run.id in self.desktop_launching:
             raise ValidationError(
                 f"The desktop app is still being opened for run {run.id}; try again in a moment."
@@ -11101,7 +11131,10 @@ class Service:
                 return
             task = await self.get_task(run.task_id, tx.conn)
             await repo.update_run(
-                tx.conn, run.id, {"with_owner_at": None, "with_owner_by": None}, tx.now
+                tx.conn,
+                run.id,
+                {"with_owner_at": None, "with_owner_by": None, "with_owner_in": None},
+                tx.now,
             )
             run.with_owner_at = None
             if event:
@@ -11109,6 +11142,183 @@ class Service:
             if run.is_open and run.status != "running":
                 launches = await self._dispatch(tx, free, actor)
         await self._spawn_all(launches)
+
+    # --- the Terminal tab: `claude --resume` of the run in a PTY on this server -------------
+
+    async def terminal_enabled(self, conn: aiosqlite.Connection | None = None) -> bool:
+        return await repo.get_app_setting(conn or self._r, run_rules.TERMINAL_KEY) == "1"
+
+    def terminal_available(self) -> bool:
+        return self.terminals.backend is not None
+
+    async def set_terminal_enabled(self, on: bool, *, actor: str = "owner") -> list[str]:
+        """The owner's switch in Settings -> Agents (board only); off closes the open terminals,
+        which hands their runs back. Returns what went wrong per run (each run is tried); a
+        terminal still starting is closed by its start, which checks the switch again."""
+        async with self._tx() as tx:
+            value = "1" if on else "0"
+            await repo.set_app_setting(tx.conn, run_rules.TERMINAL_KEY, value, tx.now, actor)
+            await tx.event("settings.terminal_enabled", actor, on=on)
+        problems: list[str] = []
+        if on:
+            return problems
+        for run_id in sorted(self.terminals.open_runs()):
+            try:
+                outcome = await self.close_terminal(
+                    run_id, actor=actor, reason="the Terminal tab was turned off"
+                )
+            except Exception as exc:  # the kill failed: the run stays held, the next try below
+                logger.exception("Closing the terminal of run %d failed", run_id)
+                problems.append(f"Run {run_id}: its terminal could not be closed ({exc}).")
+                continue
+            if outcome is not None and outcome != TERMINAL_BACK:
+                problems.append(f"Run {run_id}: the terminal closed, but {outcome}.")
+        return problems
+
+    async def _terminal_check(self, run: Run) -> tuple[str, str]:
+        """Why the run's terminal may not open now, raised; else (claude, Claude session id)."""
+        if not await self.terminal_enabled():
+            raise ValidationError(TERMINAL_OFF)
+        runs = self._run_manager()
+        if not self.terminal_available():
+            raise ValidationError(TERMINAL_MISSING)
+        if self.terminals.busy(run.id):
+            raise ValidationError(f"A terminal of run {run.id} is open already: one at a time.")
+        self._check_hand_over(run, runs.is_running(run.id))
+        cc_id = run.claude_session_id
+        if cc_id is None or not CLAUDE_SESSION_RE.fullmatch(cc_id):
+            raise ValidationError(
+                f"Run {run.id} has no Claude session yet: its first turn has not started."
+            )
+        claude = runs.claude()
+        if claude is None:
+            raise ValidationError(self._claude_missing())
+        return claude, cc_id
+
+    async def terminal_token(self, run_id: int) -> str:
+        """The one-time token for the terminal's WebSocket (board only): minted only when the
+        terminal could open now, spent by the socket's first use."""
+        run = await self.get_run(run_id)
+        await self._terminal_check(run)
+        return self.terminals.mint(run.id)
+
+    async def open_terminal(
+        self, run_id: int, rows: int, cols: int, *, actor: str = "owner"
+    ) -> run_terminal.Terminal:
+        """The run's session in the Terminal tab. The hard rule: from before the process exists
+        until it is dead the run is with the owner (`with_owner_in = 'terminal'`), so no turn
+        starts and texts sent wait. Two writers on one session fork its transcript: a turn run
+        while the TUI is open passes, then is lost from the session's history. A failed start
+        hands the run back."""
+        runs = self._run_manager()
+        run = await self.get_run(run_id)
+        claude, cc_id = await self._terminal_check(run)
+        folders = await repo.list_run_worktrees(self._r, run.id)
+        live = [w.path for w in folders if w.removed_at is None]
+        argv = run_terminal.terminal_command(claude, cc_id, _add_dirs(run.cwd, live))
+        rows, cols = run_terminal.clean_size(rows, cols)
+        if not self.terminals.reserve(run.id):
+            raise ValidationError(f"A terminal of run {run.id} is open already: one at a time.")
+        try:
+            async with self._tx() as tx:
+                run = await self.get_run(run_id, tx.conn)
+                self._check_hand_over(run, runs.is_running(run.id))
+                if await repo.active_turn(tx.conn, run.id) is not None:
+                    raise ValidationError(f"A turn of run {run.id} is running; wait or stop it.")
+                await repo.update_run(
+                    tx.conn,
+                    run.id,
+                    {
+                        "with_owner_at": tx.now,
+                        "with_owner_by": actor,
+                        "with_owner_in": run_rules.TERMINAL,
+                    },
+                    tx.now,
+                )
+        except BaseException:
+            self.terminals.release(run.id)
+            raise
+        env = run_terminal.terminal_env(os.environ, run.id)
+        try:
+            terminal = await self.terminals.spawn(run.id, argv, run.cwd, env, rows, cols)
+        except Exception as exc:  # pywinpty raises its own kinds besides OSError
+            why = f"claude did not start in the terminal: {exc}"
+            try:
+                await self._hand_back(run.id, actor, event=False)
+                stays = "the run stays with relaybay"
+            except ValidationError as refused:  # the check before a waiting text refused
+                stays = f"the run stays with the owner until Back to the program ({refused})"
+            raise ValidationError(f"{why}; {stays}.") from exc
+        # End or the switch off while the process started saw no terminal to close yet.
+        now = await self.get_run(run.id)
+        if not now.is_open or not now.in_terminal or not await self.terminal_enabled():
+            why = "the run ended" if not now.is_open else "the Terminal tab was turned off"
+            await self.close_terminal(run.id, actor=actor, reason=f"{why} while it started")
+            raise ValidationError(f"The terminal did not open: {why} while it started.")
+        async with self._tx() as tx:
+            task = await self.get_task(run.task_id, tx.conn)
+            await self._run_event(
+                tx,
+                "run.terminal_opened",
+                actor,
+                task,
+                run.id,
+                claude_session_id=cc_id,
+                pid=terminal.pty.pid,
+            )
+        return terminal
+
+    async def close_terminal(
+        self, run_id: int, *, actor: str = "owner", reason: str, hand_back: bool = True
+    ) -> str | None:
+        """The tab closed, the TUI exited, Back to the program, End, the switch off or the server
+        stopping: the process tree is killed and waited for first, then (`hand_back`) the run is
+        relaybay's again and its first waiting text starts. A kill that fails raises and keeps
+        the run with the owner. Returns TERMINAL_BACK, or why the run stays with the owner (the
+        check before a waiting text refused: Back to the program on the card tries again; the
+        reason is on the run too); None: no terminal of the run was open."""
+        closed = await self.terminals.close(run_id)
+        if closed is None:
+            return None
+        terminal, code = closed
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            task = await self.get_task(run.task_id, tx.conn)
+            opened = datetime.fromtimestamp(terminal.opened_at, UTC).isoformat()
+            await self._run_event(
+                tx,
+                "run.terminal_closed",
+                actor,
+                task,
+                run.id,
+                reason=reason,
+                exit_code=code,
+                opened_at=opened,
+            )
+        if not hand_back:
+            return "the run is not handed back"  # End and the server stop: no waiting text
+        try:
+            await self._hand_back(run_id, actor, event=False)
+        except ValidationError as refused:
+            held = f"the run stays with you until Back to the program: {refused}"
+            async with self._tx() as tx:
+                await repo.update_run(
+                    tx.conn,
+                    run_id,
+                    {"status_reason": f"Back to the program refused: {refused}"},
+                    tx.now,
+                )
+            return held
+        return TERMINAL_BACK
+
+    async def _close_terminals(self, reason: str) -> None:
+        """Server stop: every terminal is killed and journaled; the runs stay marked, and the
+        next start hands them back (`_recover_runs`)."""
+        for run_id in self.terminals.open_runs():
+            try:
+                await self.close_terminal(run_id, actor="relaybay", reason=reason, hand_back=False)
+            except Exception:
+                logger.exception("Closing the terminal of run %d at server stop failed", run_id)
 
     # --- limits before each turn: slots, free memory, the brake ----------------------------
 
@@ -11191,6 +11401,10 @@ class Service:
         running = await repo.count_running_turns(tx.conn)
         launches: list[tuple[int, int]] = []
         for run, turn_id in await repo.queued_runs(tx.conn):
+            if self.terminals.busy(run.id):
+                # The hard rule's second lock: with_owner_at already keeps such a run out of
+                # the queue; a terminal open on it never shares its session with a turn.
+                continue
             brake = await self._run_brake(tx.conn, run)
             if brake is not None:
                 reason = run_rules.brake_reason(brake.target, brake.reason)
@@ -11255,7 +11469,7 @@ class Service:
         if not run.is_open:
             raise ValidationError(f"Run {run.id} has ended.")
         if run.with_owner:
-            raise ValidationError(f"Run {run.id} is with the owner in the desktop app.")
+            raise ValidationError(f"Run {run.id} is with the owner {_owner_place(run)}.")
         if run.status != "queued":
             raise ValidationError(
                 f"Run {run.id} is {run.status}: no turn of it waits in the queue."
@@ -11730,6 +11944,8 @@ class Service:
         if not run.is_open:
             raise ValidationError(f"Run {run.id} has already ended.")
         why = reason or f"ended by {actor}"
+        if self.terminals.busy(run.id):
+            await self.close_terminal(run.id, actor=actor, reason=why, hand_back=False)
         if runs.is_running(run.id):
             await runs.stop(run.id, why)
         await self._lose_orphan(runs, run)
@@ -11747,6 +11963,7 @@ class Service:
                 ended_by=actor,
                 with_owner_at=None,
                 with_owner_by=None,
+                with_owner_in=None,
             )
             await self._run_event(tx, "run.ended", actor, task, run.id, reason=why)
             # No next turn will carry them: the owner's answers go to the card's session instead.
@@ -11767,9 +11984,27 @@ class Service:
         return await self.get_run(run_id)
 
     async def _recover_runs(self) -> None:
-        """At start: a run still `running` lost its process with the previous server."""
+        """At start: a run still `running` lost its process with the previous server; a run
+        held by the Terminal tab lost its terminal with it and is handed back (its waiting text
+        starts from the queue's next pass)."""
         async with self._tx() as tx:
             for run in await repo.open_runs(tx.conn):
+                if run.in_terminal:
+                    task = await self.get_task(run.task_id, tx.conn)
+                    await repo.update_run(
+                        tx.conn,
+                        run.id,
+                        {"with_owner_at": None, "with_owner_by": None, "with_owner_in": None},
+                        tx.now,
+                    )
+                    await self._run_event(
+                        tx,
+                        "run.returned",
+                        "relaybay",
+                        task,
+                        run.id,
+                        reason="its terminal ended with the previous server",
+                    )
                 if run.status != "running":
                     continue
                 task = await self.get_task(run.task_id, tx.conn)

@@ -1747,3 +1747,10 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .approval-waits { border: 1px solid var(--warn); }
 .approval-decide input[type=text] { width: 100%; }
 .approval-closed > summary { cursor: pointer; font-size: 13px; }
+
+/* The Terminal tab of a run: the screen takes the rest of the window; xterm.js paints inside. */
+.terminal-page { display: flex; flex-direction: column; min-height: calc(100vh - 56px); }
+.terminal-hint { border: 1px solid var(--warn); border-radius: 6px; padding: 8px 12px; margin: 0 0 8px; }
+.terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.terminal-status { flex: 1 1 auto; color: var(--muted); }
+.terminal-screen { flex: 1 1 auto; min-height: 320px; background: #000; padding: 4px; border-radius: 6px; overflow: hidden; }

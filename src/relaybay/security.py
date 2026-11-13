@@ -21,8 +21,9 @@ CSP = (
     "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none';"
     " frame-ancestors 'none'; form-action 'self'"
 )
+CSP_HEADER = b"content-security-policy"
 SECURITY_HEADERS = [
-    (b"content-security-policy", CSP.encode()),
+    (CSP_HEADER, CSP.encode()),
     (b"x-content-type-options", b"nosniff"),
     (b"x-frame-options", b"DENY"),
     # Not "no-referrer": with it browsers send `Origin: null` on same-origin POSTs.
@@ -143,8 +144,12 @@ class SecurityMiddleware:
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message.setdefault("headers", [])
-                message["headers"] = [*message["headers"], *SECURITY_HEADERS]
+                headers = list(message.get("headers", []))
+                # A page that set its own policy (the Terminal tab) keeps it: browsers enforce
+                # every CSP header they get, so adding ours would undo its one exception.
+                own_csp = any(name.lower() == b"content-security-policy" for name, _ in headers)
+                extra = [h for h in SECURITY_HEADERS if not (own_csp and h[0] == CSP_HEADER)]
+                message["headers"] = [*headers, *extra]
             await send(message)
 
         rejection = self.check(scope)

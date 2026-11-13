@@ -99,6 +99,13 @@ jobs:
             -H "Accept: application/json, text/event-stream" \
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
 
+      - name: Smoke - the Terminal tab's pseudo-terminal (ConPTY files in the frozen build)
+        if: runner.os == 'Windows'
+        run: |
+          # doctor fails other items on a runner (no claude): only this one must be ok.
+          "$BIN/relaybay$EXE" doctor --json --home "$RUNNER_TEMP/pty-smoke" > pty-doctor.json || true
+          uv run --no-sync python -c "import json, sys; item = next(c for c in json.load(open('pty-doctor.json', encoding='utf-8')) if c['name'] == 'pseudo-terminal'); print(item); sys.exit(0 if item['ok'] else 1)"
+
       - name: Smoke - hook forwarder time (live server) and silence (dead port)
         run: |
           uv run --no-sync python scripts/hook_timing.py --limit-ms 800 -- "$BIN/relaybay-hook$EXE"

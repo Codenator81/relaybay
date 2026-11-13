@@ -1,6 +1,6 @@
 # 0012 — Runner and embedded terminal (agents inside relaybay)
 
-- Status: **Accepted** (direction); the runner is planned for 0.9, the terminal for 0.10
+- Status: **Accepted** (direction); the runner shipped in 0.9, the terminal is built for 0.10
   ([0021](0021-agents-inside.md)). Starts with the probes below.
 - Size: runner about 4 agent-days (0.9, PR 1 of [0021](0021-agents-inside.md#plan-of-09-by-pull-request)),
   terminal about 4 (0.10), first ACP adapter about 2 (not before the runner has run a week).
@@ -126,6 +126,16 @@ streamed over a WebSocket) running `claude --resume <session id>` in the run's w
 session the headless turns use. Off until the owner turns it on; same security as the board (cookie,
 CSRF, Origin), loopback only. While it is open, headless turns for that run queue (exact rule from
 probe 4). Platform notes: [0021](0021-agents-inside.md#platform-notes).
+
+Built for 0.10 (2026-11-13; [SPEC](../SPEC.md#spec-run), Terminal tab). The probe of 2026-11-13
+on Windows (claude 2.1.323, pywinpty ConPTY, xterm.js 5.5 with the fit add-on, in Chromium and
+the pywebview window) settled the rest: the TUI renders and takes keys; pywinpty's read blocks,
+so it runs in a thread; the fit runs after layout and before the socket opens; Ctrl+V reaches the
+TUI as ^V, so paste is handled by the page; a new folder asks the trust question with "No, exit"
+preselected. The exact rule: **an open terminal is the run "with the owner"**: no turn starts
+and texts queue; closing it hands the run back like Back to the program. A headless turn run
+while the TUI is open passed, then was lost from the session's history (the transcript forks):
+two writers on one session are never allowed. macOS and Linux use the stdlib `pty`, not probed.
 
 ## Later in the same direction
 

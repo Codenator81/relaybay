@@ -3,8 +3,10 @@
 import asyncio
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
+import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Form, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -24,9 +26,10 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 from starlette.responses import StreamingResponse
+from starlette.websockets import WebSocketDisconnect
 
 from relaybay import __version__, machine_setup
-from relaybay.config import Settings
+from relaybay.config import LOCAL_HOSTS, Settings
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
@@ -55,11 +58,14 @@ from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
 from relaybay.runner import auth as run_auth
+from relaybay.runner.terminal import clean_size
 from relaybay.runner.worktrees import summary as worktree_summary
 from relaybay.security import (
     COOKIE_NAME,
+    CSP,
     CSRF_FIELD,
     csrf_token,
+    host_name,
     login_url,
     port_cookie,
     safe_next,
@@ -68,10 +74,11 @@ from relaybay.security import (
     session_cookie_value,
     token_id,
 )
-from relaybay.service import HTTP_URL_RE, Inbox, Service, has_hidden_chars
+from relaybay.service import HTTP_URL_RE, TERMINAL_BACK, Inbox, Service, has_hidden_chars
 from relaybay.web.markdown import render_document, render_markdown
 from relaybay.web.sse import event_stream
 
+logger = logging.getLogger("relaybay")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 LOGIN_CSRF_COOKIE = "relaybay_login_csrf"
 LOGIN_ERROR_COOKIE = "relaybay_login_error"
@@ -220,6 +227,8 @@ EVENT_KINDS = (
     "run.lost",
     "run.opened_in_desktop",
     "run.returned",
+    "run.terminal_opened",
+    "run.terminal_closed",
     "run.settings_changed",
     "run.waiting",
     "run.start_anyway",
@@ -242,8 +251,19 @@ EVENT_KINDS = (
     "approval.expired",
     "settings.run_login_any",
     "settings.run_limits",
+    "settings.terminal_enabled",
 )
 CSRF_HEADER = "x-relaybay-csrf"
+# The Terminal tab: the board's policy plus inline styles, which xterm.js writes.
+TERMINAL_CSP = CSP + "; style-src 'self' 'unsafe-inline'"
+LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")
+TERMINAL_NOT_LOOPBACK = (
+    "The server listens on {host}, not on loopback only: the Terminal tab works only on a server"
+    " bound to 127.0.0.1 (not in Docker or on a LAN address)."
+)
+TERMINAL_EXITED = "claude exited"
+TERMINAL_REFUSED = 4000  # a close code of the application's range: the terminal did not open
+TERMINAL_HELD = 4001  # claude exited, but the run stays with the owner (the reason went before)
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
 BOARD_ONLY = (
     "Environments, permission levels and the policy change only from the board in a browser;"
@@ -1537,7 +1557,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             owner_modes=run_rules.PERMISSION_MODES + run_rules.OWNER_ONLY_MODES,
             desktop_ok=runs is not None and runs.desktop_launcher is not None,
             launching=view is not None and view.run.id in service.desktop_launching,
+            terminal_on=terminal_here() and await service.terminal_enabled(),
+            terminal_open=view is not None and service.terminals.busy(view.run.id),
         )
+
+    def terminal_here() -> bool:
+        """The Terminal tab can work on this server: a PTY, and a loopback-only listener."""
+        return service.terminal_available() and settings.host in LOOPBACK_BINDS
 
     @router.get("/p/{slug}/t/{key}/run", response_class=HTMLResponse)
     async def run_fragment(request: Request, slug: str, key: str):
@@ -1663,6 +1689,148 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 await service.end_run(own, actor="owner")
 
         return await run_write(request, slug, key, csrf, write)
+
+    # --- the Terminal tab of a run: `claude --resume` in a PTY over a WebSocket -------------
+
+    async def terminal_run(slug: str, key: str, run_id: int) -> tuple[Task, Any]:
+        """The card and its run for the terminal routes; 404 while the Terminal tab is off."""
+        if not await service.terminal_enabled():
+            raise HTTPException(status_code=404)
+        task = await find_task(slug, key)
+        return task, await service.get_run(await run_of(task, run_id))
+
+    @router.get("/p/{slug}/t/{key}/run/{run_id}/terminal", response_class=HTMLResponse)
+    async def run_terminal_page(request: Request, slug: str, key: str, run_id: int):
+        task, run = await terminal_run(slug, key, run_id)
+        response = render(
+            request,
+            "terminal.html",
+            t=task,
+            run=run,
+            back=f"/p/{slug}?task={task.key}",
+            base=f"/p/{slug}/t/{task.key}/run/{run.id}/terminal",
+        )
+        # xterm.js styles its rows with <style> elements it writes: this page alone allows
+        # inline styles; scripts stay 'self' only.
+        response.headers["content-security-policy"] = TERMINAL_CSP
+        return response
+
+    @router.post("/p/{slug}/t/{key}/run/{run_id}/terminal/token")
+    async def run_terminal_token(
+        request: Request,
+        slug: str,
+        key: str,
+        run_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        """A one-time token for the WebSocket, from a signed-in browser only (cookie + CSRF, no
+        Bearer); a refusal answers 409 with the reason."""
+        board_only(request, csrf)
+        _, run = await terminal_run(slug, key, run_id)
+        try:
+            if settings.host not in LOOPBACK_BINDS:
+                raise ValidationError(TERMINAL_NOT_LOOPBACK.format(host=settings.host))
+            minted = await service.terminal_token(run.id)
+        except ValidationError as exc:
+            return PlainTextResponse(str(exc), status_code=409)
+        return JSONResponse({"token": minted}, headers={"cache-control": "no-store"})
+
+    def terminal_socket_refusal(websocket: WebSocket) -> str | None:
+        """The SecurityMiddleware passes WebSockets through: every check is made here. The
+        server listens on loopback and the Host is a loopback name; no Bearer client; the
+        board's own cookie; an Origin equal to the board's own origin."""
+        headers = websocket.headers
+        if settings.host not in LOOPBACK_BINDS:
+            return "the server does not listen on loopback only"
+        host = headers.get("host") or ""
+        if host_name(host) not in LOCAL_HOSTS:
+            return "not a loopback host"
+        if "authorization" in headers:
+            return "the board only, not a Bearer client"
+        cookie = websocket.cookies.get(port_cookie(COOKIE_NAME, host))
+        if not same_secret(cookie, session_cookie_value(token)):
+            return "not signed in"
+        origin = headers.get("origin")
+        if origin is None or origin.lower() != f"http://{host.lower()}":
+            return "a foreign origin"
+        return None
+
+    @router.websocket("/p/{slug}/t/{key}/run/{run_id}/terminal")
+    async def run_terminal_socket(websocket: WebSocket, slug: str, key: str, run_id: int):
+        """Text frames out: what the TUI writes. In: JSON `{"type": "input", "data": …}` or
+        `{"type": "resize", "rows": …, "cols": …}`. A refusal closes before the handshake
+        (the browser sees 403); the end closes with the reason."""
+        refusal = terminal_socket_refusal(websocket)
+        if refusal is None and not await service.terminal_enabled():
+            refusal = "the Terminal tab is off"
+        if refusal is None:
+            try:
+                task = await find_task(slug, key)
+                own = await run_of(task, run_id)
+            except NotFoundError:
+                refusal = "no such run on this card"
+        params = websocket.query_params
+        if refusal is None and not service.terminals.take(params.get("token", ""), run_id):
+            refusal = "no valid one-time token"
+        if refusal is not None:
+            logger.warning("Terminal socket of run %d refused: %s", run_id, refusal)
+            await websocket.close(code=1008)
+            return
+        try:
+            terminal = await service.open_terminal(
+                own, params.get("rows", ""), params.get("cols", ""), actor="owner"
+            )
+        except DomainError as exc:
+            # After the handshake, so the page can show why (a close reason holds 123 bytes).
+            await websocket.accept()
+            await websocket.send_text(f"\r\n\x1b[33mrelaybay: {exc}\x1b[0m\r\n")
+            await websocket.close(code=TERMINAL_REFUSED, reason="refused")
+            return
+        reason = "the tab closed"
+        try:
+            await websocket.accept()
+            reason = await pump_terminal(websocket, terminal)
+        finally:
+            # Shielded: a server stop cancels this handler, and the tree must still die first.
+            outcome = await asyncio.shield(
+                service.close_terminal(own, actor="owner", reason=reason)
+            )
+        if reason != TERMINAL_EXITED:
+            return  # the browser went: the card tells the outcome
+        with contextlib.suppress(RuntimeError, WebSocketDisconnect):  # the browser went first
+            if outcome == TERMINAL_BACK:
+                await websocket.close(code=1000, reason="claude exited")
+            else:
+                await websocket.send_text(f"\r\n\x1b[33mrelaybay: {outcome}\x1b[0m\r\n")
+                await websocket.close(code=TERMINAL_HELD, reason="held")
+
+    async def pump_terminal(websocket: WebSocket, terminal: Any) -> str:
+        """Until the TUI exits or the browser goes: the reason the terminal closes."""
+
+        async def out() -> None:
+            while (chunk := await terminal.output()) is not None:
+                await websocket.send_text(chunk)
+
+        async def into() -> None:
+            while True:
+                message = json.loads(await websocket.receive_text())
+                if message.get("type") == "input":
+                    terminal.write(str(message.get("data", "")))
+                elif message.get("type") == "resize":
+                    terminal.resize(*clean_size(message.get("rows"), message.get("cols")))
+
+        writer, reader = asyncio.create_task(out()), asyncio.create_task(into())
+        done, pending = await asyncio.wait({writer, reader}, return_when=asyncio.FIRST_COMPLETED)
+        for job in pending:
+            job.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for job in done:
+            failure = job.exception()
+            if failure is not None and not isinstance(failure, WebSocketDisconnect):
+                logger.warning("The terminal socket of run %d failed: %r", terminal.run_id, failure)
+        if writer in done and writer.exception() is None:
+            return TERMINAL_EXITED
+        return "the tab closed"
 
     # --- Questions to the owner: answered only here, on the board -------------------------
 
@@ -2632,6 +2800,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             login_line=run_auth.login_line(login) if login is not None else "",
             layers=await service.run_layers(),
             login_any=await service.run_login_any(),
+            terminal_enabled=await service.terminal_enabled(),
+            terminal_available=service.terminal_available(),
+            terminal_bind=None
+            if settings.host in LOOPBACK_BINDS
+            else TERMINAL_NOT_LOOPBACK.format(host=settings.host),
             fix_command=run_auth.FIX_COMMAND,
             limits=await service.run_limits(),
             config_limits=(settings.max_running_turns, settings.min_free_memory_mb),
@@ -2665,6 +2838,16 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         allow = (await request.form()).getlist("allow")[-1:] == ["1"]
         await service.set_run_login_any(allow, actor="owner")
         return flash_redirect(request, "/settings/agents", message="Saved.")
+
+    @router.post("/settings/agents/terminal", response_class=HTMLResponse)
+    async def agents_terminal(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
+        board_only(request, csrf)
+        # A hidden "0" comes before the checkbox, so the last value is the state.
+        on = (await request.form()).getlist("on")[-1:] == ["1"]
+        problems = await service.set_terminal_enabled(on, actor="owner")
+        if problems:
+            return flash_redirect(request, "/settings/agents#terminal", error=" ".join(problems))
+        return flash_redirect(request, "/settings/agents#terminal", message="Saved.")
 
     @router.get("/settings/notifications", response_class=HTMLResponse)
     async def notifications(request: Request):

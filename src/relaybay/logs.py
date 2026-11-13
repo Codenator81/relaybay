@@ -13,16 +13,27 @@ from uvicorn.logging import AccessFormatter
 REDACTED = "<redacted>"
 
 
+# Paths whose query string carries a secret: the board's token, a terminal's one-time token.
+SECRET_QUERY_PATHS = ("/login", "/terminal")
+
+
+def _redacted(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    path, sep, _query = value.partition("?")
+    if sep and path.rstrip("/").endswith(SECRET_QUERY_PATHS):
+        return f"{path}?{REDACTED}"
+    return value
+
+
 class RedactLoginFilter(logging.Filter):
-    """Drop the query string of `/login` from access-log lines: it carries the token."""
+    """Drop the query string of `/login` and of a run's `/terminal` socket from log lines:
+    uvicorn.access records carry the path as an argument (client_addr, method, full_path, ...),
+    and uvicorn.error logs a WebSocket as (client, path)."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        args = record.args
-        # uvicorn.access records: (client_addr, method, full_path, http_version, status_code)
-        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
-            path, sep, _query = args[2].partition("?")
-            if sep and path.rstrip("/") == "/login":
-                record.args = (*args[:2], f"{path}?{REDACTED}", *args[3:])
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redacted(arg) for arg in record.args)
         return True
 
 
@@ -30,6 +41,7 @@ def uvicorn_log_config() -> dict[str, Any]:
     config = copy.deepcopy(LOGGING_CONFIG)
     config.setdefault("filters", {})["redact_login"] = {"()": RedactLoginFilter}
     config["handlers"]["access"]["filters"] = ["redact_login"]
+    config["handlers"]["default"]["filters"] = ["redact_login"]
     return config
 
 

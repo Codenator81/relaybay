@@ -1,7 +1,9 @@
 {#- The Agent block of a card: the user's own claude run on it. Expects: t (the task), view (the
     open or latest run, or None), form (the Start form when no run is open), running, error,
     choices, owner_modes, desktop_ok (relaybay can open the desktop app here), launching (that
-    launch runs now). Refetched on live run events. -#}
+    launch runs now), terminal_on (the Terminal tab is on, this install has a PTY and the server
+    listens on loopback only), terminal_open (a terminal of the run is open or starting).
+    Refetched on live run events. -#}
 {%- macro hidden_csrf() -%}<input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">{%- endmacro %}
 {%- set base = "/p/" ~ t.project_slug ~ "/t/" ~ t.key ~ "/run" %}
 <div class="run" id="run-{{ t.key }}" data-key="{{ t.key }}"
@@ -15,7 +17,9 @@
     <span class="muted">run {{ r.id }} · {{ r.model }} · {{ r.effort }} · {{ r.permission_mode }} · started by {{ r.started_by }} <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
   </p>
   {% if r.status_reason %}<p class="run-reason">{{ r.status_reason }}</p>{% endif %}
-  {% if r.is_open and r.with_owner %}<p class="run-reason run-owner-note">With you in the Claude desktop app since <time datetime="{{ r.with_owner_at }}" data-age>{{ r.with_owner_at|age }}</time>: relaybay starts no turn, texts sent wait until Back to the program.</p>{% endif %}
+  {% if r.is_open and r.in_terminal and terminal_open %}<p class="run-reason run-owner-note">With you in the Terminal tab since <time datetime="{{ r.with_owner_at }}" data-age>{{ r.with_owner_at|age }}</time>: relaybay starts no turn, texts sent wait until the terminal closes.</p>
+  {% elif r.is_open and r.in_terminal %}<p class="run-reason run-owner-note">The terminal closed, but the run is still with you: relaybay starts no turn until Back to the program.</p>
+  {% elif r.is_open and r.with_owner %}<p class="run-reason run-owner-note">With you in the Claude desktop app since <time datetime="{{ r.with_owner_at }}" data-age>{{ r.with_owner_at|age }}</time>: relaybay starts no turn, texts sent wait until Back to the program.</p>{% endif %}
   <dl class="run-facts">
     <dt>Folder</dt><dd><code>{{ r.cwd }}</code></dd>
     {% for w in view.worktrees %}
@@ -72,10 +76,17 @@
       <button type="submit" class="btn danger">Stop</button>
     </form>
     {% endif %}
-    {% if r.with_owner or (r.claude_session_id and not running and r.status != "running") %}
+    {% if (r.with_owner and not r.in_terminal) or (r.claude_session_id and not running and r.status != "running" and not r.with_owner) %}
     {% if view.worktrees|rejectattr("path", "equalto", r.cwd)|list %}<p class="muted run-desktop-folders">In the desktop app only <code>{{ r.cwd }}</code> is a working folder (<code>--desktop</code> takes no <code>--add-dir</code>); add the run's other folders there with <code>/add-dir</code>.</p>{% endif %}
     {% endif %}
-    {% if r.with_owner %}
+    {% if r.in_terminal %}
+    <form class="inline-form" method="post" action="{{ base }}/{{ r.id }}/back"
+          hx-post="{{ base }}/{{ r.id }}/back" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
+      {{ hidden_csrf() }}
+      <button type="submit" class="btn primary">Back to the program</button>
+    </form>
+    {% if terminal_open %}<p class="muted run-back-note">The terminal is open in another tab or window; closing it hands the run back. Back to the program closes it here.</p>{% endif %}
+    {% elif r.with_owner %}
     {% if launching %}
     <p class="muted run-launching">Opening the desktop app…</p>
     {% else %}
@@ -88,6 +99,7 @@
     <p class="muted run-back-note">Close or leave the session in the desktop app before Back to the program: relaybay's turns and your typing there would write to one session.</p>
     {% endif %}
     {% elif r.claude_session_id and not running and r.status != "running" %}
+    {% if terminal_on %}<a class="btn" href="{{ base }}/{{ r.id }}/terminal">Terminal</a>{% endif %}
     {% if r.desktop_link %}<a class="btn primary" href="{{ r.desktop_link }}">Go to the session in the desktop app</a>{% endif %}
     {% if desktop_ok %}
     <form class="inline-form" method="post" action="{{ base }}/{{ r.id }}/desktop"
@@ -102,7 +114,7 @@
     <form class="run-send" method="post" action="{{ base }}/{{ r.id }}/send"
           hx-post="{{ base }}/{{ r.id }}/send" hx-target="closest .run" hx-swap="outerHTML" hx-disabled-elt="find button">
       {{ hidden_csrf() }}
-      <label class="field"><span>{{ "Next text (waits until Back to the program)" if r.with_owner else "Next text (waits for the running turn)" if running else "Continue" }}</span>
+      <label class="field"><span>{{ "Next text (waits until the terminal closes)" if r.in_terminal and terminal_open else "Next text (waits until Back to the program)" if r.in_terminal else "Next text (waits until Back to the program)" if r.with_owner else "Next text (waits for the running turn)" if running else "Continue" }}</span>
         <textarea name="text" rows="3" maxlength="20000" required placeholder="What the agent should do next"></textarea>
       </label>
       <button type="submit" class="btn primary">Send</button>

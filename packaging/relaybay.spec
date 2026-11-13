@@ -9,7 +9,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
 ROOT = Path(SPECPATH).parent
 LAUNCHERS = ROOT / "packaging" / "launchers"
@@ -27,6 +27,16 @@ datas = [
     (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "THIRD_PARTY_LICENSES.txt"), "."),
 ]
+
+# The Terminal tab on Windows: pywinpty has no PyInstaller hook, and its ConPTY needs the DLLs and
+# the helper programs next to its module (conpty.dll starts OpenConsole.exe from its own folder).
+# The lazy `from winpty import PtyProcess` is named here so the analysis cannot miss it.
+WINPTY_BINARIES = (
+    collect_dynamic_libs("winpty", search_patterns=["*.dll", "*.exe"])
+    if sys.platform == "win32"
+    else []
+)
+WINPTY_IMPORTS = ["winpty"] if sys.platform == "win32" else []
 
 # Never part of the program: PyInstaller's own setuptools / pkg_resources hooks would otherwise
 # collect setuptools' vendored packages, which THIRD_PARTY_LICENSES.txt does not list.
@@ -60,18 +70,23 @@ HOOK_EXCLUDES = [
 ]
 
 
-def analysis(script, excludes=(), datas=()):
+def analysis(script, excludes=(), datas=(), binaries=(), hiddenimports=()):
     return Analysis(
         [str(LAUNCHERS / script)],
         pathex=[str(ROOT / "src")],
         datas=list(datas),
+        binaries=list(binaries),
+        hiddenimports=list(hiddenimports),
         excludes=[*BUILD_ONLY, *excludes],
         noarchive=False,
     )
 
 
-main_a = analysis("relaybay_cli.py", datas=datas)
-desktop_a = analysis("relaybay_desktop.py")
+# Both run the server (the program embeds it), so both import winpty; COLLECT shares the files.
+main_a = analysis(
+    "relaybay_cli.py", datas=datas, binaries=WINPTY_BINARIES, hiddenimports=WINPTY_IMPORTS
+)
+desktop_a = analysis("relaybay_desktop.py", hiddenimports=WINPTY_IMPORTS)
 hook_a = analysis("relaybay_hook.py", excludes=HOOK_EXCLUDES)
 
 icon = str(ICONS / ("relaybay.icns" if sys.platform == "darwin" else "relaybay.ico"))

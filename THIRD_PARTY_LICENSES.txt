@@ -61,6 +61,7 @@ python-xlib                               LGPL-2.1-or-later            Linux
 pythonnet                                 MIT                          Windows
 pywebview                                 BSD-3-Clause                 all
 pywin32                                   PSF-2.0                      Windows
+pywinpty                                  MIT                          Windows
 referencing                               MIT                          all
 regex                                     Apache-2.0 AND CNRI-Python   all
 rpds-py                                   MIT                          all
@@ -72,6 +73,7 @@ truststore                                MIT                          all
 typing-extensions                         PSF-2.0                      all
 typing-inspection                         MIT                          all
 uvicorn                                   BSD-3-Clause                 all
+wsproto                                   MIT                          all
 
 
 Other components
@@ -92,6 +94,12 @@ Microsoft Edge WebView2 SDK (Windows)       Microsoft.Web.WebView2.Core.dll,
                                             Microsoft. The WebView2 runtime is part of Windows and
                                             is not bundled
 htmx and its SSE extension (the board)      0BSD
+xterm.js 5.5.0 and its fit add-on 0.10.0    MIT; the Terminal tab of a run. Their licence texts
+(the Terminal tab)                          are next to them in the static files:
+                                            vendor/xterm/LICENSE-xterm.txt and
+                                            LICENSE-addon-fit.txt
+winpty and ConPTY (Windows, in pywinpty)    winpty.dll, winpty-agent.exe (winpty, MIT);
+                                            conpty.dll, OpenConsole.exe (Windows Terminal, MIT)
 
 On Linux PyInstaller may also copy shared libraries of the build system (Ubuntu 22.04) that the
 modules above link against; each keeps the licence of its Ubuntu package. The WebKitGTK, GTK and
