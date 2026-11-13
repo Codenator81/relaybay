@@ -7,15 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-<<<<<<< Updated upstream
-### Fixed
-
-- A run started by a server that itself runs inside a Claude Code session no longer inherits that session's markers (`CLAUDE_CODE_CHILD_SESSION` and the other host `CLAUDE_CODE_*` variables): with them the run's `claude` saved no transcript, so `--resume` had nothing to go on. A provider, shell or output setting the user exports (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_GIT_BASH_PATH`, ...) still reaches the run.
-=======
 ### Added
 
 - The Terminal tab on a run, off by default (Settings → Agents → Terminal tab, board only): a Terminal button on a run with a known session opens `claude --resume <id>` in the run's folder in a terminal on the board, a pseudo-terminal on this server (ConPTY through pywinpty on Windows; the standard library's `pty` on macOS and Linux, not probed there) shown by the vendored xterm.js 5.5 over a WebSocket. While it is open the run is with you: no turn starts and texts sent wait, because two writers on one session fork its transcript; closing the tab, `/exit`, Back to the program or End kills the process tree first, then hands the run back and the first waiting text starts. The socket is loopback only and needs the board's cookie, its own Origin and a one-time token from a board-only POST; Bearer clients are refused. Ctrl+V pastes, and a hint names the trust question Claude Code asks in a new folder. Events `run.terminal_opened`, `run.terminal_closed`, `settings.terminal_enabled` (on the Audit page); migration 0042. New dependencies: `pywinpty` (Windows only) and `wsproto` (uvicorn's WebSocket support).
->>>>>>> Stashed changes
+
+### Fixed
+
+- A run started by a server that itself runs inside a Claude Code session no longer inherits that session's markers (`CLAUDE_CODE_CHILD_SESSION` and the other host `CLAUDE_CODE_*` variables): with them the run's `claude` saved no transcript, so `--resume` had nothing to go on. A provider, shell or output setting the user exports (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_GIT_BASH_PATH`, ...) still reaches the run.
 
 ## [0.9.0] - 2026-11-13
 
