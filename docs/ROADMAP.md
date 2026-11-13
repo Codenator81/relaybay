@@ -169,11 +169,11 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | Questions (with "look at this" for visual acceptance) and approvals as objects on the card and in the Inbox | done | [0022](design/0022-questions-and-approvals.md) |
 | Slots and free memory per machine, queueing with a reason; the brake and budgets on runs; lifecycle and retention | done | [0021](design/0021-agents-inside.md#the-run) |
 
-## 0.10 — the terminal
+## 0.10 — the terminal (released 2026-11-13)
 
 | Item | Status | Design |
 |---|---|---|
-| A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | built, not released | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
+| A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | done | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
 
 ## 0.11 — the coordinator and schedules
 

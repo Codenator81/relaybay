@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-13
+
 ### Added
 
 - The Terminal tab on a run, off by default (Settings → Agents → Terminal tab, board only): a Terminal button on a run with a known session opens `claude --resume <id>` in the run's folder in a terminal on the board, a pseudo-terminal on this server (ConPTY through pywinpty on Windows; the standard library's `pty` on macOS and Linux, not probed there) shown by the vendored xterm.js 5.5 over a WebSocket. While it is open the run is with you: no turn starts and texts sent wait, because two writers on one session fork its transcript; closing the tab, `/exit`, Back to the program or End kills the process tree first, then hands the run back and the first waiting text starts. The socket is loopback only and needs the board's cookie, its own Origin and a one-time token from a board-only POST; Bearer clients are refused. Ctrl+V pastes, and a hint names the trust question Claude Code asks in a new folder. Events `run.terminal_opened`, `run.terminal_closed`, `settings.terminal_enabled` (on the Audit page); migration 0042. When the hand-back is refused (the sign-in expired) the page and the card say so and Back to the program tries again; the button stays hidden on a server not bound to loopback; `relaybay doctor` has a `pseudo-terminal` item; the terminal's one-time token is redacted from the log. New dependencies: `pywinpty` (Windows only) and `wsproto` (uvicorn's WebSocket support).
@@ -956,7 +958,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.10.0
 [0.9.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.9.0
 [0.8.6]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.6
 [0.8.5]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.5
