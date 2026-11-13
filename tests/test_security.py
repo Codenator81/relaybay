@@ -142,8 +142,21 @@ def test_access_log_redacts_the_login_token() -> None:
     )
     assert RedactLoginFilter().filter(slash)
     assert "secret-value" not in slash.getMessage()
+    socket_line = logging.LogRecord(
+        "uvicorn.error",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "WebSocket %s" [accepted]',
+        ("127.0.0.1:5000", "/p/acme-shop/t/acme-shop-1/run/2/terminal?token=one-time&rows=24"),
+        None,
+    )
+    assert RedactLoginFilter().filter(socket_line)
+    assert "one-time" not in socket_line.getMessage()
+    assert "/run/2/terminal?<redacted>" in socket_line.getMessage()
     config = uvicorn_log_config()
     assert config["handlers"]["access"]["filters"] == ["redact_login"]
+    assert config["handlers"]["default"]["filters"] == ["redact_login"]
 
 
 PAGE = {"Accept": "text/html,application/xhtml+xml"}

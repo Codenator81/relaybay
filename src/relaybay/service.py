@@ -1100,6 +1100,8 @@ WORKTREE_REMOVE = "remove"
 WORKTREE_KEEP = "keep"
 SERVER_STOPPING = "waiting for the server to start again"
 TERMINAL_OFF = "The Terminal tab is off; the owner turns it on in Settings -> Agents."
+# What closing a terminal left: the run handed back, or held with the reason (`close_terminal`).
+TERMINAL_BACK = "the run is back with relaybay"
 TERMINAL_MISSING = (
     "The Terminal tab needs a pseudo-terminal: on Windows the pywinpty package, which this"
     " install lacks (reinstall relaybay)."
@@ -11095,8 +11097,17 @@ class Service:
         run = await self.get_run(run_id)
         if not run.with_owner:
             raise ValidationError(f"Run {run.id} is not with the owner.")
-        if run.in_terminal or self.terminals.busy(run.id):
-            await self.close_terminal(run.id, actor=actor, reason="Back to the program")
+        if self.terminals.busy(run.id):
+            if self.terminals.get(run.id) is None:
+                raise ValidationError(
+                    f"The terminal of run {run.id} is starting; try again in a moment."
+                )
+            outcome = await self.close_terminal(run.id, actor=actor, reason="Back to the program")
+            if outcome is not None and outcome != TERMINAL_BACK:
+                raise ValidationError(f"The terminal closed, but {outcome}.")
+            return await self.get_run(run_id)
+        if run.in_terminal:  # its terminal ended, the hand-back then was refused: try again
+            await self._hand_back(run.id, actor, event=True)
             return await self.get_run(run_id)
         if run.id in self.desktop_launching:
             raise ValidationError(
@@ -11140,18 +11151,29 @@ class Service:
     def terminal_available(self) -> bool:
         return self.terminals.backend is not None
 
-    async def set_terminal_enabled(self, on: bool, *, actor: str = "owner") -> None:
+    async def set_terminal_enabled(self, on: bool, *, actor: str = "owner") -> list[str]:
         """The owner's switch in Settings -> Agents (board only); off closes the open terminals,
-        which hands their runs back."""
+        which hands their runs back. Returns what went wrong per run (each run is tried); a
+        terminal still starting is closed by its start, which checks the switch again."""
         async with self._tx() as tx:
             value = "1" if on else "0"
             await repo.set_app_setting(tx.conn, run_rules.TERMINAL_KEY, value, tx.now, actor)
             await tx.event("settings.terminal_enabled", actor, on=on)
-        if not on:
-            for run_id in self.terminals.open_runs():
-                await self.close_terminal(
+        problems: list[str] = []
+        if on:
+            return problems
+        for run_id in sorted(self.terminals.open_runs()):
+            try:
+                outcome = await self.close_terminal(
                     run_id, actor=actor, reason="the Terminal tab was turned off"
                 )
+            except Exception as exc:  # the kill failed: the run stays held, the next try below
+                logger.exception("Closing the terminal of run %d failed", run_id)
+                problems.append(f"Run {run_id}: its terminal could not be closed ({exc}).")
+                continue
+            if outcome is not None and outcome != TERMINAL_BACK:
+                problems.append(f"Run {run_id}: the terminal closed, but {outcome}.")
+        return problems
 
     async def _terminal_check(self, run: Run) -> tuple[str, str]:
         """Why the run's terminal may not open now, raised; else (claude, Claude session id)."""
@@ -11227,6 +11249,12 @@ class Service:
             except ValidationError as refused:  # the check before a waiting text refused
                 stays = f"the run stays with the owner until Back to the program ({refused})"
             raise ValidationError(f"{why}; {stays}.") from exc
+        # End or the switch off while the process started saw no terminal to close yet.
+        now = await self.get_run(run.id)
+        if not now.is_open or not now.in_terminal or not await self.terminal_enabled():
+            why = "the run ended" if not now.is_open else "the Terminal tab was turned off"
+            await self.close_terminal(run.id, actor=actor, reason=f"{why} while it started")
+            raise ValidationError(f"The terminal did not open: {why} while it started.")
         async with self._tx() as tx:
             task = await self.get_task(run.task_id, tx.conn)
             await self._run_event(
@@ -11242,14 +11270,16 @@ class Service:
 
     async def close_terminal(
         self, run_id: int, *, actor: str = "owner", reason: str, hand_back: bool = True
-    ) -> bool:
+    ) -> str | None:
         """The tab closed, the TUI exited, Back to the program, End, the switch off or the server
         stopping: the process tree is killed and waited for first, then (`hand_back`) the run is
-        relaybay's again and its first waiting text starts. A kill that fails keeps the run with
-        the owner. False: no terminal of the run was open."""
+        relaybay's again and its first waiting text starts. A kill that fails raises and keeps
+        the run with the owner. Returns TERMINAL_BACK, or why the run stays with the owner (the
+        check before a waiting text refused: Back to the program on the card tries again; the
+        reason is on the run too); None: no terminal of the run was open."""
         closed = await self.terminals.close(run_id)
         if closed is None:
-            return False
+            return None
         terminal, code = closed
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
@@ -11265,9 +11295,21 @@ class Service:
                 exit_code=code,
                 opened_at=opened,
             )
-        if hand_back:
+        if not hand_back:
+            return "the run is not handed back"  # End and the server stop: no waiting text
+        try:
             await self._hand_back(run_id, actor, event=False)
-        return True
+        except ValidationError as refused:
+            held = f"the run stays with you until Back to the program: {refused}"
+            async with self._tx() as tx:
+                await repo.update_run(
+                    tx.conn,
+                    run_id,
+                    {"status_reason": f"Back to the program refused: {refused}"},
+                    tx.now,
+                )
+            return held
+        return TERMINAL_BACK
 
     async def _close_terminals(self, reason: str) -> None:
         """Server stop: every terminal is killed and journaled; the runs stay marked, and the

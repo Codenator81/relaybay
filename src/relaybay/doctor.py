@@ -224,6 +224,18 @@ def _hook_spool_check(environ: Mapping[str, str], now: datetime | None = None) -
     return Check(not late, name, detail)
 
 
+def _pty_check() -> Check:
+    """The Terminal tab's pseudo-terminal runs a program here (the frozen build's ConPTY files
+    included): `echo` in a PTY, read back."""
+    from relaybay.runner import terminal
+
+    try:
+        detail = terminal.self_test(terminal.default_backend())
+    except Exception as exc:  # pywinpty raises its own kinds besides OSError
+        return Check(False, "pseudo-terminal", f"the Terminal tab cannot run here: {exc}")
+    return Check(True, "pseudo-terminal", detail)
+
+
 def doctor_checks(
     settings: Settings,
     *,
@@ -231,6 +243,7 @@ def doctor_checks(
     opener: OpenerDirector | None = None,
     environ: Mapping[str, str] = os.environ,
     run: Callable[..., Any] = run_quiet,
+    pty_check: Callable[[], Check] = _pty_check,
 ) -> list[Check]:
     """All items, each green or red. Reads files and talks to the server; writes nothing."""
     opener = opener or build_opener(ProxyHandler({}))  # localhost: never through a proxy
@@ -265,6 +278,7 @@ def doctor_checks(
     checks.append(_claude_check(found))
     checks.append(_login_check(found, run))
     checks.append(Check(True, "desktop app", found.desktop_app or "not found (optional)"))
+    checks.append(pty_check())
 
     if token is None:
         checks.append(

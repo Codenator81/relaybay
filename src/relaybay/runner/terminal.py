@@ -1,7 +1,8 @@
 """The Terminal tab of a run: `claude --resume <id>` in a pseudo-terminal, streamed to the board.
 
-Windows: a ConPTY through pywinpty. macOS and Linux: the standard library's `pty` with a plain
-subprocess on the slave side, no fork of the server (not probed there). A PTY's read blocks, so
+Windows: a ConPTY through pywinpty. macOS and Linux: the standard library's `pty` with a
+subprocess on the slave side that takes it as its controlling terminal, so the TUI gets SIGHUP
+when the master closes, the server's crash included (not probed there). A PTY's read blocks, so
 each terminal reads in a thread of its own and hands the chunks to the loop; writes go through a
 second thread in the order they came. The process goes into a `ProcessTree` (a job object, or its
 own process group), so it dies with the tab, the run's End or the server.
@@ -10,18 +11,19 @@ own process group), so it dies with the tab, the run's End or the server.
 import asyncio
 import codecs
 import contextlib
+import functools
 import importlib.util
 import logging
 import os
 import queue
 import secrets
-import signal
 import struct
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any, Protocol
 
 from relaybay.domain.errors import ValidationError
@@ -137,11 +139,8 @@ class _PosixPty:
         import termios
 
         assert self._master is not None
+        # The kernel sends SIGWINCH to the foreground group of the controlling terminal.
         fcntl.ioctl(self._master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        # The slave is no controlling terminal (no fork to make it one): the kernel sends no
-        # SIGWINCH, so the group gets it from here.
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(self.pid, signal.SIGWINCH)
 
     def kill(self) -> None:
         self._tree.terminate()
@@ -180,6 +179,9 @@ class PosixPtyBackend:
                 stderr=slave,
                 start_new_session=True,
                 close_fds=True,
+                # In the child after setsid: the slave (fd 0) becomes its controlling terminal.
+                # A bound builtin, so nothing is imported between fork and exec.
+                preexec_fn=functools.partial(fcntl.ioctl, 0, termios.TIOCSCTTY, 0),
             )
         except BaseException:
             os.close(master)
@@ -196,6 +198,43 @@ def default_backend(platform: str = sys.platform) -> PtyBackend | None:
     if platform == "win32":
         return WinPtyBackend() if importlib.util.find_spec("winpty") is not None else None
     return PosixPtyBackend()
+
+
+SELF_TEST_SECONDS = 15.0
+
+
+def self_test(backend: PtyBackend | None, platform: str = sys.platform) -> str:
+    """Start `echo ok` in a pseudo-terminal and read it back (doctor, the frozen build's CI
+    smoke): raises with the reason when the PTY cannot run a program here."""
+    if backend is None:
+        raise RuntimeError("no pseudo-terminal: on Windows the pywinpty package is missing")
+    if platform == "win32":
+        argv = [os.environ.get("COMSPEC") or "cmd.exe", "/d", "/c", "echo relaybay-pty-ok"]
+    else:
+        argv = ["/bin/sh", "-c", "echo relaybay-pty-ok"]
+    pty = backend.spawn(argv, str(Path.cwd()), os.environ, 24, 80)
+    seen = ""
+    done = threading.Event()
+
+    def read() -> None:
+        nonlocal seen
+        try:
+            while "relaybay-pty-ok" not in seen:
+                seen += pty.read()
+        except EOFError:
+            pass  # the program ended; what it wrote is in `seen`
+        finally:
+            done.set()
+
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        done.wait(SELF_TEST_SECONDS)
+    finally:
+        pty.kill()
+        pty.close()
+    if "relaybay-pty-ok" not in seen:
+        raise RuntimeError(f"the program in the PTY wrote {seen[-200:]!r}, not its echo")
+    return f"{type(backend).__name__}: a program ran and was read back"
 
 
 def terminal_command(claude: str, claude_session_id: str, add_dirs: tuple[str, ...]) -> list[str]:

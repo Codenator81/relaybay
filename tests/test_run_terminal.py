@@ -25,11 +25,12 @@ from relaybay.db import repo
 from relaybay.domain.errors import ValidationError
 from relaybay.mcp_server import format as fmt
 from relaybay.runner import terminal as run_terminal
+from relaybay.runner.auth import LoginState
 from relaybay.runner.layers import LayerState
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, run_in_app
-from tests.test_runs_service import CC_A, StubRuns
+from tests.test_runs_service import CC_A, CC_B, SUBSCRIPTION, StubRuns
 
 LAYERS_OK = LayerState("command", True, "command hooks from your user settings", "registered")
 
@@ -176,7 +177,7 @@ async def test_an_open_terminal_holds_the_run_and_its_close_hands_it_back(
     assert (spec.prompt, spec.resume) == ("After the terminal", CC_A)
     [closed] = await events(svc, "run.terminal_closed")
     assert closed.payload["reason"] == "the tab closed" and closed.payload["exit_code"] == 1
-    assert await svc.close_terminal(run.id, reason="again") is False
+    assert await svc.close_terminal(run.id, reason="again") is None
 
 
 async def test_no_turn_spawns_while_a_terminal_is_open_even_without_the_hold(
@@ -276,6 +277,118 @@ async def test_a_kill_that_fails_keeps_the_run_held_until_a_later_close(svc: Ser
     assert not back.with_owner and len(stub(svc).started) == 2
 
 
+SIGNED_OUT = LoginState(False, "none", None, 1, readable=True)
+
+
+async def refuse_next_hand_back(service: Service, run_id: int) -> None:
+    """A text waits and the next hand-back's check refuses it: the sign-in is gone."""
+    await service.send_to_run(run_id, "After the terminal")
+    stub(service).checked_since_start.discard(run_id)
+    stub(service).state = SIGNED_OUT
+
+
+async def test_a_refused_hand_back_keeps_the_run_held_and_back_tries_again(svc: Service) -> None:
+    run = await idle_run(svc)
+    await svc.set_terminal_enabled(True)
+    await svc.open_terminal(run.id, 24, 80)
+    await refuse_next_hand_back(svc, run.id)
+    outcome = await svc.close_terminal(run.id, reason="claude exited")
+    assert outcome is not None and outcome.startswith("the run stays with you until Back")
+    held = await svc.get_run(run.id)
+    assert held.in_terminal and not svc.terminals.busy(run.id)
+    assert held.status_reason is not None
+    assert held.status_reason.startswith("Back to the program refused")
+    assert len(stub(svc).started) == 1
+    with pytest.raises(ValidationError, match="claude"):
+        await svc.return_run(run.id)  # still signed out: refused, visibly
+    assert (await svc.get_run(run.id)).in_terminal
+    stub(svc).state = SUBSCRIPTION
+    back = await svc.return_run(run.id)
+    assert not back.with_owner and back.status == "running" and len(stub(svc).started) == 2
+    [returned] = await events(svc, "run.returned")
+    assert returned.actor == "owner"
+
+
+async def test_back_after_a_failed_start_whose_hand_back_was_refused(svc: Service) -> None:
+    run = await idle_run(svc)
+    await svc.set_terminal_enabled(True)
+    backend(svc).fail = OSError("no console")
+    hand_back = svc._hand_back
+
+    async def refuse(*args: Any, **kwargs: Any) -> None:
+        raise ValidationError("claude is signed out")
+
+    svc._hand_back = refuse  # type: ignore[method-assign]
+    with pytest.raises(ValidationError, match="stays with the owner until Back to the program"):
+        await svc.open_terminal(run.id, 24, 80)
+    assert (await svc.get_run(run.id)).in_terminal and not svc.terminals.busy(run.id)
+    svc._hand_back = hand_back  # type: ignore[method-assign]
+    back = await svc.return_run(run.id)
+    assert not back.with_owner
+
+
+async def test_the_switch_off_tries_every_run_and_names_the_failures(svc: Service) -> None:
+    first = await idle_run(svc)
+    other_folder = Path(svc.db_path).parent / "demo-api"
+    other_folder.mkdir()
+    await svc.upsert_project("demo-api", repo_path=str(other_folder))
+    await svc.create_task("demo-api", "Second", stage="dev")
+    second = await svc.start_run("demo-api-1")
+    await stub(svc).finish(second.id, cc_id=CC_B)
+    await svc.set_terminal_enabled(True)
+    await svc.open_terminal(first.id, 24, 80)
+    await svc.open_terminal(second.id, 24, 80)
+    stuck, other = backend(svc).spawned
+
+    def refuse() -> None:
+        raise OSError("TerminateJobObject failed")
+
+    stuck.kill = refuse  # type: ignore[method-assign]
+    problems = await svc.set_terminal_enabled(False)
+    assert problems == [
+        f"Run {first.id}: its terminal could not be closed (TerminateJobObject failed)."
+    ]
+    assert other.killed and not (await svc.get_run(second.id)).with_owner
+    assert (await svc.get_run(first.id)).in_terminal and svc.terminals.busy(first.id)
+
+
+@pytest.mark.parametrize("meanwhile", ["end", "off"])
+async def test_end_or_the_switch_off_during_the_start_close_it_at_once(
+    svc: Service, meanwhile: str
+) -> None:
+    run = await idle_run(svc)
+    await svc.set_terminal_enabled(True)
+    loop = asyncio.get_running_loop()
+    fake = backend(svc)
+    spawn = fake.spawn
+
+    def spawn_while(*args: Any) -> run_terminal.Pty:
+        act = svc.end_run(run.id) if meanwhile == "end" else svc.set_terminal_enabled(False)
+        asyncio.run_coroutine_threadsafe(act, loop).result(10)
+        return spawn(*args)
+
+    fake.spawn = spawn_while  # type: ignore[method-assign]
+    why = "the run ended" if meanwhile == "end" else "the Terminal tab was turned off"
+    with pytest.raises(ValidationError, match=f"did not open: {why} while it started"):
+        await svc.open_terminal(run.id, 24, 80)
+    [pty] = fake.spawned
+    assert pty.killed and not svc.terminals.busy(run.id)
+    after = await svc.get_run(run.id)
+    assert not after.with_owner
+    assert after.is_open == (meanwhile == "off")
+    assert await events(svc, "run.terminal_opened") == []
+
+
+def test_the_pty_self_test_and_its_doctor_item() -> None:
+    with pytest.raises(RuntimeError, match="no pseudo-terminal"):
+        run_terminal.self_test(None)
+    assert "read back" in run_terminal.self_test(run_terminal.default_backend())
+    from relaybay import doctor
+
+    item = doctor._pty_check()
+    assert (item.ok, item.name) == (True, "pseudo-terminal")
+
+
 async def test_a_failed_start_hands_the_run_back(svc: Service) -> None:
     run = await idle_run(svc)
     await svc.set_terminal_enabled(True)
@@ -356,7 +469,12 @@ def test_the_command_and_environment_of_the_terminal() -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="the stdlib pty is POSIX (not probed there)")
 def test_the_posix_pty_runs_a_program_and_kills_its_group(tmp_path: Path) -> None:
     pty = run_terminal.PosixPtyBackend().spawn(
-        [sys.executable, "-c", "import sys; print(sys.stdin.readline().upper(), flush=True)"],
+        [
+            sys.executable,
+            "-c",
+            "import os, sys; line = sys.stdin.readline().upper().strip();"
+            " print(line, 'CTTY' if os.tcgetpgrp(0) == os.getpgrp() else 'NOCTTY', flush=True)",
+        ],
         str(tmp_path),
         {**os.environ, "TERM": "xterm-256color"},
         24,
@@ -366,9 +484,9 @@ def test_the_posix_pty_runs_a_program_and_kills_its_group(tmp_path: Path) -> Non
         pty.write("hello\n")
         seen = ""
         deadline = time.monotonic() + 30
-        while "HELLO" not in seen and time.monotonic() < deadline:
+        while "CTTY" not in seen and time.monotonic() < deadline:
             seen += pty.read()
-        assert "HELLO" in seen
+        assert "HELLO CTTY" in seen  # the slave is its controlling terminal: SIGHUP on close
     finally:
         pty.kill()
         pty.close()
@@ -513,8 +631,15 @@ def test_the_socket_refuses_without_a_valid_token_origin_cookie_or_with_bearer(
         lambda: not run_in_app(board, service.get_run, run_id).with_owner, "the run handed back"
     )
     refused(board, url + used, origin)  # a token works once
+    minted = mint(board, token, run_id)
     settings.host = "0.0.0.0"
-    refused(board, url + mint(board, token, run_id), origin)  # not loopback only
+    refused(board, url + minted, origin)  # not loopback only
+    lan = board.post(
+        f"{BASE_RUN}/{run_id}/terminal/token", data=form(token), headers={"Origin": BASE}
+    )
+    assert lan.status_code == 409 and "not on loopback only" in lan.text
+    assert ">Terminal</a>" not in board.get(BASE_RUN).text
+    assert "not on loopback only" in board.get("/settings/agents").text
     settings.host = "127.0.0.1"
     switch(board, token, False)
     refused(board, url + "anything", origin)
@@ -618,3 +743,23 @@ async def test_the_reader_thread_hands_chunks_to_the_loop_and_ends_with_none() -
     assert await terminal.kill() == 1
     assert await terminal.output() is None and pty.closed and pty.written == ["x"]
     assert pty.sizes[-1] == (10, 20)
+
+
+def test_a_refused_hand_back_after_the_exit_is_said_on_the_page_and_the_card(
+    board: TestClient, token: str
+) -> None:
+    service: Service = board.app.state.service
+    run_id = board_idle_run(board)
+    switch(board, token, True)
+    url = f"{WS}{BASE_RUN}/{run_id}/terminal?rows=24&cols=80&token={mint(board, token, run_id)}"
+    with board.websocket_connect(url, headers={"Origin": BASE}) as socket_:
+        [pty] = backend(service).spawned
+        run_in_app(board, refuse_next_hand_back, service, run_id)
+        pty.exit(0)
+        assert "the run stays with you until Back to the program" in socket_.receive_text()
+        with pytest.raises(WebSocketDisconnect) as caught:
+            socket_.receive_text()
+        assert caught.value.code == 4001
+    panel = board.get(BASE_RUN).text
+    assert "The terminal closed, but the run is still with you" in panel
+    assert "Back to the program refused" in panel and "waits until Back to the program" in panel

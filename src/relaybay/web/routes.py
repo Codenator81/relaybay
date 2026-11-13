@@ -74,7 +74,7 @@ from relaybay.security import (
     session_cookie_value,
     token_id,
 )
-from relaybay.service import HTTP_URL_RE, Inbox, Service, has_hidden_chars
+from relaybay.service import HTTP_URL_RE, TERMINAL_BACK, Inbox, Service, has_hidden_chars
 from relaybay.web.markdown import render_document, render_markdown
 from relaybay.web.sse import event_stream
 
@@ -257,8 +257,13 @@ CSRF_HEADER = "x-relaybay-csrf"
 # The Terminal tab: the board's policy plus inline styles, which xterm.js writes.
 TERMINAL_CSP = CSP + "; style-src 'self' 'unsafe-inline'"
 LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")
+TERMINAL_NOT_LOOPBACK = (
+    "The server listens on {host}, not on loopback only: the Terminal tab works only on a server"
+    " bound to 127.0.0.1 (not in Docker or on a LAN address)."
+)
 TERMINAL_EXITED = "claude exited"
 TERMINAL_REFUSED = 4000  # a close code of the application's range: the terminal did not open
+TERMINAL_HELD = 4001  # claude exited, but the run stays with the owner (the reason went before)
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
 BOARD_ONLY = (
     "Environments, permission levels and the policy change only from the board in a browser;"
@@ -1552,8 +1557,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             owner_modes=run_rules.PERMISSION_MODES + run_rules.OWNER_ONLY_MODES,
             desktop_ok=runs is not None and runs.desktop_launcher is not None,
             launching=view is not None and view.run.id in service.desktop_launching,
-            terminal_on=await service.terminal_enabled() and service.terminal_available(),
+            terminal_on=terminal_here() and await service.terminal_enabled(),
+            terminal_open=view is not None and service.terminals.busy(view.run.id),
         )
+
+    def terminal_here() -> bool:
+        """The Terminal tab can work on this server: a PTY, and a loopback-only listener."""
+        return service.terminal_available() and settings.host in LOOPBACK_BINDS
 
     @router.get("/p/{slug}/t/{key}/run", response_class=HTMLResponse)
     async def run_fragment(request: Request, slug: str, key: str):
@@ -1718,6 +1728,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         board_only(request, csrf)
         _, run = await terminal_run(slug, key, run_id)
         try:
+            if settings.host not in LOOPBACK_BINDS:
+                raise ValidationError(TERMINAL_NOT_LOOPBACK.format(host=settings.host))
             minted = await service.terminal_token(run.id)
         except ValidationError as exc:
             return PlainTextResponse(str(exc), status_code=409)
@@ -1780,10 +1792,17 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             reason = await pump_terminal(websocket, terminal)
         finally:
             # Shielded: a server stop cancels this handler, and the tree must still die first.
-            await asyncio.shield(service.close_terminal(own, actor="owner", reason=reason))
-        if reason == TERMINAL_EXITED:
-            with contextlib.suppress(RuntimeError):  # the browser went first
+            outcome = await asyncio.shield(
+                service.close_terminal(own, actor="owner", reason=reason)
+            )
+        if reason != TERMINAL_EXITED:
+            return  # the browser went: the card tells the outcome
+        with contextlib.suppress(RuntimeError, WebSocketDisconnect):  # the browser went first
+            if outcome == TERMINAL_BACK:
                 await websocket.close(code=1000, reason="claude exited")
+            else:
+                await websocket.send_text(f"\r\n\x1b[33mrelaybay: {outcome}\x1b[0m\r\n")
+                await websocket.close(code=TERMINAL_HELD, reason="held")
 
     async def pump_terminal(websocket: WebSocket, terminal: Any) -> str:
         """Until the TUI exits or the browser goes: the reason the terminal closes."""
@@ -2783,6 +2802,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             login_any=await service.run_login_any(),
             terminal_enabled=await service.terminal_enabled(),
             terminal_available=service.terminal_available(),
+            terminal_bind=None
+            if settings.host in LOOPBACK_BINDS
+            else TERMINAL_NOT_LOOPBACK.format(host=settings.host),
             fix_command=run_auth.FIX_COMMAND,
             limits=await service.run_limits(),
             config_limits=(settings.max_running_turns, settings.min_free_memory_mb),
@@ -2822,7 +2844,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         board_only(request, csrf)
         # A hidden "0" comes before the checkbox, so the last value is the state.
         on = (await request.form()).getlist("on")[-1:] == ["1"]
-        await service.set_terminal_enabled(on, actor="owner")
+        problems = await service.set_terminal_enabled(on, actor="owner")
+        if problems:
+            return flash_redirect(request, "/settings/agents#terminal", error=" ".join(problems))
         return flash_redirect(request, "/settings/agents#terminal", message="Saved.")
 
     @router.get("/settings/notifications", response_class=HTMLResponse)

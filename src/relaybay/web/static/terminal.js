@@ -132,23 +132,36 @@
       if (over) return;
       if (ev.code === 1000) ended("claude exited; the run is back with relaybay.");
       else if (ev.code === 4000) ended("The terminal did not open: the reason is above.");
-      else ended("The connection closed (code " + ev.code + "); the run is back with relaybay.");
+      else if (ev.code === 4001) {
+        ended("claude exited, but the run stays with you (the reason is above): Back to the program on the card.");
+      } else ended("The connection closed (code " + ev.code + "): the card shows where the run is.");
     };
   }
 
-  function start() {
+  // A reload during a session asks while the old terminal is still being killed (409): once more.
+  var RETRY_MS = 1500;
+
+  function start(retried) {
     fit.fit();
     var body = new URLSearchParams();
     body.set(page.dataset.csrfField, page.dataset.csrf);
     fetch(page.dataset.path + "/token", { method: "POST", body: body, credentials: "same-origin" })
       .then(function (response) {
         if (response.ok) return response.json();
+        if (response.status === 409 && !retried) {
+          return new Promise(function (resolve) {
+            window.setTimeout(resolve, RETRY_MS);
+          }).then(function () {
+            start(true);
+            return null;
+          });
+        }
         return response.text().then(function (text) {
           throw new Error(text || response.statusText);
         });
       })
       .then(function (data) {
-        connect(data.token);
+        if (data) connect(data.token);
       })
       .catch(function (err) {
         ended("The terminal did not open: " + err.message);
@@ -157,6 +170,8 @@
 
   // After the load event the stylesheets are in, so the fit measures the laid-out screen; no
   // animation frame, which a window in the background never gets.
-  if (document.readyState === "complete") start();
-  else window.addEventListener("load", start);
+  if (document.readyState === "complete") start(false);
+  else window.addEventListener("load", function () {
+    start(false);
+  });
 })();

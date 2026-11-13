@@ -510,7 +510,9 @@ folder or a key variable.
   (`/p/<slug>/t/<key>/run/<id>/terminal`) runs `claude --resume <Claude Code session id>` in the
   run's cwd, with an `--add-dir` for each other folder of the run, in a pseudo-terminal on the
   server (Windows: ConPTY through pywinpty; macOS and Linux: the standard library's `pty` with a
-  subprocess in a session of its own, **not probed on these systems**), shown by the vendored
+  subprocess in a session of its own that takes the slave as its controlling terminal, so the
+  TUI gets SIGHUP when the master closes, a server crash included; **not probed on these
+  systems**), shown by the vendored
   xterm.js 5.5 with its fit add-on over a WebSocket at the same path. The environment is a turn's:
   no host session markers (`CLAUDECODE`, `CLAUDE_CODE_*` of `HOST_VARIABLES`), with
   `RELAYBAY_RUN_ID`, and `TERM=xterm-256color` on macOS and Linux. The process goes into the run's
@@ -518,7 +520,12 @@ folder or a key variable.
   started before that is outside; macOS and Linux: its process group) and is killed when the tab
   closes, the TUI exits, Back to the program, End, the switch turned off or the server stops. The
   page fits the size after layout and sends it with the socket's URL (a fit before layout would
-  start a 2x1 PTY); resizes follow as messages. One terminal per run at a time.
+  start a 2x1 PTY); resizes follow as messages. One terminal per run at a time; a reload of the
+  page asks for its token once more after 1.5 s when the old terminal is still being closed
+  (409). The button shows only when the switch is on, this install has a PTY and the server
+  listens on loopback only; otherwise Settings → Agents says why. `relaybay doctor` has a
+  `pseudo-terminal` item (runs `echo` in a PTY and reads it back), which the Windows CI smoke of
+  the frozen build requires.
   **The hard rule**: from just before the process starts until it is dead the run is with the
   owner (`run.with_owner_at`, `with_owner_by`, `with_owner_in = 'terminal'`): no turn starts,
   texts sent wait, Start anyway is refused, the desktop app is refused; the queue also skips a run
@@ -526,8 +533,14 @@ folder or a key variable.
   for it, and only then hands the run back: the first waiting text starts with `--resume`, so the
   session goes on with what the owner did there. The reason, so nobody weakens it: two writers on
   one Claude Code session fork its transcript; a headless turn run while the TUI is open passes,
-  then is lost from the session's history (probe of 2026-11-13). End closes the terminal without a
-  hand-back, so no waiting text starts. A server stop kills the terminals (`run.terminal_closed`,
+  then is lost from the session's history (probe of 2026-11-13). When the check before a waiting
+  text refuses the hand-back (the sign-in expired, hooks missing), the process is gone but the
+  run stays with the owner: the run's reason says "Back to the program refused: …", the page
+  says it in the terminal (close code 4001) instead of "back with relaybay", the card says the
+  terminal closed, and Back to the program tries the hand-back again (a `run.returned`). A kill
+  that fails keeps the terminal open and the run held; the next close tries again. End or the
+  switch turned off while the process is starting: the start checks again once it runs and
+  closes it at once. End closes the terminal without a hand-back, so no waiting text starts. A server stop kills the terminals (`run.terminal_closed`,
   "server stopped") and the next start hands their runs back (`run.returned` by relaybay).
   **Access**: the WebSocket is not covered by the security middleware, so the route checks
   everything itself before the handshake: the server listens on loopback only (`host` is
@@ -535,7 +548,8 @@ folder or a key variable.
   (Bearer clients are refused); the board's session cookie; an `Origin` equal to the board's own
   origin; a one-time token minted by a board-only POST (`…/terminal/token`, cookie + CSRF, 409
   with the reason when the terminal could not open now), bound to the run, valid 30 s, spent by
-  its first use. A refusal closes before the handshake (the browser sees 403); a terminal that
+  its first use; the token is redacted from uvicorn's log lines, as `/login`'s. A refusal closes
+  before the handshake (the browser sees 403); a terminal that
   does not start says why in the terminal and closes with code 4000, handing the run back. The
   page alone allows inline styles (`style-src 'self' 'unsafe-inline'`: xterm.js writes style
   elements); scripts stay `'self'`. **Trust hint**: in a folder Claude Code has not seen it asks
@@ -1235,7 +1249,8 @@ free memory now and edits the [run limits](#spec-run-limits) (turns at once, 1 t
 memory before a turn, 0 for no check) with `config.toml`'s values beside them; a save is board
 only, a `settings.run_limits` event, and starts the turns that the new limits let start.
 **Terminal tab** switches the Terminal button on runs ([§1](#spec-run), off by default; board
-only, a `settings.terminal_enabled` event; off closes the open terminals). It is only this
+only, a `settings.terminal_enabled` event; off closes the open terminals, each tried on its own,
+and names a run whose terminal could not be closed or handed back). It is only this
 switch, no `config.toml` key: the owner's word turns it on, not a file an agent can write.
 
 <a id="spec-board-repos"></a>
@@ -2174,7 +2189,8 @@ folder; it fails when the oldest event waits more than 10 minutes, [§4](#spec-h
 `token file` (present, not empty,
 on POSIX not readable by others), `Claude Code` (on `PATH`, version at least the minimum supported),
 `claude sign-in` (the [login check](#spec-run-login) line; red when not signed in, green with "runs
-need Settings → Agents to allow it" for an API key or another method), `desktop app` (informational), then the server items of the check (`relaybay server`, `MCP with the
+need Settings → Agents to allow it" for an API key or another method), `desktop app` (informational), `pseudo-terminal` (the Terminal tab's PTY runs `echo` and reads it
+back; red when it cannot, as without pywinpty on Windows), then the server items of the check (`relaybay server`, `MCP with the
 token`, `hook endpoint`; only the first without a token or when nothing listens), `rules hash`
 (the hash of the global rules from the settings; fails when the running server started with another
 one, reported in `/healthz`, i.e. it needs a restart; versions accepted since do not count), then the Claude Code items of the check (`hooks in user
