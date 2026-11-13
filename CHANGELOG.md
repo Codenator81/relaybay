@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A run started by a server that itself runs inside a Claude Code session no longer inherits that session's markers (`CLAUDE_CODE_CHILD_SESSION` and the other host `CLAUDE_CODE_*` variables): with them the run's `claude` saved no transcript, so `--resume` had nothing to go on. A provider, shell or output setting the user exports (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_GIT_BASH_PATH`, ...) still reaches the run.
+
 ## [0.9.0] - 2026-11-13
 
 ### Fixed

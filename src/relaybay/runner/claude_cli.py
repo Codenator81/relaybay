@@ -22,7 +22,39 @@ HOST_VARIABLES = (
     "CLAUDE_CODE_SESSION_ATTENDED",
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
 )
+# A server started from inside a Claude Code session (a terminal of the desktop app, a session's
+# Bash) inherits that session's markers: with CLAUDE_CODE_CHILD_SESSION a run's claude saves no
+# transcript at all, so `--resume` has nothing to resume. Every variable with these prefixes goes,
+# except the ones a user sets on purpose (a provider, a shell, output limits); settings.json's own
+# `env` is applied by Claude Code itself, so it is not lost either.
+HOST_PREFIXES = ("CLAUDE_CODE_", "CLAUDE_AGENT_SDK_", "CLAUDE_PREVIEW_")
+USER_VARIABLES = frozenset(
+    {
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+        "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+        "CLAUDE_CODE_GIT_BASH_PATH",
+        "CLAUDE_CODE_SHELL",
+        "CLAUDE_CODE_SHELL_PREFIX",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+        "CLAUDE_CODE_CLIENT_CERT",
+        "CLAUDE_CODE_CLIENT_KEY",
+    }
+)
+
+
+def is_host_variable(name: str) -> bool:
+    """A variable of the Claude Code session the server may run in, never passed to a run."""
+    if name in HOST_VARIABLES:
+        return True
+    return name.startswith(HOST_PREFIXES) and name not in USER_VARIABLES
 
 
 def _install_folders(platform: str, environ: Mapping[str, str], home: Path) -> list[Path]:
@@ -132,7 +164,7 @@ def child_env(base: Mapping[str, str], run_id: int) -> dict[str, str]:
     """The server's environment, without the host session's variables, with the run's id and
     the switch that loads the `CLAUDE.md` of each --add-dir folder (the cwd alone gives only its
     own). The Claude Code config folder and any key variable stay as the user has them."""
-    env = {k: v for k, v in base.items() if k not in HOST_VARIABLES}
+    env = {k: v for k, v in base.items() if not is_host_variable(k)}
     env[RUN_ID_ENV] = str(run_id)
     env[ADD_DIRS_CLAUDE_MD_ENV] = "1"
     return env
