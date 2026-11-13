@@ -24,14 +24,22 @@
   map, together with the git actions of the same call), denying with a request opened; an
   approved call run alone, from the run's folder, uses its approval in the same transaction and
   is answered `allow` for a run not with the owner in every mode but `bypassPermissions` (the
-  owner's approval is stronger than auto mode's classifier; a refusal after it is spent, opens no
-  request and shows in the report), no decision otherwise; one run with other commands is denied
+  owner's approval is stronger than auto mode's classifier), no decision otherwise; one run with other commands is denied
   and the approval kept; an approval expires after `approvals.valid_minutes` (120); requests from a turn's `permission_denials`, read line by line; MCP `approval_request`
   and `approval_list`; the Inbox's Approvals group and the card's fold, decided with `POST
   /approvals/{id}/decide` (board only); delivery and `waiting` as for questions; a card that goes
   to done withdraws its open questions and expires its requests; the tray kind `approval`.
   "Inside a turn" stays the upgrade; the denial plus a new turn is the default. Behaviour:
   [SPEC](../SPEC.md#spec-approvals).
+- Fix after PR 4 (migration 0041): the gate's answer could be lost. The command hook gave the
+  guard one 0.3 s try, the gate reads the branch with `git rev-parse`, and on a slow machine the
+  client gave up: Manual mode refused the push while the approval was already marked used, so the
+  owner had to approve again. Now the approval is **reserved** for the call (its `tool_use_id`)
+  at the allow and **used** only at that call's `PostToolUse` (or its result in the run's stream);
+  a call that did not run **releases** it, at most 3 times (see the table below). A refusal after
+  an allow that reached Claude Code reads the same as a lost answer, so it releases the approval
+  too (it was "spent" before); the loop stays impossible because a release opens no request.
+  The client waits 5 s for a call that may need an approval, the gate keeps within 3 s of git.
 
 ## Problem
 
@@ -90,7 +98,8 @@ later answer from the owner is delivered as a change of course.
 **Model.** `approval`: id, task, run (or a desktop session), action (`commit`, `push`, `merge`,
 `deploy`, `sql`), target (repository and branch, PR, environment), the agent's summary (commits,
 files, CI state), the rollback command for `deploy`, requested at, decision (`approved`, `refused`),
-decided by, decided at, the owner's text, used at, used by (the tool call).
+decided by, decided at, the owner's text, used at, used by (the tool call); reserved at, for
+which call (`tool_use_id`), by which session, and how many times a reservation was released.
 
 **What needs one.** Policy data (0013), per project, under a new `approvals` key:
 
@@ -141,18 +150,34 @@ structured output, which Claude Code rejects as "an invalid result"; the tool re
 is open, so the MCP client's timeout must be known before the owner's wait can be long; until then
 the denial plus a new turn stays the default.
 
-**Events.** `approval.requested`, `approval.decided`, `approval.used`; all on the Audit page.
-`approval.expired` when the card goes to done with a request open or an approval unused.
+**Events.** `approval.requested`, `approval.decided`, `approval.used`, `approval.released`; all
+on the Audit page. `approval.expired` when the card goes to done with a request open or an
+approval unused, when it is not used by `valid_until`, and at its third release.
+
+<a id="reserved-used-released"></a>
+
+**Reserved, used, released.** One approval allows one call, and is spent only when that call ran:
+
+| Moment | The approval | Event |
+|---|---|---|
+| `PreToolUse` of a covered call run alone (`allow`, or no decision) | reserved for the call's `tool_use_id`; still `approved`; covers no other call (another one is denied "held for a call", nothing opens; of two racing calls one reserves it) | — |
+| That call's `PostToolUse` | `used` | `approval.used` (`allow` or `none`) |
+| A run's turn ends; the call is in `permission_denials` (by `tool_use_id`, all approvals held for it; a denial without an id only for one held without an id, by its command): a classifier, another hook, or Manual mode after a lost answer | released: `approved` again, unreserved, within `valid_until`; no new request; the report says "the approval stays for one more try" | `approval.released` |
+| A run's turn ends, or is lost; the call is not refused (it may have run with its `PostToolUse` lost) | `used`: never twice through | `approval.used` |
+| A desktop session's `Stop` or `SessionEnd` with the call still held | `used`: relaybay reads no refusals there | `approval.used` |
+| The third release | `expired`, "released 3 times"; the report says "approval exhausted, a new request is needed" | `approval.expired` |
+| `valid_until` passes, reserved or not | `expired` | `approval.expired` |
+| git does not tell the branch within 1.5 s (3 s for all reads of the call) | not reserved; denied "could not tell the branch, run it again" | — |
 
 **Who is checked, and what a failure of the check does** (the coordinator's decision of
 2026-11-12 for 0.9):
 
 | Actor | Action | Approved and run alone | On a check error |
 |---|---|---|---|
-| A run of the program, not with the owner | push, PR merge, a change on a test or live stand | `allow` (no decision in `bypassPermissions`); used once | denied: "approval check unavailable" (the run found by the session's id) |
-| A run held by the owner in the desktop app | the same | used, no decision | denied, as above |
+| A run of the program, not with the owner | push, PR merge, a change on a test or live stand | `allow` (no decision in `bypassPermissions`); reserved, used once the call ran | denied: "approval check unavailable" (the run found by the session's id) |
+| A run held by the owner in the desktop app | the same | reserved, no decision; used once the call ran | denied, as above |
 | A run of the program | any other call | — | goes on, as with a guard error |
-| A desktop session (checked only with `approvals.desktop: true`) | the same guarded actions | used, no decision | goes on, as with a guard error |
+| A desktop session (checked only with `approvals.desktop: true`) | the same guarded actions | reserved, no decision; used at its `PostToolUse` or at `Stop` | goes on, as with a guard error |
 | A session whose kind cannot be read (the database fails too) | a call that looks guarded | — | denied |
 | A session on no card | any | not checked | not checked |
 
@@ -164,6 +189,8 @@ the denial plus a new turn stays the default.
 | A pattern too wide blocks harmless calls (`git push --dry-run`) | Patterns are policy data; the owner narrows them |
 | An agent asks instead of working | 5 open questions per task; a default is required |
 | An answer arrives while a turn runs and is lost | Queued on the run; the turn queue is a table, not memory |
+| The guard's answer to an approved call is lost (a slow machine, the hook's timeout) and Claude Code refuses the call | The approval is reserved, not spent, and released at the turn's end; the client waits 5 s for such a call, the gate keeps git within 3 s |
+| A released approval lets a call through twice | Released only when the call is refused or left no result in the stream; a `PostToolUse` or a result marks it used; 3 releases expire it |
 | The owner's text steers the agent wrongly | It is the owner's word; it reaches the agent verbatim and is shown on the card as sent |
 
 ## Tests with the fake `claude`

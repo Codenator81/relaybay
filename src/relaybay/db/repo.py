@@ -5440,6 +5440,11 @@ def _approval(row: aiosqlite.Row) -> Approval:
         comment_id=row["comment_id"],
         told_at=row["told_at"],
         delivered_at=row["delivered_at"],
+        reserved_at=row["reserved_at"],
+        reserved_for=row["reserved_for"],
+        reserved_call=row["reserved_call"],
+        reserved_session_id=row["reserved_session_id"],
+        released_count=row["released_count"],
         task_key=row["task_key"],
         task_title=row["task_title"],
         project_slug=row["project_slug"],
@@ -5501,7 +5506,7 @@ async def open_approvals(
 
 
 async def usable_approvals(conn: aiosqlite.Connection, task_ids: list[int]) -> list[Approval]:
-    """Approved and not used yet, on any of the cards; the oldest first."""
+    """Approved and not used yet, on any of the cards, the reserved ones too; the oldest first."""
     if not task_ids:
         return []
     marks = ", ".join("?" for _ in task_ids)
@@ -5513,23 +5518,77 @@ async def usable_approvals(conn: aiosqlite.Connection, task_ids: list[int]) -> l
     return [_approval(r) for r in rows]
 
 
+async def reserve_approval(
+    conn: aiosqlite.Connection,
+    approval_id: int,
+    tool_use_id: str | None,
+    call: str,
+    session_id: int,
+    now: str,
+) -> bool:
+    """Hold an approved, unreserved approval for one call; False when another call holds it."""
+    cur = await conn.execute(
+        "UPDATE approval SET reserved_at = ?, reserved_for = ?, reserved_call = ?,"
+        " reserved_session_id = ? WHERE id = ? AND status = 'approved' AND reserved_at IS NULL",
+        (now, tool_use_id, call, session_id, approval_id),
+    )
+    return cur.rowcount == 1
+
+
+async def reserved_for_call(conn: aiosqlite.Connection, tool_use_id: str) -> list[Approval]:
+    """The approvals held for the call with this tool_use_id."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + " WHERE a.reserved_for = ? AND a.status = 'approved'"
+        " AND a.reserved_at IS NOT NULL ORDER BY a.id",
+        (tool_use_id,),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def reserved_by_session(conn: aiosqlite.Connection, session_id: int) -> list[Approval]:
+    """The approvals held for calls of this session."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + " WHERE a.reserved_session_id = ? AND a.status = 'approved'"
+        " AND a.reserved_at IS NOT NULL ORDER BY a.id",
+        (session_id,),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def use_reserved(conn: aiosqlite.Connection, approval_id: int, now: str) -> bool:
+    """The held call ran: the approval is used, by that call (its reservation stays as the record
+    of which call it was). False when it is not held any more."""
+    cur = await conn.execute(
+        "UPDATE approval SET status = 'used', used_at = ?, used_by = reserved_call,"
+        " used_session = (SELECT name FROM session WHERE id = reserved_session_id)"
+        " WHERE id = ? AND status = 'approved' AND reserved_at IS NOT NULL",
+        (now, approval_id),
+    )
+    return cur.rowcount == 1
+
+
+async def release_approval(conn: aiosqlite.Connection, approval_id: int) -> int | None:
+    """The held call did not run: the approval is free again. Its release count, or None when it
+    was not held."""
+    cur = await conn.execute(
+        "UPDATE approval SET reserved_at = NULL, reserved_for = NULL, reserved_call = NULL,"
+        " reserved_session_id = NULL, released_count = released_count + 1"
+        " WHERE id = ? AND status = 'approved' AND reserved_at IS NOT NULL",
+        (approval_id,),
+    )
+    if cur.rowcount != 1:
+        return None
+    row = await _one(conn, "SELECT released_count FROM approval WHERE id = ?", (approval_id,))
+    return int(row["released_count"]) if row else None
+
+
 async def update_approval(
     conn: aiosqlite.Connection, approval_id: int, changes: dict[str, Any]
 ) -> None:
     sets = ", ".join(f"{k} = ?" for k in changes)
     await conn.execute(f"UPDATE approval SET {sets} WHERE id = ?", (*changes.values(), approval_id))
-
-
-async def use_approval(
-    conn: aiosqlite.Connection, approval_id: int, used_by: str, session: str | None, now: str
-) -> bool:
-    """Mark an approved approval used; False when another call took it first."""
-    cur = await conn.execute(
-        "UPDATE approval SET status = 'used', used_at = ?, used_by = ?, used_session = ?"
-        " WHERE id = ? AND status = 'approved'",
-        (now, used_by, session, approval_id),
-    )
-    return cur.rowcount == 1
 
 
 async def expire_approvals(
@@ -5572,13 +5631,13 @@ async def expire_approval(
     )
 
 
-async def used_since(conn: aiosqlite.Connection, run_id: int, since: str) -> list[Approval]:
-    """The run's approvals used at or after `since` (a turn's start)."""
+async def reserved_by_run(conn: aiosqlite.Connection, run_id: int) -> list[Approval]:
+    """The approvals held for calls of the run's session."""
     rows = await _all(
         conn,
-        _APPROVAL_SELECT + " WHERE a.run_id = ? AND a.status = 'used' AND a.used_at >= ?"
-        " ORDER BY a.id",
-        (run_id, since),
+        _APPROVAL_SELECT + " WHERE a.status = 'approved' AND a.reserved_at IS NOT NULL"
+        " AND a.reserved_session_id = (SELECT session_id FROM run WHERE id = ?) ORDER BY a.id",
+        (run_id,),
     )
     return [_approval(r) for r in rows]
 

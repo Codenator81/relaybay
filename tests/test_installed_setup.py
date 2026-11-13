@@ -500,6 +500,37 @@ def test_reconnect_target_for_a_missing_interpreter(tmp_path: Path, claude_home:
     assert reconnect_target([], paths, BASE, None) is None
 
 
+@pytest.mark.parametrize(("mode", "old"), [("command", 3), ("http", 2)])
+def test_an_older_setups_short_hook_timeout_is_outdated(
+    tmp_path: Path, claude_home: Path, mode: str, old: int
+) -> None:
+    paths = claude_paths(claude_home)
+    python = Path(sys.executable).as_posix()
+    handler = hook_handler(mode, BASE, tmp_path / "token", python=python)
+    write_change(plan_apply(paths.settings, desired_groups(handler)))
+    ran = SimpleNamespace(returncode=0, stdout=f"relaybay-hook {__version__}\n", stderr="")
+
+    def timeout_check() -> machine_setup.Check:
+        checks = machine_setup.config_checks(
+            base_url=BASE, token=None, paths=paths, run=lambda *a, **k: ran
+        )
+        [found] = [c for c in checks if c.name == machine_setup.TIMEOUT_CHECK]
+        return found
+
+    assert timeout_check().ok
+    write_change(plan_apply(paths.settings, desired_groups(handler | {"timeout": old})))
+    short = timeout_check()
+    assert not short.ok and "run 'relaybay setup' again" in short.detail
+    checks = machine_setup.config_checks(
+        base_url=BASE, token=None, paths=paths, run=lambda *a, **k: ran
+    )
+    target = reconnect_target(checks, paths, BASE, None)
+    assert target == (python if mode == "command" else None)  # the desktop's Reconnect notice
+    # Setup puts the current timeout back.
+    write_change(plan_apply(paths.settings, desired_groups(handler)))
+    assert timeout_check().ok
+
+
 def test_reconnect_plan_diff_and_apply(
     controller: DesktopController, monkeypatch: pytest.MonkeyPatch
 ) -> None:

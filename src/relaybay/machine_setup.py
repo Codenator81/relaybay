@@ -47,8 +47,14 @@ HTTP_HOOKS_MIN_VERSION = (2, 1, 63)
 # hook events in HOOK_EVENTS are older than that (unverified for earlier releases).
 MIN_CLAUDE_CODE_VERSION = (2, 0, 0)
 TOKEN_ENV = "RELAYBAY_TOKEN"
-COMMAND_TIMEOUT = 3  # seconds; the command keeps within hook_client.BUDGET_SECONDS (2 s)
-HTTP_TIMEOUT = 2
+# Seconds. The command keeps within hook_client.BUDGET_SECONDS (2 s), except a call that may need
+# an approval: its one try waits hook_client.GUARDED_TIMEOUT_SECONDS (5 s), after a drain of the
+# spool within the budget for a PostToolUse, plus the interpreter's start-up.
+COMMAND_TIMEOUT = 10
+# An http hook is one request: the approval check of a push answers within its git budget
+# (service.GATE_GIT_SECONDS, 3 s) plus the database; every other event at once.
+HTTP_TIMEOUT = 10
+TIMEOUT_CHECK = "hook timeout"
 # The wake-up hook waits up to WAKE_HOLD_SECONDS (25 min) for a comment; Claude Code enforces
 # `timeout` on an asyncRewake hook, so it must be longer than that.
 WAKE_TIMEOUT = 1800
@@ -895,13 +901,42 @@ def _interpreter_check(command: str, run: Callable[..., Any]) -> Check:
     return Check(True, name, f"{interpreter} imports relaybay.hook_client")
 
 
+def _timeout_check(data: dict, hosts: frozenset[str], mode: str) -> Check:
+    """relaybay's hook entries wait at least as long as this version needs (an older setup
+    wrote 3 s for command hooks and 2 s for http ones, which cut the approval check short)."""
+    need = COMMAND_TIMEOUT if mode == "command" else HTTP_TIMEOUT
+    short = sorted(
+        {
+            event
+            for event in HOOK_EVENTS
+            for h in our_handlers(data, event, hosts)
+            if not _waits_enough(h.get("timeout"), need)
+        }
+    )
+    if short:
+        return Check(
+            False,
+            TIMEOUT_CHECK,
+            f"under {need} s for {', '.join(short)}: run 'relaybay setup' again to update it",
+        )
+    return Check(True, TIMEOUT_CHECK, f"{need} s")
+
+
+def _waits_enough(value: Any, need: int) -> bool:
+    """No timeout is Claude Code's own default, longer than relaybay needs."""
+    if value is None:
+        return True
+    return isinstance(value, int | float) and not isinstance(value, bool) and value >= need
+
+
 def reconnect_target(
     checks: list[Check], paths: ClaudePaths, base_url: str, expected: Path | None
 ) -> str | None:
     """The forwarder relaybay's command hooks start, when they need a re-apply: it failed the
-    `config_checks` item "command hook runs" (missing, cannot import, another version), or it
-    is not `expected` (the frozen program's own `relaybay-hook`). None otherwise, also for
-    http hooks and when there are no hooks. Reads the settings file only."""
+    `config_checks` item "command hook runs" (missing, cannot import, another version) or
+    "hook timeout" (an older setup's shorter timeout), or it is not `expected` (the frozen
+    program's own `relaybay-hook`). None otherwise, also for http hooks and when there are no
+    hooks. Reads the settings file only."""
     try:
         _, data = read_json(paths.settings)
     except (SetupError, OSError):
@@ -911,7 +946,7 @@ def reconnect_target(
     target = hook_interpreter(handlers[0]["command"]) if handlers else None
     if target is None:
         return None
-    broken = any(c.name == "command hook runs" and not c.ok for c in checks)
+    broken = any(c.name in ("command hook runs", TIMEOUT_CHECK) and not c.ok for c in checks)
     foreign = expected is not None and not _same_path(target, expected.as_posix())
     return target if broken or foreign else None
 
@@ -1014,6 +1049,7 @@ def config_checks(
             detail = f"{mode} hooks for {len(HOOK_EVENTS)} events"
             detail += "" if here else f", but not for {base_url}"
             checks.append(Check(here, "hooks in user settings", detail))
+            checks.append(_timeout_check(data, hosts, mode))
             if mode == "command":
                 checks.append(_interpreter_check(first.get("command") or "", run))
             if mode == "http":

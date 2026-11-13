@@ -13,7 +13,8 @@ Events that carry state (session start and end, a prompt, a notification, the en
 todo tool's change and a session launch) get one retry with a longer timeout; when the server still
 does not answer they go to a bounded spool in the relaybay config folder, and the next run that
 reaches the server sends them first, oldest first. The guard (PreToolUse) and other tool calls get
-one short try and are never spooled.
+one short try and are never spooled; a call that may need the owner's approval (a push, a merge, a
+change on a stand) gets one longer try, because the server reads git before it answers.
 """
 
 import argparse
@@ -40,9 +41,14 @@ from relaybay.domain.hooks import (
 )
 
 TIMEOUT_SECONDS = 0.3  # the one try of the guard and of an activity ping
+# The one try of a call that may need an approval (its PreToolUse and its PostToolUse): the gate
+# reads the current branch with git and holds the approval for the call, and an answer lost to
+# a timeout makes Claude Code refuse the call. Within machine_setup.COMMAND_TIMEOUT.
+GUARDED_TIMEOUT_SECONDS = 5.0
 STATE_TIMEOUT_SECONDS = 1.0  # each of the two tries of a state-bearing event
-# Counted from the import of this module: Claude Code ends the command after 3 s
-# (machine_setup.COMMAND_TIMEOUT), and the interpreter's start-up and the spool write come on top.
+# Counted from the import of this module, for the events other than a guarded call: Claude Code
+# ends the command after machine_setup.COMMAND_TIMEOUT, and the interpreter's start-up and the
+# spool write come on top.
 BUDGET_SECONDS = 2.0
 SILENT_SECONDS = 0.5  # no answer for this long: the server is away, the event goes to the spool
 RETRY_PAUSE_SECONDS = 0.2
@@ -58,6 +64,19 @@ SPOOL_BYTES_MAX = 256 * 1024
 # Inside a JSON string a quote is escaped, so a match is a key, never text in a value.
 _EVENT_RE = re.compile(rb'"hook_event_name"\s*:\s*"([A-Za-z]+)"')
 _TOOL_RE = re.compile(rb'"tool_name"\s*:\s*"([A-Za-z_]+)"')
+# A call that may need the owner's approval, read roughly from the raw bytes: git with push, gh
+# with merge, a program of the guard's mutating rules (relaybay.domain.guard.MUTATING_RULES) or an
+# MCP tool other than relaybay's. A wider match only waits longer for a slow server. Only the
+# body before its "tool_response" and at most GUARDED_SCAN_BYTES are read, and the gap between
+# the words is bounded, so the check stays linear on a large tool output.
+_GUARDED_RE = re.compile(
+    rb'\bgit(?:\.exe)?\b[^"\n]{0,300}?\bpush\b|\bgh(?:\.exe)?\b[^"\n]{0,300}?\bmerge\b'
+    rb"|\b(?:kubectl|helm|ssh|scp|rsync|sftp|psql|mysql|mariadb|sqlite3|sqlcmd|mongosh|mongo"
+    rb"|redis-cli|clickhouse-client|cqlsh|pg_restore|mysqlimport|terraform)\b"
+    rb'|"tool_name"\s*:\s*"mcp__(?!relaybay__)',
+    re.IGNORECASE,
+)
+GUARDED_SCAN_BYTES = 16 * 1024
 # The server answers the long poll within WAKE_HOLD_SECONDS; a little longer than that.
 WAIT_TIMEOUT_SECONDS = WAKE_HOLD_SECONDS + 60
 WAKE_EXIT_CODE = 2
@@ -116,6 +135,13 @@ def event_kind(body: bytes) -> str:
         if tool is not None and tool.group(1).decode() in (*TODO_TOOLS, *LAUNCH_TOOLS):
             return "state"
     return "ping"
+
+
+def tool_timeout(body: bytes) -> float:
+    """The one try's timeout of a tool call's event: longer for a call that may need an approval."""
+    response = body.find(b'"tool_response"')
+    head = body[: response if response >= 0 else len(body)][:GUARDED_SCAN_BYTES]
+    return GUARDED_TIMEOUT_SECONDS if _GUARDED_RE.search(head) else TIMEOUT_SECONDS
 
 
 def config_folder(environ: Mapping[str, str] = os.environ) -> Path:
@@ -378,7 +404,7 @@ def deliver(url: str, token: str, body: bytes, started: float | None = None) -> 
     at = _utc_now()
     kind = event_kind(body)
     if kind == "guard":
-        return _send(url, token, body, TIMEOUT_SECONDS) or b""
+        return _send(url, token, body, tool_timeout(body)) or b""
     deadline = (time.monotonic() if started is None else started) + BUDGET_SECONDS
     state = kind == "state"
     path = spool_path()
@@ -392,7 +418,7 @@ def deliver(url: str, token: str, body: bytes, started: float | None = None) -> 
             spool(path, body, at, _append_wait(deadline))
         return b""
     if not state:
-        return _send(url, token, body, TIMEOUT_SECONDS) or b""
+        return _send(url, token, body, tool_timeout(body)) or b""
     answer = _send(url, token, body, max(0.05, min(own, deadline - time.monotonic())))
     if answer is None and deadline - time.monotonic() > RETRY_PAUSE_SECONDS + 0.1:
         time.sleep(RETRY_PAUSE_SECONDS)

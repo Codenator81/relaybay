@@ -19,6 +19,8 @@ VIAS = ("agent", "guard", "denial")
 PUSH_MODES = ("plain", "force", "delete")
 VALID_MINUTES = 120  # an approval not used within this expires (policy approvals.valid_minutes)
 OPEN_MAX = 10  # open requests per card: the guard stops opening more and only denies
+# A reservation for a call that did not run goes back; this many times, and the approval expires.
+RELEASES_MAX = 3
 SUMMARY_MAX = 2000
 ROLLBACK_MAX = 1000
 TARGET_MAX = 300
@@ -235,6 +237,11 @@ class Approval:
     comment_id: int | None
     told_at: str | None
     delivered_at: str | None
+    reserved_at: str | None = None
+    reserved_for: str | None = None  # the tool_use_id of the call it is held for
+    reserved_call: str | None = None
+    reserved_session_id: int | None = None
+    released_count: int = 0
     task_key: str = ""
     task_title: str = ""
     project_slug: str = ""
@@ -244,6 +251,11 @@ class Approval:
     @property
     def is_open(self) -> bool:
         return self.status == "open"
+
+    @property
+    def reserved(self) -> bool:
+        """Held for one call that has not finished yet: no other call may use it."""
+        return self.status == "approved" and self.reserved_at is not None
 
     @property
     def what(self) -> str:
@@ -859,12 +871,38 @@ def done_reason(key: str) -> str:
     )
 
 
-def spent_note(a: Approval) -> str:
-    """A refusal of a call an approval allowed: Claude Code refused it anyway."""
+def released_note(a: Approval) -> str:
+    """A refusal of a call an approval was held for: Claude Code refused it (a classifier, its
+    mode, or relaybay's answer came too late), so the approval goes back for one more try."""
     return (
-        f"approved call refused by Claude Code (approval {a.id}, {a.what}): the approval is"
-        " spent; ask again if it is still needed"
+        f"approved call refused by Claude Code (approval {a.id}, {a.what}): the approval stays"
+        " for one more try; run the same command again, alone"
     )
+
+
+def exhausted_note(a: Approval) -> str:
+    return (
+        f"approved call refused by Claude Code (approval {a.id}, {a.what}): released"
+        f" {RELEASES_MAX} times, approval exhausted, a new request is needed"
+    )
+
+
+EXHAUSTED_REASON = f"released {RELEASES_MAX} times"
+
+
+def held_reason(approvals: list[Approval]) -> str:
+    """The call needs an approval that is held for another call still running."""
+    named = ", ".join(f"approval {a.id} ({a.what})" for a in approvals)
+    return (
+        f"relaybay guard: {named} is held for a call that has not finished yet. Wait for its"
+        " result; if Claude Code refused that call, the approval comes back when the turn ends."
+    )
+
+
+SLOW_REASON = (
+    "relaybay guard: could not tell the branch, run it again (git did not answer in time)."
+    " The approval is kept."
+)
 
 
 def unknown_reason(need: Need) -> str:

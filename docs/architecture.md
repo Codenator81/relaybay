@@ -72,7 +72,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `doctor.py` | `relaybay doctor`: read-only diagnosis built from the setup checks plus versions, data folder, token and rules hash |
 | `demo.py` | `relaybay demo`: seeds the demo workspace through the service layer |
 | `markdown_import.py`, `markdown_export.py`, `domain/markdown_layout.py` | `relaybay import` and `export`: the markdown layout, a plan with a hash on a copy of the database, writes through the service, the export manifest |
-| `hook_client.py` | The command hook: stdin → POST → stdout (a 200 JSON answer only), always exit 0; the guard and tool calls one 0.3 s try, state-bearing events a retry and the spool (`hook-spool.jsonl` in the config folder, sent first by a later run); with `--wait` the wake-up hook (long poll, exit 2 with the comment on stderr) |
+| `hook_client.py` | The command hook: stdin → POST → stdout (a 200 JSON answer only), always exit 0; the guard and tool calls one 0.3 s try (5 s for a call that may need an approval), state-bearing events a retry and the spool (`hook-spool.jsonl` in the config folder, sent first by a later run); with `--wait` the wake-up hook (long poll, exit 2 with the comment on stderr) |
 | `logs.py` | uvicorn log config that redacts the `/login` query string |
 | `policy/` | Policy as data: layers (preset, legacy `config.toml` keys, `policy.json`, project, environment) merged into an effective policy with the source of each value; `schema.json`, `presets/*.json` |
 | `install.py` | How this copy was installed (`install_kind()`), its executable and whether its location is stable; used by upgrade hints, the updater, `doctor` and the hook command |
@@ -179,7 +179,10 @@ approval      id, task_id, run_id, session_id (who asked), requested_by, request
               expired_at, expired_reason,
               turn_id (the run turn carrying the decision), comment_id (the owner comment carrying
               it), told_at, delivered_at
-              -- one approval allows one call: used_at is set with the guard's allow, in one tx
+              reserved_at, reserved_for (the call's tool_use_id), reserved_call,
+              reserved_session_id, released_count
+              -- one approval allows one call: reserved with the guard's allow, in one tx; used at
+              -- that call's PostToolUse; released when the call did not run (3 times: expired)
 session_message id, sender_session_id, sender_name, sender_verified, recipient_session_id,
               recipient_name, task_id, body_md, in_reply_to, depth, created_at, delivered_at,
               read_at, stop_blocks, loop_stopped_at, loop_seen_at

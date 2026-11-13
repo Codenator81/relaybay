@@ -1,5 +1,6 @@
 """The forwarder's retry and spool, the server's handling of replayed events and the doctor item."""
 
+import http.server
 import io
 import json
 import os
@@ -7,6 +8,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,7 +18,7 @@ import platformdirs
 import pytest
 from starlette.testclient import TestClient
 
-from relaybay import doctor, hook_client
+from relaybay import doctor, hook_client, machine_setup
 from relaybay.domain.hooks import LAUNCH_TOOLS
 from relaybay.domain.plan import TODO_TOOLS
 from relaybay.service import Service
@@ -127,6 +129,86 @@ def test_only_state_bearing_events_are_retried_and_spooled(
     assert "prompt" not in line  # the prompt text is never written to disk
     moment = datetime.fromisoformat(line[hook_client.SPOOLED_FIELD])
     assert abs(datetime.now(UTC) - moment) < timedelta(minutes=1)
+
+
+def tool_body(event: str, command: str, tool: str = "Bash") -> bytes:
+    return body(event, tool_name=tool, tool_input={"command": command})
+
+
+@pytest.mark.parametrize(
+    ("command", "tool", "guarded"),
+    [
+        ("git push origin feat/checkout", "Bash", True),
+        ("git -C ../api push", "Bash", True),
+        ("gh pr merge 12 --squash", "Bash", True),
+        ("kubectl -n shop rollout restart deploy/web", "Bash", True),
+        ('psql -h db.test -c "delete from orders"', "Bash", True),
+        ("npm test", "Bash", False),
+        ("git status", "Bash", False),
+        ("ghost-tool merge", "Bash", False),
+        ("{}", "mcp__acme-deploy__rollout", True),
+        ("{}", "mcp__relaybay__task_get", False),
+    ],
+)
+def test_a_call_that_may_need_an_approval_gets_the_longer_try(
+    fake_post: FakePost, desktop_config_dir: Path, command: str, tool: str, guarded: bool
+) -> None:
+    expected = hook_client.GUARDED_TIMEOUT_SECONDS if guarded else hook_client.TIMEOUT_SECONDS
+    for event in ("PreToolUse", "PostToolUse"):
+        hook_client.deliver(URL, "t", tool_body(event, command, tool))
+    assert [t for _, t in fake_post.calls] == [expected] * 2
+    # Claude Code waits for the hook longer than the forwarder waits for the server.
+    assert machine_setup.COMMAND_TIMEOUT > hook_client.GUARDED_TIMEOUT_SECONDS + 2
+
+
+def test_the_guarded_check_stays_fast_on_a_large_body() -> None:
+    words = "git status " * 95_000  # about 1 MB of "git" with no push after it
+    bodies = [
+        json.dumps(hook("PostToolUse") | {"tool_response": {"stdout": words}}).encode(),
+        tool_body("PreToolUse", words, "Write"),
+    ]
+    for data in bodies:
+        assert len(data) > 1_000_000
+        started = time.perf_counter()
+        assert hook_client.tool_timeout(data) == hook_client.TIMEOUT_SECONDS
+        assert time.perf_counter() - started < 0.05
+    # The tool's output is not read: a push in it is not the call's.
+    pushed = hook("PostToolUse") | {"tool_response": {"stdout": "run git push origin main"}}
+    assert hook_client.tool_timeout(json.dumps(pushed).encode()) == hook_client.TIMEOUT_SECONDS
+
+
+def test_the_forwarder_waits_for_a_slow_approval_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server that answers after 0.6 s: the guard's answer of a push still arrives (the
+    approval check reads git), a ping's does not."""
+    answer = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            time.sleep(0.6)
+            data = json.dumps(answer).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args: Any) -> None:
+            return None
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/hooks/claude-code"
+    try:
+        push = tool_body("PreToolUse", "git push origin feat/checkout")
+        assert json.loads(hook_client.deliver(url, "t", push)) == answer
+        assert hook_client.deliver(url, "t", tool_body("PreToolUse", "npm test")) == b""
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_the_next_run_that_reaches_the_server_sends_the_spool_first(
