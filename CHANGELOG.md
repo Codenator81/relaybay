@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-13
+
 ### Fixed
 
 - Runs on macOS: stopping a turn whose process group holds only exited processes no longer fails with "Operation not permitted" (macOS answers EPERM there).
@@ -945,7 +947,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.8.6...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.9.0
 [0.8.6]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.6
 [0.8.5]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.5
 [0.8.4]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.4
