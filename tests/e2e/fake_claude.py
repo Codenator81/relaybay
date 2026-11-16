@@ -11,6 +11,8 @@ text); a command handler defined in several of them runs once, as Claude Code do
 user `$CLAUDE_CONFIG_DIR/CLAUDE.md`, the cwd's `CLAUDE.md` and `CLAUDE.local.md`, and those of each
 `--add-dir` folder only with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`.
 A tool a `--disallowedTools` rule matches is left out of `system/init` and its calls are denied.
+`--no-session-persistence` writes no transcript; `--max-turns N` ends the turn at its N+1st
+assistant message with a `result` of subtype `error_max_turns` (`is_error` true), as probe 20 saw.
 
 Scenario keys, all optional:
   session_id, model, usage (per message), tools (names besides the MCP ones)
@@ -130,6 +132,10 @@ class ScenarioFailed(Exception):
     pass
 
 
+class MaxTurns(Exception):
+    """The turn reached `--max-turns`: the CLI ends it with `error_max_turns`."""
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:  # the CLI exits 1 on a bad flag, not argparse's 2
         sys.stderr.write(f"error: {message}\n")
@@ -165,6 +171,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--bare", action="store_true")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument(
+        "--no-session-persistence", action="store_true", dest="no_session_persistence"
+    )
+    parser.add_argument("--max-turns", type=int, dest="max_turns")
     args = parser.parse_args(argv)
     if args.version or args.desktop:
         return args
@@ -270,6 +280,8 @@ class Run:
                 out.write(json.dumps(entry) + "\n")
 
     def write_transcript(self, entry: dict[str, Any]) -> None:
+        if self.args.no_session_persistence:
+            return  # nothing on disk: a later --resume of this id finds no conversation
         stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         line = {**entry, "timestamp": stamp, "sessionId": self.session_id}
         with self.transcript.open("a", encoding="utf-8") as out:
@@ -285,6 +297,8 @@ class Run:
             "stop_reason": None,
             "usage": self.usage,
         }
+        if self.args.max_turns is not None and self.turns >= self.args.max_turns:
+            raise MaxTurns
         self.turns += 1
         for key in self.total:
             self.total[key] += self.usage.get(key, 0)
@@ -725,7 +739,11 @@ class Run:
         if self.compacting:
             self.compact()
             return
-        self.turn()
+        try:
+            self.turn()
+        except MaxTurns:
+            self.result("error_max_turns", is_error=True)
+            return
         self.result()
 
     @property

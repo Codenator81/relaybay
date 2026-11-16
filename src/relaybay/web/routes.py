@@ -36,6 +36,7 @@ from relaybay.domain import memory as mem
 from relaybay.domain import profiles as profile_rules
 from relaybay.domain import run_events as run_lines
 from relaybay.domain import runs as run_rules
+from relaybay.domain import schedules as srules
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
 from relaybay.domain.backlog import ASSIGNEE_MAX
@@ -263,6 +264,7 @@ EVENT_KINDS = (
     "coordinator.new_session",
     "coordinator.stopped",
     "coordinator.ended",
+    *srules.EVENT_KINDS,
 )
 CSRF_HEADER = "x-relaybay-csrf"
 # The Terminal tab: the board's policy plus inline styles, which xterm.js writes.
@@ -282,6 +284,15 @@ COORDINATOR_DONE = {
     "back": "The coordinator is back with relaybay.",
     "anyway": "Its waiting turn is started.",
 }
+SCHEDULE_ACTIONS = {
+    "save": "Schedule {id} saved.",
+    "enable": "Schedule {id} enabled.",
+    "disable": "Schedule {id} disabled.",
+    "run": "Schedule {id} runs now.",
+    "stop": "The check of schedule {id} is stopped.",
+    "delete": "Schedule {id} deleted.",
+}
+SCHEDULE_HISTORY = 50
 TERMINAL_EXITED = "claude exited"
 TERMINAL_REFUSED = 4000  # a close code of the application's range: the terminal did not open
 TERMINAL_HELD = 4001  # claude exited, but the run stays with the owner (the reason went before)
@@ -398,6 +409,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         t, utcnow(), settings.done_window_days, settings.require_tracker_log
     )
     env.filters["age"] = age
+    # Schedules show the machine's local time, as they are planned in it.
+    env.filters["local_time"] = lambda value: srules.local_text(value, service.local_time)
+    env.globals["when_text"] = lambda s: srules.when_text(s, service.local_time)
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
     env.filters["http_url"] = http_url
@@ -1918,6 +1932,125 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         except DomainError as exc:
             return flash_redirect(request, back, error=str(exc))
         return flash_redirect(request, back, message=COORDINATOR_DONE[action])
+
+    # --- Schedules: coordinator turns, read-only checks, reminders (owner only) -----------------
+
+    @router.get("/schedules", response_class=HTMLResponse)
+    async def schedules_page(request: Request):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        flash = take_flash(request)
+        found = await service.schedules()
+        response = await page(
+            request,
+            "schedules.html",
+            "schedules",
+            schedules=found,
+            history=await service.schedule_runs(limit=SCHEDULE_HISTORY),
+            projects=[item.project for item in await service.list_projects()],
+            check_profiles=await service.profiles(run_rules.CHECK),
+            kinds=srules.KINDS,
+            repeats=srules.REPEATS,
+            max_times=srules.MAX_TIMES,
+            every_min=srules.EVERY_MIN,
+            check_profile=srules.CHECK_PROFILE,
+            timezone=service.local_time.name(),
+            message=flash.get("message"),
+            error=flash.get("error"),
+            last_event_id=last_event_id,
+        )
+        return shown_once(request, response)
+
+    async def schedule_form(request: Request) -> dict[str, Any]:
+        form = await request.form()
+        return {
+            name: form.get(name)
+            for name in (
+                "kind",
+                "repeat",
+                "at",
+                "time_of_day",
+                "weekdays_only",
+                "every_minutes",
+                "max_times",
+                "project",
+                "task",
+                "profile",
+                "prompt",
+            )
+        }
+
+    @router.post("/schedules", response_class=HTMLResponse)
+    async def schedule_create(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
+        board_only(request, csrf)
+        try:
+            made = await service.create_schedule(await schedule_form(request), actor="owner")
+        except DomainError as exc:
+            return flash_redirect(request, "/schedules#new", error=str(exc))
+        return flash_redirect(
+            request, f"/schedules#schedule-{made.id}", message=f"Schedule {made.id} added."
+        )
+
+    @router.post("/schedules/notices/{schedule_run_id}/seen", response_class=HTMLResponse)
+    async def schedule_notice_seen(
+        request: Request,
+        schedule_run_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        board_only(request, csrf)
+        form = await request.form()
+        await service.mark_schedule_notice_seen(schedule_run_id, actor="owner")
+        back = "/inbox#inbox-schedules" if form.get("from") == "inbox" else "/schedules#history"
+        return flash_redirect(request, back, message="Marked seen.")
+
+    @router.post("/schedules/checks/{run_id}/anyway", response_class=HTMLResponse)
+    async def schedule_check_anyway(
+        request: Request, run_id: int, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ):
+        """Start anyway for a queued check (the Inbox's Queued turns)."""
+        board_only(request, csrf)
+        form = await request.form()
+        back = "/inbox" if form.get("from") == "inbox" else "/schedules"
+        run = await service.get_run(run_id)
+        if run.kind != run_rules.CHECK:
+            raise HTTPException(status_code=404)
+        try:
+            await service.start_anyway(run.id, actor="owner")
+        except DomainError as exc:
+            return flash_redirect(request, back, error=str(exc))
+        return flash_redirect(request, back, message="Its waiting turn is started.")
+
+    @router.post("/schedules/{schedule_id}/{action}", response_class=HTMLResponse)
+    async def schedule_action(
+        request: Request,
+        schedule_id: int,
+        action: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if action not in SCHEDULE_ACTIONS:
+            raise HTTPException(status_code=404)
+        board_only(request, csrf)
+        anchor = f"/schedules#schedule-{schedule_id}"
+        try:
+            if action == "save":
+                await service.update_schedule(
+                    schedule_id, await schedule_form(request), actor="owner"
+                )
+            elif action in ("enable", "disable"):
+                await service.set_schedule_enabled(schedule_id, action == "enable", actor="owner")
+            elif action == "run":
+                await service.run_schedule_now(schedule_id, actor="owner")
+            elif action == "stop":
+                await service.stop_schedule(schedule_id, actor="owner")
+            else:
+                await service.delete_schedule(schedule_id, actor="owner")
+                anchor = "/schedules"
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return flash_redirect(request, anchor, error=str(exc))
+        return flash_redirect(
+            request, anchor, message=SCHEDULE_ACTIONS[action].format(id=schedule_id)
+        )
 
     async def coordinator_run(act: Callable[..., Awaitable[Any]]) -> Any:
         run = await service.coordinator_run_view()

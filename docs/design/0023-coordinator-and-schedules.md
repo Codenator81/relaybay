@@ -205,9 +205,10 @@ time) and `schedule_run` (started, ended, outcome, tokens, its run turn or repor
 - Times are the machine's local time; the program asleep or closed at the time: on the next start a
   run missed by less than an hour runs once, older ones are logged as missed and the next time is
   planned.
-- The coordinator may create one-off checks and reminders over MCP (`schedule_add`), list and cancel
-  its own (`schedule_list`, `schedule_cancel`); repeating schedules and coordinator turns are made on
-  the board. A check counts in the slots and the budgets and queues for them like a run. At most one
+- The coordinator may create one-off checks and reminders over MCP (`schedule_add`), and checks every
+  N minutes bounded by `max_times` (K8), list and cancel its own (`schedule_list`,
+  `schedule_cancel`); daily schedules, repeating reminders and coordinator turns are made on the
+  board. A check counts in the slots and the budgets and queues for them like a run. At most one
   run of a schedule at a time.
 
 ## The Coordinator page
@@ -256,6 +257,7 @@ Decided by the coordinator on 2026-11-16, each as proposed.
 | K5 | The agents view (who started whom, who writes to whom) of the earlier 0.11 line | Not in 0.11; the Coordinator page lists the runs it started | The Map was removed in 0.8.2; one page less until a week of runs shows the need |
 | K6 | Missed schedules | Run once if missed by under an hour, else logged as missed | A morning summary at noon is noise; a CI check an hour late is stale |
 | K7 | The coordinator's daily cap on `run_start` | 10, a profile field | A loop of starts is the costly failure; slots alone allow it over a day |
+| K8 | Repeating checks over MCP | Decided by default in PR 4: `schedule_add` takes `every_minutes` for a check, at most `max_times` (24) times; each run of a check counts in `run_start_per_day` (an `every` check each time), and at most 10 of its schedules may still run | "Check CI of PR 51 every 10 minutes" is the design's own example and the coordinator is the one that knows when to watch; the bound, the daily counter and the `done` answer keep it from becoming a loop |
 
 ## Plan by pull request
 

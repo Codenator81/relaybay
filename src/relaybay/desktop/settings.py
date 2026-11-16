@@ -101,8 +101,8 @@ class DesktopSettings:
             " question or look-at-this request), `approval` (an agent waits for your"
             " approval of a push, a merge or a stand change), `permission` (a session waiting for"
             " you, off by default), `brake` (an agent or a rule pulled the brake), `budget` (a"
-            " token budget nearly or fully spent), `server` (an external server stopped"
-            " answering).",
+            " token budget nearly or fully spent), `reminder` (a schedule's reminder), `server` (an"
+            " external server stopped answering).",
             default="all but `permission`",
         ),
     )

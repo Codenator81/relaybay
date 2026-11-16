@@ -47,6 +47,7 @@ from relaybay.domain import profiles as prules
 from relaybay.domain import questions as qrules
 from relaybay.domain import run_events as run_lines
 from relaybay.domain import runs as run_rules
+from relaybay.domain import schedules as srules
 from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
@@ -309,6 +310,7 @@ AUDIT_CHANGE_KINDS = (
     "coordinator.new_session",
     "coordinator.stopped",
     "coordinator.ended",
+    *srules.EVENT_KINDS,
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -364,6 +366,24 @@ def _note_closed_plan(task: Task) -> None:
 
 
 _last_now: datetime | None = None
+
+
+def _check_disallowed(stored: str | None) -> tuple[str, ...]:
+    rules = prules.turn_disallowed(stored)
+    return rules + tuple(t for t in prules.CHECK_DISALLOWED if t not in rules)
+
+
+def _turn_disallowed(run: Run) -> tuple[str, ...]:
+    """A turn's --disallowedTools: its profile's and the fixed ones; a check also has no file
+    writes and no relaybay tools."""
+    if run.kind == run_rules.CHECK:
+        return _check_disallowed(run.disallowed_tools)
+    return prules.turn_disallowed(run.disallowed_tools)
+
+
+def _ticked(value: Any) -> bool:
+    """A form's checkbox or a tool's flag."""
+    return value is True or str(value or "").strip().lower() in ("1", "true", "on", "yes")
 
 
 def _wake_span(wake: crules.CoordinatorWake) -> tuple[int, int]:
@@ -546,12 +566,15 @@ class Inbox:
     questions: list[Question] = field(default_factory=list)  # open, of all cards
     approvals: list[Approval] = field(default_factory=list)  # open requests, of all cards
     queued: list[Run] = field(default_factory=list)  # runs whose turn waits in the queue
+    # Reminders and answers of checks without a card, until the owner marks them seen.
+    schedules: list[srules.ScheduleRun] = field(default_factory=list)
 
     @property
     def count(self) -> int:
         asked = {q.task_id for q in self.questions} | {a.task_id for a in self.approvals}
         return (
             len(self.questions)
+            + len(self.schedules)
             + len(self.approvals)
             + len(self.queued)
             + len(self.intake)
@@ -1403,6 +1426,11 @@ class Service:
         self._braked_runs: set[int] = set()  # a brake stop of these is under way
         self._trace_failures: dict[int, list[str]] = {}  # per run: what its last delete left
         self._retention_at: float | None = None  # monotonic time of the last retention pass
+        # The schedules' clock (UTC now) and the machine's local time; tests put their own.
+        self.clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+        self.local_time: srules.LocalTime = srules.SystemTime()
+        self._schedule_kick = asyncio.Event()  # a schedule saved: the clock looks again
+        self._schedule_lock = asyncio.Lock()  # one pass (or Run now) handles due times at once
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2369,6 +2397,9 @@ class Service:
         stopped = await self._brake_answer(payload, hook)
         if stopped is not None:
             return stopped
+        refused = await self._profile_answer(payload, hook)
+        if refused is not None:
+            return refused
         try:
             touch, warnings = await self._guard(payload, hook)
         except Exception:
@@ -2642,6 +2673,7 @@ class Service:
             await self.open_questions(),
             await self.open_approval_requests(),
             await self.queued_runs(),
+            await repo.schedule_notices(self._r),
         )
 
     def update_notice(self) -> updates.UpdateNotice | None:
@@ -2953,6 +2985,9 @@ class Service:
             if session is not None
             else set()
         )
+        if session is not None and session.kind == "run":
+            # A check's session is bound to no card: its schedule names the card.
+            task_ids.update(await repo.check_tasks_of_session(self._r, session.id))
         for brake in brakes:
             if (
                 brake.scope == "all"
@@ -3018,6 +3053,63 @@ class Service:
                     self._brake_stops.add(stop)
                     stop.add_done_callback(self._brake_stops.discard)
         return answer
+
+    async def _profile_answer(self, payload: Any, hook: HookEvent) -> dict[str, Any] | None:
+        """PreToolUse of a check's or the coordinator's turn: a call that no allow rule of its
+        profile matches (the coordinator also has its folder's Edit rule) is denied. Under
+        `dontAsk` the user's and the project's own `permissions.allow` rules are pre-approved,
+        so the allow list alone is not a wall. Fails open, like every hook: a failure here
+        refuses nothing."""
+        if not isinstance(payload, dict):
+            return None
+        tool = payload.get("tool_name")
+        tool_input = payload.get("tool_input")
+        if not isinstance(tool, str) or tool in agent_limits.FREE_TOOLS:
+            return None
+        try:
+            run = None
+            for run_id in sorted(await self._runs_of_hook(payload, hook)):
+                found = await repo.get_run(self._r, run_id)
+                if (
+                    found is not None
+                    and found.is_open
+                    and found.kind in (run_rules.CHECK, run_rules.COORDINATOR)
+                    and found.claude_session_id in (None, hook.cc_session_id)
+                ):
+                    run = found
+                    break
+            if run is None:
+                return None
+            windows = sys.platform == "win32"
+            rules = list(run.allowed_rules)
+            if run.is_coordinator:
+                # The call's path is resolved (links followed): so is the folder.
+                folder = await asyncio.to_thread(lambda: str(Path(run.cwd).resolve()))
+                rules.append(crules.edit_rule(folder, windows=windows))
+            allowed = prules.call_allowed(
+                rules,
+                tool,
+                tool_input if isinstance(tool_input, dict) else {},
+                cwd=hook.cwd or run.cwd,
+                windows=windows,
+            )
+        except Exception:
+            logger.exception("Checking a call against its run's profile failed; it goes on")
+            return None
+        if allowed:
+            return None
+        reason = (
+            f"relaybay: {tool} is outside the allow list of profile {run.profile} for this"
+            f" {run.kind} run{'' if run.is_coordinator else ' (read-only)'}; a Bash command must"
+            " match one rule as a single command. Nothing ran."
+        )
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
 
     async def _runs_of_hook(self, payload: Any, hook: HookEvent) -> set[int]:
         """The runs a refused call may come from: the open run of the hook's session row (a
@@ -3107,9 +3199,13 @@ class Service:
             return await repo.session_turn_tokens(conn, budget.session_id, day)
         if budget.scope == "task":
             assert budget.task_id is not None
-            return await repo.task_tokens(conn, budget.task_id, day)
+            return await repo.task_tokens(conn, budget.task_id, day) + await repo.check_tokens(
+                conn, task_id=budget.task_id, day=day
+            )
         project_id = budget.project_id if budget.scope == "project" else None
-        return await repo.usage_tokens(conn, project_id=project_id, day=day)
+        return await repo.usage_tokens(
+            conn, project_id=project_id, day=day
+        ) + await repo.check_tokens(conn, project_id=project_id, day=day)
 
     async def _marked_budgets(
         self, conn: aiosqlite.Connection, today: str, marks: dict[int, set[str]]
@@ -4712,10 +4808,12 @@ class Service:
         session_id: int | None,
         actor: str,
         format_problem: str | None,
+        size_task: bool = True,
     ) -> int:
         """The writes of one report, for report_add and a run's turn alike: the rules warnings
         (`format_problem`, the first line's, checked by the caller; no `verified:` mark on an M or
-        L report), the task's fields, the report with its marks, its event and its index row."""
+        L report), the task's fields, the report with its marks, its event and its index row.
+        `size_task` off: the report's size does not size the task (a check's `S`)."""
         state, size, summary = parse_report(body)
         checks = parse_checks(body)
         problems = (format_problem, verified_marks_problem(size, len(checks)))
@@ -4724,7 +4822,7 @@ class Service:
             _note(warning)
         if await self._work_after_closed_plan(tx, task, state):
             _note_closed_plan(task)
-        if size and not task.size:
+        if size and not task.size and size_task:
             clean["size"] = size  # the first report's size sizes a task that has none
         diff = _task_diff(task, clean)
         unlog = None
@@ -10883,8 +10981,10 @@ class Service:
         folders: list[tuple[str, int, str]] = []
         with_rows = {run_id for _, _, run_id, _ in in_use}
         for other in await repo.open_runs(conn):
-            if other.is_coordinator:
-                continue  # its folder is outside any repository and never a project's
+            if other.kind != run_rules.CARD:
+                # The coordinator's folder is outside any repository and never a project's; a
+                # check only reads, so it shares a folder with a card's run.
+                continue
             if other.cwd_repo_id is None:
                 folders.append((other.cwd, other.id, other.task_key))
             elif other.id not in with_rows:
@@ -11204,18 +11304,30 @@ class Service:
         )
 
     async def _check_coordinator_cap(self, conn: aiosqlite.Connection, run_id: int) -> None:
-        """The coordinator's run_start_per_day since the local midnight; asked before the checks
-        and again in the write transaction of the start, so two calls at once cannot pass it."""
+        """The coordinator's run_start_per_day since the local midnight, counting the runs it
+        started and the checks it scheduled; asked before the checks and again in the write
+        transaction of the start, so two calls at once cannot pass it."""
         run = await self.get_run(run_id, conn)
-        profile = await self.get_profile(run.profile or crules.DEFAULT_PROFILE, conn)
+        why = await self._coordinator_cap_reason(conn, run.profile)
+        if why:
+            raise ValidationError(f"{why} Nothing started; the owner may start more on the cards.")
+
+    async def _coordinator_cap_reason(
+        self, conn: aiosqlite.Connection, profile_name: str | None
+    ) -> str | None:
+        """Why the coordinator's run_start_per_day is used up (None: it is not): the runs it
+        started and the check runs of the schedules it made since the local midnight."""
+        profile = await self.get_profile(profile_name or crules.DEFAULT_PROFILE, conn)
         since = crules.local_day_start(datetime.now(UTC))
         started = await repo.coordinator_starts_since(conn, since)
-        if started >= profile.per_day:
-            raise ValidationError(
-                f"The coordinator started {started} run(s) today, its profile {profile.name}"
-                f" allows {profile.per_day} a day. Nothing started; the owner may start more"
-                " on the cards."
-            )
+        checks = await repo.coordinator_checks_since(conn, since)
+        if started + checks < profile.per_day:
+            return None
+        ran = f" and ran {checks} check(s) of its schedules" if checks else ""
+        return (
+            f"The coordinator started {started} run(s){ran} today, its profile {profile.name}"
+            f" allows {profile.per_day} a day."
+        )
 
     async def _refuse_braked_caller(self, session: str | None, what: str, nothing: str) -> None:
         """A coordinator's run tool: refused while a brake covers the caller."""
@@ -11741,11 +11853,14 @@ class Service:
             )
         at_cwd = self._projects_at_cwd(await repo.projects_with_repo_path(conn), run.cwd)
         projects = {run.project_id, *(p.id for p in at_cwd)}
+        task_id = run.task_id
+        if run.kind == run_rules.CHECK:
+            task_id = await repo.check_task(conn, run.id)  # its schedule's card, if any
         for brake in brakes:
             if (
                 brake.scope == "all"
                 or (brake.scope == "project" and brake.project_id in projects)
-                or (brake.scope == "task" and brake.task_id == run.task_id)
+                or (brake.scope == "task" and task_id is not None and brake.task_id == task_id)
                 or (
                     brake.scope == "session"
                     and run.session_id is not None
@@ -11910,6 +12025,18 @@ class Service:
         self, tx: _Tx, kind: str, actor: str, task: Task | None, run_id: int, **payload: Any
     ) -> None:
         if task is None:
+            run = await repo.get_run(tx.conn, run_id)
+            if run is not None and run.kind == run_rules.CHECK:
+                await tx.event(
+                    kind,
+                    actor,
+                    project_id=run.project_id,
+                    project=run.project_slug,
+                    run_id=run_id,
+                    run_kind=run_rules.CHECK,
+                    **payload,
+                )
+                return
             await tx.event(kind, actor, run_id=run_id, run_kind=run_rules.COORDINATOR, **payload)
             return
         await tx.event(
@@ -12002,6 +12129,7 @@ class Service:
                 if run.is_coordinator:
                     # Edit and Write inside its own folder only, added at each turn (not stored).
                     allowed += (crules.edit_rule(run.cwd, windows=sys.platform == "win32"),)
+                check = run.kind == run_rules.CHECK
                 spec = TurnSpec(
                     claude,
                     turn.prompt,
@@ -12010,12 +12138,14 @@ class Service:
                     run.effort,
                     run.permission_mode,
                     allowed,
-                    run.claude_session_id,
+                    None if check else run.claude_session_id,
                     run.chrome,
-                    disallowed=prules.turn_disallowed(run.disallowed_tools),
+                    disallowed=_turn_disallowed(run),
                     add_dirs=_add_dirs(run.cwd, [w.path for w in folders if w.removed_at is None]),
                     settings_file=str(settings_file) if settings_file else None,
                     mcp_file=str(mcp_file) if mcp_file else None,
+                    no_session_persistence=check,
+                    max_turns=srules.CHECK_MAX_TURNS if check else None,
                 )
                 pid = await runs.start_turn(run.id, turn.id, spec, reserved=True)
             except (OSError, ValidationError, RuntimeError) as exc:
@@ -12039,6 +12169,8 @@ class Service:
             await repo.cancel_queued(tx.conn, run.id, tx.now)
             await self._set_run_status(tx, run, "stopped", error)
             await self._run_event(tx, "run.stopped", "relaybay", task, run.id, reason=error)
+            if run.kind == run_rules.CHECK:
+                await self._end_check(tx, run, turn.id, "failed_to_start", None, error)
         await self.dispatch_queued()  # its slot is free again
 
     async def turn_init(self, turn_id: int, claude_session_id: str) -> None:
@@ -12161,7 +12293,7 @@ class Service:
             assert ended is not None
             try:
                 run = await self.get_run(ended.run_id)
-                if not run.is_coordinator:  # it has no card to ask an approval on
+                if run.kind == run_rules.CARD:  # only a card's run asks an approval
                     denied, refused = await self._denied_needs(run, ended, result)
             except Exception:
                 logger.exception("Reading the denials of turn %d for approvals failed", turn_id)
@@ -12191,7 +12323,7 @@ class Service:
                     changes["context_tokens"] = result.context_tokens
             await repo.end_turn(tx.conn, turn.id, changes, tx.now)
             notes = await self._settle_turn_reservations(tx, run, refused)
-            if result is not None:
+            if result is not None and run.kind != run_rules.CHECK:
                 await self._turn_report(tx, task, run, turn, outcome, result, notes)
             if task is not None:
                 await self._requests_from_denials(tx, run, task, turn, denied)
@@ -12230,8 +12362,12 @@ class Service:
                 await repo.cancel_queued(tx.conn, run.id, tx.now)
                 await self._run_event(tx, f"run.{new}", "relaybay", task, run.id, reason=reason)
                 await self._end_run_session(tx, run)
+            if run.kind == run_rules.CHECK:
+                await self._end_check(tx, run, turn.id, outcome, result, reason)
             launches = await self._dispatch(tx, free, "relaybay")
         await self._spawn_all(launches)
+        if run.kind == run_rules.CHECK:
+            self._schedule_kick.set()  # a repeating check's next time may have changed
 
     async def _end_run_session(self, tx: _Tx, run: Run) -> None:
         """A killed turn sends no SessionEnd (Windows kills hard): the row ends here."""
@@ -13051,6 +13187,11 @@ class Service:
             wake=state,
             wakes={w.turn_id: w for w in wakes if w.turn_id is not None},
             compacted=compacted,
+            schedules=[
+                s
+                for s in await repo.list_schedules(self._r)
+                if s.kind == srules.COORDINATOR_TURN or s.created_by_kind == "coordinator"
+            ],
         )
 
     async def start_coordinator(self, *, actor: str = "owner", new_session: bool = False) -> Run:
@@ -13406,6 +13547,865 @@ class Service:
             )
             state.budget = agent_limits.BudgetState(budget, state.today_tokens, level)
         return state
+
+    # --- schedules: coordinator turns, read-only checks, reminders (design 0023) -----------
+
+    def _now(self) -> datetime:
+        return self.clock().astimezone(UTC)
+
+    async def schedules(self, created_by_kind: str | None = None) -> list[srules.Schedule]:
+        return await repo.list_schedules(self._r, created_by_kind)
+
+    async def get_schedule(
+        self, schedule_id: int | str, conn: aiosqlite.Connection | None = None
+    ) -> srules.Schedule:
+        text = str(schedule_id).strip().lstrip("#")
+        found = await repo.get_schedule(conn or self._r, int(text)) if text.isdigit() else None
+        if found is None:
+            raise NotFoundError(f"Schedule {schedule_id} not found.")
+        return found
+
+    async def schedule_runs(
+        self, schedule_ids: list[int] | None = None, limit: int = 50
+    ) -> list[srules.ScheduleRun]:
+        return await repo.schedule_runs(self._r, schedule_ids, limit)
+
+    async def _schedule_values(
+        self, conn: aiosqlite.Connection, values: dict[str, Any], now: datetime
+    ) -> dict[str, Any]:
+        """The columns of a schedule as a form or a tool gives them, checked: its kind, when,
+        target (a check needs a project; a card names its project) and text."""
+        kind = srules.clean_kind(values.get("kind"))
+        repeat = srules.clean_repeat(values.get("repeat"))
+        prompt = srules.clean_prompt(values.get("prompt"))
+        if kind == srules.COORDINATOR_TURN and len(prompt) > srules.TITLE_MAX:
+            raise ValidationError(
+                f"A coordinator turn's text is one wake line: at most {srules.TITLE_MAX}"
+                f" characters; got {len(prompt)}. Put the details in a document and name it."
+            )
+        slug = str(values.get("project") or "").strip()
+        ref = str(values.get("task") or "").strip()
+        project_id = task_id = None
+        if ref and ref != "-":
+            task = await self.get_task(ref, conn)
+            if slug not in ("", "-") and slug.lower() != task.project_slug:
+                raise ValidationError(f"{task.key} is not in the project {slug}.")
+            project_id, task_id = task.project_id, task.id
+        elif slug and slug != "-":
+            project_id = (await self.get_project(slug, conn)).id
+        if kind == srules.CHECK and project_id is None:
+            raise ValidationError("A check needs a project or a card: it reads in their folder.")
+        profile = None
+        if kind == srules.CHECK:
+            name = str(values.get("profile") or "").strip().lower() or srules.CHECK_PROFILE
+            found = await repo.get_profile(conn, name)
+            if found is None or run_rules.CHECK not in found.kinds:
+                raise ValidationError(
+                    f"The profile {name} is not one for checks: pick a profile whose kinds"
+                    " include check (Settings -> Profiles)."
+                )
+            profile = found.name
+        row: dict[str, Any] = {
+            "kind": kind,
+            "repeat": repeat,
+            "at": None,
+            "time_of_day": None,
+            "weekdays_only": 0,
+            "every_minutes": None,
+            "max_times": srules.MAX_TIMES,
+            "project_id": project_id,
+            "task_id": task_id,
+            "profile": profile,
+            "prompt": prompt,
+            "timezone": self.local_time.name(),
+        }
+        if repeat == srules.ONCE:
+            moment = srules.clean_at(values.get("at"), self.local_time)
+            if moment < now - timedelta(minutes=1):
+                shown = srules.local_text(srules.iso(moment), self.local_time)
+                raise ValidationError(f"{shown} has passed: a once schedule needs a later time.")
+            row["at"] = srules.iso(moment)
+        elif repeat == srules.DAILY:
+            row["time_of_day"] = srules.clean_time_of_day(values.get("time_of_day"))
+            row["weekdays_only"] = int(_ticked(values.get("weekdays_only")))
+        else:
+            row["every_minutes"] = srules.clean_every(values.get("every_minutes"))
+            row["max_times"] = srules.clean_max_times(values.get("max_times"))
+        return row
+
+    def _first_due(self, row: dict[str, Any], now: datetime) -> str:
+        return srules.iso(
+            srules.first_due(
+                row["repeat"],
+                now,
+                self.local_time,
+                at=srules.parse(row["at"]) if row["at"] else None,
+                time_of_day=row["time_of_day"],
+                weekdays_only=bool(row["weekdays_only"]),
+                every_minutes=row["every_minutes"],
+            )
+        )
+
+    async def _schedule_event(
+        self, tx: _Tx, kind: str, actor: str, schedule: srules.Schedule, **payload: Any
+    ) -> None:
+        await tx.event(
+            kind,
+            actor,
+            project_id=schedule.project_id,
+            task_id=schedule.task_id,
+            schedule_id=schedule.id,
+            schedule_kind=schedule.kind,
+            title=schedule.title,
+            **({"project": schedule.project_slug} if schedule.project_slug else {}),
+            **({"key": schedule.task_key} if schedule.task_key else {}),
+            **payload,
+        )
+
+    async def create_schedule(
+        self,
+        values: dict[str, Any],
+        *,
+        actor: str = "owner",
+        created_by_kind: str = "owner",
+        coordinator_run: int | None = None,
+    ) -> srules.Schedule:
+        """A new schedule, enabled, due first at its next time. The owner's on the board (any
+        kind); the coordinator's through `schedule_add_mcp` (checks and reminders), held in its
+        write transaction to its caps (`coordinator_run`)."""
+        now = self._now()
+        async with self._tx() as tx:
+            row = await self._schedule_values(tx.conn, values, now)
+            if coordinator_run is not None:
+                await self._check_schedule_caps(tx.conn, coordinator_run, row["kind"])
+            schedule_id = await repo.insert_schedule(
+                tx.conn,
+                {
+                    **row,
+                    "created_by": actor,
+                    "created_by_kind": created_by_kind,
+                    "enabled": 1,
+                    "next_at": self._first_due(row, now),
+                    "updated_by": actor,
+                },
+                tx.now,
+            )
+            made = await self.get_schedule(schedule_id, tx.conn)
+            await self._schedule_event(
+                tx,
+                "schedule.created",
+                actor,
+                made,
+                when=srules.when_text(made, self.local_time),
+                next_at=made.next_at,
+                created_by_kind=created_by_kind,
+            )
+        self._schedule_kick.set()
+        return made
+
+    async def update_schedule(
+        self, schedule_id: int, values: dict[str, Any], *, actor: str = "owner"
+    ) -> srules.Schedule:
+        """The owner's edit (board only): every field again; the count starts anew and the
+        next time is planned from now. A disabled schedule stays disabled."""
+        now = self._now()
+        async with self._tx() as tx:
+            current = await self.get_schedule(schedule_id, tx.conn)
+            row = await self._schedule_values(tx.conn, values, now)
+            next_at = self._first_due(row, now) if current.enabled else None
+            await repo.update_schedule(
+                tx.conn,
+                current.id,
+                {**row, "next_at": next_at, "times_run": 0, "done_at": None, "updated_by": actor},
+                tx.now,
+            )
+            saved = await self.get_schedule(current.id, tx.conn)
+            changed = sorted(
+                k for k in row if k != "timezone" and getattr(current, k) != getattr(saved, k)
+            )
+            await self._schedule_event(
+                tx,
+                "schedule.updated",
+                actor,
+                saved,
+                changes=changed,
+                when=srules.when_text(saved, self.local_time),
+                next_at=saved.next_at,
+            )
+        self._schedule_kick.set()
+        return saved
+
+    async def set_schedule_enabled(
+        self, schedule_id: int, on: bool, *, actor: str = "owner"
+    ) -> srules.Schedule:
+        """Disable: no next time (a running check goes on). Enable: planned again from now; a
+        once whose time has passed needs a new time first."""
+        now = self._now()
+        async with self._tx() as tx:
+            current = await self.get_schedule(schedule_id, tx.conn)
+            if current.enabled == on:
+                return current
+            next_at = None
+            if on:
+                if current.repeat == srules.ONCE and srules.parse(current.at or "") < now:
+                    raise ValidationError(
+                        f"Schedule {current.id} was due once at"
+                        f" {srules.local_text(current.at, self.local_time)}: edit it to a later"
+                        " time instead."
+                    )
+                row = {
+                    "repeat": current.repeat,
+                    "at": current.at,
+                    "time_of_day": current.time_of_day,
+                    "weekdays_only": current.weekdays_only,
+                    "every_minutes": current.every_minutes,
+                }
+                next_at = self._first_due(row, now)
+            changes: dict[str, Any] = {"enabled": int(on), "next_at": next_at, "updated_by": actor}
+            if on:
+                changes.update(times_run=0, done_at=None)
+            await repo.update_schedule(tx.conn, current.id, changes, tx.now)
+            saved = await self.get_schedule(current.id, tx.conn)
+            await self._schedule_event(
+                tx, "schedule.updated", actor, saved, enabled=on, next_at=next_at
+            )
+        self._schedule_kick.set()
+        return saved
+
+    async def delete_schedule(self, schedule_id: int, *, actor: str = "owner") -> None:
+        """Delete it: gone from the lists, its runs kept (they count in the budgets); a
+        check of it that runs is ended first."""
+        current = await self.get_schedule(schedule_id)
+        open_run = await self._open_schedule_run(current.id)
+        if open_run is not None and open_run.run_id is not None:
+            run = await repo.get_run(self._r, open_run.run_id)
+            if run is not None and run.is_open:
+                await self.end_run(run.id, actor=actor, reason=f"schedule deleted by {actor}")
+        async with self._tx() as tx:
+            current = await self.get_schedule(schedule_id, tx.conn)
+            await repo.delete_schedule(tx.conn, current.id, tx.now, actor)
+            await self._schedule_event(tx, "schedule.deleted", actor, current)
+
+    async def _open_schedule_run(self, schedule_id: int) -> srules.ScheduleRun | None:
+        found = [r for r in await repo.open_schedule_runs(self._r) if r.schedule_id == schedule_id]
+        return found[0] if found else None
+
+    async def stop_schedule(self, schedule_id: int, *, actor: str = "owner") -> None:
+        """Stop the check of the schedule that runs or waits in the queue (board only)."""
+        current = await self.get_schedule(schedule_id)
+        open_run = await self._open_schedule_run(current.id)
+        if open_run is None or open_run.run_id is None:
+            raise ValidationError(f"No check of schedule {current.id} runs now.")
+        run = await self.get_run(open_run.run_id)
+        if run.is_open:
+            await self.end_run(run.id, actor=actor, reason=f"stopped by {actor}")
+        async with self._schedule_lock:
+            await self._settle_checks()
+
+    async def mark_schedule_notice_seen(
+        self, schedule_run_id: int, *, actor: str = "owner"
+    ) -> None:
+        async with self._tx() as tx:
+            found = await repo.get_schedule_run(tx.conn, schedule_run_id)
+            if found is None:
+                raise NotFoundError(f"Schedule run {schedule_run_id} not found.")
+            if await repo.mark_schedule_notice_seen(tx.conn, found.id, tx.now):
+                await tx.event(
+                    "schedule.notice_seen",
+                    actor,
+                    schedule_id=found.schedule_id,
+                    schedule_run_id=found.id,
+                )
+
+    async def run_schedule_now(self, schedule_id: int, *, actor: str = "owner") -> None:
+        """Run now (board only): once, at once, outside its times: its next time and its count
+        stay. Refused while a run of it is open."""
+        current = await self.get_schedule(schedule_id)
+        async with self._schedule_lock:
+            await self._handle_due(current.id, self._now(), manual=actor)
+
+    # --- the clock ------------------------------------------------------------------------
+
+    async def schedule_pass(self, now: datetime | None = None) -> float | None:
+        """One look of the clock: checks that ended are written down, then every schedule due
+        by `now` (default: the clock) is handled: run, skipped while a run of it is open, or
+        missed when late by an hour or more (K6), each followed by its next time. Returns the
+        seconds until the next due time, None when nothing is planned."""
+        moment = now or self._now()
+        async with self._schedule_lock:
+            await self._settle_checks()
+            for due in await repo.due_schedules(self._r, srules.iso(moment)):
+                try:
+                    await self._handle_due(due.id, moment)
+                except Exception:
+                    logger.exception("Schedule %d failed; the next pass tries again", due.id)
+        top = await repo.next_schedule_at(self._r)
+        if top is None:
+            return None
+        return max(1.0, (srules.parse(top) - self._now()).total_seconds())
+
+    async def schedule_loop(self) -> None:
+        """The server's clock: a pass at each next due time, after a schedule is saved, and at
+        least every CHECK_SECONDS, so a missed time after a sleep is found soon."""
+        while True:
+            wait = srules.CHECK_SECONDS
+            try:
+                left = await self.schedule_pass()
+                if left is not None:
+                    wait = min(wait, left)
+            except Exception:
+                logger.exception("The schedules' clock failed; the next pass tries again")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._schedule_kick.wait(), wait)
+            self._schedule_kick.clear()
+
+    async def _handle_due(self, schedule_id: int, moment: datetime, manual: str = "") -> None:
+        """A due time of one schedule (or the owner's Run now, `manual` naming the owner): the
+        `schedule_run` row and the next time in one transaction; a check's run starts after it."""
+        claimed: tuple[srules.Schedule, int] | None = None
+        async with self._tx() as tx:
+            s = await self.get_schedule(schedule_id, tx.conn)
+            if not manual:
+                if not s.enabled or s.next_at is None or srules.parse(s.next_at) > moment:
+                    return
+                due = srules.parse(s.next_at)
+                s.times_run += 1
+                nxt = srules.next_after(s, moment, self.local_time)
+                changes: dict[str, Any] = {
+                    "times_run": s.times_run,
+                    "next_at": srules.iso(nxt) if nxt else None,
+                }
+                if nxt is None:
+                    changes["done_at"] = tx.now
+                await repo.update_schedule(tx.conn, s.id, changes, tx.now)
+            else:
+                due = moment
+            row: dict[str, Any] = {"schedule_id": s.id, "due_at": srules.iso(due)}
+            if s.running:
+                if manual:
+                    raise ConflictError(f"A run of schedule {s.id} is open: one at a time.")
+                await self._schedule_outcome(
+                    tx, s, row, srules.SKIPPED, "its last run still runs: one at a time"
+                )
+                return
+            if not manual and srules.is_missed(due, moment):
+                await self._schedule_outcome(tx, s, row, srules.MISSED, None)
+                return
+            actor = manual or "relaybay"
+            if s.kind == srules.REMINDER:
+                await self._schedule_outcome(
+                    tx, s, row, srules.RAN, None, actor=actor, notice=s.prompt
+                )
+                return
+            if s.kind == srules.COORDINATOR_TURN:
+                if await repo.open_coordinator_run(tx.conn) is None:
+                    await self._schedule_outcome(
+                        tx,
+                        s,
+                        row,
+                        srules.SKIPPED,
+                        "no coordinator run is open: Start it on the Coordinator page",
+                        actor=actor,
+                    )
+                    return
+                await self._schedule_outcome(
+                    tx, s, row, srules.RAN, "a line in the coordinator's next wake", actor=actor
+                )
+                return
+            schedule_run_id = await repo.insert_schedule_run(tx.conn, {**row, "started_at": tx.now})
+            claimed = (s, schedule_run_id)
+        if claimed is not None:
+            await self._start_check(*claimed, actor=manual or "relaybay")
+
+    async def _schedule_outcome(
+        self,
+        tx: _Tx,
+        s: srules.Schedule,
+        row: dict[str, Any],
+        outcome: str,
+        reason: str | None,
+        *,
+        actor: str = "relaybay",
+        notice: str | None = None,
+    ) -> int:
+        """A schedule run that ends as it is written: its row and its event (`schedule.fired`
+        for one that ran, `schedule.missed`, `schedule.skipped`)."""
+        schedule_run_id = await repo.insert_schedule_run(
+            tx.conn,
+            {
+                **row,
+                "started_at": None if outcome == srules.MISSED else tx.now,
+                "ended_at": tx.now,
+                "outcome": outcome,
+                "reason": reason,
+                "notice": notice,
+            },
+        )
+        kind = {srules.RAN: "schedule.fired", srules.MISSED: "schedule.missed"}.get(
+            outcome, "schedule.skipped"
+        )
+        await self._schedule_event(
+            tx,
+            kind,
+            actor,
+            s,
+            schedule_run_id=schedule_run_id,
+            due_at=row["due_at"],
+            outcome=outcome,
+            **({"reason": reason} if reason else {}),
+        )
+        return schedule_run_id
+
+    async def _check_folder(self, s: srules.Schedule) -> tuple[str, str]:
+        """Where a check reads: the worktree of its card's open run when it has one, else the
+        project's folder (the agent defaults' folder, else its first repository). Returns the
+        folder and the words for its head line."""
+        if s.task_id is not None:
+            card_run = await repo.open_run_of_task(self._r, s.task_id)
+            if card_run is not None:
+                folders = [
+                    w.path
+                    for w in await repo.list_run_worktrees(self._r, card_run.id)
+                    if w.removed_at is None
+                ]
+                if folders:
+                    path = card_run.cwd if card_run.cwd in folders else folders[0]
+                    if await asyncio.to_thread(Path(path).is_dir):
+                        return path, f"{s.task_key}, in the worktree of its run {card_run.id}"
+        defaults = await self.run_defaults(s.project_slug)
+        repos = await repo.list_project_repos(self._r, s.project_id or 0)
+        folder = defaults.folder or (repos[0].path if repos else "")
+        if not folder or not await asyncio.to_thread(Path(folder).is_dir):
+            raise ValidationError(
+                f"{s.project_slug} has no folder here for a check: set the project folder in its"
+                " agent defaults, or a repository path."
+            )
+        return folder, s.task_key or s.project_slug
+
+    async def _start_check(self, s: srules.Schedule, schedule_run_id: int, *, actor: str) -> None:
+        """A `check` run for a schedule run claimed in the transaction before: the sign-in and
+        the layers are checked, then one transaction writes the run, its session and its one
+        turn, and the queue starts it when a slot, memory and the brakes allow. Anything that
+        keeps it from being written fails the schedule run with the reason."""
+        try:
+            runs = self._run_manager()
+            cwd, where = await self._check_folder(s)
+            profile = await repo.get_profile(self._r, s.profile or srules.CHECK_PROFILE)
+            if profile is None or run_rules.CHECK not in profile.kinds:
+                raise ValidationError(
+                    f"The profile {s.profile} is gone or no longer for checks: edit the schedule."
+                )
+            if s.created_by_kind == "coordinator":
+                # Every run of a coordinator's check counts in its run_start_per_day.
+                coordinator = await repo.open_coordinator_run(self._r)
+                why = await self._coordinator_cap_reason(
+                    self._r, coordinator.profile if coordinator else None
+                )
+                if why:
+                    raise ValidationError(why)
+            defaults = await self.run_defaults(s.project_slug)
+            guess = await repo.next_run_id(self._r)
+            method, layers = await self._run_preflight(runs)
+            hooks_source = layers.hooks_source if layers is not None else "user"
+            mcp_source = layers.mcp_source if layers is not None else "user"
+            claude = runs.claude()
+            assert claude is not None
+            settings_file, mcp_file = run_files(
+                self._run_folder(guess), hooks=hooks_source == "run", mcp=mcp_source == "run"
+            )
+            prompt = srules.check_prompt(s.id, where, cwd, s.prompt, s.repeat == srules.EVERY)
+            build_command(
+                TurnSpec(
+                    claude,
+                    prompt,
+                    cwd,
+                    defaults.model,
+                    defaults.effort,
+                    profile.permission_mode,
+                    tuple(profile.allowed_rules),
+                    disallowed=_check_disallowed(profile.disallowed_tools),
+                    settings_file=str(settings_file) if settings_file else None,
+                    mcp_file=str(mcp_file) if mcp_file else None,
+                    no_session_persistence=True,
+                    max_turns=srules.CHECK_MAX_TURNS,
+                )
+            )
+        except Exception as exc:
+            # The claim is closed with the real error (a refusal, a missing claude, a folder
+            # that cannot be written), not left for the next pass to call a stopped server.
+            if not isinstance(exc, DomainError):
+                logger.exception("Starting the check of schedule %d failed", s.id)
+            async with self._tx() as tx:
+                await self._finish_schedule_run(
+                    tx, s, schedule_run_id, srules.FAILED, f"the check did not start: {exc}"
+                )
+            return
+        free = await self._free_memory()
+        async with self._tx() as tx:
+            run_id = await repo.insert_run(
+                tx.conn,
+                {
+                    "kind": run_rules.CHECK,
+                    "project_id": s.project_id,
+                    "cwd": cwd,
+                    "model": defaults.model,
+                    "effort": defaults.effort,
+                    "permission_mode": profile.permission_mode,
+                    "allowed_tools": profile.allowed_tools,
+                    "disallowed_tools": profile.disallowed_tools,
+                    "profile": profile.name,
+                    "mode_set": 0,
+                    "chrome": 0,
+                    "auth_method": method,
+                    "hooks_source": hooks_source,
+                    "mcp_source": mcp_source,
+                    "status": "queued",
+                    "started_by": f"schedule {s.id}",
+                    "started_by_kind": s.created_by_kind,
+                },
+                tx.now,
+            )
+            name = f"{s.project_slug} check run {run_id}"
+            session_id = await repo.insert_session(tx.conn, name, tx.now, kind="run")
+            await repo.touch_session(
+                tx.conn, session_id, tx.now, {"project_id": s.project_id, "cwd": cwd}
+            )
+            await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
+            await tx.event(
+                "session.seen", name, project_id=s.project_id, session_id=session_id, session=name
+            )
+            await repo.insert_turn(tx.conn, run_id, prompt, f"schedule {s.id}", "relaybay", tx.now)
+            await repo.update_schedule_run(tx.conn, schedule_run_id, {"run_id": run_id})
+            await self._run_event(
+                tx,
+                "run.started",
+                actor,
+                None,
+                run_id,
+                model=defaults.model,
+                mode=profile.permission_mode,
+                profile=profile.name,
+                schedule_id=s.id,
+            )
+            await self._schedule_event(
+                tx,
+                "schedule.fired",
+                actor,
+                s,
+                schedule_run_id=schedule_run_id,
+                run_id=run_id,
+            )
+            launches = await self._dispatch(tx, free, "relaybay")
+        await self._spawn_all(launches)
+
+    async def _finish_schedule_run(
+        self,
+        tx: _Tx,
+        s: srules.Schedule,
+        schedule_run_id: int,
+        outcome: str,
+        reason: str | None,
+        **values: Any,
+    ) -> None:
+        await repo.update_schedule_run(
+            tx.conn,
+            schedule_run_id,
+            {"ended_at": tx.now, "outcome": outcome, "reason": reason, **values},
+        )
+        await self._schedule_event(
+            tx,
+            "schedule.ended",
+            "relaybay",
+            s,
+            schedule_run_id=schedule_run_id,
+            outcome=outcome,
+            **({"reason": reason} if reason else {}),
+            **{k: v for k, v in values.items() if k in ("run_id", "report_id", "tokens") and v},
+        )
+
+    async def _end_check(
+        self,
+        tx: _Tx,
+        run: Run,
+        turn_id: int,
+        outcome: str,
+        result: Result | None,
+        reason: str | None,
+    ) -> None:
+        """A check's one turn ended: its answer becomes a report on the schedule's card (first
+        line `inspected · S · …`, written by relaybay) or, with no card, the turn's result and
+        an Inbox line; its schedule run ends with the outcome and the tokens; a repeating check
+        whose answer starts with `done` stops; the run ends, as a check never keeps a
+        session."""
+        found = await repo.schedule_run_of_run(tx.conn, run.id)
+        s = (
+            await repo.get_schedule(tx.conn, found.schedule_id, deleted=True)
+            if found is not None
+            else None
+        )
+        turn = await repo.get_turn(tx.conn, turn_id)
+        assert turn is not None
+        tokens = (
+            turn.input_tokens
+            + turn.output_tokens
+            + turn.cache_read_tokens
+            + turn.cache_write_tokens
+        )
+        step_limit = result is not None and result.subtype == "error_max_turns"
+        text = result.text if result is not None else ""
+        if outcome == "success":
+            done, why = srules.RAN, srules.gist(text)
+        elif step_limit:
+            done, why = srules.STOPPED, srules.STEP_LIMIT
+        elif outcome == "stopped":
+            done, why = srules.STOPPED, reason or "stopped"
+        else:
+            subtype = result.subtype if result is not None else outcome.replace("_", " ")
+            done, why = srules.FAILED, reason or f"the check ended with an error ({subtype})"
+        report_id = notice = None
+        if result is not None and (outcome == "success" or step_limit) and s is not None:
+            body = srules.check_report(s.id, run.id, text, step_limit)
+            if s.task_id is not None:
+                report_id = await self._check_report(tx, s, run, body)
+            else:
+                await repo.set_turn_result(tx.conn, turn.id, body)
+                notice = body.splitlines()[0]
+        if s is not None and found is not None and found.is_open:
+            await self._finish_schedule_run(
+                tx,
+                s,
+                found.id,
+                done,
+                why,
+                run_id=run.id,
+                turn_id=turn.id,
+                report_id=report_id,
+                tokens=tokens,
+                notice=notice,
+            )
+            if (
+                done == srules.RAN
+                and s.repeat == srules.EVERY
+                and s.next_at is not None
+                and srules.is_done_answer(text)
+            ):
+                await repo.update_schedule(
+                    tx.conn, s.id, {"next_at": None, "done_at": tx.now}, tx.now
+                )
+                await self._schedule_event(
+                    tx, "schedule.updated", "relaybay", s, done="its answer starts with done"
+                )
+        if run.is_open and run.status != "ended":
+            label = f"check of schedule {s.id}" if s is not None else "check"
+            ended = f"{label} {done}: {why}"
+            await self._set_run_status(tx, run, "ended", ended, ended_by="relaybay")
+            await self._run_event(tx, "run.ended", "relaybay", None, run.id, reason=ended)
+            await self._end_run_session(tx, run)
+
+    async def _check_report(self, tx: _Tx, s: srules.Schedule, run: Run, body: str) -> int | None:
+        """The check's answer as a report on its card; like a turn's report, a failure to write
+        it must not keep the turn from ending, so it is undone to a savepoint and logged."""
+        await tx.conn.execute("SAVEPOINT check_report")
+        events = len(tx.events)
+        report_id = None
+        try:
+            task = await self.get_task(s.task_id or 0, tx.conn)
+            report_id = await self._write_report(
+                tx,
+                task,
+                body,
+                {},
+                session_id=run.session_id,
+                actor=run.session_name or f"check run {run.id}",
+                format_problem=None,
+                size_task=False,
+            )
+        except Exception:
+            await tx.conn.execute("ROLLBACK TO check_report")
+            del tx.events[events:]
+            logger.exception("Writing the report of check run %d failed", run.id)
+        await tx.conn.execute("RELEASE check_report")
+        return report_id
+
+    async def _settle_checks(self) -> None:
+        """Schedule runs whose check is over without its end written: the server stopped
+        between the claim and the run, or while the turn ran (the run is lost), or the owner
+        ended the run before its turn started. Each ends with what happened. Read first: a
+        check that runs or waits in the queue needs no write."""
+        for open_run in await repo.open_schedule_runs(self._r):
+            if not await self._check_over(self._r, open_run):
+                continue
+            async with self._tx() as tx:
+                found = await repo.get_schedule_run(tx.conn, open_run.id)
+                s = await repo.get_schedule(tx.conn, open_run.schedule_id, deleted=True)
+                if found is None or not found.is_open or s is None:
+                    continue
+                if not await self._check_over(tx.conn, found):
+                    continue
+                run = await repo.get_run(tx.conn, found.run_id) if found.run_id else None
+                if run is None:
+                    why = (
+                        "the server stopped before its check started"
+                        if found.run_id is None
+                        else "its run is gone"
+                    )
+                    await self._finish_schedule_run(tx, s, found.id, srules.FAILED, why)
+                    continue
+                last = await repo.last_turn(tx.conn, run.id)
+                if not run.is_open:
+                    await self._finish_schedule_run(
+                        tx,
+                        s,
+                        found.id,
+                        srules.STOPPED,
+                        run.status_reason or "its run ended",
+                        run_id=run.id,
+                        turn_id=last.id if last else None,
+                    )
+                    continue
+                if last is None:
+                    continue
+                await self._end_check(
+                    tx, run, last.id, last.outcome or run.status, None, run.status_reason
+                )
+
+    @staticmethod
+    async def _check_over(conn: aiosqlite.Connection, found: srules.ScheduleRun) -> bool:
+        """An open schedule run whose check is over: never started, gone, ended, or open with
+        no turn running or waiting and stopped, lost or idle."""
+        run = await repo.get_run(conn, found.run_id) if found.run_id else None
+        if run is None or not run.is_open:
+            return True
+        if (
+            await repo.active_turn(conn, run.id) is not None
+            or await repo.next_queued_turn(conn, run.id) is not None
+        ):
+            return False
+        return run.status in ("lost", "stopped", "idle")
+
+    # --- schedules over MCP: the coordinator's one-off checks and reminders -------------------
+
+    async def _check_schedule_caps(
+        self, conn: aiosqlite.Connection, run_id: int, kind: str
+    ) -> None:
+        """A coordinator's schedules: at most COORDINATOR_OPEN_MAX that may still run, and each
+        check counts in its profile's run_start_per_day, as a run_start does."""
+        open_now = await repo.open_coordinator_schedules(conn)
+        if open_now >= srules.COORDINATOR_OPEN_MAX:
+            raise ValidationError(
+                f"The coordinator has {open_now} schedules that may still run, at most"
+                f" {srules.COORDINATOR_OPEN_MAX}: cancel one with schedule_cancel first. Nothing"
+                " added."
+            )
+        if kind == srules.CHECK:
+            await self._check_coordinator_cap(conn, run_id)
+
+    async def _schedule_caller(
+        self, session: str | None, hook_session: str | None, tool: str
+    ) -> Run:
+        """The coordinator run under its profile's `schedule_add` right; anyone else is
+        refused: the owner keeps schedules on the board."""
+        run = await self._coordinator_right(self._r, session, hook_session, "schedule_add", tool)
+        if run is None:
+            raise ValidationError(
+                f"{tool} is for the coordinator run only (its profile's schedule_add right);"
+                " schedules are the owner's on the board (Schedules). Nothing changed."
+            )
+        return run
+
+    async def schedule_add_mcp(
+        self,
+        kind: str,
+        prompt: str,
+        *,
+        project: str | None = None,
+        task: str | None = None,
+        at: str | None = None,
+        in_minutes: int | None = None,
+        every_minutes: int | None = None,
+        max_times: int | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> srules.Schedule:
+        """`schedule_add`: a one-off check or reminder (`at` or `in_minutes`), or a check every
+        N minutes bounded by `max_times`. Never a coordinator turn and never a daily or a
+        repeating reminder: those are the owner's, on the board."""
+        caller = await self._schedule_caller(session, hook_session, "schedule_add")
+        kind = srules.clean_kind(kind)
+        if kind == srules.COORDINATOR_TURN:
+            raise ValidationError(
+                "A coordinator turn on a schedule is the owner's: ask the owner to add it on the"
+                " board (Schedules). Nothing added."
+            )
+        values: dict[str, Any] = {"kind": kind, "prompt": prompt, "project": project, "task": task}
+        if every_minutes is not None:
+            if kind != srules.CHECK:
+                raise ValidationError(
+                    "Only a check repeats over MCP (every_minutes with max_times); a repeating"
+                    " reminder is the owner's, on the board. Nothing added."
+                )
+            if at or in_minutes is not None:
+                raise ValidationError(
+                    "every_minutes starts one interval from now: no at or in_minutes."
+                )
+            values.update(repeat=srules.EVERY, every_minutes=every_minutes, max_times=max_times)
+        else:
+            if max_times is not None:
+                raise ValidationError("max_times goes with every_minutes only.")
+            if (at is None) == (in_minutes is None):
+                raise ValidationError(
+                    "Give the time once: at (YYYY-MM-DD HH:MM, this machine's local time) or"
+                    " in_minutes. Nothing added."
+                )
+            if in_minutes is not None:
+                minutes = int(in_minutes)
+                if not 1 <= minutes <= srules.IN_MINUTES_MAX:
+                    raise ValidationError(
+                        f"in_minutes must be from 1 to {srules.IN_MINUTES_MAX}; got {minutes}."
+                    )
+                at = srules.iso(self._now() + timedelta(minutes=minutes))
+            else:
+                moment = srules.clean_at(at, self.local_time)
+                if moment > self._now() + timedelta(minutes=srules.IN_MINUTES_MAX):
+                    raise ValidationError(
+                        "at must be within a week from now (as in_minutes); a later time is the"
+                        " owner's, on the board. Nothing added."
+                    )
+            values.update(repeat=srules.ONCE, at=at)
+        name = caller.session_name or crules.SESSION_NAME.format(run_id=caller.id)
+        await self._check_schedule_caps(self._r, caller.id, kind)
+        return await self.create_schedule(
+            values, actor=name, created_by_kind="coordinator", coordinator_run=caller.id
+        )
+
+    async def schedule_list_mcp(
+        self, *, session: str | None = None, hook_session: str | None = None
+    ) -> list[srules.Schedule]:
+        """`schedule_list`: the coordinator's schedules and the owner's, to read."""
+        await self._schedule_caller(session, hook_session, "schedule_list")
+        return await self.schedules()
+
+    async def schedule_cancel_mcp(
+        self,
+        schedule_id: int,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> srules.Schedule:
+        """`schedule_cancel`: deletes a schedule a coordinator made (any coordinator run of
+        it); the owner's are refused."""
+        caller = await self._schedule_caller(session, hook_session, "schedule_cancel")
+        found = await self.get_schedule(schedule_id)
+        if found.created_by_kind != "coordinator":
+            raise ValidationError(
+                f"Schedule {found.id} is the owner's: only the owner changes it, on the board."
+                " Nothing changed."
+            )
+        name = caller.session_name or crules.SESSION_NAME.format(run_id=caller.id)
+        await self.delete_schedule(found.id, actor=name)
+        return found
 
     # --- questions to the owner -----------------------------------------------
 

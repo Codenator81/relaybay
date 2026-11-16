@@ -7,7 +7,10 @@ Pure rules only: names, validation, the shipped rows and the fixed lines no prof
 
 import json
 import re
+import shlex
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from relaybay.domain.errors import ValidationError
@@ -250,3 +253,118 @@ def rights_json(rights: dict[str, int]) -> str:
 
 def kinds_json(kinds: list[str]) -> str:
     return json.dumps(kinds)
+
+
+# A check takes these away besides the fixed ones: `dontAsk` pre-approves the user's and the
+# project's own `permissions.allow` rules, and a deny beats an allow.
+CHECK_DISALLOWED = ("Edit", "Write", "MultiEdit", "NotebookEdit", "PowerShell", "mcp__relaybay")
+# Tools an allow rule of the file kind covers: an `Edit` rule covers every file write.
+_FILE_TOOLS = {
+    "Edit": ("Edit", "Write", "MultiEdit", "NotebookEdit"),
+    "Read": ("Read",),
+    "Write": ("Write",),
+    "NotebookEdit": ("NotebookEdit",),
+    "Glob": ("Glob",),
+    "Grep": ("Grep",),
+}
+# A Bash command with one of these runs more than the one command a rule names.
+_SHELL_CHAINING = re.compile(r"[;&|`<>$\r\n]")
+# Options of the read-only git and gh commands that write, run something or wait: git
+# accepts any unique prefix of a long option (`--outp=x`), so a prefix of one is refused too.
+REFUSED_OPTIONS = (
+    "--output",
+    "--ext-diff",
+    "--textconv",
+    "--config-env",
+    "--exec",
+    "--exec-path",
+    "--upload-pack",
+    "--receive-pack",
+    "--open-files-in-pager",
+    "--paginate",
+    "--web",
+    "--watch",
+)
+# `-c name=value` (also `-cname=value`) sets any git config, a pager or a hook among them.
+REFUSED_SHORT = ("-c",)
+# Short forms that mean one of REFUSED_OPTIONS only for one program (`gh -w` is `--web`;
+# `git log -w` ignores whitespace and stays allowed).
+REFUSED_SHORT_OF = {"gh": ("-w",)}
+
+
+def _call_path(tool_input: dict[str, Any], cwd: str | None, windows: bool) -> str | None:
+    raw = tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    given = Path(raw)
+    # Resolved (`..` and links followed): a path written to look inside a folder is not.
+    resolved = str((given if given.is_absolute() or cwd is None else Path(cwd) / given).resolve())
+    if windows:
+        win = PureWindowsPath(resolved)
+        drive = win.drive.rstrip(":").lower()
+        parts = [p for p in win.parts[1:] if p not in ("\\", "/")]
+        return ("/" + "/".join([drive, *parts])).lower()
+    return resolved
+
+
+def _refused_option(command: str) -> bool:
+    """A word of the command is one of REFUSED_OPTIONS (or a prefix of one, with or without
+    `=value`) or a short option of REFUSED_SHORT; a command that does not split is refused."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return True
+    for word in words[1:]:
+        if word.startswith("--") and len(word) > 2:
+            name = word.split("=", 1)[0]
+            if any(option.startswith(name) for option in REFUSED_OPTIONS):
+                return True
+        elif word.startswith("-") and not word.startswith("--"):
+            shorts = REFUSED_SHORT + REFUSED_SHORT_OF.get(words[0], ())
+            if any(word.startswith(short) for short in shorts):
+                return True
+    return False
+
+
+def call_allowed(
+    rules: list[str],
+    tool: str,
+    tool_input: dict[str, Any],
+    *,
+    cwd: str | None = None,
+    windows: bool = False,
+) -> bool:
+    """Whether a tool call matches one of a profile's allow rules: a tool name (`*` globs), an
+    MCP server (`mcp__server`) or tool, or `Tool(pattern)` with the pattern globbed against the
+    Bash command (one command only: no chaining, pipes or redirection) or the file's resolved
+    path (`//` anchors at the root; an `Edit` rule covers Write and NotebookEdit)."""
+    for rule in rules:
+        found = re.fullmatch(r"([^()]+)\((.*)\)", rule)
+        if found is None:
+            if rule.startswith("mcp__") and "__" not in rule[5:]:
+                if tool == rule or tool.startswith(rule + "__"):
+                    return True
+            elif fnmatchcase(tool, rule):
+                return True
+            continue
+        name, pattern = found[1], found[2]
+        if name == "Bash":
+            command = tool_input.get("command")
+            if tool != "Bash" or not isinstance(command, str):
+                continue
+            command = command.strip()
+            if _SHELL_CHAINING.search(command) or _refused_option(command):
+                continue
+            bare = pattern[:-2] if pattern.endswith(" *") else None
+            if fnmatchcase(command, pattern) or command == bare:
+                return True
+            continue
+        if tool not in _FILE_TOOLS.get(name, (name,)):
+            continue
+        path = _call_path(tool_input, cwd, windows)
+        if path is None or not pattern.startswith("//"):
+            continue
+        wanted = pattern[1:].lower() if windows else pattern[1:]
+        if fnmatchcase(path, wanted) or fnmatchcase(path + "/", wanted):
+            return True
+    return False

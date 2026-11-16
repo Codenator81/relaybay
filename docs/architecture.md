@@ -164,6 +164,15 @@ run_worktree  id, run_id, project_repo_id, repo_name, source_path, path, path_ke
               created_by_run (0|1), copied (JSON names), created_at, removed_at, kept_reason,
               question_id (the owner's question whether to remove it), kept_at
               -- one open run per path_key, checked by the service
+schedule      id, kind (coordinator|check|reminder), repeat (once|daily|every), at,
+              time_of_day, weekdays_only, every_minutes (>= 5), max_times (1..24), timezone,
+              project_id, task_id, profile, prompt, created_by, created_by_kind
+              (owner|coordinator), enabled, next_at, times_run, done_at, created_at,
+              updated_at, updated_by   -- times in UTC; daily follows the local time
+schedule_run  id, schedule_id, due_at, started_at, ended_at, outcome
+              (ran|missed|skipped|failed|stopped), reason, tokens, run_id (a check run),
+              turn_id, report_id, notice, seen_at (an Inbox line until seen)
+              -- one open run per schedule (UNIQUE index WHERE ended_at IS NULL)
 question      id, task_id, run_id, session_id (who asked), asked_by, kind (question|look), text,
               options (JSON), default_answer, blocking (0|1), look_url, look_account,
               default_after, asked_at, status (open|answered|defaulted|withdrawn), answer,

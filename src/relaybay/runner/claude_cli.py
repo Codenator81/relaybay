@@ -124,6 +124,9 @@ class TurnSpec:
     add_dirs: tuple[str, ...] = field(default_factory=tuple)
     settings_file: str | None = None  # relaybay's hooks, when the user's settings lack them
     mcp_file: str | None = None  # relaybay's MCP server, likewise
+    # A schedule's one-shot check (probe 20 of design 0023): no transcript, capped in steps.
+    no_session_persistence: bool = False
+    max_turns: int | None = None
 
 
 def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
@@ -160,6 +163,10 @@ def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
         argv += ["--mcp-config", spec.mcp_file]
     if spec.chrome:
         argv.append("--chrome")
+    if spec.no_session_persistence:
+        argv.append("--no-session-persistence")
+    if spec.max_turns is not None:
+        argv += ["--max-turns", str(spec.max_turns)]
     if spec.resume:
         argv += ["--resume", spec.resume]
     if batch:
