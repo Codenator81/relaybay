@@ -175,7 +175,7 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 |---|---|---|
 | A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | done | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
 
-## 0.11 — the coordinator, schedules and profiles
+## 0.11 — the coordinator, schedules and profiles (released 2026-11-16)
 
 | Item | Status | Design |
 |---|---|---|
