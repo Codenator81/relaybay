@@ -2,9 +2,9 @@
 
 - Status: **Accepted**, 2026-11-10; 0.9 shipped 2026-11-13 (PR 69-83); the 0.10 Terminal tab is
   built (not released). The overall design of agents started and steered by relaybay,
-  releases 0.9 to 0.12. Details live in [0012](0012-runner-and-embedded-terminal.md) (runner,
+  releases 0.9 to 0.11 (the owner, 2026-11-16: no 0.12 in its earlier form, no managers). Details live in [0012](0012-runner-and-embedded-terminal.md) (runner,
   terminal, probes), [0022](0022-questions-and-approvals.md) (questions and approvals as objects)
-  and [0023](0023-coordinator-and-schedules.md) (coordinator and schedules). Closes the direction of
+  and [0023](0023-coordinator-and-schedules.md) (coordinator, schedules and profiles). Closes the direction of
   [0017](0017-readiness-for-agents-inside.md); uses [0018](0018-brake-and-budgets.md),
   [0019](0019-session-messages.md), [0013](0013-policy-as-data.md), the pages planned in
   [0004](0004-navigation.md) and the autonomy rule of [0015](0015-intake-and-autonomy.md).
@@ -59,7 +59,7 @@
   ([0012](0012-runner-and-embedded-terminal.md#probes-2026-11)). No code before the coordinator
   accepts this design; the owner answered [O1](#questions-for-the-owner) (go ahead).
 - Size: 0.9 about 13 agent-days ([plan by PR](#plan-of-09-by-pull-request)); 0.10 about 4; 0.11
-  about 6; 0.12 about 2.
+  about 10 with the profile editor moved in ([0023](0023-coordinator-and-schedules.md#plan-by-pull-request)).
 
 ## Goal
 
@@ -327,7 +327,7 @@ Only these stay with the owner; everything else the coordinator decides.
 | C5 | `psutil` for free memory | No; platform code (`GlobalMemoryStatusEx`, `sysctl`, `/proc/meminfo`) | One dependency less in the frozen build |
 | C6 | Default model and effort | Opus, medium; the other model as a card field set by the coordinator or the owner | Today's practice |
 | C7 | One coordinator for all projects | Yes ([0023](0023-coordinator-and-schedules.md)) | Links and priorities across projects are visible only from above |
-| C8 | Managers layer | Not built; decided after a week of coordinator work | A layer of retelling is the problem being removed |
+| C8 | Managers layer | **Decided by the owner, 2026-11-16: not built**, no Managers page | A layer of retelling is the problem being removed |
 | C9 | ACP adapters and containers | Not before the runner has run a week (0017) | Same as 0017 |
 | C13 | Sign-in methods a run accepts | Subscription only; API keys and others by the owner's switch in Settings | The owner runs on his subscription; a key bills elsewhere |
 | C11 | relaybay's hooks in a run | The user's settings when `setup` installed them there, else the byte-identical command with `--settings` for the run | Claude Code runs an identical handler once (probe 8), so a wrong check fires nothing twice; no dedupe state on relaybay's hook path |
@@ -341,8 +341,7 @@ Only these stay with the owner; everything else the coordinator decides.
 |---|---|---|
 | 0.9 | The shutdown fix; the runner on a card (headless, `--resume`, several repositories); questions, "look at this" and approvals as objects; slots and memory; lifecycle; full reports with `verified` marks | One real task of size S or M over two repositories (a backend and a frontend change) from card to push without the desktop chat; the owner answers one question, looks at one screen and gives the approvals on the board |
 | 0.10 | Terminal tab on a run (PTY, xterm.js, `claude --resume <id>`), off by default; headless turns queue while it is open | A step-by-step acceptance by eye done in relaybay's terminal |
-| 0.11 | The coordinator as a permanent run, woken by events; schedules; the Coordinator page ([0023](0023-coordinator-and-schedules.md)) | A working day in which the coordinator inside relaybay sets and drives the tasks |
-| 0.12 | Role profiles editable on the board; managers only if the week of 0.11 shows the need | A profile changed on the board takes effect on the next turn |
+| 0.11 | The coordinator as a permanent run, woken by events; schedules; the Coordinator page; permission profiles as data, editable on the board ([0023](0023-coordinator-and-schedules.md)) | A working day in which the coordinator inside relaybay sets and drives the tasks; a profile changed on the board takes effect on the next turn |
 | 1.0 | As in the roadmap, plus a week of the owner's daily work through relaybay without going back to the desktop app for anything relaybay should do | |
 
 Each release goes onto the owner's machine and runs there before the next one starts; findings from
@@ -393,6 +392,6 @@ defect of 0.9.
 
 - A chat of our own; the terminal with the ordinary `claude` is the direct conversation (0.10).
 - An Agent SDK runner on a subscription.
-- Architect, developer and reviewer as relaybay entities; a Managers page (unless 0.12 says so).
+- Architect, developer and reviewer as relaybay entities; managers and a Managers page (the owner, 2026-11-16).
 - ACP adapters and containers before the runner has run a week.
 - Electron or a browser panel of our own; the diff and browser plugins (owner, 2026-11-10: not now).
