@@ -480,11 +480,11 @@ Start the user's own claude on a card, for coordinator sessions only: cards in p
 
 ### `run_status`
 
-The card's run (the open one, else the latest): status, folders, Claude session id, tokens and the latest turns. Open to every session.
+The card's run (the open one, else the latest): status, folders, Claude session id, tokens and the latest turns; task 'coordinator': the coordinator run, which has no card. Open to every session.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id; 'coordinator' for the coordinator run. |
 
 ### `run_events`
 
@@ -513,13 +513,13 @@ Change the permission mode, model or effort of the card's open run from its next
 
 ### `question_ask`
 
-Ask the owner a question on a card; it shows in the owner's Inbox and on the card, and only the owner answers it, on the board. Every question carries a default; at most 5 are open per card. A blocking one: end your turn, the answer comes as your next turn (a run) or as an owner comment (a desktop session). kind look: bring up the screen first, pass its url and the test account's name.
+Ask the owner a question on a card; it shows in the owner's Inbox and on the card, and only the owner answers it, on the board. Every question carries a default; at most 5 are open per card. A blocking one: end your turn, the answer comes as your next turn (a run) or as an owner comment (a desktop session). kind look: bring up the screen first, pass its url and the test account's name. The coordinator run may leave task out: the question is its own, on the Coordinator page.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `text` | string | yes | The question, or for kind look what to check on the screen. Never a password or token. |
 | `default` | string | yes | What you do when the owner does not answer: required, a question without a default is refused. |
+| `task` | string or null | no | Task key such as 'acme-shop-12', or its numeric id: the card the question is on. Required, except for the coordinator run, which may ask without a card. |
 | `options` | list of string or null | no | Short answers the owner picks from (at most 8). Optional. |
 | `blocking` | boolean or null | no | true: you end your turn and wait for the answer. Default false: you go on with the default. A look question is always blocking. |
 | `default_after` | string or null | no | For a non-blocking question: when it closes with its default, a time with its zone (2026-12-01T15:00:00Z) or a duration (30m, 2h, 1d). Default 1h. |

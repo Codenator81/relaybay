@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -35,6 +36,7 @@ from relaybay.domain import annotations as ann
 from relaybay.domain import approvals as arules
 from relaybay.domain import backlog, guard, intake
 from relaybay.domain import comments as comment_text
+from relaybay.domain import coordinator as crules
 from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
@@ -230,6 +232,7 @@ from relaybay.policy import (
     widened_on_live,
 )
 from relaybay.runner import auth as run_auth
+from relaybay.runner import coordinator as coordinator_folder
 from relaybay.runner import desktop as run_desktop
 from relaybay.runner import memory as run_memory
 from relaybay.runner import terminal as run_terminal
@@ -301,6 +304,11 @@ AUDIT_CHANGE_KINDS = (
     "profile.updated",
     "profile.deleted",
     "profile.reset",
+    "settings.coordinator",
+    "coordinator.started",
+    "coordinator.new_session",
+    "coordinator.stopped",
+    "coordinator.ended",
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -1087,6 +1095,7 @@ RUN_REPORT_LINE = (
     " `state · size · gist`."
 )
 RUN_START_STAGES = ("plan", "dev")
+COORDINATOR_REF = "coordinator"  # run_status's name for the coordinator run
 RUN_START_NOT_COORDINATOR = (
     "run_start is only for the coordinator sessions named in the server's config; a side task"
     " goes to backlog_add. Nothing started."
@@ -1202,6 +1211,12 @@ async def _make_worktrees(
 
         work.add_done_callback(undo)
         raise
+
+
+def _ended_hint(run: Run) -> str:
+    if run.is_coordinator:
+        return f"Run {run.id} has ended; start the coordinator again on the Coordinator page."
+    return f"Run {run.id} has ended; start a new run on {run.task_key}."
 
 
 def _owner_place(run: Run) -> str:
@@ -2220,10 +2235,20 @@ class Service:
         )
         args = (session.id, BOARD_ACTORS, ACCEPTANCE_TOLD, since)
         bound = await repo.untold_plan_acceptances(self._r, *args)
-        others = await repo.untold_board_acceptances(self._r, *args) if self.coordinators else []
+        coordinator_run = (
+            await repo.open_coordinator_run(self._r) if session.kind == "run" else None
+        )
+        own = coordinator_run is not None and coordinator_run.session_id == session.id
+        others = (
+            await repo.untold_board_acceptances(self._r, *args) if self.coordinators or own else []
+        )
         # Asked only when there is something to tell: the check reads several rows.
-        coordinator = bool(others) and await self._is_coordinator(
-            self._r, session.external_id or session.name, session.cc_session_id
+        # The coordinator run's own session row is relaybay's, not a caller's claim.
+        coordinator = bool(others) and (
+            bool(own)
+            or await self._is_coordinator(
+                self._r, session.external_id or session.name, session.cc_session_id
+            )
         )
         if not bound and not coordinator:
             return []  # the common case: no write transaction per tool call
@@ -2426,7 +2451,7 @@ class Service:
                 # Its lines and transcript go when the card closes, allowed call or not.
                 for run in await repo.open_runs_of_session(tx.conn, session.id):
                     if await repo.mark_run(tx.conn, run.id, "touched_live_at", tx.now):
-                        task = await self.get_task(run.task_id, tx.conn)
+                        task = await self._run_task(tx.conn, run)
                         await self._run_event(tx, "run.touched_live", "relaybay", task, run.id)
             bound = await repo.open_tasks_of_session(tx.conn, session.id) if session else []
             for touch in touches:
@@ -3983,6 +4008,7 @@ class Service:
         hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Task:
+        await self._coordinator_right(self._r, session, hook_session, "tasks_write", "task_create")
         fields: dict[str, Any] = {
             "title": _clean_title(title),
             "stage": parse_stage(stage) if stage else Stage.PLAN,
@@ -4096,6 +4122,7 @@ class Service:
     ) -> Saved:
         """`update_task` that also returns the rule warnings of a stage move. `repos` and `prs`
         in `changes` add or remove the task's code links in the same transaction."""
+        await self._coordinator_right(self._r, session, hook_session, "tasks_write", "task_update")
         links = {k: _link_entries(changes[k], k) for k in LINK_NAMES if k in changes}
         changes = {k: v for k, v in changes.items() if k not in LINK_NAMES}
         async with self._tx() as tx:
@@ -4375,6 +4402,9 @@ class Service:
     ) -> Saved:
         """Move the task; `next_step` / `waiting_on`, if given, are saved in the same
         transaction ('' clears them). Returns the task and the rule warnings of the move."""
+        await self._coordinator_right(
+            self._r, session, hook_session, "tasks_write", "task_set_stage"
+        )
         changes: dict[str, Any] = {"stage": stage}
         for name, value in (
             ("stage_note", note),
@@ -6446,6 +6476,7 @@ class Service:
         """A message to another session; returns it and an honest line on when it can arrive.
         A reply over the depth limit is refused and shown in the Inbox, so that mark commits
         and the error follows it."""
+        await self._coordinator_right(self._r, session, hook_session, "messages", "message_send")
         text = _clean_message(body)
         refused = None
         async with self._tx() as tx:
@@ -7009,6 +7040,7 @@ class Service:
     ) -> Task:
         """`task_archive` / `task_unarchive`: for coordinator sessions only."""
         tool = "task_archive" if archived else "task_unarchive"
+        await self._coordinator_right(self._r, session, hook_session, "tasks_write", tool)
         async with self._tx() as tx:
             if not await self._is_coordinator(tx.conn, session, hook_session):
                 raise ValidationError(ARCHIVE_NOT_COORDINATOR.format(tool=tool))
@@ -7303,6 +7335,9 @@ class Service:
         only for a configured coordinator; `planned` never (only "To plan" on the board creates
         the task). Anyone else may edit title, body, area, priority and assignee of an item that
         is still new and that the same session added."""
+        await self._coordinator_right(
+            self._r, session, hook_session, "tasks_write", "backlog_update"
+        )
         async with self._tx() as tx:
             item = await self._backlog(tx.conn, ref)
             coordinator = await self._is_coordinator(tx.conn, session, hook_session)
@@ -8150,6 +8185,7 @@ class Service:
     ) -> tuple[Task, Plan, bool]:
         """Accept the task's plan (the owner on the board, the coordinator over MCP). The third
         value is False when it was accepted already (nothing written)."""
+        await self._coordinator_right(self._r, session, hook_session, "plan_accept", "plan_accept")
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
             sess = await self._session(tx, session, session_title, hook_session)
@@ -9822,13 +9858,77 @@ class Service:
                     reason="The project_rules row was removed by hand.",
                 )
 
+    async def _coordinator_run_of(
+        self, conn: aiosqlite.Connection, value: str | None, hook_session: str | None
+    ) -> Run | None:
+        """The open coordinator run when it is the caller: the call's `hook_session` is the run's
+        Claude session id (relaybay records it at the turn's init, not from a hook link), or the
+        session named is the run's own and carries that hook session. The same weak identity as
+        the `coordinators` config: one shared token, so it stops mistakes, not an attacker."""
+        cc_id = (hook_session or "").strip()
+        if not cc_id:
+            return None
+        run = await repo.open_coordinator_run(conn)
+        if run is None:
+            return None
+        if run.claude_session_id == cc_id:
+            return run
+        needle = (value or "").strip()
+        if needle and run.session_id is not None:
+            session = await self._known_session(needle, conn)
+            if session is not None and session.id == run.session_id:
+                return run if session.cc_session_id == cc_id else None
+        return None
+
+    async def _coordinator_right(
+        self,
+        conn: aiosqlite.Connection,
+        value: str | None,
+        hook_session: str | None,
+        right: str,
+        tool: str,
+    ) -> Run | None:
+        """For a call of the coordinator run: refused when its profile has `right` off; returns
+        the run when it is the caller (None: another caller, whose rights are checked as
+        before). A call that names the coordinator run's own session is held to the rights
+        too, whatever its hook_session says: a missing or stale hook never widens them."""
+        run = await self._coordinator_run_of(conn, value, hook_session)
+        named = run or await self._named_coordinator_run(conn, value)
+        if named is None:
+            return None
+        run, caller = named, run
+        profile = await repo.get_profile(conn, run.profile or crules.DEFAULT_PROFILE)
+        if profile is None or not profile.rights.get(right):
+            name = profile.name if profile is not None else run.profile
+            raise ValidationError(
+                f"{tool} is off for the coordinator: its profile {name} does not grant"
+                f" {right}. The owner changes that in Settings -> Profiles. Nothing changed."
+            )
+        return caller
+
+    async def _named_coordinator_run(
+        self, conn: aiosqlite.Connection, value: str | None
+    ) -> Run | None:
+        """The open coordinator run when `value` names its session (by name, alias or id)."""
+        needle = (value or "").strip()
+        if not needle:
+            return None
+        run = await repo.open_coordinator_run(conn)
+        if run is None or run.session_id is None:
+            return None
+        session = await self._known_session(needle, conn)
+        return run if session is not None and session.id == run.session_id else None
+
     async def _is_coordinator(
         self, conn: aiosqlite.Connection, value: str | None, hook_session: str | None
     ) -> bool:
-        """Is the caller an entry of `coordinators`? Asked before the call's own `hook_session`
-        is linked, or it would prove itself. A desktop id needs that session's exact hook id,
-        which no tool prints; a name or an alias only has to be passed, so it guards against
-        mistakes, it is not access control: all clients share one token."""
+        """Is the caller the open coordinator run, or an entry of `coordinators`? Asked before
+        the call's own `hook_session` is linked, or it would prove itself. A desktop id needs
+        that session's exact hook id, which no tool prints; a name or an alias only has to be
+        passed, so it guards against mistakes, it is not access control: all clients share one
+        token."""
+        if await self._coordinator_run_of(conn, value, hook_session) is not None:
+            return True
         needle = (value or "").strip()
         if not needle:
             return False
@@ -9941,6 +10041,9 @@ class Service:
     ) -> tuple[str, int]:
         """A new version of the scope's rules, for a coordinator session; returns the canonical
         scope and the version. The owner sees it in the Inbox until it is marked read."""
+        await self._coordinator_right(
+            self._r, session, hook_session, "rules_update", "rules_update"
+        )
         async with self._tx() as tx:
             if not await self._is_coordinator(tx.conn, session, hook_session):
                 raise self._not_a_coordinator()
@@ -10432,12 +10535,12 @@ class Service:
     ) -> RunProfile:
         """An edit of a profile, board only; its version grows by one and the next turn of
         every run under it starts with it. A profile still named by a project's run defaults
-        or used by an open run on a card stays for cards."""
+        or used by an open run on a card stays for cards; one the open coordinator run uses
+        stays for the coordinator."""
         cleaned = self._profile_values(values)
         async with self._tx() as tx:
             before = await self.get_profile(name, tx.conn)
-            if "card" not in cleaned["kinds"]:
-                await self._refuse_profile_in_use(tx.conn, before, "taken off cards")
+            await self._refuse_kinds_in_use(tx.conn, before, cleaned["kinds"], "taken off")
             if before.snapshot() == cleaned:
                 return before
             await repo.update_profile(tx.conn, before.name, cleaned, tx.now, actor)
@@ -10454,8 +10557,7 @@ class Service:
             if before.snapshot() == shipped:
                 return before
             self._check_batch_rules(shipped)
-            if "card" not in shipped["kinds"]:
-                await self._refuse_profile_in_use(tx.conn, before, "reset off cards")
+            await self._refuse_kinds_in_use(tx.conn, before, shipped["kinds"], "reset off")
             await repo.update_profile(tx.conn, before.name, shipped, tx.now, actor)
             await self._profile_saved(tx, "profile.reset", actor, before.name, before)
             return await self.get_profile(before.name, tx.conn)
@@ -10470,20 +10572,38 @@ class Service:
                     f"{before.name} ships with relaybay: it can be edited or reset, not deleted."
                 )
             await self._refuse_profile_in_use(tx.conn, before, "deleted")
+            if (await self.coordinator_settings(tx.conn)).profile == before.name:
+                raise ConflictError(
+                    f"{before.name} is the coordinator's profile in Settings -> Agents: pick"
+                    " another one there first."
+                )
             await repo.delete_profile(tx.conn, before.name)
             await self._profile_saved(tx, "profile.deleted", actor, before.name, before)
 
+    async def _refuse_kinds_in_use(
+        self, conn: aiosqlite.Connection, profile: RunProfile, kinds: list[str], what: str
+    ) -> None:
+        """A run kind leaves the profile only when nothing of that kind uses it."""
+        if "card" not in kinds:
+            await self._refuse_profile_in_use(conn, profile, f"{what} cards", "card")
+        if run_rules.COORDINATOR not in kinds:
+            await self._refuse_profile_in_use(
+                conn, profile, f"{what} the coordinator", run_rules.COORDINATOR
+            )
+
     @staticmethod
     async def _refuse_profile_in_use(
-        conn: aiosqlite.Connection, profile: RunProfile, what: str
+        conn: aiosqlite.Connection, profile: RunProfile, what: str, kind: str | None = None
     ) -> None:
-        if profile.projects:
+        """Refused while a project's run defaults name it (unless `kind` is not `card`) or an
+        open run (of `kind`, None: of any kind) uses it."""
+        if profile.projects and kind in (None, "card"):
             raise ConflictError(
                 f"{profile.name} is the profile of {', '.join(profile.projects)}: it cannot be"
                 f" {what} while a project's agent defaults name it. Pick another profile there"
                 " first."
             )
-        runs = await repo.open_runs_of_profile(conn, profile.name)
+        runs = await repo.open_runs_of_profile(conn, profile.name, kind)
         if runs:
             listed = ", ".join(str(r) for r in runs)
             raise ConflictError(
@@ -10640,8 +10760,11 @@ class Service:
         )
         return run, turn, run_lines.items(lines, run_lines.COMPACT_TEXT_MAX)
 
-    async def run_status(self, ref: str | int) -> tuple[Task, RunView | None]:
-        """run_status over MCP: open to every caller, it changes nothing."""
+    async def run_status(self, ref: str | int) -> tuple[Task | None, RunView | None]:
+        """run_status over MCP: open to every caller, it changes nothing. `coordinator`: the
+        coordinator run (the open one, else the latest), which has no card."""
+        if str(ref).strip().lower() == COORDINATOR_REF:
+            return None, await self.coordinator_run_view()
         task = await self.get_task(ref)
         return task, await self.run_view(task)
 
@@ -10742,6 +10865,8 @@ class Service:
         folders: list[tuple[str, int, str]] = []
         with_rows = {run_id for _, _, run_id, _ in in_use}
         for other in await repo.open_runs(conn):
+            if other.is_coordinator:
+                continue  # its folder is outside any repository and never a project's
             if other.cwd_repo_id is None:
                 folders.append((other.cwd, other.id, other.task_key))
             elif other.id not in with_rows:
@@ -10783,6 +10908,7 @@ class Service:
         brief: str | None = None,
         caller_kind: str = "owner",
         profile: str | None = None,
+        started_by_run: int | None = None,
     ) -> Run:
         """Start a run on the card: the owner's board button, or `run_start` of a coordinator
         (`start_run_mcp` checks the caller). Checks come first; then the new worktrees are made
@@ -10875,6 +11001,7 @@ class Service:
                     "auth_method": method,
                     "hooks_source": hooks_source,
                     "mcp_source": mcp_source,
+                    "started_by_run": started_by_run,
                 },
                 text=text,
                 free_mb=free,
@@ -10909,6 +11036,8 @@ class Service:
             await self._worktree_conflict(tx.conn, made, cwd_path if cwd_repo is None else None)
             if await repo.next_run_id(tx.conn) != run_id:
                 raise ConflictError("Another run started at the same moment; start this one again.")
+            if values.get("started_by_run") is not None:
+                await self._check_coordinator_cap(tx.conn, values["started_by_run"])
             await repo.insert_run(
                 tx.conn,
                 {
@@ -10986,9 +11115,16 @@ class Service:
         hook_session: str | None = None,
     ) -> Run:
         """`run_start`: a coordinator starts a run on a card in plan or dev with no brake on it,
-        in new worktrees, with the project's permission profile. Anyone else is refused."""
+        in new worktrees, with the project's permission profile. Anyone else is refused. The
+        coordinator run under its profile's rights: run_start on, at most run_start_per_day runs
+        a local day; it starts only runs on cards, never a coordinator."""
+        own = await self._coordinator_right(
+            self._r, session, hook_session, "run_start", "run_start"
+        )
         if not await self._is_coordinator(self._r, session, hook_session):
             raise ValidationError(RUN_START_NOT_COORDINATOR)
+        if own is not None:
+            await self._check_coordinator_cap(self._r, own.id)
         if (permission_mode or "").strip() not in ("", "-"):
             raise ValidationError(
                 "run_start takes no permission mode: a run started over MCP uses the project's"
@@ -11046,7 +11182,22 @@ class Service:
             effort=effort,
             brief=brief,
             caller_kind="coordinator",
+            started_by_run=own.id if own is not None else None,
         )
+
+    async def _check_coordinator_cap(self, conn: aiosqlite.Connection, run_id: int) -> None:
+        """The coordinator's run_start_per_day since the local midnight; asked before the checks
+        and again in the write transaction of the start, so two calls at once cannot pass it."""
+        run = await self.get_run(run_id, conn)
+        profile = await self.get_profile(run.profile or crules.DEFAULT_PROFILE, conn)
+        since = crules.local_day_start(datetime.now(UTC))
+        started = await repo.coordinator_starts_since(conn, since)
+        if started >= profile.per_day:
+            raise ValidationError(
+                f"The coordinator started {started} run(s) today, its profile {profile.name}"
+                f" allows {profile.per_day} a day. Nothing started; the owner may start more"
+                " on the cards."
+            )
 
     async def _refuse_braked_caller(self, session: str | None, what: str, nothing: str) -> None:
         """A coordinator's run tool: refused while a brake covers the caller."""
@@ -11147,7 +11298,7 @@ class Service:
                 changed["follows_profile"] = {"from": not run.mode_set, "to": follows}
                 values["mode_set"] = int(not follows)
             if changed:
-                task = await self.get_task(run.task_id, tx.conn)
+                task = await self._run_task(tx.conn, run)
                 await repo.update_run(tx.conn, run.id, values, tx.now)
                 await self._run_event(
                     tx, "run.settings_changed", actor, task, run.id, changed=changed
@@ -11167,6 +11318,9 @@ class Service:
     ) -> Run:
         """`run_settings`: a coordinator changes the mode (never raising it), model or effort of
         the card's open run between turns, under the brake rules of `run_start`."""
+        await self._coordinator_right(
+            self._r, session, hook_session, "run_settings", "run_settings"
+        )
         if not await self._is_coordinator(self._r, session, hook_session):
             raise ValidationError(RUN_SETTINGS_NOT_COORDINATOR)
         stopped = ("no run changes", "Nothing changed.")
@@ -11253,7 +11407,7 @@ class Service:
             run = await self.get_run(run_id, tx.conn)
             await repo.update_run(tx.conn, run.id, {"desktop_opened_at": tx.now}, tx.now)
             if run.is_open and run.with_owner:
-                task = await self.get_task(run.task_id, tx.conn)
+                task = await self._run_task(tx.conn, run)
                 await self._run_event(
                     tx, "run.opened_in_desktop", actor, task, run.id, claude_session_id=cc_id
                 )
@@ -11314,7 +11468,7 @@ class Service:
             run = await self.get_run(run_id, tx.conn)
             if not run.with_owner:
                 return
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             await repo.update_run(
                 tx.conn,
                 run.id,
@@ -11441,7 +11595,7 @@ class Service:
             await self.close_terminal(run.id, actor=actor, reason=f"{why} while it started")
             raise ValidationError(f"The terminal did not open: {why} while it started.")
         async with self._tx() as tx:
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             await self._run_event(
                 tx,
                 "run.terminal_opened",
@@ -11468,7 +11622,7 @@ class Service:
         terminal, code = closed
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             opened = datetime.fromtimestamp(terminal.opened_at, UTC).isoformat()
             await self._run_event(
                 tx,
@@ -11552,6 +11706,21 @@ class Service:
         brakes = await repo.open_brakes(conn)
         if not brakes:
             return None
+        if run.is_coordinator:
+            # For all projects: a project's or a card's brake does not hold it, `all` does.
+            return next(
+                (
+                    b
+                    for b in brakes
+                    if b.scope == "all"
+                    or (
+                        b.scope == "session"
+                        and run.session_id is not None
+                        and b.session_id == run.session_id
+                    )
+                ),
+                None,
+            )
         at_cwd = self._projects_at_cwd(await repo.projects_with_repo_path(conn), run.cwd)
         projects = {run.project_id, *(p.id for p in at_cwd)}
         for brake in brakes:
@@ -11593,14 +11762,15 @@ class Service:
             brake = await self._run_brake(tx.conn, run)
             if brake is not None:
                 reason = run_rules.brake_reason(brake.target, brake.reason)
-            elif running >= top:
+            elif running >= top and not run.is_coordinator:
                 reason = run_rules.slot_reason(running, top)
             elif need and free_mb is not None and free_mb < need:
                 reason = run_rules.memory_reason(free_mb, need)
             else:
-                task = await self.get_task(run.task_id, tx.conn)
+                task = await self._run_task(tx.conn, run)
                 await self._start_queued_turn(tx, run, task, turn_id, actor)
-                running += 1
+                if not run.is_coordinator:  # it takes no slot
+                    running += 1
                 if free_mb is not None:
                     free_mb -= need
                 launches.append((run.id, turn_id))
@@ -11609,10 +11779,12 @@ class Service:
         return launches
 
     async def _start_queued_turn(
-        self, tx: _Tx, run: Run, task: Task, turn_id: int, actor: str
+        self, tx: _Tx, run: Run, task: Task | None, turn_id: int, actor: str
     ) -> None:
         turn = await repo.get_turn(tx.conn, turn_id)
         assert turn is not None
+        if run.is_coordinator:
+            await self._follow_coordinator_settings(tx, run)
         # Every turn reads its run's profile now: a profile edit takes effect on the next turn.
         # A run from before profiles keeps its own mode and tools.
         profile = await repo.get_profile(tx.conn, run.profile) if run.profile else None
@@ -11637,7 +11809,7 @@ class Service:
         if run.status == "queued" and _reason_kind(run.status_reason) == _reason_kind(reason):
             await repo.update_run(tx.conn, run.id, {"status_reason": reason}, tx.now)
             return
-        task = await self.get_task(run.task_id, tx.conn)
+        task = await self._run_task(tx.conn, run)
         turn = await repo.get_turn(tx.conn, turn_id)
         assert turn is not None
         await self._set_run_status(tx, run, "queued", reason)
@@ -11693,7 +11865,7 @@ class Service:
             turn = await repo.next_queued_turn(tx.conn, run.id)
             if turn is None or await repo.active_turn(tx.conn, run.id) is not None:
                 raise ValidationError(f"No turn of run {run.id} waits in the queue.")
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             top, need = await self.run_limits(tx.conn)
             await self._run_event(
                 tx,
@@ -11712,9 +11884,16 @@ class Service:
         await self._spawn_all([(run.id, turn.id)])
         return await self.get_run(run_id)
 
+    async def _run_task(self, conn: aiosqlite.Connection, run: Run) -> Task | None:
+        """The run's card; None for the coordinator run."""
+        return None if run.task_id is None else await self.get_task(run.task_id, conn)
+
     async def _run_event(
-        self, tx: _Tx, kind: str, actor: str, task: Task, run_id: int, **payload: Any
+        self, tx: _Tx, kind: str, actor: str, task: Task | None, run_id: int, **payload: Any
     ) -> None:
+        if task is None:
+            await tx.event(kind, actor, run_id=run_id, run_kind=run_rules.COORDINATOR, **payload)
+            return
         await tx.event(
             kind,
             actor,
@@ -11801,6 +11980,10 @@ class Service:
                     base_url=runs.config.base_url,
                     token_path=runs.config.token_path,
                 )
+                allowed = tuple(run.allowed_rules)
+                if run.is_coordinator:
+                    # Edit and Write inside its own folder only, added at each turn (not stored).
+                    allowed += (crules.edit_rule(run.cwd, windows=sys.platform == "win32"),)
                 spec = TurnSpec(
                     claude,
                     turn.prompt,
@@ -11808,7 +11991,7 @@ class Service:
                     run.model,
                     run.effort,
                     run.permission_mode,
-                    tuple(run.allowed_rules),
+                    allowed,
                     run.claude_session_id,
                     run.chrome,
                     disallowed=prules.turn_disallowed(run.disallowed_tools),
@@ -11833,7 +12016,7 @@ class Service:
                 )
                 return
             run = await self.get_run(run_id, tx.conn)
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             await repo.end_turn(tx.conn, turn.id, {"outcome": "failed_to_start"}, tx.now)
             await repo.cancel_queued(tx.conn, run.id, tx.now)
             await self._set_run_status(tx, run, "stopped", error)
@@ -11875,7 +12058,7 @@ class Service:
                 tx.conn, run_id, "secret_seen_at", tx.now
             ):
                 run = await self.get_run(run_id, tx.conn)
-                task = await self.get_task(run.task_id, tx.conn)
+                task = await self._run_task(tx.conn, run)
                 await self._run_event(tx, "run.secret_seen", "relaybay", task, run_id)
             if retention != run_rules.RETENTION_OFF:
                 await repo.insert_run_events(tx.conn, turn_id, events)
@@ -11883,7 +12066,7 @@ class Service:
     async def _turn_report(
         self,
         tx: _Tx,
-        task: Task,
+        task: Task | None,
         run: Run,
         turn: RunTurn,
         outcome: str,
@@ -11894,7 +12077,13 @@ class Service:
         that cannot be written must not keep the turn from ending: its writes are undone to a
         savepoint and the failure is logged. When the agent already reported this turn with
         report_add (the run's session, since the turn started) and the result adds nothing (no
-        text, or the same first line, and no refusals), the turn links that report instead."""
+        text, or the same first line, and no refusals), the turn links that report instead.
+        A turn without a card (the coordinator's) keeps the text on the turn itself."""
+        if task is None:
+            refusals = [(r.tool, r.input) for r in result.refusals]
+            body = run_rules.turn_report(run.id, turn.seq, outcome, result.text, refusals, notes)
+            await repo.set_turn_result(tx.conn, turn.id, body)
+            return
         own = None
         if run.session_id is not None and turn.started_at is not None and not result.refusals:
             own = await repo.latest_report_of_session(
@@ -11954,7 +12143,8 @@ class Service:
             assert ended is not None
             try:
                 run = await self.get_run(ended.run_id)
-                denied, refused = await self._denied_needs(run, ended, result)
+                if not run.is_coordinator:  # it has no card to ask an approval on
+                    denied, refused = await self._denied_needs(run, ended, result)
             except Exception:
                 logger.exception("Reading the denials of turn %d for approvals failed", turn_id)
         free = await self._free_memory()
@@ -11962,7 +12152,7 @@ class Service:
             turn = await repo.get_turn(tx.conn, turn_id)
             assert turn is not None
             run = await self.get_run(turn.run_id, tx.conn)
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             changes: dict[str, Any] = {"outcome": outcome, "exit_code": exit_code}
             if result is not None:
                 changes.update(
@@ -11980,7 +12170,8 @@ class Service:
             notes = await self._settle_turn_reservations(tx, run, refused)
             if result is not None:
                 await self._turn_report(tx, task, run, turn, outcome, result, notes)
-            await self._requests_from_denials(tx, run, task, turn, denied)
+            if task is not None:
+                await self._requests_from_denials(tx, run, task, turn, denied)
             tokens = sum(
                 changes.get(k, 0)
                 for k in (
@@ -12041,7 +12232,7 @@ class Service:
         prompt = run_rules.clean_prompt(text)
         run = await self.get_run(run_id)
         if not run.is_open:
-            raise ValidationError(f"Run {run.id} has ended; start a new run on {run.task_key}.")
+            raise ValidationError(_ended_hint(run))
         if (
             not run.with_owner
             and not runs.is_running(run.id)
@@ -12052,8 +12243,8 @@ class Service:
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
             if not run.is_open:
-                raise ValidationError(f"Run {run.id} has ended; start a new run on {run.task_key}.")
-            task = await self.get_task(run.task_id, tx.conn)
+                raise ValidationError(_ended_hint(run))
+            task = await self._run_task(tx.conn, run)
             repeat = await self._repeated_send(tx, run.id, prompt, actor)
             if repeat is not None:
                 return repeat
@@ -12064,7 +12255,13 @@ class Service:
         return found
 
     async def _queue_turn(
-        self, tx: _Tx, run: Run, task: Task, text: str | None, actor: str, free_mb: int | None
+        self,
+        tx: _Tx,
+        run: Run,
+        task: Task | None,
+        text: str | None,
+        actor: str,
+        free_mb: int | None,
     ) -> tuple[int, list[tuple[int, int]]]:
         """A new turn of the owner's on the run. When no turn of the run runs and it is not with
         the owner, the queue decides (`_dispatch`): it starts now, or waits for a slot, memory
@@ -12077,6 +12274,8 @@ class Service:
         parts += [arules.decision_line(a) for a in decided]
         if text:
             parts.append(text)
+        if run.is_coordinator and run.claude_session_id is None:
+            parts[0] = crules.header(run.id, run.session_name or "", run.cwd) + parts[0]
         turn_id = await repo.insert_turn(
             tx.conn, run.id, "\n\n".join(parts), actor, "owner", tx.now
         )
@@ -12134,7 +12333,7 @@ class Service:
             run = await self.get_run(run.id, tx.conn)
             if run.status != "running" or runs.is_running(run.id):
                 return False
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             reason = "no claude process was running for this turn"
             active = await repo.active_turn(tx.conn, run.id)
             if active is not None:
@@ -12161,7 +12360,7 @@ class Service:
         await self._lose_orphan(runs, run)
         async with self._tx() as tx:
             run = await self.get_run(run_id, tx.conn)
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             await repo.cancel_queued(tx.conn, run.id, tx.now)
             if not run.is_open:  # ended meanwhile (a card's close and the owner's End)
                 return run
@@ -12176,6 +12375,8 @@ class Service:
                 with_owner_in=None,
             )
             await self._run_event(tx, "run.ended", actor, task, run.id, reason=why)
+            if task is None:
+                return await self.get_run(run_id)  # its next run carries the waiting answers
             # No next turn will carry them: the owner's answers go to the card's session instead.
             for q in await repo.pending_answers(tx.conn, run.id):
                 comment = await self._insert_comment(
@@ -12200,7 +12401,7 @@ class Service:
         async with self._tx() as tx:
             for run in await repo.open_runs(tx.conn):
                 if run.in_terminal:
-                    task = await self.get_task(run.task_id, tx.conn)
+                    task = await self._run_task(tx.conn, run)
                     await repo.update_run(
                         tx.conn,
                         run.id,
@@ -12217,7 +12418,7 @@ class Service:
                     )
                 if run.status != "running":
                     continue
-                task = await self.get_task(run.task_id, tx.conn)
+                task = await self._run_task(tx.conn, run)
                 reason = "the server stopped while a turn ran"
                 await self._settle_turn_reservations(tx, run, {})
                 await self._set_run_status(tx, run, "lost", reason)
@@ -12292,7 +12493,7 @@ class Service:
         self, tx: _Tx, kind: str, actor: str, run_id: int, w: RunWorktree, **payload: Any
     ) -> None:
         run = await self.get_run(run_id, tx.conn)
-        task = await self.get_task(run.task_id, tx.conn)
+        task = await self._run_task(tx.conn, run)
         await self._run_event(
             tx,
             kind,
@@ -12393,7 +12594,7 @@ class Service:
                 tx, "run.worktree_kept", "relaybay", run_id, w, reason=reason
             )
             run = await self.get_run(run_id, tx.conn)
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             text = qrules.clean_text(
                 _cut_text(
                     f"The card is done, but the worktree of {w.repo_name} at {w.path} (branch"
@@ -12524,7 +12725,7 @@ class Service:
                 return  # the same files still refuse: the last event says so
             else:
                 self._trace_failures[run.id] = failed
-            task = await self.get_task(run.task_id, tx.conn)
+            task = await self._run_task(tx.conn, run)
             await self._run_event(
                 tx,
                 "run.traces_deleted",
@@ -12559,7 +12760,21 @@ class Service:
                         retention=retention,
                     )
             total += lines
-        return total
+        # The coordinator's runs have no project: they keep the default retention.
+        cutoff = moment - timedelta(days=int(run_rules.DEFAULT_RETENTION))
+        async with self._tx() as tx:
+            lines = await repo.delete_projectless_events(
+                tx.conn, cutoff.isoformat(timespec="milliseconds")
+            )
+            if lines:
+                await tx.event(
+                    "run.events_expired",
+                    "relaybay",
+                    run_kind=run_rules.COORDINATOR,
+                    lines=lines,
+                    retention=run_rules.DEFAULT_RETENTION,
+                )
+        return total + lines
 
     async def run_loop(self, interval: float = RUN_CHECK_SECONDS) -> None:
         """The server's re-check of runs: queued turns whose memory recovered or whose brake was
@@ -12576,6 +12791,260 @@ class Service:
                 logger.exception("Checking runs failed; the next pass tries again")
             await asyncio.sleep(interval)
 
+    # --- the coordinator run: one permanent run without a card (design 0023) ---------------
+
+    async def coordinator_settings(
+        self, conn: aiosqlite.Connection | None = None
+    ) -> crules.CoordinatorSettings:
+        """The owner's choices in Settings -> Agents; the defaults without a row."""
+        conn = conn or self._r
+        found = crules.CoordinatorSettings()
+        for key, name in (
+            (crules.FOLDER_KEY, "folder"),
+            (crules.PROFILE_KEY, "profile"),
+            (crules.MODEL_KEY, "model"),
+            (crules.EFFORT_KEY, "effort"),
+        ):
+            value = await repo.get_app_setting(conn, key)
+            if value:
+                setattr(found, name, value)
+        return found
+
+    async def _coordinator_profile(self, conn: aiosqlite.Connection, name: str) -> RunProfile:
+        try:
+            profile = await self.get_profile(name, conn)
+        except NotFoundError:
+            raise ValidationError(
+                f"The coordinator's profile {name} does not exist: pick one in Settings -> Agents."
+            ) from None
+        if run_rules.COORDINATOR not in profile.kinds:
+            raise ValidationError(
+                f"Profile {profile.name} is not for the coordinator (it is for"
+                f" {', '.join(profile.kinds)}): pick one in Settings -> Agents."
+            )
+        return profile
+
+    async def coordinator_folder(
+        self, conn: aiosqlite.Connection | None = None
+    ) -> tuple[Path, str | None]:
+        """Where the coordinator works and, for the default, why it moved out of the data
+        folder (that lies inside a git repository)."""
+        chosen = (await self.coordinator_settings(conn)).folder
+        if chosen:
+            return Path(chosen), None
+        home = self._run_manager().config.home
+        return await asyncio.to_thread(coordinator_folder.default_folder, home)
+
+    async def set_coordinator_settings(
+        self, values: dict[str, Any], *, actor: str = "owner"
+    ) -> crules.CoordinatorSettings:
+        """Settings -> Agents (board only): the folder (empty: the default), the profile (one
+        for the coordinator), the model and the effort. They apply from its next turn; a
+        folder applies from the next Start."""
+        folder = crules.clean_folder(values.get("folder"))
+        if folder is not None:
+            why = await asyncio.to_thread(coordinator_folder.inside_repository_reason, Path(folder))
+            if why:
+                raise ValidationError(why)
+            crules.edit_rule(folder, windows=sys.platform == "win32")
+        model = run_rules.clean_model(values.get("model") or crules.DEFAULT_MODEL)
+        effort = run_rules.clean_effort(values.get("effort") or crules.DEFAULT_EFFORT)
+        async with self._tx() as tx:
+            name = str(values.get("profile") or crules.DEFAULT_PROFILE)
+            profile = await self._coordinator_profile(tx.conn, name)
+            new = crules.CoordinatorSettings(folder, profile.name, model, effort)
+            for key, value in (
+                (crules.FOLDER_KEY, folder or ""),
+                (crules.PROFILE_KEY, new.profile),
+                (crules.MODEL_KEY, new.model),
+                (crules.EFFORT_KEY, new.effort),
+            ):
+                await repo.set_app_setting(tx.conn, key, value, tx.now, actor)
+            await tx.event(
+                "settings.coordinator",
+                actor,
+                folder=folder,
+                profile=new.profile,
+                model=new.model,
+                effort=new.effort,
+            )
+        return new
+
+    async def _follow_coordinator_settings(self, tx: _Tx, run: Run) -> None:
+        """At the start of each of its turns the coordinator run takes the owner's model,
+        effort and profile; a profile no longer for the coordinator is not taken."""
+        wanted = await self.coordinator_settings(tx.conn)
+        changes: dict[str, Any] = {}
+        if wanted.model != run.model:
+            changes["model"] = wanted.model
+        if wanted.effort != run.effort:
+            changes["effort"] = wanted.effort
+        if wanted.profile != run.profile:
+            profile = await repo.get_profile(tx.conn, wanted.profile)
+            if profile is not None and run_rules.COORDINATOR in profile.kinds:
+                changes["profile"] = profile.name
+        if changes:
+            await repo.update_run(tx.conn, run.id, changes, tx.now)
+            for name, value in changes.items():
+                setattr(run, name, value)
+
+    async def coordinator_run_view(self) -> RunView | None:
+        """The open coordinator run, else the latest one, with its turns."""
+        run = await repo.open_coordinator_run(self._r) or await repo.latest_coordinator_run(self._r)
+        if run is None:
+            return None
+        turns = await repo.list_turns(self._r, run.id)
+        view = RunView(run, turns, run_rules.totals(turns))
+        done = [t for t in turns if t.result_md]
+        if done:
+            view.last_report = _first_line(done[-1].result_md or "")
+        return view
+
+    async def coordinator_page(self) -> crules.CoordinatorPage:
+        await self.close_overdue_questions()
+        settings = await self.coordinator_settings()
+        folder: str | None = None
+        note = refusal = None
+        if self.runs is not None:
+            path, note = await self.coordinator_folder()
+            folder = str(path)
+            refusal = await asyncio.to_thread(coordinator_folder.inside_repository_reason, path)
+        every = await repo.coordinator_questions(self._r, limit=50)
+        return crules.CoordinatorPage(
+            settings=settings,
+            folder=folder,
+            folder_note=note,
+            refusal=refusal,
+            view=await self.coordinator_run_view(),
+            questions=sorted((q for q in every if q.is_open), key=lambda q: q.id),
+            answered=[q for q in every if not q.is_open][:10],
+        )
+
+    async def start_coordinator(self, *, actor: str = "owner", new_session: bool = False) -> Run:
+        """Start (the owner's button only; no MCP tool starts a coordinator): the coordinator
+        run is written idle, with no turn and no tokens spent. Its folder must lie outside any
+        git repository; it is made, with the starter CLAUDE.md when it has none. `new_session`:
+        the open coordinator run ends first, after the checks, and the new one carries its
+        questions. The coordinator's CLAUDE.md and relaybay's memory stay as they are."""
+        runs = self._run_manager()
+        current = await repo.open_coordinator_run(self._r)
+        if current is not None and not new_session:
+            raise ConflictError(
+                f"The coordinator runs already (run {current.id}): one at a time. Use New"
+                " session for a fresh one."
+            )
+        folder, _ = await self.coordinator_folder()
+        why = await asyncio.to_thread(coordinator_folder.inside_repository_reason, folder)
+        if why:
+            raise ValidationError(f"{why} Nothing started.")
+        settings = await self.coordinator_settings()
+        profile = await self._coordinator_profile(self._r, settings.profile)
+        rule = crules.edit_rule(str(folder), windows=sys.platform == "win32")
+        run_id = await repo.next_run_id(self._r)
+        method, layers = await self._run_preflight(runs, run_id)
+        hooks_source = layers.hooks_source if layers is not None else "user"
+        mcp_source = layers.mcp_source if layers is not None else "user"
+        claude = runs.claude()
+        assert claude is not None
+        settings_file, mcp_file = run_files(
+            self._run_folder(run_id), hooks=hooks_source == "run", mcp=mcp_source == "run"
+        )
+        # The batch-shim check of the whole command line, before anything is made or written.
+        build_command(
+            TurnSpec(
+                claude,
+                "",
+                str(folder),
+                settings.model,
+                settings.effort,
+                profile.permission_mode,
+                (*profile.allowed_rules, rule),
+                disallowed=prules.turn_disallowed(profile.disallowed_tools),
+                settings_file=str(settings_file) if settings_file else None,
+                mcp_file=str(mcp_file) if mcp_file else None,
+            )
+        )
+        if current is not None:
+            await self.end_run(current.id, actor=actor, reason=f"new session by {actor}")
+            run_id = await repo.next_run_id(self._r)
+        await asyncio.to_thread(coordinator_folder.prepare, folder)
+        async with self._tx() as tx:
+            if await repo.open_coordinator_run(tx.conn) is not None:
+                raise ConflictError("The coordinator was started at the same moment.")
+            if await repo.next_run_id(tx.conn) != run_id:
+                raise ConflictError("Another run started at the same moment; start again.")
+            await repo.insert_run(
+                tx.conn,
+                {
+                    "id": run_id,
+                    "kind": run_rules.COORDINATOR,
+                    "cwd": str(folder),
+                    "model": settings.model,
+                    "effort": settings.effort,
+                    "permission_mode": profile.permission_mode,
+                    "allowed_tools": profile.allowed_tools,
+                    "disallowed_tools": profile.disallowed_tools,
+                    "profile": profile.name,
+                    "mode_set": 0,
+                    "chrome": 0,
+                    "auth_method": method,
+                    "hooks_source": hooks_source,
+                    "mcp_source": mcp_source,
+                    "status": "idle",
+                    "started_by": actor,
+                    "started_by_kind": "owner",
+                },
+                tx.now,
+            )
+            name = crules.SESSION_NAME.format(run_id=run_id)
+            session_id = await repo.insert_session(tx.conn, name, tx.now, kind="run")
+            await repo.touch_session(tx.conn, session_id, tx.now, {"cwd": str(folder)})
+            await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
+            await tx.event("session.seen", name, session_id=session_id, session=name)
+            carried = await repo.carry_coordinator_questions(tx.conn, run_id)
+            await self._run_event(
+                tx,
+                "coordinator.new_session" if current is not None else "coordinator.started",
+                actor,
+                None,
+                run_id,
+                folder=str(folder),
+                profile=profile.name,
+                model=settings.model,
+                effort=settings.effort,
+                questions=carried,
+                **({"ended_run": current.id} if current is not None else {}),
+            )
+        return await self.get_run(run_id)
+
+    async def _open_coordinator(self) -> Run:
+        run = await repo.open_coordinator_run(self._r)
+        if run is None:
+            raise ValidationError("The coordinator is not started: Start it on this page first.")
+        return run
+
+    async def stop_coordinator(self, *, actor: str = "owner") -> Run:
+        """Stop its running turn; the run stays, its session resumable."""
+        run = await self._open_coordinator()
+        stopped = await self.stop_run(run.id, actor=actor)
+        async with self._tx() as tx:
+            await self._run_event(tx, "coordinator.stopped", actor, None, run.id)
+        return stopped
+
+    async def end_coordinator(self, *, actor: str = "owner") -> Run:
+        """No more turns of this coordinator run; its open questions wait for the next Start."""
+        run = await self._open_coordinator()
+        ended = await self.end_run(run.id, actor=actor)
+        async with self._tx() as tx:
+            await self._run_event(tx, "coordinator.ended", actor, None, run.id)
+        return ended
+
+    async def coordinator_say(self, text: str, *, actor: str = "owner") -> RunTurn:
+        """The owner's box: the text as a turn framed as the owner's word, sent by the owner."""
+        run = await self._open_coordinator()
+        body = crules.owner_text(run_rules.clean_prompt(text))
+        return await self.send_to_run(run.id, body, actor=actor)
+
     # --- questions to the owner -----------------------------------------------
 
     async def get_question(
@@ -12586,18 +13055,27 @@ class Service:
             raise NotFoundError(f"Question {question_id} not found.")
         return found
 
+    async def _question_task(self, conn: aiosqlite.Connection, q: Question) -> Task | None:
+        """The question's card; None for the coordinator's question without one."""
+        return None if q.task_id is None else await self.get_task(q.task_id, conn)
+
     async def _question_event(
-        self, tx: _Tx, kind: str, actor: str, task: Task, q: Question, **payload: Any
+        self, tx: _Tx, kind: str, actor: str, task: Task | None, q: Question, **payload: Any
     ) -> None:
+        card: dict[str, Any] = {"run_kind": run_rules.COORDINATOR}
+        if task is not None:
+            card = {
+                "project_id": task.project_id,
+                "task_id": task.id,
+                "project": task.project_slug,
+                "key": task.key,
+                "stage": task.stage.value,
+            }
         await tx.event(
             kind,
             actor,
-            project_id=task.project_id,
-            task_id=task.id,
             session_id=q.session_id,
-            project=task.project_slug,
-            key=task.key,
-            stage=task.stage.value,
+            **card,
             question_id=q.id,
             run_id=q.run_id,
             question_kind=q.kind,
@@ -12619,7 +13097,11 @@ class Service:
             actor=actor,
         )
 
-    async def _card_waits_on_owner(self, tx: _Tx, task: Task, q: Question, actor: str) -> None:
+    async def _card_waits_on_owner(
+        self, tx: _Tx, task: Task | None, q: Question, actor: str
+    ) -> None:
+        if task is None:
+            return  # the coordinator's question: no card waits
         await self._set_card(
             tx,
             task,
@@ -12629,11 +13111,11 @@ class Service:
         )
 
     async def _card_after_question(
-        self, tx: _Tx, task: Task, q: Question, next_step: str, actor: str
+        self, tx: _Tx, task: Task | None, q: Question, next_step: str, actor: str
     ) -> None:
         """Hand the card back to the agent once no blocking question of it waits on the owner,
         unless someone else already changed who it waits on."""
-        if not q.blocking:
+        if not q.blocking or task is None:
             return
         task = await self.get_task(task.id, tx.conn)
         owners = {name.strip().casefold() for name in self.owner_names}
@@ -12654,7 +13136,7 @@ class Service:
         self,
         tx: _Tx,
         run: Run,
-        task: Task,
+        task: Task | None,
         blocking: list[Question],
         why: str | None,
         requests: list[Approval] | None = None,
@@ -12685,6 +13167,8 @@ class Service:
             questions=ids,
             approvals=approval_ids,
         )
+        if task is None:
+            return
         if blocking:
             await self._card_waits_on_owner(tx, task, blocking[0], "relaybay")
         else:
@@ -12697,7 +13181,7 @@ class Service:
         hooks handed over the owner comment that carries them."""
         for q in carried:
             await repo.update_question(tx.conn, q.id, {"delivered_at": tx.now})
-            task = await self.get_task(q.task_id, tx.conn)
+            task = await self._question_task(tx.conn, q)
             await self._question_event(
                 tx, "question.delivered", session_name or q.asked_by, task, q, session=session_name
             )
@@ -12722,7 +13206,7 @@ class Service:
 
     async def ask_question(
         self,
-        ref: str,
+        ref: str | None,
         text: str,
         default: str,
         *,
@@ -12737,8 +13221,9 @@ class Service:
         hook_session: str | None = None,
     ) -> tuple[Question, str]:
         """`question_ask`: a question for the owner on a card, with its default. A run's session
-        asks for its run; any other session for itself. Returns the question and what the agent
-        does next."""
+        asks for its run; any other session for itself. The coordinator run may ask without a
+        card (`ref` empty): the question is bound to its run and its answer comes as its next
+        turn. Returns the question and what the agent does next."""
         if (session or "").strip() in ("", "-"):
             raise ValidationError(
                 "question_ask needs your session: the answer goes back to who asked. Nothing asked."
@@ -12764,19 +13249,30 @@ class Service:
                 raise ValidationError("url and account are for look questions (kind look).")
             choices = qrules.clean_options(options)
             stops = bool(blocking)
+        card_ref = (ref or "").strip()
         async with self._tx() as tx:
-            task = await self.get_task(ref, tx.conn)
-            if task.stage == Stage.DONE:
+            # Asked before the call's own hook_session is linked, or it would prove itself.
+            own = await self._coordinator_run_of(tx.conn, session, hook_session)
+            if card_ref in ("", "-") and own is None:
+                raise ValidationError(
+                    "question_ask needs the card (task) the question is on; only the coordinator"
+                    " run asks without one. Nothing asked."
+                )
+            task = None if card_ref in ("", "-") else await self.get_task(card_ref, tx.conn)
+            if task is not None and task.stage == Stage.DONE:
                 raise ValidationError(f"{task.key} is done: nothing to ask on it.")
             due = qrules.deadline(default_after, stops, datetime.fromisoformat(tx.now))
-            project = await self.get_project(task.project_slug, tx.conn)
+            project = await self.get_project(task.project_slug, tx.conn) if task else None
             rules = await self._secret_rules(tx.conn, project)
             _scan(rules, text=body, default=fallback, url=link, account=login)
             for option in choices:
                 envs.check_secret("option", option, rules)
-            if await repo.count_open_questions(tx.conn, task.id) >= qrules.OPEN_MAX:
+            where = task.key if task is not None else "The coordinator"
+            if await repo.count_open_questions(tx.conn, task.id if task else None) >= (
+                qrules.OPEN_MAX
+            ):
                 raise ValidationError(
-                    f"{task.key} already has {qrules.OPEN_MAX} open questions: wait for the owner,"
+                    f"{where} already has {qrules.OPEN_MAX} open questions: wait for the owner,"
                     " or withdraw one with question_withdraw. Nothing asked."
                 )
             caller = await self._session(tx, session, session_title, hook_session)
@@ -12784,14 +13280,16 @@ class Service:
             run = await repo.run_of_session(tx.conn, caller.id) if caller.kind == "run" else None
             if run is not None and not run.is_open:
                 run = None
-            if run is not None and run.task_id != task.id:
+            if own is not None:
+                run = own  # on a card or not, its answer comes as its next turn
+            elif run is not None and task is not None and run.task_id != task.id:
                 raise ValidationError(
                     f"Run {run.id} works on {run.task_key}: ask on that card. Nothing asked."
                 )
             question_id = await repo.insert_question(
                 tx.conn,
                 {
-                    "task_id": task.id,
+                    "task_id": task.id if task else None,
                     "run_id": run.id if run else None,
                     "session_id": caller.id,
                     "asked_by": caller.name,
@@ -12881,7 +13379,7 @@ class Service:
                 )
             if not q.is_open:
                 raise ValidationError(f"Question {q.id} is {q.status}: only an open one goes.")
-            task = await self.get_task(q.task_id, tx.conn)
+            task = await self._question_task(tx.conn, q)
             await repo.update_question(
                 tx.conn,
                 q.id,
@@ -12935,7 +13433,7 @@ class Service:
             q = await self.get_question(question_id, tx.conn)
             if not q.answerable:
                 raise ValidationError(f"Question {q.id} is {q.status}: it takes no answer.")
-            task = await self.get_task(q.task_id, tx.conn)
+            task = await self._question_task(tx.conn, q)
             await repo.update_question(
                 tx.conn,
                 q.id,
@@ -12958,15 +13456,24 @@ class Service:
             )
             run = await repo.get_run(tx.conn, q.run_id) if q.run_id else None
             kept = await repo.worktree_of_question(tx.conn, q.id) if q.run_id is None else None
+            # The coordinator's question (without a card, or asked by a coordinator run on one).
+            coordinator = task is None or (run is not None and run.is_coordinator)
+            if coordinator and (run is None or not run.is_open):
+                # Its run ended: the answer waits for the coordinator's open or next run.
+                run = await repo.open_coordinator_run(tx.conn)
+                if run is not None:
+                    await repo.carry_coordinator_questions(tx.conn, run.id)
             if run is not None and run.is_open:
-                _, launches = await self._queue_turn(tx, run, task, None, actor, free)
+                _, launches = await self._queue_turn(
+                    tx, run, await self._run_task(tx.conn, run), None, actor, free
+                )
             elif kept is not None:
                 # relaybay asked it when the card closed: the answer is for relaybay itself.
                 if (q.answer or "").split(":", 1)[0].strip() == WORKTREE_REMOVE:
                     remove = kept.id
                 else:
                     await repo.update_run_worktree(tx.conn, kept.id, {"kept_at": tx.now})
-            else:
+            elif task is not None and not coordinator:  # else the coordinator's next Start
                 comment = await self._insert_comment(
                     tx,
                     task,
@@ -13010,7 +13517,7 @@ class Service:
                         "defaulted_at": tx.now,
                     },
                 )
-                task = await self.get_task(q.task_id, tx.conn)
+                task = await self._question_task(tx.conn, q)
                 await self._question_event(
                     tx, "question.defaulted", "relaybay", task, q, default=q.default
                 )
@@ -13156,7 +13663,7 @@ class Service:
             if run is not None and not run.is_open:
                 run = None
         if run is not None:
-            tasks = [await self.get_task(run.task_id, conn)]
+            tasks = [await self.get_task(run.task_id, conn)] if run.task_id is not None else []
         else:
             bound = await repo.open_tasks_of_session(conn, session.id)
             order = {
@@ -13698,6 +14205,11 @@ class Service:
             run = await repo.run_of_session(tx.conn, caller.id) if caller.kind == "run" else None
             if run is not None and not run.is_open:
                 run = None
+            if run is not None and run.is_coordinator:
+                raise ValidationError(
+                    "The coordinator does not request approvals: runs on cards do the code and"
+                    " ask for theirs. Nothing requested."
+                )
             if run is not None and run.task_id != task.id:
                 raise ValidationError(
                     f"Run {run.id} works on {run.task_key}: ask on that card. Nothing requested."

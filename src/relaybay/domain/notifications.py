@@ -100,6 +100,17 @@ def classify(
         return Notice(
             "budget", title, f"{used} of {limit} tokens", USAGE_URL, f"budget:{target}:{event.kind}"
         )
+    if event.kind == "question.asked" and p.get("run_kind") == "coordinator":
+        if not p.get("blocking"):
+            return None
+        what = "Look at this" if p.get("question_kind") == "look" else "Question"
+        return Notice(
+            "question",
+            f"{what} from the coordinator",
+            str(p.get("text") or ""),
+            "/coordinator",
+            "coordinator",
+        )
     key, project = p.get("key"), p.get("project")
     if not key or not project:
         return None

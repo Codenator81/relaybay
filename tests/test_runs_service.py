@@ -117,6 +117,7 @@ async def svc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     service = Service(tmp_path / "relaybay.sqlite")
     await service.start()
     service.runs = StubRuns(service, tmp_path)  # type: ignore[assignment]
+    service.memory_reader = lambda: None  # never the machine's own free memory
     stub(service).loop = asyncio.get_running_loop()
     repo = tmp_path / "acme-shop"
     repo.mkdir()

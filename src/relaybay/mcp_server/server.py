@@ -1181,9 +1181,18 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         return fmt.run_started(found, started)
 
     @mcp.tool(annotations=READ, structured_output=False)
-    async def run_status(task: TaskRef) -> str:
+    async def run_status(
+        task: Annotated[
+            str,
+            Field(
+                description="Task key such as 'acme-shop-12', or its numeric id; 'coordinator'"
+                " for the coordinator run."
+            ),
+        ],
+    ) -> str:
         """The card's run (the open one, else the latest): status, folders, Claude session id,
-        tokens and the latest turns. Open to every session."""
+        tokens and the latest turns; task 'coordinator': the coordinator run, which has no
+        card. Open to every session."""
         found, view = await run(service.run_status(task))
         return fmt.run_status(found, view)
 
@@ -1257,7 +1266,6 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
 
     @write
     async def question_ask(
-        task: TaskRef,
         text: Annotated[
             str,
             Field(
@@ -1272,6 +1280,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " without a default is refused."
             ),
         ],
+        task: Annotated[
+            str | None,
+            Field(
+                description="Task key such as 'acme-shop-12', or its numeric id: the card the"
+                " question is on. Required, except for the coordinator run, which may ask"
+                " without a card."
+            ),
+        ] = None,
         options: Annotated[
             list[str] | None,
             Field(description="Short answers the owner picks from (at most 8). Optional."),
@@ -1317,7 +1333,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         only the owner answers it, on the board. Every question carries a default; at most 5 are
         open per card. A blocking one: end your turn, the answer comes as your next turn (a run)
         or as an owner comment (a desktop session). kind look: bring up the screen first, pass
-        its url and the test account's name."""
+        its url and the test account's name. The coordinator run may leave task out: the
+        question is its own, on the Coordinator page."""
         asked, hint = await run(
             service.ask_question(
                 task,
@@ -1334,7 +1351,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
-        found = await run(service.get_task(asked.task_id))
+        found = await run(service.get_task(asked.task_id)) if asked.task_id else None
         return fmt.question_asked(found, asked, hint)
 
     @mcp.tool(annotations=READ, structured_output=False)

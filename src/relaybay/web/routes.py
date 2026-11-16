@@ -59,6 +59,7 @@ from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
 from relaybay.runner import auth as run_auth
+from relaybay.runner.coordinator import default_folder as coordinator_default
 from relaybay.runner.terminal import clean_size
 from relaybay.runner.worktrees import summary as worktree_summary
 from relaybay.security import (
@@ -257,6 +258,11 @@ EVENT_KINDS = (
     "profile.updated",
     "profile.deleted",
     "profile.reset",
+    "settings.coordinator",
+    "coordinator.started",
+    "coordinator.new_session",
+    "coordinator.stopped",
+    "coordinator.ended",
 )
 CSRF_HEADER = "x-relaybay-csrf"
 # The Terminal tab: the board's policy plus inline styles, which xterm.js writes.
@@ -266,6 +272,16 @@ TERMINAL_NOT_LOOPBACK = (
     "The server listens on {host}, not on loopback only: the Terminal tab works only on a server"
     " bound to 127.0.0.1 (not in Docker or on a LAN address)."
 )
+COORDINATOR_DONE = {
+    "start": "The coordinator is started: it waits for your first text.",
+    "new-session": "A new session of the coordinator is started.",
+    "stop": "Its running turn is stopped.",
+    "end": "The coordinator is ended.",
+    "say": "Sent to the coordinator.",
+    "desktop": "Opened in the Claude desktop app.",
+    "back": "The coordinator is back with relaybay.",
+    "anyway": "Its waiting turn is started.",
+}
 TERMINAL_EXITED = "claude exited"
 TERMINAL_REFUSED = 4000  # a close code of the application's range: the terminal did not open
 TERMINAL_HELD = 4001  # claude exited, but the run stays with the owner (the reason went before)
@@ -1769,12 +1785,20 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         refusal = terminal_socket_refusal(websocket)
         if refusal is None and not await service.terminal_enabled():
             refusal = "the Terminal tab is off"
+        own = run_id
         if refusal is None:
             try:
                 task = await find_task(slug, key)
                 own = await run_of(task, run_id)
             except NotFoundError:
                 refusal = "no such run on this card"
+        await serve_terminal(websocket, own, refusal)
+
+    async def serve_terminal(websocket: WebSocket, own: int, refusal: str | None) -> None:
+        """The run's terminal over an accepted socket, once the checks of its route passed
+        (`refusal` None): the one-time token, then the PTY until the TUI exits or the browser
+        goes."""
+        run_id = own
         params = websocket.query_params
         if refusal is None and not service.terminals.take(params.get("token", ""), run_id):
             refusal = "no valid one-time token"
@@ -1838,6 +1862,117 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return TERMINAL_EXITED
         return "the tab closed"
 
+    # --- The coordinator: one run without a card, owner only -------------------------------
+
+    @router.get("/coordinator", response_class=HTMLResponse)
+    async def coordinator_page(request: Request):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        flash = take_flash(request)
+        found = await service.coordinator_page()
+        run = found.view.run if found.view is not None else None
+        runs = service.runs
+        response = await page(
+            request,
+            "coordinator.html",
+            "coordinator",
+            c=found,
+            available=runs is not None,
+            running=run is not None and runs is not None and runs.is_running(run.id),
+            desktop_ok=runs is not None and runs.desktop_launcher is not None,
+            terminal_on=terminal_here() and await service.terminal_enabled(),
+            terminal_open=run is not None and service.terminals.busy(run.id),
+            message=flash.get("message"),
+            error=flash.get("error"),
+            last_event_id=last_event_id,
+        )
+        return shown_once(request, response)
+
+    @router.post("/coordinator/{action}", response_class=HTMLResponse)
+    async def coordinator_action(
+        request: Request,
+        action: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+        text: Annotated[str, Form()] = "",
+    ):
+        """Start, Stop, New session, End, the owner's box and the hand-overs: from a signed-in
+        browser only (cookie + CSRF, never a Bearer client)."""
+        acts: dict[str, Callable[[], Awaitable[Any]]] = {
+            "start": lambda: service.start_coordinator(actor="owner"),
+            "new-session": lambda: service.start_coordinator(actor="owner", new_session=True),
+            "stop": lambda: service.stop_coordinator(actor="owner"),
+            "end": lambda: service.end_coordinator(actor="owner"),
+            "say": lambda: service.coordinator_say(text, actor="owner"),
+            "desktop": lambda: coordinator_run(service.open_in_desktop),
+            "back": lambda: coordinator_run(service.return_run),
+            "anyway": lambda: coordinator_run(service.start_anyway),
+        }
+        if action not in acts:
+            raise HTTPException(status_code=404)
+        board_only(request, csrf)
+        form = await request.form()
+        back = "/inbox" if form.get("from") == "inbox" else "/coordinator"
+        try:
+            await acts[action]()
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return flash_redirect(request, back, error=str(exc))
+        return flash_redirect(request, back, message=COORDINATOR_DONE[action])
+
+    async def coordinator_run(act: Callable[..., Awaitable[Any]]) -> Any:
+        run = await service.coordinator_run_view()
+        if run is None or not run.run.is_open:
+            raise ValidationError("The coordinator is not started.")
+        return await act(run.run.id, actor="owner")
+
+    async def coordinator_terminal_run() -> Any:
+        """The open coordinator run for the terminal routes; 404 while the Terminal tab is off
+        or no coordinator runs."""
+        if not await service.terminal_enabled():
+            raise HTTPException(status_code=404)
+        view = await service.coordinator_run_view()
+        if view is None or not view.run.is_open:
+            raise HTTPException(status_code=404)
+        return view.run
+
+    @router.get("/coordinator/terminal", response_class=HTMLResponse)
+    async def coordinator_terminal_page(request: Request):
+        run = await coordinator_terminal_run()
+        response = render(
+            request,
+            "terminal.html",
+            t=None,
+            run=run,
+            back="/coordinator",
+            base="/coordinator/terminal",
+        )
+        response.headers["content-security-policy"] = TERMINAL_CSP
+        return response
+
+    @router.post("/coordinator/terminal/token")
+    async def coordinator_terminal_token(
+        request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ) -> Response:
+        board_only(request, csrf)
+        run = await coordinator_terminal_run()
+        try:
+            if settings.host not in LOOPBACK_BINDS:
+                raise ValidationError(TERMINAL_NOT_LOOPBACK.format(host=settings.host))
+            minted = await service.terminal_token(run.id)
+        except ValidationError as exc:
+            return PlainTextResponse(str(exc), status_code=409)
+        return JSONResponse({"token": minted}, headers={"cache-control": "no-store"})
+
+    @router.websocket("/coordinator/terminal")
+    async def coordinator_terminal_socket(websocket: WebSocket):
+        refusal = terminal_socket_refusal(websocket)
+        if refusal is None and not await service.terminal_enabled():
+            refusal = "the Terminal tab is off"
+        view = await service.coordinator_run_view()
+        if refusal is None and (view is None or not view.run.is_open):
+            refusal = "the coordinator is not started"
+        await serve_terminal(websocket, view.run.id if view is not None else 0, refusal)
+
     # --- Questions to the owner: answered only here, on the board -------------------------
 
     async def questions_panel(
@@ -1869,10 +2004,15 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         reason on a refusal), or a redirect back for a plain form post."""
         board_only(request, csrf)
         question = await service.get_question(question_id)
-        task = await service.get_task(question.task_id)
+        task = await service.get_task(question.task_id) if question.task_id else None
         htmx = "hx-request" in request.headers
         inbox_side = place == "inbox"
-        back = "/inbox" if inbox_side else f"/p/{task.project_slug}?task={task.key}"
+        if inbox_side:
+            back = "/inbox"
+        elif task is None:
+            back = "/coordinator"
+        else:
+            back = f"/p/{task.project_slug}?task={task.key}"
         error = None
         try:
             await service.answer_question(
@@ -1884,7 +2024,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             if not htmx:
                 return flash_redirect(request, back, error=str(exc))
             error = str(exc)
-        if not htmx:
+        if not htmx or (task is None and not inbox_side):
+            if error is not None:
+                return flash_redirect(request, back, error=error)
             return flash_redirect(request, back, message=f"Question {question_id} answered.")
         if inbox_side:
             return render(
@@ -1895,6 +2037,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 error=error,
                 message=None if error else f"Question {question_id} answered.",
             )
+        assert task is not None
         return await questions_panel(request, task, error=error)
 
     # --- Approvals: decided only here, on the board ---------------------------------------
@@ -2795,6 +2938,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         flash = take_flash(request)
         runs = service.runs
         login = await runs.login() if runs is not None else None
+        default_folder = None
+        if runs is not None:
+            path, note = await asyncio.to_thread(coordinator_default, runs.config.home)
+            default_folder = (str(path), note)
         response = await page(
             request,
             "agents.html",
@@ -2815,11 +2962,32 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             limits=await service.run_limits(),
             config_limits=(settings.max_running_turns, settings.min_free_memory_mb),
             free_mb=await service.free_memory_now(),
+            coordinator=await service.coordinator_settings(),
+            coordinator_default=default_folder,
+            coordinator_profiles=await service.profiles(run_rules.COORDINATOR),
+            choices=RUN_CHOICES,
             message=flash.get("message"),
             error=flash.get("error"),
             last_event_id=last_event_id,
         )
         return shown_once(request, response)
+
+    @router.post("/settings/agents/coordinator", response_class=HTMLResponse)
+    async def agents_coordinator(
+        request: Request,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+        folder: Annotated[str, Form()] = "",
+        profile: Annotated[str, Form()] = "",
+        model: Annotated[str, Form()] = "",
+        effort: Annotated[str, Form()] = "",
+    ):
+        board_only(request, csrf)
+        values = {"folder": folder, "profile": profile, "model": model, "effort": effort}
+        try:
+            await service.set_coordinator_settings(values, actor="owner")
+        except DomainError as exc:
+            return flash_redirect(request, "/settings/agents#coordinator", error=str(exc))
+        return flash_redirect(request, "/settings/agents#coordinator", message="Saved.")
 
     @router.post("/settings/agents/limits", response_class=HTMLResponse)
     async def agents_limits(

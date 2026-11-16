@@ -3,7 +3,9 @@
     relaybay's hooks and MCP server are in the user's settings, and the owner's switch for
     sign-ins that are not a subscription. Expects: available, claude, claude_setting, login,
     login_line, layers, login_any, fix_command, limits (turns at once, MB a turn needs),
-    config_limits (config.toml's), free_mb (None: not readable here), optional message, error. -#}
+    config_limits (config.toml's), free_mb (None: not readable here), coordinator (its
+    settings), coordinator_default ((folder, why it moved) or None), coordinator_profiles,
+    choices, optional message, error. -#}
 {% block title %}Agents · relaybay{% endblock %}
 {% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/settings/integrations">Settings</a><span class="crumb-sep">/</span><span class="crumb">Agents</span>{% endblock %}
 {% block content %}
@@ -53,6 +55,29 @@
       <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
       <input type="hidden" name="allow" value="0">
       <label class="field field-check"><input type="checkbox" name="allow" value="1"{% if login_any %} checked{% endif %}> <span>Allow runs under an API key or another sign-in that is not a subscription</span></label>
+      <button type="submit" class="btn primary">Save</button>
+    </form>
+  </section>
+  <section class="panel" id="coordinator">
+    <h2>Coordinator</h2>
+    <p class="muted">The <a href="/coordinator">coordinator</a> runs in a folder of its own, never inside a git repository (it would load that repository's CLAUDE.md and auto memory). Start refuses one inside a repository. Its profile, model and effort apply from its next turn; the folder from the next Start.</p>
+    <form method="post" action="/settings/agents/coordinator">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <label class="field"><span>Folder (empty: the default{% if coordinator_default %}, <code>{{ coordinator_default[0] }}</code>{% endif %})</span>
+        <input type="text" name="folder" maxlength="500" value="{{ coordinator.folder or '' }}">
+      </label>
+      {% if coordinator_default and coordinator_default[1] %}<p class="muted">{{ coordinator_default[1] }}</p>{% endif %}
+      <div class="field-row">
+        <label class="field"><span>Profile</span>
+          <select name="profile">{% for p in coordinator_profiles %}<option value="{{ p.name }}"{% if p.name == coordinator.profile %} selected{% endif %}>{{ p.name }}</option>{% endfor %}</select>
+        </label>
+        <label class="field"><span>Model</span>
+          <select name="model">{% for m in choices.models %}<option{% if m == coordinator.model %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        </label>
+        <label class="field"><span>Effort</span>
+          <select name="effort">{% for e in choices.efforts %}<option{% if e == coordinator.effort %} selected{% endif %}>{{ e }}</option>{% endfor %}</select>
+        </label>
+      </div>
       <button type="submit" class="btn primary">Save</button>
     </form>
   </section>

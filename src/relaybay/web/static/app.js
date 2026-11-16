@@ -40,6 +40,8 @@
     "run.secret_seen", "run.touched_live", "run.traces_deleted", "run.events_expired",
     "settings.run_limits", "settings.terminal_enabled",
     "profile.created", "profile.updated", "profile.deleted", "profile.reset",
+    "settings.coordinator", "coordinator.started", "coordinator.new_session",
+    "coordinator.stopped", "coordinator.ended",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn",
     "approval.requested", "approval.decided", "approval.used", "approval.released",

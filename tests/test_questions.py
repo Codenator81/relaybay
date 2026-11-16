@@ -37,6 +37,7 @@ async def svc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     service = Service(tmp_path / "relaybay.sqlite", coordinators=["coord"])
     await service.start()
     service.runs = StubRuns(service, tmp_path)  # type: ignore[assignment]
+    service.memory_reader = lambda: None  # never the machine's own free memory
     folder = tmp_path / "acme-shop"
     folder.mkdir()
     await service.upsert_project("acme-shop", repo_path=str(folder))
