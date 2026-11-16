@@ -334,6 +334,9 @@ class RunTurn:
     profile: str | None = None  # the profile and its version the turn started with
     profile_version: int | None = None
     result_md: str | None = None  # the result of a turn without a card (no report holds it)
+    compact_pre_tokens: int | None = None  # a /compact turn's context before, and after
+    compact_post_tokens: int | None = None
+    context_tokens: int | None = None  # of its last assistant message (input and cache)
 
     @property
     def state(self) -> str:

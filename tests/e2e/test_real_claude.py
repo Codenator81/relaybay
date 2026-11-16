@@ -12,7 +12,7 @@ import pytest
 
 from relaybay.runner.auth import check_login
 from relaybay.runner.claude_cli import TurnSpec, build_command, is_batch
-from tests.e2e.stream_contract import check_stream
+from tests.e2e.stream_contract import check_compact, check_stream
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RELAYBAY_E2E_REAL_CLAUDE") != "1",
@@ -36,6 +36,33 @@ def test_real_claude_keeps_the_stream_shape(tmp_path: Path) -> None:
     )
     assert done.returncode == 0, done.stderr
     check_stream([json.loads(line) for line in done.stdout.splitlines() if line.strip()])
+
+
+def test_real_claude_compacts_a_resumed_session_headless(tmp_path: Path) -> None:
+    """Probe 18 of design 0023: the shape the fake's `/compact` imitates."""
+    claude = shutil.which("claude")
+    assert claude is not None, "no claude on PATH"
+
+    def turn(*args: str) -> list[dict]:
+        done = subprocess.run(
+            [claude, "-p", *args, "--output-format", "stream-json", "--verbose"],
+            cwd=tmp_path,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            check=False,
+        )
+        assert done.returncode == 0, done.stderr
+        return [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+
+    first = turn("reply ok")
+    session = first[-1]["session_id"]
+    compact = turn("/compact", "--resume", session)
+    check_compact(compact)
+    assert compact[-1]["session_id"] == session
 
 
 def test_real_claude_auth_status_answers_the_fields_a_run_reads() -> None:

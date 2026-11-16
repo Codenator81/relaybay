@@ -366,6 +366,14 @@ def _note_closed_plan(task: Task) -> None:
 _last_now: datetime | None = None
 
 
+def _wake_span(wake: crules.CoordinatorWake) -> tuple[int, int]:
+    return wake.first_event_id, wake.last_event_id
+
+
+def _iso_before(now: str, delta: timedelta) -> str:
+    return (datetime.fromisoformat(now) - delta).isoformat(timespec="milliseconds")
+
+
 def now_iso() -> str:
     """Strictly increasing within the process: two writes in one clock tick (about 15 ms on
     Windows) still sort in the order they happened, which "a report after the plan closed"
@@ -1372,6 +1380,7 @@ class Service:
         # Budgets each session has heard about in this context: (budget, period key, level).
         self._budget_told: dict[int, set[tuple[int, str, str]]] = {}
         self._limits_wake = asyncio.Event()  # a new budget does not wait out the reader's sleep
+        self._wake_kick = asyncio.Event()  # a committed event: the coordinator's wakes look
         # When a message event was last written, per sender and recipient; what a hook's
         # transcript path was found to be, so the file system is asked once per path; subagent
         # files over the limit, per transcript file.
@@ -1480,6 +1489,8 @@ class Service:
 
     async def _commit_and_publish(self, conn: aiosqlite.Connection, events: list[Event]) -> None:
         await conn.execute("COMMIT")
+        if events:
+            self._wake_kick.set()
         for event in events:
             self.bus.publish(event)
             if event.kind == "task.stage_changed" and event.payload.get("to") == Stage.DONE.value:
@@ -3075,6 +3086,7 @@ class Service:
                 budget.scope == "all"
                 or (budget.scope == "project" and budget.project_id in project_ids)
                 or (budget.scope == "task" and budget.task_id in task_ids)
+                or (budget.scope == agent_limits.SESSION_SCOPE and budget.session_id == session.id)
             )
             own = {row for row in rows if row[0] == budget.id}
             if covers and own - told:
@@ -3090,6 +3102,9 @@ class Service:
         self, conn: aiosqlite.Connection, budget: agent_limits.TokenBudget, today: str
     ) -> int:
         day = today if budget.period == "day" else None
+        if budget.scope == agent_limits.SESSION_SCOPE:
+            assert budget.session_id is not None
+            return await repo.session_turn_tokens(conn, budget.session_id, day)
         if budget.scope == "task":
             assert budget.task_id is not None
             return await repo.task_tokens(conn, budget.task_id, day)
@@ -3501,13 +3516,16 @@ class Service:
                 **({"key": task.key, "stage": task.stage.value} if task else {}),
             )
             if level == agent_limits.EXCEEDED and budget.action == "stop":
-                project = None
+                project = session = None
                 if budget.scope == "project":
                     project = await repo.get_project_by_id(tx.conn, budget.project_id or 0)
+                if budget.scope == agent_limits.SESSION_SCOPE:
+                    session = await repo.get_session_by_id(tx.conn, budget.session_id or 0)
                 await self._insert_brake(
                     tx,
                     scope=budget.scope,
                     project=project,
+                    session=session,
                     task=task,
                     reason=agent_limits.budget_reason(state),
                     source=agent_limits.SOURCE_BUDGET,
@@ -12166,6 +12184,11 @@ class Service:
                     denials=result.denials,
                     denied_tools=result.denied_tools,
                 )
+                if result.compact_pre_tokens is not None:
+                    changes["compact_pre_tokens"] = result.compact_pre_tokens
+                    changes["compact_post_tokens"] = result.compact_post_tokens
+                if result.context_tokens is not None:
+                    changes["context_tokens"] = result.context_tokens
             await repo.end_turn(tx.conn, turn.id, changes, tx.now)
             notes = await self._settle_turn_reservations(tx, run, refused)
             if result is not None:
@@ -12262,23 +12285,25 @@ class Service:
         text: str | None,
         actor: str,
         free_mb: int | None,
+        *,
+        kind: str = "owner",
+        carry: bool = True,
     ) -> tuple[int, list[tuple[int, int]]]:
-        """A new turn of the owner's on the run. When no turn of the run runs and it is not with
-        the owner, the queue decides (`_dispatch`): it starts now, or waits for a slot, memory
-        or a brake with its reason; else it waits for the running turn or for Back to the
-        program. The owner's answers that no turn's process got yet (their turn was cancelled)
-        go first in its text. Returns the turn's id and the turns to spawn after the commit."""
-        pending = await repo.pending_answers(tx.conn, run.id)
-        decided = await repo.pending_decisions(tx.conn, run.id)
+        """A new turn of the owner's (or relaybay's, `kind`) on the run. When no turn of the run
+        runs and it is not with the owner, the queue decides (`_dispatch`): it starts now, or
+        waits for a slot, memory or a brake with its reason; else it waits for the running turn
+        or for Back to the program. The owner's answers that no turn's process got yet (their
+        turn was cancelled) go first in its text, unless `carry` is off (a `/compact` must be
+        the whole text). Returns the turn's id and the turns to spawn after the commit."""
+        pending = await repo.pending_answers(tx.conn, run.id) if carry else []
+        decided = await repo.pending_decisions(tx.conn, run.id) if carry else []
         parts = [qrules.answer_line(q) for q in pending]
         parts += [arules.decision_line(a) for a in decided]
         if text:
             parts.append(text)
         if run.is_coordinator and run.claude_session_id is None:
             parts[0] = crules.header(run.id, run.session_name or "", run.cwd) + parts[0]
-        turn_id = await repo.insert_turn(
-            tx.conn, run.id, "\n\n".join(parts), actor, "owner", tx.now
-        )
+        turn_id = await repo.insert_turn(tx.conn, run.id, "\n\n".join(parts), actor, kind, tx.now)
         if pending:
             await repo.put_answers_on_turn(tx.conn, [q.id for q in pending], turn_id)
         if decided:
@@ -12808,6 +12833,17 @@ class Service:
             value = await repo.get_app_setting(conn, key)
             if value:
                 setattr(found, name, value)
+        for key, name in (
+            (crules.GAP_KEY, "wake_gap_seconds"),
+            (crules.COMPACT_KEY, "compact_at_tokens"),
+            (crules.DAILY_KEY, "daily_tokens"),
+        ):
+            value = await repo.get_app_setting(conn, key)
+            if value:
+                setattr(found, name, int(value))
+        action = await repo.get_app_setting(conn, crules.BUDGET_ACTION_KEY)
+        if action:
+            found.budget_action = action
         return found
 
     async def _coordinator_profile(self, conn: aiosqlite.Connection, name: str) -> RunProfile:
@@ -12839,8 +12875,9 @@ class Service:
         self, values: dict[str, Any], *, actor: str = "owner"
     ) -> crules.CoordinatorSettings:
         """Settings -> Agents (board only): the folder (empty: the default), the profile (one
-        for the coordinator), the model and the effort. They apply from its next turn; a
-        folder applies from the next Start."""
+        for the coordinator), the model, the effort, the minimum gap between wakes, the context
+        that sends /compact, and its daily tokens with what happens at the limit (its own
+        budget). They apply from its next turn or wake; a folder applies from the next Start."""
         folder = crules.clean_folder(values.get("folder"))
         if folder is not None:
             why = await asyncio.to_thread(coordinator_folder.inside_repository_reason, Path(folder))
@@ -12849,15 +12886,25 @@ class Service:
             crules.edit_rule(folder, windows=sys.platform == "win32")
         model = run_rules.clean_model(values.get("model") or crules.DEFAULT_MODEL)
         effort = run_rules.clean_effort(values.get("effort") or crules.DEFAULT_EFFORT)
+        gap = crules.clean_gap(values.get("wake_gap_seconds"))
+        compact_at = crules.clean_compact_at(values.get("compact_at_tokens"))
+        daily = crules.clean_daily_tokens(values.get("daily_tokens"))
+        action = crules.clean_budget_action(values.get("budget_action"))
         async with self._tx() as tx:
             name = str(values.get("profile") or crules.DEFAULT_PROFILE)
             profile = await self._coordinator_profile(tx.conn, name)
-            new = crules.CoordinatorSettings(folder, profile.name, model, effort)
+            new = crules.CoordinatorSettings(
+                folder, profile.name, model, effort, gap, compact_at, daily, action
+            )
             for key, value in (
                 (crules.FOLDER_KEY, folder or ""),
                 (crules.PROFILE_KEY, new.profile),
                 (crules.MODEL_KEY, new.model),
                 (crules.EFFORT_KEY, new.effort),
+                (crules.GAP_KEY, str(gap)),
+                (crules.COMPACT_KEY, str(compact_at)),
+                (crules.DAILY_KEY, str(daily)),
+                (crules.BUDGET_ACTION_KEY, action),
             ):
                 await repo.set_app_setting(tx.conn, key, value, tx.now, actor)
             await tx.event(
@@ -12867,8 +12914,72 @@ class Service:
                 profile=new.profile,
                 model=new.model,
                 effort=new.effort,
+                wake_gap_seconds=gap,
+                compact_at_tokens=compact_at,
+                daily_tokens=daily,
+                budget_action=action,
             )
+            run = await repo.open_coordinator_run(tx.conn)
+            if run is not None and run.session_id is not None:
+                await self._coordinator_budget(tx, run.session_id, new, actor)
+        self._limits_wake.set()
         return new
+
+    async def _coordinator_budget(
+        self, tx: _Tx, session_id: int, settings: crules.CoordinatorSettings, actor: str
+    ) -> None:
+        """The coordinator's own budget (design 0023): of its session, per UTC day, warning at
+        80% of the daily tokens of Settings -> Agents; `stop` only when the owner chose it. A
+        new session takes over the budget of the one before (its marks start again), else one
+        is created; a change of the numbers starts the marks again, as on the Usage page."""
+        budget = await repo.session_budget(tx.conn, session_id)
+        moved = None
+        if budget is None:
+            budget = await repo.coordinator_budget(tx.conn)
+            if budget is not None:
+                moved = budget.session_id
+                await repo.move_session_budget(tx.conn, budget.id, session_id, tx.now, actor)
+        wanted = (settings.daily_tokens, settings.budget_action, "day")
+        if budget is None:
+            budget_id = await repo.insert_session_budget(
+                tx.conn,
+                session_id,
+                max_tokens=settings.daily_tokens,
+                action=settings.budget_action,
+                now=tx.now,
+                actor=actor,
+            )
+        elif moved is None and (budget.max_tokens, budget.action, budget.period) == wanted:
+            return
+        else:
+            budget_id = budget.id
+            await repo.save_budget(
+                tx.conn,
+                budget.id,
+                scope=agent_limits.SESSION_SCOPE,
+                project_id=None,
+                task_id=None,
+                period="day",
+                max_tokens=settings.daily_tokens,
+                action=settings.budget_action,
+                now=tx.now,
+                actor=actor,
+            )
+        await repo.clear_budget_marks(tx.conn, budget_id)
+        self._forget_told(budget_id)
+        saved = await repo.get_budget(tx.conn, budget_id)
+        assert saved is not None
+        await tx.event(
+            "budget.set",
+            actor,
+            session_id=session_id,
+            budget_id=budget_id,
+            target=saved.target,
+            period=saved.period,
+            max_tokens=saved.max_tokens,
+            action=saved.action,
+            **({"moved_from_session": moved} if moved is not None else {}),
+        )
 
     async def _follow_coordinator_settings(self, tx: _Tx, run: Run) -> None:
         """At the start of each of its turns the coordinator run takes the owner's model,
@@ -12910,14 +13021,36 @@ class Service:
             folder = str(path)
             refusal = await asyncio.to_thread(coordinator_folder.inside_repository_reason, path)
         every = await repo.coordinator_questions(self._r, limit=50)
+        view = await self.coordinator_run_view()
+        run = view.run if view is not None else None
+        wakes = await repo.coordinator_wakes(self._r, run.id) if run is not None else []
+        compacted: dict[int, tuple[int, int | None]] = {}
+        turns = view.turns if view is not None else []
+        for i, turn in enumerate(turns):
+            if turn.compact_pre_tokens is None:
+                continue
+            # Without the CLI's own number after it: for `/compact` the context of the next
+            # turn, for a turn Claude Code compacted itself the context it ended with.
+            after = turn.compact_post_tokens
+            if after is None and not crules.is_compact(turn):
+                after = crules.turn_context(turn)
+            elif after is None and i + 1 < len(turns) and turns[i + 1].ended_at:
+                after = crules.turn_context(turns[i + 1])
+            compacted[turn.id] = (turn.compact_pre_tokens, after)
+        state = await self.coordinator_wake_state(run)
+        done = [t for t in turns if t.ended_at and not crules.is_compact(t)]
+        state.context_tokens = crules.turn_context(done[-1]) if done else None
         return crules.CoordinatorPage(
             settings=settings,
             folder=folder,
             folder_note=note,
             refusal=refusal,
-            view=await self.coordinator_run_view(),
+            view=view,
             questions=sorted((q for q in every if q.is_open), key=lambda q: q.id),
             answered=[q for q in every if not q.is_open][:10],
+            wake=state,
+            wakes={w.turn_id: w for w in wakes if w.turn_id is not None},
+            compacted=compacted,
         )
 
     async def start_coordinator(self, *, actor: str = "owner", new_session: bool = False) -> Run:
@@ -13001,6 +13134,11 @@ class Service:
             await repo.touch_session(tx.conn, session_id, tx.now, {"cwd": str(folder)})
             await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
             await tx.event("session.seen", name, session_id=session_id, session=name)
+            if await repo.get_app_setting(tx.conn, crules.CURSOR_KEY) is None:
+                # The first Start: the wakes begin from now, not from the board's history.
+                last = await repo.last_event_id(tx.conn)
+                await repo.set_app_setting(tx.conn, crules.CURSOR_KEY, str(last), tx.now, actor)
+            await self._coordinator_budget(tx, session_id, settings, actor)
             carried = await repo.carry_coordinator_questions(tx.conn, run_id)
             await self._run_event(
                 tx,
@@ -13044,6 +13182,230 @@ class Service:
         run = await self._open_coordinator()
         body = crules.owner_text(run_rules.clean_prompt(text))
         return await self.send_to_run(run.id, body, actor=actor)
+
+    # --- its wakes: events since the last one, as one turn (design 0023) ------------------
+
+    async def _wake_held(self, conn: aiosqlite.Connection, run: Run) -> str | None:
+        """Why no wake turn may be queued on the coordinator run now; its events wait, the
+        cursor stays. None: a wake may come."""
+        if not run.is_open:
+            return "the coordinator has ended: Start it again"
+        if run.with_owner or self.terminals.busy(run.id):
+            return f"it is with you {_owner_place(run)}: back to the program first"
+        if run.status == "stopped":
+            return "it is stopped: your next text in the box goes on"
+        if run.status == "lost":
+            return "its last turn was lost: your next text in the box goes on"
+        if run.status == "waiting":
+            return "it waits for your answer to its question"
+        if run.status == "queued":
+            return f"its turn is queued: {run.status_reason or 'a slot, memory or a brake'}"
+        if (
+            run.status == "running"
+            or await repo.active_turn(conn, run.id) is not None
+            or await repo.next_queued_turn(conn, run.id) is not None
+        ):
+            return "a turn runs or waits: new events go into the next wake"
+        brake = await self._run_brake(conn, run)
+        if brake is not None:
+            return f"under the brake ({brake.target})"
+        if run.session_id is not None:
+            budget = await repo.session_budget(conn, run.session_id)
+            if budget is not None and budget.action == "stop":
+                today = datetime.now(UTC).date().isoformat()
+                used = await self._budget_used(conn, budget, today)
+                if used >= budget.max_tokens:
+                    return f"over its stop budget: {used:,} of {budget.max_tokens:,} tokens today"
+        return None
+
+    @staticmethod
+    async def _wake_gap_left(
+        conn: aiosqlite.Connection, settings: crules.CoordinatorSettings, now: datetime
+    ) -> float:
+        """Seconds until the minimum gap since the last wake has passed; 0 when it has."""
+        last = await repo.last_coordinator_wake(conn)
+        if last is None or not settings.wake_gap_seconds:
+            return 0.0
+        since = (now - datetime.fromisoformat(last.created_at)).total_seconds()
+        return max(0.0, settings.wake_gap_seconds - since)
+
+    @staticmethod
+    async def _wake_cursor(conn: aiosqlite.Connection) -> int | None:
+        value = await repo.get_app_setting(conn, crules.CURSOR_KEY)
+        return int(value) if value else None
+
+    async def _check_coordinator_budget(self) -> None:
+        """Its budget's thresholds right after its turns, not only on the usage loop's pass."""
+        budget = await repo.coordinator_budget(self._r)
+        if budget is None:
+            return
+        today = datetime.now(UTC).date().isoformat()
+        used = await self._budget_used(self._r, budget, today)
+        level = agent_limits.level_for(used, budget.max_tokens)
+        marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
+        if level is not None and level not in marks.get(budget.id, set()):
+            await self._cross_threshold(budget.id, today)
+
+    async def coordinator_wake_pass(self, now: datetime | None = None) -> float | None:
+        """One look for the coordinator run. After a turn whose context passed the owner's
+        threshold, the next turn is `/compact` (sent by relaybay), before any wake. Else, once
+        the minimum gap has passed, the events it listens to since the cursor become one wake
+        turn of at most WAKE_LINES lines, a `coordinator_wake` row links them, and the cursor
+        moves to the newest event. Nothing new: no turn. While `_wake_held` holds, nothing
+        moves. Returns the seconds the gap still holds a wake, else None. `now`: a test's
+        clock for the gap."""
+        run = await repo.open_coordinator_run(self._r)
+        if self.runs is None or run is None:
+            return None
+        await self._check_coordinator_budget()
+        moment = now or datetime.now(UTC)
+        # Read first: most passes (an event that is no news) end here, without the write lock.
+        due, left = await self._wake_due(self._r, run, moment)
+        if due is None:
+            return left
+        free = await self._free_memory()
+        launches: list[tuple[int, int]] = []
+        async with self._tx() as tx:
+            run = await repo.open_coordinator_run(tx.conn)
+            if run is None:
+                return None
+            due, left = await self._wake_due(tx.conn, run, moment)
+            if due is None:
+                return left
+            settings = await self.coordinator_settings(tx.conn)
+            last_turn = await repo.last_turn(tx.conn, run.id)
+            if due == "compact" and last_turn is not None:
+                await self._run_event(
+                    tx,
+                    "coordinator.compacting",
+                    "relaybay",
+                    None,
+                    run.id,
+                    context=crules.turn_context(last_turn),
+                    compact_at_tokens=settings.compact_at_tokens,
+                )
+                _, launches = await self._queue_turn(
+                    tx, run, None, crules.COMPACT, "relaybay", free, kind="relaybay", carry=False
+                )
+            elif due == "init":
+                # A coordinator run older than the cursor: its wakes begin from now.
+                top = await repo.last_event_id(tx.conn)
+                await repo.set_app_setting(tx.conn, crules.CURSOR_KEY, str(top), tx.now, "relaybay")
+            else:
+                cursor = await self._wake_cursor(tx.conn) or 0
+                top = await repo.last_event_id(tx.conn)
+                back = await repo.unreturned_wakes(tx.conn)
+                found, total, last = await repo.coordinator_wake_events(
+                    tx.conn, cursor, top, crules.WAKE_LINES, [_wake_span(w) for w in back]
+                )
+                if due == "wake" and back:
+                    await repo.mark_wakes_returned(tx.conn, [w.id for w in back], tx.now)
+                if due == "wake" and total:
+                    text = crules.wake_text(found, total)
+                    turn_id, launches = await self._queue_turn(
+                        tx, run, None, text, "relaybay", free, kind="relaybay"
+                    )
+                    wake_id = await repo.insert_coordinator_wake(
+                        tx.conn, run.id, turn_id, found[0].id, last, total, tx.now
+                    )
+                    await self._run_event(
+                        tx,
+                        "coordinator.woken",
+                        "relaybay",
+                        None,
+                        run.id,
+                        wake_id=wake_id,
+                        events=total,
+                        first_event_id=found[0].id,
+                        last_event_id=last,
+                        **({"returned_wakes": [w.id for w in back]} if back else {}),
+                    )
+                if top > cursor:
+                    await repo.set_app_setting(
+                        tx.conn, crules.CURSOR_KEY, str(top), tx.now, "relaybay"
+                    )
+        await self._spawn_all(launches)
+        return None
+
+    async def _wake_due(
+        self, conn: aiosqlite.Connection, run: Run, moment: datetime
+    ) -> tuple[str | None, float | None]:
+        """What the pass does now: "compact", "wake", "cursor" (only move past events that are
+        no news, once they pile up), or nothing; with nothing, the seconds the gap still holds."""
+        if await self._wake_held(conn, run) is not None:
+            return None, None
+        cursor = await self._wake_cursor(conn)
+        if cursor is None:
+            return "init", None
+        settings = await self.coordinator_settings(conn)
+        last = await repo.last_turn(conn, run.id)
+        threshold = settings.compact_at_tokens
+        if crules.needs_compact(last, threshold) and crules.needs_compact(
+            last, threshold, await repo.turns_since_compact(conn, run.id)
+        ):
+            return "compact", None
+        left = await self._wake_gap_left(conn, settings, moment)
+        if left:
+            return None, left
+        top = await repo.last_event_id(conn)
+        back = [_wake_span(w) for w in await repo.unreturned_wakes(conn)]
+        if top <= cursor and not back:
+            return None, None
+        _, total, _ = await repo.coordinator_wake_events(conn, cursor, top, 0, back)
+        if total:
+            return "wake", None
+        return ("cursor" if top - cursor > crules.CURSOR_LAG else None), None
+
+    async def coordinator_wake_loop(self) -> None:
+        """The server's wakes of the coordinator: a pass after every committed event, at the
+        end of the minimum gap, and every WAKE_CHECK_SECONDS. No process runs between wakes."""
+        while True:
+            wait = crules.WAKE_CHECK_SECONDS
+            try:
+                left = await self.coordinator_wake_pass()
+                if left is not None:
+                    wait = min(wait, left + 0.1)
+            except Exception:
+                logger.exception("Waking the coordinator failed; the next pass tries again")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._wake_kick.wait(), wait)
+            if self._wake_kick.is_set():
+                await asyncio.sleep(crules.WAKE_SETTLE_SECONDS)  # a burst becomes one pass
+            self._wake_kick.clear()
+
+    async def coordinator_wake_state(self, run: Run | None) -> crules.WakeState:
+        """For the page: the events that wait for a wake and why they wait, its budget and
+        today's tokens."""
+        state = crules.WakeState()
+        cursor = await self._wake_cursor(self._r)
+        if cursor is not None:
+            top = await repo.last_event_id(self._r)
+            back = [_wake_span(w) for w in await repo.unreturned_wakes(self._r)]
+            _, state.waiting, _ = await repo.coordinator_wake_events(self._r, cursor, top, 0, back)
+        if run is None:
+            return state
+        if run.is_open:
+            state.held = await self._wake_held(self._r, run)
+            if state.held is None and state.waiting:
+                settings = await self.coordinator_settings()
+                left = await self._wake_gap_left(self._r, settings, datetime.now(UTC))
+                if left:
+                    state.held = f"the minimum gap between wakes: about {int(left) + 1} s more"
+        if run.session_id is None:
+            return state
+        today = datetime.now(UTC).date().isoformat()
+        state.today_tokens = await repo.session_turn_tokens(self._r, run.session_id, today)
+        budget = await repo.session_budget(self._r, run.session_id)
+        if budget is not None:
+            marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
+            levels = marks.get(budget.id, set())
+            level = (
+                agent_limits.EXCEEDED
+                if agent_limits.EXCEEDED in levels
+                else next(iter(levels), None)
+            )
+            state.budget = agent_limits.BudgetState(budget, state.today_tokens, level)
+        return state
 
     # --- questions to the owner -----------------------------------------------
 
@@ -13500,10 +13862,30 @@ class Service:
     async def close_overdue_questions(self) -> int:
         """Non-blocking questions past their deadline close with their default, visibly. Asked
         on reads and by the server's loop; the deadline is in the database, so a restart only
-        delays it."""
-        if not await repo.overdue_questions(self._r, now_iso()):
+        delays it. Every question past its deadline unanswered gets one `question.overdue`
+        (for the coordinator's wakes): a non-blocking one when it closes with its default, a
+        blocking one, which has no deadline of its own, once it is open BLOCKING_OVERDUE."""
+        now = now_iso()
+        asked_before = _iso_before(now, qrules.BLOCKING_OVERDUE)
+        if not await repo.overdue_questions(self._r, now) and not await repo.overdue_unmarked(
+            self._r, now, asked_before
+        ):
             return 0
         async with self._tx() as tx:
+            asked_before = _iso_before(tx.now, qrules.BLOCKING_OVERDUE)
+            for q in await repo.overdue_unmarked(tx.conn, tx.now, asked_before):
+                await repo.update_question(tx.conn, q.id, {"overdue_at": tx.now})
+                task = await self._question_task(tx.conn, q)
+                opened = datetime.fromisoformat(tx.now) - datetime.fromisoformat(q.asked_at)
+                await self._question_event(
+                    tx,
+                    "question.overdue",
+                    "relaybay",
+                    task,
+                    q,
+                    default=q.default,
+                    open_minutes=int(opened.total_seconds() // 60),
+                )
             due = await repo.overdue_questions(tx.conn, tx.now)
             for q in due:
                 await repo.update_question(
