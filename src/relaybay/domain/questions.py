@@ -35,7 +35,7 @@ _DURATION_RE = re.compile(r"^(\d{1,6})\s*(m|min|minutes?|h|hours?|d|days?)$", re
 @dataclass(slots=True)
 class Question:
     id: int
-    task_id: int
+    task_id: int | None  # None: the coordinator's question, bound to its run
     run_id: int | None
     session_id: int | None
     asked_by: str
@@ -68,6 +68,11 @@ class Question:
     @property
     def is_open(self) -> bool:
         return self.status == "open"
+
+    @property
+    def origin(self) -> str:
+        """Where the question comes from, for listings: its card's key, or "Coordinator"."""
+        return self.task_key if self.task_id is not None else "Coordinator"
 
     @property
     def answerable(self) -> bool:

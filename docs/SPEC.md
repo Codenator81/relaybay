@@ -4,7 +4,7 @@ How relaybay behaves **now**: the concepts and every shipped feature. This page 
 plans; upcoming work lives in the [roadmap](ROADMAP.md) and the [design documents](design/index.md).
 When a feature ships, its final behaviour moves here in the same pull request.
 
-Version covered: `0.10.0`, plus the permission profiles of [Unreleased]. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.10.0`, plus the permission profiles and the coordinator run of [Unreleased]. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:
@@ -594,8 +594,8 @@ rights (`run_start`, `run_start_per_day`, `run_settings`, `tasks_write`, `plan_a
 and `read-only` (`dontAsk`; `Read`, `Glob`, `Grep` and the same read-only rules; no rights; for
 checks); each lists `CronCreate`, `CronDelete`, `ScheduleWakeup`, `RemoteTrigger` as taken away.
 The coordinator's `Edit` and `Write` inside its own folder come with the coordinator run, not the
-row. **Rights are stored and shown only**: the coordinator run of 0.11's second step enforces them;
-until then the `coordinators` config decides as before. A run records its profile at Start
+row. **Rights are enforced for the [coordinator run](#spec-coordinator) only**; a desktop
+coordinator named in the `coordinators` config keeps the behaviour it had. A run records its profile at Start
 (`run.profile`; the Start form offers the profiles for cards, the project's preselected;
 `run_start` always takes the project's). **Every turn reads its run's profile when it is marked
 started**: its allowed and taken-away tools, and its mode unless the run's mode was set for it
@@ -611,13 +611,90 @@ never `--bare`; a coordinator never starts a coordinator). A run from before pro
 (`run.profile` NULL) keeps its own mode and allowed tools; its turns get the fixed taken-away tools
 too. No MCP tool writes a profile.
 
+<a id="spec-coordinator"></a>
+
+**The coordinator run** ([design 0023](design/0023-coordinator-and-schedules.md#the-coordinator)).
+A run has a **kind** (`run.kind`): `card` (a run on a card, as above), `coordinator` (the one
+permanent run without a card) or `check` (reserved for a schedule's one-shot run; always in a
+project). A coordinator run has no task, no project and no worktree; at most one is open (a unique
+index). It is the owner's: **Start**, **Stop**, **New session**, **End**, the Terminal tab and
+Open in the desktop app are buttons of the [Coordinator page](#spec-board-coordinator); no MCP
+tool starts or stops one, and a coordinator never starts a coordinator.
+
+- **Start** writes the run `idle`, with no turn and no tokens spent; the owner's first text is its
+  first turn. It checks the sign-in and the user layer as a card's Start does, makes the folder and
+  writes the starter `CLAUDE.md` (package data, `relaybay/runner/coordinator_claude.md`) only when
+  the folder has none; an existing one is never overwritten. Its questions without a card that
+  wait (open, or answered and never handed to a turn) move to the new run. A
+  `coordinator.started` event.
+- **The folder is never inside a git repository** (probe 15: the repository's `CLAUDE.md` and its
+  auto memory would load). Default `<home>/coordinator`; when that path or a parent holds `.git`
+  (a folder or a worktree's file), the default is `coordinator` in relaybay's per-user data folder
+  (`platformdirs`), and Settings → Agents says why. The owner may set another absolute folder there
+  (`app_setting` `coordinator_folder`); saving one inside a repository is refused, and Start
+  refuses one with the reason (a repository made after the save). The folder is saved normalised
+  (`Path.resolve`); a drive or filesystem root, a path written with `..`, and a folder whose name
+  holds a character a permission rule reads as a pattern (`* ? [ ] ( ) ! #`, a backslash) are
+  refused too. The profile named in Settings -> Agents cannot be deleted; one missing anyway
+  makes Start refuse with its name.
+- **Its turns** run in the folder (cwd, no `--add-dir`), with hooks and MCP layers as for card
+  runs and `RELAYBAY_RUN_ID` in the environment. The profile, model and effort are the owner's
+  choices in Settings → Agents (`coordinator_profile`, default `coordinator`, any profile whose
+  kinds include `coordinator`; `coordinator_model` default `opus`; `coordinator_effort` default
+  `medium`), taken at the start of each turn. Every turn adds one allow rule,
+  `Edit(//<folder>/**)` (on Windows the folder in Claude Code's POSIX form, `C:\x` as `/c/x`):
+  under the profile's `dontAsk` mode Edit and Write then work inside the folder only (probe 21);
+  the rule is not stored in the profile. Every turn queued while the run has no Claude session
+  yet starts with a short head naming the run, its session and its folder. A turn's result text is kept on the turn
+  (`run_turn.result_md`), not as a report: there is no card.
+- **The owner's word**: the owner's box sends `The owner says on the board: <text>` as a turn,
+  `sent_by_kind` owner; everything else in its turns is data.
+- **New session** ends the open run (a running turn is stopped first) after the checks of Start,
+  then starts a fresh one in the same folder (`coordinator.new_session`, naming the ended run):
+  its `CLAUDE.md` and relaybay's memory carry over, the Claude Code session does not. **Stop**
+  stops a running turn (`coordinator.stopped`); **End** ends the run (`coordinator.ended`); its
+  waiting questions wait for the next Start.
+- **Who it is.** A call whose `hook_session` equals the open coordinator run's Claude session id,
+  or whose session is the run's own session carrying that hook session, is the coordinator for
+  every check that asks the `coordinators` config (`run_start`, `run_settings`, `rules_update`,
+  `task_archive`, backlog triage, `brake_set`, the digests' hints, `question_withdraw`). The same
+  weak identity as the config: it stops mistakes, not a determined agent. For that caller the
+  **rights of its profile** hold: `run_start` (and at most `run_start_per_day` runs started by
+  coordinator runs since the machine's local midnight, counted by `run.started_by_run`),
+  `run_settings`, `rules_update`, `plan_accept`, `tasks_write` (`task_create`, `task_update`,
+  `task_patch`, `task_set_stage`, `task_archive`, `task_unarchive`, `backlog_update`) and
+  `messages` (`message_send`); a right off is refused with the profile's name. A call that names
+  the coordinator run's own session is held to these rights whatever its `hook_session` says (a
+  missing or stale hook never widens them); only a matching hook makes it the coordinator. The
+  daily cap is counted before the checks and again in the start's write transaction. The owner's
+  plan acceptances on the board reach it as they reach a configured coordinator, with or without
+  a `coordinators` config. The intake tools
+  take no session, so `tasks_write` does not reach them. A desktop coordinator of the config keeps
+  today's behaviour unchanged.
+- **Its questions** ([§1](#spec-questions)): `question_ask` without `task` from the coordinator run
+  makes a question bound to its run (`question.task_id` NULL); with `task` the question is on that
+  card and still bound to its run. The owner's answer becomes its next turn, as for a card run; an
+  answer to a question of an ended coordinator run (on a card or not) is never sent to a card's
+  session: it moves to the open coordinator run, or waits for the next Start. Listings show its
+  origin as "Coordinator" and link to the Coordinator page.
+- **What does not apply to it.** A project's or a card's brake does not hold it; `all` and a brake
+  on its session do. It takes **no slot**: its turn starts while card runs fill
+  `max_running_turns` and is not counted in them, so it can react while two card runs are busy;
+  the free-memory check applies (decided by default: the slots exist to protect the machine's work
+  on cards, the memory check protects the machine). No project budget counts it (its session has
+  no project); no card's close ends it; it has no worktree; a denial opens no approval request
+  and `approval_request` from it is refused ("the coordinator does not request approvals"). Its stored lines are kept the default 30 days. Its events carry
+  `run_kind: coordinator` instead of a project and a card; the Audit page lists them under
+  "coordinator". `run_status` with `task` `coordinator` shows it over MCP.
+
 <a id="spec-run-limits"></a>
 
 **Run limits** ([design 0021](design/0021-agents-inside.md), C4, C5). Before each turn of a run (the
 first, a Continue, the owner's answer or decision, a text that waited for the running turn or for
 Back to the program) the queue decides, in the transaction that would mark it started:
 
-- **Slots.** At most `max_running_turns` turns run at once over all runs (default 2; a turn counts
+- **Slots.** At most `max_running_turns` turns run at once over all runs on cards (the
+  [coordinator run](#spec-coordinator) takes none; default 2; a turn counts
   from the moment it is marked started until it ends, whatever the number of its worktrees; an idle
   run or one with the owner holds none). The count is read in the same write transaction that
   marks a turn started, so two starts can never both take the last slot.
@@ -714,12 +791,14 @@ worktree neither removed nor kept, or traces still to delete):
 
 **Questions to the owner.** An agent's question is an object on its card (`question`,
 [§11](#spec-data); [design 0022](design/0022-questions-and-approvals.md#questions)), never a
-paragraph of a report. MCP `question_ask(task, text, default, options?, blocking?, default_after?,
+paragraph of a report. MCP `question_ask(text, default, task?, options?, blocking?, default_after?,
 kind?, url?, account?, session, hook_session?)`:
 
 - **The caller.** `session` is required: the answer goes back to who asked. A run's session (the
   name the run header gives, `<card> run <n>`) asks for its open run, on that run's card only; any
-  other session asks for itself (a desktop session). Refused on a card in `done`.
+  other session asks for itself (a desktop session). Refused on a card in `done`. `task` is
+  required except for the [coordinator run](#spec-coordinator), which may ask without a card (at
+  most 5 such questions open).
 - **Every question carries a default** (what the agent does without an answer): one without it is
   refused. **At most 5 open questions per card.** Options: at most 8, each up to 200 characters;
   text up to 2,000; default up to 500.
@@ -1308,6 +1387,23 @@ only, a `settings.run_limits` event, and starts the turns that the new limits le
 only, a `settings.terminal_enabled` event; off closes the open terminals, each tried on its own,
 and names a run whose terminal could not be closed or handed back). It is only this
 switch, no `config.toml` key: the owner's word turns it on, not a file an agent can write.
+**Coordinator** sets the [coordinator run](#spec-coordinator)'s folder (empty: the default, shown
+with the reason when it moved out of a git repository), its profile (those for the coordinator),
+model and effort; board only, a `settings.coordinator` event; a folder inside a git repository is
+refused.
+
+<a id="spec-board-coordinator"></a>
+
+**Coordinator** (`/coordinator`, in the sidebar after All boards; the full page with wakes comes
+later). Its status, run, Claude session id, tokens, folder (where Start puts it before the first
+Start) and the profile, model and effort from Settings → Agents; Start (when none is open, with
+the reason shown when the folder lies inside a git repository), Stop (while a turn runs), Start
+anyway (queued for memory), Terminal and Open in the desktop app (between turns, as on a card;
+while either holds it, turns wait), Back to the program, New session and End. The owner's box
+sends a turn framed as the owner's word. Below: its open questions with the answer form (and the
+latest closed ones), then its turns, newest first, each with its text folded and its result text.
+Every form is board only (cookie and CSRF, never a Bearer client) and answers with a redirect
+back with the outcome.
 
 <a id="spec-board-repos"></a>
 
@@ -3324,6 +3420,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0042_run_terminal` | `run.with_owner_in` (`terminal`: the run is with the owner in the board's Terminal tab; NULL: the Claude desktop app of 0034); a start hands back a run still marked `terminal` ([§1](#spec-run)). Additive only |
 | `0043_run_profile` | `run_profile` (name unique, description, permission mode with a CHECK against `bypassPermissions`, allowed and taken-away rules, rights JSON, kinds JSON, builtin, version, updated at / by), seeded with `agent`, `coordinator` and `read-only` ([§1](#spec-profiles)). Additive only |
 | `0044_run_profile_use` | `project_run_defaults.profile` (default `agent`); a project whose mode and allowed tools differ from `agent`'s gets a profile `agent-<slug>` with that pair and is pointed at it, so no run changes its rights; the old columns stay, unread. `run.profile` (NULL for older runs), `run.disallowed_tools`, `run.mode_set` (1 for older runs: they keep their own mode); `run_turn.profile`, `run_turn.profile_version` ([§1](#spec-profiles)). Additive only |
+| `0045_coordinator_run` | `run` rebuilt: `kind` (`card` for every existing run, `coordinator`, `check`), `task_id` and `project_id` nullable with CHECKs (a `card` has both, a `coordinator` neither, a `check` a project), `started_by_run` (the coordinator run that started it); a unique index allows one open coordinator run. `question` rebuilt: `task_id` nullable, CHECK that a question has a card or a run. Both with foreign keys off; every column, index and value kept. `run_turn.result_md` (the result of a turn without a card) ([§1](#spec-coordinator)) |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

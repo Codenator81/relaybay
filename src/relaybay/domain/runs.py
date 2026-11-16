@@ -28,6 +28,9 @@ TRANSITIONS: dict[str | None, frozenset[str]] = {
     "waiting": frozenset({"running", "queued", "idle", "ended"}),
     "ended": frozenset(),
 }
+# A run's kind (design 0023): on a card, the one coordinator run without a card, a one-shot check.
+RUN_KINDS = ("card", "coordinator", "check")
+CARD, COORDINATOR, CHECK = RUN_KINDS
 TURN_OUTCOMES = ("success", "error", "stopped", "lost", "cancelled", "failed_to_start")
 SENT_BY_KINDS = ("owner", "coordinator", "relaybay")
 
@@ -228,8 +231,8 @@ class RunDefaults:
 @dataclass(slots=True)
 class Run:
     id: int
-    task_id: int
-    project_id: int
+    task_id: int | None  # None: the coordinator run (and a check without a card)
+    project_id: int | None  # None: the coordinator run
     session_id: int | None
     cwd: str
     cwd_repo_id: int | None
@@ -264,6 +267,17 @@ class Run:
     profile: str | None = None  # None: started before profiles, it keeps its own mode and tools
     disallowed_tools: str | None = None  # the profile's taken-away rules as its last turn read
     mode_set: bool = False  # its mode was chosen for it, not followed from the profile
+    kind: str = CARD
+    started_by_run: int | None = None  # the coordinator run that started it with run_start
+
+    @property
+    def is_coordinator(self) -> bool:
+        return self.kind == COORDINATOR
+
+    @property
+    def place(self) -> str:
+        """Where the run works, for messages: its card's key, or "the coordinator"."""
+        return "the coordinator" if self.is_coordinator else self.task_key
 
     @property
     def is_open(self) -> bool:
@@ -319,6 +333,7 @@ class RunTurn:
     events: int = 0  # stored stream-json lines
     profile: str | None = None  # the profile and its version the turn started with
     profile_version: int | None = None
+    result_md: str | None = None  # the result of a turn without a card (no report holds it)
 
     @property
     def state(self) -> str:

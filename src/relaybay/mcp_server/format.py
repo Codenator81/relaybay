@@ -968,8 +968,11 @@ def comments(task: Task, items: list[Comment], unread_only: bool = False) -> str
 
 
 def event_subject(e: Event) -> str:
-    """The task key of an event, or its project."""
-    return str(e.payload.get("key") or e.payload.get("project") or "")
+    """The task key of an event, or its project; "coordinator" for the coordinator run's."""
+    p = e.payload
+    if p.get("run_kind") == "coordinator":
+        return "coordinator"
+    return str(p.get("key") or p.get("project") or "")
 
 
 def event_detail(e: Event) -> str:
@@ -1099,6 +1102,13 @@ def event_detail(e: Event) -> str:
         return profile_change(p)
     if e.kind == "settings.run_login_any":
         return "other sign-ins allowed" if p.get("on") else "subscription sign-ins only"
+    if e.kind in ("coordinator.started", "coordinator.new_session"):
+        return f"run {p.get('run_id')} in {p.get('folder')} · profile {p.get('profile')}"
+    if e.kind in ("coordinator.stopped", "coordinator.ended"):
+        return f"run {p.get('run_id')}"
+    if e.kind == "settings.coordinator":
+        folder = p.get("folder") or "the default folder"
+        return f"{folder} · profile {p.get('profile')} · {p.get('model')} · {p.get('effort')}"
     if e.kind == "settings.terminal_enabled":
         return "Terminal tab on" if p.get("on") else "Terminal tab off"
     if e.kind == "run.terminal_closed":
@@ -1285,18 +1295,21 @@ def profile_change(p: dict[str, Any]) -> str:
     return f"{name}: {'; '.join(moves)}" if moves else name
 
 
-def run_status(task: Task, view: RunView | None) -> str:
-    """A card's run: status, folders, Claude session id, tokens and the latest turns. Never a
-    prompt's text: the card's digest has the work."""
+def run_status(task: Task | None, view: RunView | None) -> str:
+    """A card's run, or the coordinator's (`task` None): status, folders, Claude session id,
+    tokens and the latest turns. Never a prompt's text: the card's digest has the work."""
     if view is None:
+        if task is None:
+            return "The coordinator has no run. The owner starts it on the Coordinator page."
         return (
             f"{task.key} has no run. The owner starts one on the card, a coordinator with"
             " run_start."
         )
     r = view.run
     reason = f" ({r.status_reason})" if r.status_reason else ""
+    where = f"on {task.key}" if task is not None else "of the coordinator (no card)"
     lines = [
-        f"Run {r.id} on {task.key}: {r.status}{reason}. {r.model}, effort {r.effort},"
+        f"Run {r.id} {where}: {r.status}{reason}. {r.model}, effort {r.effort},"
         f" {r.permission_mode}{run_profile_note(view)}; started by {r.started_by}"
         f" ({r.started_by_kind})"
         f" {r.created_at[:19]}Z.",
@@ -1611,7 +1624,7 @@ def question_line(q: Question) -> str:
     """One question as question_list shows it; the answer verbatim when there is one."""
     where = f"run {q.run_id}" if q.run_id else "desktop session"
     head = (
-        f"- #{q.id} {q.task_key} ({q.kind}, {where}, asked by {q.asked_by}"
+        f"- #{q.id} {q.origin} ({q.kind}, {where}, asked by {q.asked_by}"
         f" {q.asked_at[:16]}Z): {_question_state(q)}"
     )
     lines = [head, f"  {qrules.quoted(q.text)}"]
@@ -1636,12 +1649,13 @@ def questions(task: Task | None, items: list[Question], status: str | None) -> s
     return "\n".join([head, *map(question_line, items)])
 
 
-def question_asked(task: Task, q: Question, hint: str) -> str:
-    return f"Question #{q.id} asked on **{task.key}** ({q.kind}). {hint}"
+def question_asked(task: Task | None, q: Question, hint: str) -> str:
+    where = f"on **{task.key}**" if task is not None else "by the coordinator, without a card"
+    return f"Question #{q.id} asked {where} ({q.kind}). {hint}"
 
 
 def question_withdrawn(q: Question) -> str:
-    return f"Question #{q.id} on {q.task_key} withdrawn."
+    return f"Question #{q.id} on {q.origin} withdrawn."
 
 
 def _approval_state(a: Approval) -> str:

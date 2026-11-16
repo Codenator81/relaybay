@@ -9,6 +9,7 @@
   <ul class="nav-list">
     <li>{% call item("/inbox", "Inbox", nav.active == "inbox") %}{% with count = nav.inbox_count %}{% include "_inbox_badge.html" %}{% endwith %}{% endcall %}</li>
     <li>{{ item("/", "All boards", nav.active == "boards") }}</li>
+    <li>{{ item("/coordinator", "Coordinator", nav.active == "coordinator") }}</li>
     <li>{{ item("/backlog", "All backlog", nav.active == "backlog" and not nav.project) }}</li>
     <li>{{ item("/usage", "Usage", nav.active == "usage") }}</li>
     <li>{{ item("/activity", "Activity", nav.active == "activity") }}</li>

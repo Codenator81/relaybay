@@ -1,10 +1,12 @@
-{#- One question to the owner, on the card (place "card") and in the Inbox (place "inbox", with
-    its card). The owner answers with an option, a text, or both; a look question with "fine" or
+{#- One question to the owner, on the card (place "card"), in the Inbox (place "inbox", with
+    its card, or "Coordinator" for the coordinator's own) and on the Coordinator page (place
+    "coordinator", a plain form post). The owner answers with an option, a text, or both; a look question with "fine" or
     its remarks. The look URL opens in the owner's own browser. -#}
 {%- macro question_item(q, place) -%}
 <li class="question-row question-{{ q.status }}" id="question-{{ q.id }}" data-question="{{ q.id }}">
   <p class="question-head">
-    {% if place == "inbox" %}<a class="inbox-link" href="/p/{{ q.project_slug }}?task={{ q.task_key }}"><span class="card-key">{{ q.task_key }}</span> <span class="inbox-title">{{ q.task_title }}</span></a>{% endif %}
+    {% if place == "inbox" and q.task_id is none %}<a class="inbox-link" href="/coordinator"><span class="card-key">Coordinator</span></a>
+    {% elif place == "inbox" %}<a class="inbox-link" href="/p/{{ q.project_slug }}?task={{ q.task_key }}"><span class="card-key">{{ q.task_key }}</span> <span class="inbox-title">{{ q.task_title }}</span></a>{% endif %}
     <span class="question-number">#{{ q.id }}</span>
     {% if q.kind == "look" %}<span class="chip question-look-chip">look at this</span>{% endif %}
     <span class="muted">{% if q.run_id %}run {{ q.run_id }}{% else %}desktop session{% endif %} · {{ q.asked_by }} · asked <time datetime="{{ q.asked_at }}" data-age>{{ q.asked_at|age }}</time></span>
@@ -24,7 +26,7 @@
   {% if q.answer is not none %}<p class="question-answer-text"><span class="muted">{{ "Default taken" if q.answered_by == "default" else "Your answer" }}:</span> {{ q.answer }}</p>{% endif %}
   {% if q.answerable %}
   <form class="question-answer" method="post" action="/questions/{{ q.id }}/answer"
-        hx-post="/questions/{{ q.id }}/answer" hx-target="{{ '#inbox' if place == 'inbox' else '#questions-' ~ q.task_key }}" hx-swap="outerHTML" hx-disabled-elt="find button">
+        {% if place != "coordinator" %}hx-post="/questions/{{ q.id }}/answer" hx-target="{{ '#inbox' if place == 'inbox' else '#questions-' ~ q.task_key }}" hx-swap="outerHTML" hx-disabled-elt="find button"{% endif %}>
     <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
     <input type="hidden" name="from" value="{{ place }}">
     {% if q.status == "defaulted" %}<p class="muted">An answer now reaches the agent as a change of course.</p>{% endif %}

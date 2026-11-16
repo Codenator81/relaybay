@@ -180,8 +180,8 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | Item | Status | Design |
 |---|---|---|
 | The probes of 0023 (nested `CLAUDE.md`, profiles, Claude Code's own schedule tools, `/compact` headless, the cost of a wake, one-shot checks) | done | [0023](design/0023-coordinator-and-schedules.md#probes-2026-11-16) |
-| PR 1: permission profiles as data (`agent`, `coordinator`, `read-only`), editable on the board in Settings → Profiles, read on every turn | in progress | [0023](design/0023-coordinator-and-schedules.md#profiles-as-data) |
-| PR 2: the coordinator as one permanent run without a card, in a folder outside any git repository, with a replaceable starter `CLAUDE.md` | next | [0023](design/0023-coordinator-and-schedules.md#the-coordinator) |
+| PR 1: permission profiles as data (`agent`, `coordinator`, `read-only`), editable on the board in Settings → Profiles, read on every turn | done | [0023](design/0023-coordinator-and-schedules.md#profiles-as-data) |
+| PR 2: the coordinator as one permanent run without a card, in a folder outside any git repository, with a replaceable starter `CLAUDE.md` | done | [0023](design/0023-coordinator-and-schedules.md#the-coordinator) |
 | PR 3: wakes by events, compaction, the coordinator's budget | next | [0023](design/0023-coordinator-and-schedules.md#wakes) |
 | PR 4: schedules: coordinator turns, read-only `-p` checks, reminders | next | [0023](design/0023-coordinator-and-schedules.md#schedules) |
 | PR 5: the Coordinator page | next | [0023](design/0023-coordinator-and-schedules.md#the-coordinator-page) |
