@@ -13147,7 +13147,9 @@ class Service:
             view.last_report = _first_line(done[-1].result_md or "")
         return view
 
-    async def coordinator_page(self) -> crules.CoordinatorPage:
+    async def coordinator_page(self, before: int | None = None) -> crules.CoordinatorPage:
+        """The Coordinator page: one page of turns (`PAGE_TURNS`, before the turn `before` when
+        given, else the newest), so a long-lived coordinator's page stays fast."""
         await self.close_overdue_questions()
         settings = await self.coordinator_settings()
         folder: str | None = None
@@ -13157,25 +13159,41 @@ class Service:
             folder = str(path)
             refusal = await asyncio.to_thread(coordinator_folder.inside_repository_reason, path)
         every = await repo.coordinator_questions(self._r, limit=50)
-        view = await self.coordinator_run_view()
-        run = view.run if view is not None else None
-        wakes = await repo.coordinator_wakes(self._r, run.id) if run is not None else []
+        run = await repo.open_coordinator_run(self._r) or await repo.latest_coordinator_run(self._r)
+        view: RunView | None = None
+        turns: list[RunTurn] = []
+        older: int | None = None
+        wakes: list[crules.CoordinatorWake] = []
+        if run is not None:
+            newest_first = await repo.turns_before(self._r, run.id, before, crules.PAGE_TURNS + 1)
+            if len(newest_first) > crules.PAGE_TURNS:
+                newest_first = newest_first[: crules.PAGE_TURNS]
+                older = newest_first[-1].seq
+            turns = newest_first[::-1]
+            view = RunView(run, turns, await repo.run_turn_totals(self._r, run.id))
+            wakes = await repo.coordinator_wakes(self._r, run.id, [t.id for t in turns])
+        # The turn just after the page: the context a `/compact` at its end came to.
+        after_page = (
+            await repo.turn_after(self._r, run.id, turns[-1].seq)
+            if run is not None and turns and before is not None
+            else None
+        )
         compacted: dict[int, tuple[int, int | None]] = {}
-        turns = view.turns if view is not None else []
         for i, turn in enumerate(turns):
             if turn.compact_pre_tokens is None:
                 continue
             # Without the CLI's own number after it: for `/compact` the context of the next
             # turn, for a turn Claude Code compacted itself the context it ended with.
             after = turn.compact_post_tokens
+            following = turns[i + 1] if i + 1 < len(turns) else after_page
             if after is None and not crules.is_compact(turn):
                 after = crules.turn_context(turn)
-            elif after is None and i + 1 < len(turns) and turns[i + 1].ended_at:
-                after = crules.turn_context(turns[i + 1])
+            elif after is None and following is not None and following.ended_at:
+                after = crules.turn_context(following)
             compacted[turn.id] = (turn.compact_pre_tokens, after)
         state = await self.coordinator_wake_state(run)
-        done = [t for t in turns if t.ended_at and not crules.is_compact(t)]
-        state.context_tokens = crules.turn_context(done[-1]) if done else None
+        last = await repo.last_coordinator_context_turn(self._r, run.id) if run else None
+        state.context_tokens = crules.turn_context(last) if last is not None else None
         return crules.CoordinatorPage(
             settings=settings,
             folder=folder,
@@ -13192,7 +13210,29 @@ class Service:
                 for s in await repo.list_schedules(self._r)
                 if s.kind == srules.COORDINATOR_TURN or s.created_by_kind == "coordinator"
             ],
+            approvals=await repo.coordinator_run_approvals(self._r),
+            started=await repo.coordinator_started_runs(
+                self._r, crules.local_day_start(datetime.now(UTC))
+            ),
+            older=older,
+            paged=before is not None,
         )
+
+    async def coordinator_badge(self) -> crules.CoordinatorBadge:
+        """The sidebar's mark: the coordinator's open questions and its budget's level today."""
+        questions = await repo.coordinator_open_questions(self._r)
+        budget = await repo.coordinator_budget(self._r)
+        level = None
+        if budget is not None:
+            today = datetime.now(UTC).date().isoformat()
+            marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
+            levels = marks.get(budget.id, set())
+            level = (
+                agent_limits.EXCEEDED
+                if agent_limits.EXCEEDED in levels
+                else next(iter(levels), None)
+            )
+        return crules.CoordinatorBadge(questions, level)
 
     async def start_coordinator(self, *, actor: str = "owner", new_session: bool = False) -> Run:
         """Start (the owner's button only; no MCP tool starts a coordinator): the coordinator

@@ -184,7 +184,7 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | PR 2: the coordinator as one permanent run without a card, in a folder outside any git repository, with a replaceable starter `CLAUDE.md` | done | [0023](design/0023-coordinator-and-schedules.md#the-coordinator) |
 | PR 3: wakes by events, compaction, the coordinator's budget | done | [0023](design/0023-coordinator-and-schedules.md#wakes) |
 | PR 4: schedules: coordinator turns, read-only `-p` checks, reminders | done | [0023](design/0023-coordinator-and-schedules.md#schedules) |
-| PR 5: the Coordinator page | next | [0023](design/0023-coordinator-and-schedules.md#the-coordinator-page) |
+| PR 5: the Coordinator page complete: what waits, what came in and what it decided, runs it started today, its schedules, live, paged, the sidebar's mark | done | [0023](design/0023-coordinator-and-schedules.md#the-coordinator-page) |
 
 ## After 0.11
 

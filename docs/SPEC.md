@@ -751,7 +751,7 @@ turn's `system/compact_boundary` line gives `run_turn.compact_pre_tokens` (and
 `compact_post_tokens` when the CLI names one); the page shows `compacted: X -> Y tokens`, Y from
 the CLI or else the context of the next turn. No `/compact` follows a turn that Claude Code
 compacted itself (its own `compact_boundary`, shown as `compacted: X -> Y` on that turn, a wake's
-next to "woke by N events", Y the context it ended with), nor one while every turn since the
+beside its event lines, Y the context it ended with), nor one while every turn since the
 run's last `/compact` stayed above the threshold (that compaction did not help: no
 wake-compact-wake-compact chain; a turn under it allows the next). A `/compact` that fails is not
 retried until the next turn above the threshold. Claude Code's own automatic compaction stays the
@@ -1597,21 +1597,42 @@ git repository is refused, and so is a number out of its range.
 
 <a id="spec-board-coordinator"></a>
 
-**Coordinator** (`/coordinator`, in the sidebar after All boards; the full page comes later). Its
-status, run, Claude session id, tokens, today's tokens against its
-[budget](#spec-coordinator-budget) with the percentage and the warning once a threshold is marked
-("over 80% of its daily budget", "over its daily budget"), the context after its last turn next to
-the Compact at value, the events waiting for a wake with why they wait (or "for the next wake")
-and the minimum gap, folder (where Start puts it before the first Start) and the profile, model and
-effort from Settings → Agents; Start (when none is open, with
-the reason shown when the folder lies inside a git repository), Stop (while a turn runs), Start
-anyway (queued for memory), Terminal and Open in the desktop app (between turns, as on a card;
-while either holds it, turns wait), Back to the program, New session and End. The owner's box
-sends a turn framed as the owner's word. Below: its open questions with the answer form (and the
-latest closed ones), then its schedules (its coordinator turns on a schedule and the checks and
-reminders it made, each with when, its next time and its last outcome, linking to the Schedules
-page), then its turns, newest first, each with its text folded and its result text;
-a wake's text folds under "woke by N events", a `/compact` turn shows `compacted: X -> Y tokens`.
+**Coordinator** (`/coordinator`, in the sidebar after All boards, owner only: every form cookie and
+CSRF, a Bearer client is refused with 403). The sidebar item carries a mark while the coordinator's
+own questions are open (their number) or its [budget](#spec-coordinator-budget) warned or was used
+up today (`!`). The page lives like the other board pages: on the `coordinator.*`, `question.*`,
+`approval.*`, `schedule.*`, `budget.*` and `brake.*` events, the `run.*` events of the coordinator run
+and of the runs it started, and the wake kinds (a report, a message, a plan draft, intake) it
+refetches its sections (at most once per 2 s), holding the refresh while an answer, an approval
+line or the owner's text is being typed. Its sections, in this order:
+
+1. **Header.** A line for the state when it is not simply ready: no coordinator yet (what Start does
+   and the folder it will make, with the starter `CLAUDE.md`), ended (Start makes a new run; its
+   `CLAUDE.md`, relaybay's memory and its open questions carry over), with the owner in the Terminal
+   tab or the desktop app, stopped, or over a `stop` budget (wakes stop). Then status, session (run,
+   session name, Claude session id, the desktop link), the context after its last turn next to the
+   Compact at value, today's tokens against its budget with the percentage and the warning once a
+   threshold is marked ("over 80% of its daily budget", "over its daily budget"), the tokens of the
+   run, the events waiting for a wake with why they wait (or "for the next wake") and the minimum
+   gap, folder and the model, effort, mode and profile; Start (when none is open, with the reason
+   shown when the folder lies inside a git repository), Stop (while a turn runs), Start anyway
+   (queued for memory), Terminal and Open in the desktop app (between turns, as on a card; while
+   either holds it, turns wait), Back to the program, New session and End; the owner's box, which
+   sends a turn framed as the owner's word.
+2. **What waits for you.** Its open questions with the answer form, and the open approvals of the
+   runs it started, each with its card linked, Approve and Refuse (plain form posts back to this
+   page); its latest closed questions folded.
+3. **What came in and what it decided**, newest first, 20 turns a page with an "Older turns" link
+   (`?before=<turn>`) and "Newest turns" back. Each turn: who sent it (a wake, the owner, relaybay for
+   `/compact`), its state, number, age and tokens; beside it (one under the other on a phone) what
+   came in (a wake's event lines and their count, the owner's words without the frame, or the
+   `/compact` with its threshold; the whole text folded) and what it decided (its result text,
+   `compacted: X -> Y tokens` for a compaction).
+4. **Runs it started today** (since the local midnight, as its daily cap counts): the runs it
+   started with `run_start` and the checks of the schedules it made, newest first: the card (or the
+   check's project, linking to Schedules), its title, status and run number, started, tokens.
+5. **Its schedules**: its coordinator turns on a schedule and the checks and reminders it made, each
+   with when, its next time and its last outcome, linking to the Schedules page.
 
 <a id="spec-board-schedules"></a>
 

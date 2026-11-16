@@ -30,6 +30,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from relaybay import __version__, machine_setup
 from relaybay.config import LOCAL_HOSTS, Settings
+from relaybay.domain import coordinator as crules
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
@@ -247,6 +248,7 @@ EVENT_KINDS = (
     "question.defaulted",
     "question.delivered",
     "question.withdrawn",
+    "question.overdue",
     "approval.requested",
     "approval.decided",
     "approval.used",
@@ -264,6 +266,8 @@ EVENT_KINDS = (
     "coordinator.new_session",
     "coordinator.stopped",
     "coordinator.ended",
+    "coordinator.woken",
+    "coordinator.compacting",
     *srules.EVENT_KINDS,
 )
 CSRF_HEADER = "x-relaybay-csrf"
@@ -412,6 +416,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     # Schedules show the machine's local time, as they are planned in it.
     env.filters["local_time"] = lambda value: srules.local_text(value, service.local_time)
     env.globals["when_text"] = lambda s: srules.when_text(s, service.local_time)
+    env.filters["wake_lines"] = crules.wake_lines
+    env.filters["owner_words"] = crules.owner_words
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
     env.filters["http_url"] = http_url
@@ -494,6 +500,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "project": nav_project,
             "projects": [item.project for item in await service.list_projects()],
             "inbox_count": (await inbox()).count,
+            "coordinator_badge": await service.coordinator_badge(),
             "saved_filters": await saved_filters_by_project(),
             "backlog_counts": await service.backlog_counts(),
             "filter_active": bool(context.get("filter_query")),
@@ -1878,28 +1885,44 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     # --- The coordinator: one run without a card, owner only -------------------------------
 
-    @router.get("/coordinator", response_class=HTMLResponse)
-    async def coordinator_page(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        found = await service.coordinator_page()
+    async def coordinator_context(before: int | None) -> dict[str, Any]:
+        found = await service.coordinator_page(before)
         run = found.view.run if found.view is not None else None
         runs = service.runs
+        return {
+            "c": found,
+            "before": before,
+            "available": runs is not None,
+            "running": run is not None and runs is not None and runs.is_running(run.id),
+            "desktop_ok": runs is not None and runs.desktop_launcher is not None,
+            "terminal_on": terminal_here() and await service.terminal_enabled(),
+            "terminal_open": run is not None and service.terminals.busy(run.id),
+        }
+
+    @router.get("/coordinator", response_class=HTMLResponse)
+    async def coordinator_page(request: Request, before: Annotated[int | None, Query(ge=1)] = None):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        flash = take_flash(request)
         response = await page(
             request,
             "coordinator.html",
             "coordinator",
-            c=found,
-            available=runs is not None,
-            running=run is not None and runs is not None and runs.is_running(run.id),
-            desktop_ok=runs is not None and runs.desktop_launcher is not None,
-            terminal_on=terminal_here() and await service.terminal_enabled(),
-            terminal_open=run is not None and service.terminals.busy(run.id),
+            **await coordinator_context(before),
             message=flash.get("message"),
             error=flash.get("error"),
             last_event_id=last_event_id,
         )
         return shown_once(request, response)
+
+    @router.get("/fragments/coordinator", response_class=HTMLResponse)
+    async def coordinator_fragment(
+        request: Request, before: Annotated[int | None, Query(ge=1)] = None
+    ):
+        return render(request, "_coordinator.html", **await coordinator_context(before))
+
+    @router.get("/fragments/coordinator-badge", response_class=HTMLResponse)
+    async def coordinator_badge(request: Request):
+        return render(request, "_coordinator_badge.html", badge=await service.coordinator_badge())
 
     @router.post("/coordinator/{action}", response_class=HTMLResponse)
     async def coordinator_action(
@@ -2207,7 +2230,12 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         task = await service.get_task(approval.task_id)
         htmx = "hx-request" in request.headers
         inbox_side = place == "inbox"
-        back = "/inbox" if inbox_side else f"/p/{task.project_slug}?task={task.key}"
+        if inbox_side:
+            back = "/inbox"
+        elif place == "coordinator":
+            back = "/coordinator"
+        else:
+            back = f"/p/{task.project_slug}?task={task.key}"
         error = None
         done = f"Approval {approval_id} {'approved' if decision == 'approve' else 'refused'}."
         try:
@@ -2222,7 +2250,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             if not htmx:
                 return flash_redirect(request, back, error=str(exc))
             error = str(exc)
-        if not htmx:
+        if not htmx or place == "coordinator":
+            if error is not None:
+                return flash_redirect(request, back, error=error)
             return flash_redirect(request, back, message=done)
         if inbox_side:
             return render(

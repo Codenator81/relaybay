@@ -12,7 +12,7 @@ from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_js
 from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import UNASSIGNED, BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
-from relaybay.domain.coordinator import WAKE_KINDS, CoordinatorWake
+from relaybay.domain.coordinator import WAKE_KINDS, CoordinatorWake, StartedRun
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -52,7 +52,14 @@ from relaybay.domain.reports import ReportCheck
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
 from relaybay.domain.run_events import StoredLine, StreamEvent, unpack
-from relaybay.domain.runs import DEFAULT_RETENTION, Run, RunDefaults, RunTurn, RunWorktree
+from relaybay.domain.runs import (
+    DEFAULT_RETENTION,
+    Run,
+    RunDefaults,
+    RunTotals,
+    RunTurn,
+    RunWorktree,
+)
 from relaybay.domain.schedules import TITLE_MAX, Schedule, ScheduleRun, flat
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile, UsageLine
@@ -5117,11 +5124,59 @@ async def last_coordinator_wake(conn: aiosqlite.Connection) -> CoordinatorWake |
     return _wake(row) if row else None
 
 
-async def coordinator_wakes(conn: aiosqlite.Connection, run_id: int) -> list[CoordinatorWake]:
-    rows = await _all(
-        conn, "SELECT * FROM coordinator_wake WHERE run_id = ? ORDER BY id", (run_id,)
-    )
+async def coordinator_wakes(
+    conn: aiosqlite.Connection, run_id: int, turn_ids: list[int] | None = None
+) -> list[CoordinatorWake]:
+    """The wakes of a run; with `turn_ids`, only the wakes of those turns (a page of them)."""
+    if turn_ids is None:
+        rows = await _all(
+            conn, "SELECT * FROM coordinator_wake WHERE run_id = ? ORDER BY id", (run_id,)
+        )
+    elif not turn_ids:
+        return []
+    else:
+        marks = ", ".join("?" for _ in turn_ids)
+        rows = await _all(
+            conn,
+            f"SELECT * FROM coordinator_wake WHERE turn_id IN ({marks}) AND run_id = ? ORDER BY id",
+            (*turn_ids, run_id),
+        )
     return [_wake(r) for r in rows]
+
+
+async def coordinator_started_runs(conn: aiosqlite.Connection, since: str) -> list[StartedRun]:
+    """Runs a coordinator run started with run_start since `since`, and the check runs of the
+    schedules a coordinator made (the two its daily cap counts), newest first, with tokens."""
+    rows = await _all(
+        conn,
+        "SELECT r.id, r.kind, r.status, r.created_at, r.ended_at, t.key AS task_key,"
+        " t.title AS task_title, p.slug AS project_slug,"
+        " (SELECT TOTAL(x.input_tokens + x.output_tokens + x.cache_read_tokens"
+        " + x.cache_write_tokens) FROM run_turn x WHERE x.run_id = r.id) AS tokens"
+        " FROM run r LEFT JOIN task t ON t.id = r.task_id"
+        " LEFT JOIN project p ON p.id = r.project_id"
+        " WHERE r.id IN (SELECT s.id FROM run s JOIN run c ON c.id = s.started_by_run"
+        " WHERE s.started_by_run IS NOT NULL AND s.created_at >= ? AND c.kind = 'coordinator'"
+        " UNION SELECT sr.run_id FROM schedule_run sr JOIN schedule d ON d.id = sr.schedule_id"
+        " JOIN run k ON k.id = sr.run_id"
+        " WHERE d.created_by_kind = 'coordinator' AND k.kind = 'check' AND k.created_at >= ?)"
+        " ORDER BY r.id DESC",
+        (since, since),
+    )
+    return [
+        StartedRun(
+            id=r["id"],
+            kind=r["kind"],
+            status=r["status"],
+            created_at=r["created_at"],
+            ended_at=r["ended_at"],
+            tokens=int(r["tokens"] or 0),
+            task_key=r["task_key"],
+            task_title=r["task_title"],
+            project_slug=r["project_slug"],
+        )
+        for r in rows
+    ]
 
 
 _QUEUED_SELECT = """
@@ -5356,6 +5411,61 @@ async def list_turns(conn: aiosqlite.Connection, run_id: int) -> list[RunTurn]:
         (run_id,),
     )
     return [_turn(r) for r in rows]
+
+
+async def turns_before(
+    conn: aiosqlite.Connection, run_id: int, before_seq: int | None, limit: int
+) -> list[RunTurn]:
+    """At most `limit` turns of a run before `before_seq` (None: the newest), newest first,
+    with the same columns as `list_turns`; the (run_id, seq) key serves it."""
+    rows = await _all(
+        conn,
+        "SELECT t.*, r.summary AS report_summary, r.state AS report_state,"
+        " r.size AS report_size,"
+        " (SELECT COUNT(*) FROM run_event e WHERE e.turn_id = t.id) AS events"
+        " FROM run_turn t LEFT JOIN report r ON r.id = t.report_id"
+        " WHERE t.run_id = ? AND t.seq < ? ORDER BY t.seq DESC LIMIT ?",
+        (run_id, before_seq if before_seq is not None else 2**62, limit),
+    )
+    return [_turn(r) for r in rows]
+
+
+async def turn_after(conn: aiosqlite.Connection, run_id: int, seq: int) -> RunTurn | None:
+    row = await _one(
+        conn,
+        "SELECT * FROM run_turn WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT 1",
+        (run_id, seq),
+    )
+    return _turn(row) if row else None
+
+
+async def run_turn_totals(conn: aiosqlite.Connection, run_id: int) -> RunTotals:
+    row = await _one(
+        conn,
+        "SELECT TOTAL(input_tokens), TOTAL(output_tokens), TOTAL(cache_read_tokens),"
+        " TOTAL(cache_write_tokens), TOTAL(denials) FROM run_turn WHERE run_id = ?",
+        (run_id,),
+    )
+    values = [int(v or 0) for v in row] if row else [0] * 5
+    return RunTotals(*values)
+
+
+async def last_coordinator_context_turn(conn: aiosqlite.Connection, run_id: int) -> RunTurn | None:
+    """The latest ended turn of a run that is not a `/compact`: its context is the page's."""
+    row = await _one(
+        conn,
+        "SELECT * FROM run_turn WHERE run_id = ? AND ended_at IS NOT NULL"
+        " AND TRIM(prompt) != '/compact' ORDER BY seq DESC LIMIT 1",
+        (run_id,),
+    )
+    return _turn(row) if row else None
+
+
+async def coordinator_open_questions(conn: aiosqlite.Connection) -> int:
+    row = await _one(
+        conn, "SELECT COUNT(*) FROM question WHERE status = 'open' AND task_id IS NULL", ()
+    )
+    return int(row[0]) if row else 0
 
 
 async def set_turn_result(conn: aiosqlite.Connection, turn_id: int, text: str) -> None:
@@ -5965,6 +6075,18 @@ async def open_approvals(
         conn,
         _APPROVAL_SELECT + f" WHERE {column} = ? AND a.status = 'open' ORDER BY a.id",
         (value,),
+    )
+    return [_approval(r) for r in rows]
+
+
+async def coordinator_run_approvals(conn: aiosqlite.Connection) -> list[Approval]:
+    """Open requests of the runs a coordinator run started, oldest first."""
+    rows = await _all(
+        conn,
+        _APPROVAL_SELECT + " WHERE a.status = 'open' AND a.run_id IN (SELECT r.id FROM run r"
+        " JOIN run c ON c.id = r.started_by_run WHERE r.started_by_run IS NOT NULL"
+        " AND c.kind = 'coordinator') ORDER BY a.id",
+        (),
     )
     return [_approval(r) for r in rows]
 
