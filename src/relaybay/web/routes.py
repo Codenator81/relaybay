@@ -33,6 +33,7 @@ from relaybay.config import LOCAL_HOSTS, Settings
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
+from relaybay.domain import profiles as profile_rules
 from relaybay.domain import run_events as run_lines
 from relaybay.domain import runs as run_rules
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
@@ -252,6 +253,10 @@ EVENT_KINDS = (
     "settings.run_login_any",
     "settings.run_limits",
     "settings.terminal_enabled",
+    "profile.created",
+    "profile.updated",
+    "profile.deleted",
+    "profile.reset",
 )
 CSRF_HEADER = "x-relaybay-csrf"
 # The Terminal tab: the board's policy plus inline styles, which xterm.js writes.
@@ -1649,6 +1654,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 effort=str(form.get("effort") or "") or None,
                 mode=str(form.get("permission_mode") or "") or None,
                 brief=str(form.get("brief") or ""),
+                profile=str(form.get("profile") or "") or None,
             )
 
         return await run_write(request, slug, key, csrf, write)
@@ -2110,6 +2116,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             repo_kinds=REPO_KINDS,
             run_defaults=await service.run_defaults(project.slug),
             run_choices=RUN_CHOICES,
+            run_profiles=await service.profiles("card"),
             proposals=await service.proposals(project.slug),
             policies=await service.environment_policies(items),
             project_policy=await service.effective_policy(project.slug),
@@ -2247,8 +2254,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 for name in (
                     "model",
                     "effort",
-                    "permission_mode",
-                    "allowed_tools",
+                    "profile",
                     "folder",
                     "retention",
                 )
@@ -2848,6 +2854,84 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if problems:
             return flash_redirect(request, "/settings/agents#terminal", error=" ".join(problems))
         return flash_redirect(request, "/settings/agents#terminal", message="Saved.")
+
+    @router.get("/settings/profiles", response_class=HTMLResponse)
+    async def profiles_settings(request: Request):
+        last_event_id = await service.last_event_id()  # before the data, see projects_page
+        flash = take_flash(request)
+        response = await page(
+            request,
+            "profiles.html",
+            "settings",
+            profiles=await service.profiles(),
+            modes=run_rules.PERMISSION_MODES,
+            kinds=profile_rules.KINDS,
+            rights=profile_rules.RIGHTS,
+            per_day=profile_rules.PER_DAY,
+            fixed_lines=profile_rules.FIXED_LINES,
+            fixed_disallowed=profile_rules.FIXED_DISALLOWED,
+            message=flash.get("message"),
+            error=flash.get("error"),
+            last_event_id=last_event_id,
+        )
+        return shown_once(request, response)
+
+    def profile_form(form: Any) -> dict[str, Any]:
+        """A profile's fields as the editor sends them: rules one per line, a checkbox per
+        right and per run kind."""
+        return {
+            "description": str(form.get("description") or ""),
+            "permission_mode": str(form.get("permission_mode") or ""),
+            "allowed_tools": str(form.get("allowed_tools") or ""),
+            "disallowed_tools": str(form.get("disallowed_tools") or ""),
+            "rights": {
+                **{name: form.get(f"right_{name}") == "1" for name in profile_rules.RIGHT_NAMES},
+                profile_rules.PER_DAY: str(form.get(profile_rules.PER_DAY) or "0"),
+            },
+            "kinds": [str(k) for k in form.getlist("kinds")],
+        }
+
+    @router.post("/settings/profiles", response_class=HTMLResponse)
+    async def profile_create(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
+        board_only(request, csrf)
+        form = await request.form()
+        try:
+            made = await service.create_profile(
+                str(form.get("name") or ""), profile_form(form), actor="owner"
+            )
+        except DomainError as exc:
+            return flash_redirect(request, "/settings/profiles#new", error=str(exc))
+        return flash_redirect(
+            request, f"/settings/profiles#profile-{made.name}", message=f"{made.name} added."
+        )
+
+    @router.post("/settings/profiles/{name}/{action}", response_class=HTMLResponse)
+    async def profile_action(
+        request: Request,
+        name: str,
+        action: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ):
+        if action not in ("save", "reset", "delete"):
+            raise HTTPException(status_code=404)
+        board_only(request, csrf)
+        form = await request.form()
+        anchor = f"/settings/profiles#profile-{name}"
+        try:
+            if action == "save":
+                saved = await service.update_profile(name, profile_form(form), actor="owner")
+                message = f"{saved.name} saved (version {saved.version})."
+            elif action == "reset":
+                saved = await service.reset_profile(name, actor="owner")
+                message = f"{saved.name} reset to shipped (version {saved.version})."
+            else:
+                await service.delete_profile(name, actor="owner")
+                anchor, message = "/settings/profiles", f"{name} deleted."
+        except NotFoundError:
+            raise
+        except DomainError as exc:
+            return flash_redirect(request, anchor, error=str(exc))
+        return flash_redirect(request, anchor, message=message)
 
     @router.get("/settings/notifications", response_class=HTMLResponse)
     async def notifications(request: Request):

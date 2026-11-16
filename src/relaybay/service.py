@@ -41,6 +41,7 @@ from relaybay.domain import environments as envs
 from relaybay.domain import limits as agent_limits
 from relaybay.domain import memory as mem
 from relaybay.domain import messages as message_text
+from relaybay.domain import profiles as prules
 from relaybay.domain import questions as qrules
 from relaybay.domain import run_events as run_lines
 from relaybay.domain import runs as run_rules
@@ -144,6 +145,7 @@ from relaybay.domain.plan import (
 )
 from relaybay.domain.plan import STEP_DETAILS_MAX as PLAN_DETAILS_MAX
 from relaybay.domain.plan import clean_step_title as clean_plan_title
+from relaybay.domain.profiles import RunProfile
 from relaybay.domain.questions import Question
 from relaybay.domain.reports import REPORT_SIZES, ReportCheck, parse_checks, parse_report
 from relaybay.domain.review import (
@@ -232,7 +234,7 @@ from relaybay.runner import desktop as run_desktop
 from relaybay.runner import memory as run_memory
 from relaybay.runner import terminal as run_terminal
 from relaybay.runner import transcripts, worktrees
-from relaybay.runner.claude_cli import TurnSpec, build_command
+from relaybay.runner.claude_cli import TurnSpec, build_command, check_batch_word, is_batch
 from relaybay.runner.layers import LayerState, run_files, user_layer_state, write_run_files
 from relaybay.runner.manager import RunManager, RunnerConfig
 from relaybay.runner.stream import Result
@@ -295,6 +297,10 @@ AUDIT_CHANGE_KINDS = (
     "run.terminal_opened",
     "run.terminal_closed",
     "settings.terminal_enabled",
+    "profile.created",
+    "profile.updated",
+    "profile.deleted",
+    "profile.reset",
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
@@ -371,6 +377,8 @@ _APPROVAL_HINT_RE = re.compile(r"\b(git|gh)(\.exe)?\b", re.IGNORECASE)
 # mode that refuses Bash): an approved run call is answered `allow` in every other mode.
 # The mode in which an approved call needs no `allow`: Claude Code skips its checks there.
 _SKIPPING_MODES = ("bypassPermissions",)
+# The owner's choice between turns that makes a run follow its profile's mode again.
+FOLLOW_PROFILE = "profile"
 # The approval check answers within the hook client's GUARDED_TIMEOUT_SECONDS (5 s): one read of
 # the current branch waits at most GATE_BRANCH_TIMEOUT_SECONDS, all reads of one check together
 # GATE_GIT_SECONDS. A branch read is reused for BRANCH_CACHE_SECONDS while the HEAD file of its
@@ -1124,6 +1132,7 @@ class RunForm:
     fix_command: str
     repo_modes: dict[int, str] = field(default_factory=dict)  # "new" or "self", the default
     copy_line: str = ""
+    profiles: list[RunProfile] = field(default_factory=list)  # the ones for runs on cards
 
 
 PREVIEW_TIMEOUT_SECONDS = 10.0
@@ -10285,9 +10294,14 @@ class Service:
     async def run_defaults(
         self, slug: str, conn: aiosqlite.Connection | None = None
     ) -> RunDefaults:
+        """The project's run defaults, with the mode and tools of the profile they name."""
+        conn = conn or self._r
         project = await self.get_project(slug, conn)
-        found = await repo.get_run_defaults(conn or self._r, project.id) or RunDefaults(project.id)
-        retention = await repo.get_project_retention(conn or self._r, project.id)
+        found = await repo.get_run_defaults(conn, project.id) or RunDefaults(project.id)
+        profile = await self.get_profile(found.profile, conn)
+        found.permission_mode = profile.permission_mode
+        found.allowed_tools = profile.allowed_tools
+        retention = await repo.get_project_retention(conn, project.id)
         found.retention = retention or run_rules.DEFAULT_RETENTION
         return found
 
@@ -10295,22 +10309,18 @@ class Service:
         self, slug: str, values: dict[str, Any], *, actor: str = "owner"
     ) -> RunDefaults:
         """The project's run defaults. Board only (no MCP tool): an agent never widens its own
-        permission mode, and `bypassPermissions` is never a default."""
+        permissions. The mode and tools come from the profile named, one for runs on cards."""
         async with self._tx() as tx:
             project = await self.get_project(slug, tx.conn)
             current = await repo.get_run_defaults(tx.conn, project.id) or RunDefaults(project.id)
+            profile = await self._card_profile(tx.conn, values.get("profile") or current.profile)
             new = RunDefaults(
                 project.id,
                 model=run_rules.clean_model(values.get("model", current.model)),
                 effort=run_rules.clean_effort(values.get("effort", current.effort)),
-                permission_mode=run_rules.clean_mode(
-                    values.get("permission_mode", current.permission_mode), owner=False
-                ),
-                allowed_tools=run_rules.clean_allowed_tools(
-                    values.get("allowed_tools", current.allowed_tools)
-                ),
                 chrome=bool(values.get("chrome", current.chrome)),
                 folder=run_rules.clean_folder(values.get("folder", current.folder)),
+                profile=profile.name,
             )
             retention = await repo.get_project_retention(tx.conn, project.id)
             new.retention = run_rules.clean_retention(
@@ -10326,13 +10336,160 @@ class Service:
                 project=project.slug,
                 model=new.model,
                 effort=new.effort,
-                permission_mode=new.permission_mode,
-                allowed_tools=new.allowed_tools,
+                profile=new.profile,
+                permission_mode=profile.permission_mode,
+                allowed_tools=profile.allowed_tools,
                 chrome=new.chrome,
                 folder=new.folder,
                 retention=new.retention,
             )
             return await self.run_defaults(slug, tx.conn)
+
+    # --- permission profiles -------------------------------------------------
+
+    async def profiles(self, kind: str | None = None) -> list[RunProfile]:
+        """All profiles, shipped ones first; `kind`: only those for that run kind."""
+        found = await repo.list_profiles(self._r)
+        return [p for p in found if kind is None or kind in p.kinds]
+
+    async def get_profile(self, name: str, conn: aiosqlite.Connection | None = None) -> RunProfile:
+        found = await repo.get_profile(conn or self._r, str(name or "").strip().lower())
+        if found is None:
+            raise NotFoundError(f"Profile {name!r} not found.")
+        return found
+
+    async def _card_profile(self, conn: aiosqlite.Connection, name: str) -> RunProfile:
+        profile = await self.get_profile(name, conn)
+        if "card" not in profile.kinds:
+            raise ValidationError(
+                f"Profile {profile.name} is not for runs on cards (it is for"
+                f" {', '.join(profile.kinds)})."
+            )
+        return profile
+
+    def _profile_values(self, values: dict[str, Any]) -> dict[str, Any]:
+        cleaned = {
+            "description": prules.clean_description(values.get("description")),
+            "permission_mode": prules.clean_mode(values.get("permission_mode")),
+            "allowed_tools": prules.clean_rules(
+                values.get("allowed_tools"), "allowed tools", required=True
+            ),
+            "disallowed_tools": prules.clean_rules(
+                values.get("disallowed_tools"), "taken-away tools", required=False
+            ),
+            "rights": prules.clean_rights(values.get("rights") or {}),
+            "kinds": prules.clean_kinds(values.get("kinds")),
+        }
+        self._check_batch_rules(cleaned)
+        return cleaned
+
+    def _check_batch_rules(self, values: dict[str, Any]) -> None:
+        """A save reaches the open runs at once: under a batch shim a rule cmd.exe would read
+        would fail every next turn, so it is refused here, as a turn would refuse it."""
+        claude = self.runs.claude() if self.runs is not None else None
+        if claude is None or not is_batch(claude):
+            return
+        for text in (values["allowed_tools"], values["disallowed_tools"]):
+            for rule in run_rules.split_rules(text):
+                check_batch_word(claude, rule)
+
+    async def _profile_saved(
+        self,
+        tx: _Tx,
+        kind: str,
+        actor: str,
+        name: str,
+        before: RunProfile | None,
+    ) -> None:
+        """The event (an Audit line) with the before and after, and the open runs under the
+        profile updated to show what their next turn starts with."""
+        after = await repo.get_profile(tx.conn, name)
+        payload: dict[str, Any] = {"profile": name}
+        if before is not None:
+            payload["before"] = before.snapshot()
+            payload["version_before"] = before.version
+        if after is not None:
+            payload["after"] = after.snapshot()
+            payload["version"] = after.version
+            await repo.follow_profile(tx.conn, after, tx.now)
+        await tx.event(kind, actor, **payload)
+
+    async def create_profile(
+        self, name: str, values: dict[str, Any], *, actor: str = "owner"
+    ) -> RunProfile:
+        """A new profile, board only (no MCP write): the owner's alone."""
+        clean = prules.clean_name(name)
+        cleaned = self._profile_values(values)
+        async with self._tx() as tx:
+            if await repo.get_profile(tx.conn, clean) is not None:
+                raise ConflictError(f"A profile named {clean} exists already.")
+            await repo.insert_profile(tx.conn, clean, cleaned, tx.now, actor)
+            await self._profile_saved(tx, "profile.created", actor, clean, None)
+            return await self.get_profile(clean, tx.conn)
+
+    async def update_profile(
+        self, name: str, values: dict[str, Any], *, actor: str = "owner"
+    ) -> RunProfile:
+        """An edit of a profile, board only; its version grows by one and the next turn of
+        every run under it starts with it. A profile still named by a project's run defaults
+        or used by an open run on a card stays for cards."""
+        cleaned = self._profile_values(values)
+        async with self._tx() as tx:
+            before = await self.get_profile(name, tx.conn)
+            if "card" not in cleaned["kinds"]:
+                await self._refuse_profile_in_use(tx.conn, before, "taken off cards")
+            if before.snapshot() == cleaned:
+                return before
+            await repo.update_profile(tx.conn, before.name, cleaned, tx.now, actor)
+            await self._profile_saved(tx, "profile.updated", actor, before.name, before)
+            return await self.get_profile(before.name, tx.conn)
+
+    async def reset_profile(self, name: str, *, actor: str = "owner") -> RunProfile:
+        """A shipped profile back to its shipped values (a new version when they differ)."""
+        async with self._tx() as tx:
+            before = await self.get_profile(name, tx.conn)
+            shipped = prules.BUILTIN.get(before.name)
+            if not before.builtin or shipped is None:
+                raise ValidationError(f"{before.name} is not a shipped profile: nothing to reset.")
+            if before.snapshot() == shipped:
+                return before
+            self._check_batch_rules(shipped)
+            if "card" not in shipped["kinds"]:
+                await self._refuse_profile_in_use(tx.conn, before, "reset off cards")
+            await repo.update_profile(tx.conn, before.name, shipped, tx.now, actor)
+            await self._profile_saved(tx, "profile.reset", actor, before.name, before)
+            return await self.get_profile(before.name, tx.conn)
+
+    async def delete_profile(self, name: str, *, actor: str = "owner") -> None:
+        """A profile the owner added, when no project's run defaults name it and no open run
+        uses it. A shipped one is never deleted."""
+        async with self._tx() as tx:
+            before = await self.get_profile(name, tx.conn)
+            if before.builtin:
+                raise ValidationError(
+                    f"{before.name} ships with relaybay: it can be edited or reset, not deleted."
+                )
+            await self._refuse_profile_in_use(tx.conn, before, "deleted")
+            await repo.delete_profile(tx.conn, before.name)
+            await self._profile_saved(tx, "profile.deleted", actor, before.name, before)
+
+    @staticmethod
+    async def _refuse_profile_in_use(
+        conn: aiosqlite.Connection, profile: RunProfile, what: str
+    ) -> None:
+        if profile.projects:
+            raise ConflictError(
+                f"{profile.name} is the profile of {', '.join(profile.projects)}: it cannot be"
+                f" {what} while a project's agent defaults name it. Pick another profile there"
+                " first."
+            )
+        runs = await repo.open_runs_of_profile(conn, profile.name)
+        if runs:
+            listed = ", ".join(str(r) for r in runs)
+            raise ConflictError(
+                f"{profile.name} is used by open run {listed}: it cannot be {what} until"
+                " the run ends."
+            )
 
     async def run_login_any(self) -> bool:
         return await repo.get_app_setting(self._r, run_rules.LOGIN_ANY_KEY) == "1"
@@ -10422,6 +10579,7 @@ class Service:
             fix_command=run_auth.FIX_COMMAND,
             repo_modes=modes,
             copy_line=copy_line,
+            profiles=await self.profiles("card"),
         )
 
     async def run_view(self, task: Task) -> RunView | None:
@@ -10624,6 +10782,7 @@ class Service:
         mode: str | None = None,
         brief: str | None = None,
         caller_kind: str = "owner",
+        profile: str | None = None,
     ) -> Run:
         """Start a run on the card: the owner's board button, or `run_start` of a coordinator
         (`start_run_mcp` checks the caller). Checks come first; then the new worktrees are made
@@ -10632,17 +10791,21 @@ class Service:
         the worktrees just made are removed again.
 
         `cwd`: "folder" (the project folder) or a repository id; `repos`: (repository id, new
-        worktree?) per repository the run works in."""
+        worktree?) per repository the run works in. `profile`: the owner's pick of a profile for
+        cards (default: the project's); `mode`: the owner's pick for this run, which then stays
+        the run's own instead of following the profile (empty: the profile's)."""
         runs = self._run_manager()
         coordinator = caller_kind == "coordinator"
         task = await self.get_task(ref)
         defaults = await self.run_defaults(task.project_slug)
         model = run_rules.clean_model(model or defaults.model)
         effort = run_rules.clean_effort(effort or defaults.effort)
-        if coordinator:
-            mode = run_rules.clean_mode(defaults.permission_mode, owner=False)
-        else:
-            mode = run_rules.clean_mode(mode or defaults.permission_mode, owner=True)
+        picked = (profile or "").strip()
+        if coordinator or not picked:
+            picked = defaults.profile
+        run_profile = await self._card_profile(self._r, picked)
+        mode_set = not coordinator and bool((mode or "").strip())
+        mode = run_rules.clean_mode(mode, owner=True) if mode_set else run_profile.permission_mode
         if brief and brief.strip():
             text = run_rules.clean_prompt(brief, "brief")
         else:
@@ -10678,7 +10841,8 @@ class Service:
                 model,
                 effort,
                 mode,
-                tuple(defaults.allowed_rules),
+                tuple(run_profile.allowed_rules),
+                disallowed=prules.turn_disallowed(run_profile.disallowed_tools),
                 add_dirs=tuple(s.path for s in specs),
                 settings_file=str(settings_file) if settings_file else None,
                 mcp_file=str(mcp_file) if mcp_file else None,
@@ -10703,7 +10867,10 @@ class Service:
                     "model": model,
                     "effort": effort,
                     "permission_mode": mode,
-                    "allowed_tools": defaults.allowed_tools,
+                    "allowed_tools": run_profile.allowed_tools,
+                    "disallowed_tools": run_profile.disallowed_tools,
+                    "profile": run_profile.name,
+                    "mode_set": int(mode_set),
                     "chrome": int(defaults.chrome),
                     "auth_method": method,
                     "hooks_source": hooks_source,
@@ -10799,6 +10966,7 @@ class Service:
                 run_id,
                 model=values["model"],
                 mode=values["permission_mode"],
+                profile=values["profile"],
                 worktrees=sum(1 for s in made if s.create),
             )
             return await self._dispatch(tx, free_mb, actor)
@@ -10917,8 +11085,9 @@ class Service:
         """The permission mode, model and effort of the run's next turns, passed to `claude -p
         --resume` from the next turn on; never while a turn runs. The owner may pick any mode; a
         coordinator only one that does not raise it (`domain.runs.MODE_RANK`) and never
-        `bypassPermissions`. Empty or "-" keeps a value. A change is a `run.settings_changed`
-        event with the old and the new values."""
+        `bypassPermissions`. Empty or "-" keeps a value. A mode changed here stays the run's own
+        instead of following its profile; the owner's "profile" makes it follow again. A change
+        is a `run.settings_changed` event with the old and the new values."""
         owner = caller_kind == "owner"
         runs = self._run_manager()
 
@@ -10943,10 +11112,22 @@ class Service:
                     f"A turn of run {run.id} is running: the mode, model and effort change"
                     " between turns. Wait until it ends or stop it. Nothing changed."
                 )
+            follows = not run.mode_set
+            if owner and (mode or "").strip() == FOLLOW_PROFILE:
+                if run.profile is None:
+                    raise ValidationError(
+                        f"Run {run.id} started before profiles: it has no profile to follow."
+                        " Nothing changed."
+                    )
+                mode_value = (await self.get_profile(run.profile, tx.conn)).permission_mode
+                follows = True
+            elif keep(mode):
+                mode_value = run.permission_mode
+            else:
+                mode_value = run_rules.clean_mode(mode, owner=owner)
+                follows = follows and mode_value == run.permission_mode
             new = {
-                "permission_mode": (
-                    run.permission_mode if keep(mode) else run_rules.clean_mode(mode, owner=owner)
-                ),
+                "permission_mode": mode_value,
                 "model": run.model if keep(model) else run_rules.clean_model(model),
                 "effort": run.effort if keep(effort) else run_rules.clean_effort(effort),
             }
@@ -10961,9 +11142,13 @@ class Service:
                 "effort": run.effort,
             }
             changed = {k: {"from": old[k], "to": v} for k, v in new.items() if old[k] != v}
+            values: dict[str, Any] = {k: new[k] for k in changed}
+            if follows == run.mode_set:
+                changed["follows_profile"] = {"from": not run.mode_set, "to": follows}
+                values["mode_set"] = int(not follows)
             if changed:
                 task = await self.get_task(run.task_id, tx.conn)
-                await repo.update_run(tx.conn, run.id, {k: new[k] for k in changed}, tx.now)
+                await repo.update_run(tx.conn, run.id, values, tx.now)
                 await self._run_event(
                     tx, "run.settings_changed", actor, task, run.id, changed=changed
                 )
@@ -11428,7 +11613,18 @@ class Service:
     ) -> None:
         turn = await repo.get_turn(tx.conn, turn_id)
         assert turn is not None
-        await repo.start_turn(tx.conn, turn_id, tx.now)
+        # Every turn reads its run's profile now: a profile edit takes effect on the next turn.
+        # A run from before profiles keeps its own mode and tools.
+        profile = await repo.get_profile(tx.conn, run.profile) if run.profile else None
+        if profile is not None:
+            await repo.follow_profile(tx.conn, profile, tx.now)
+        await repo.start_turn(
+            tx.conn,
+            turn_id,
+            tx.now,
+            profile.name if profile else None,
+            profile.version if profile else None,
+        )
         await self._set_run_status(tx, run, "running", None)
         await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
 
@@ -11553,12 +11749,25 @@ class Service:
         for run_id, turn_id in launches:
             await self._spawn_turn(run_id, turn_id, held[run_id])
 
+    async def _spawned_profile(self, run_id: int, turn_id: int) -> Run:
+        """The run as its turn's process gets it: an edit may have landed since the turn was
+        marked started, so its profile is read again, with the run's row and the turn's
+        recorded version, in one transaction the spawn then reads."""
+        async with self._tx() as tx:
+            run = await self.get_run(run_id, tx.conn)
+            profile = await repo.get_profile(tx.conn, run.profile) if run.profile else None
+            if profile is None:
+                return run
+            await repo.follow_profile(tx.conn, profile, tx.now)
+            await repo.set_turn_profile(tx.conn, turn_id, profile.name, profile.version)
+            return await self.get_run(run_id, tx.conn)
+
     async def _spawn_turn(self, run_id: int, turn_id: int, reserved: bool) -> None:
         """Start the process of a turn already marked started; a failure ends it visibly.
         `reserved`: what `reserve` answered right after the commit that marked it started."""
         runs = self._run_manager()
         try:
-            run = await self.get_run(run_id)
+            run = await self._spawned_profile(run_id, turn_id)
             turn = await repo.get_turn(self._r, turn_id)
             folders = await repo.list_run_worktrees(self._r, run_id)
         except BaseException:
@@ -11602,6 +11811,7 @@ class Service:
                     tuple(run.allowed_rules),
                     run.claude_session_id,
                     run.chrome,
+                    disallowed=prules.turn_disallowed(run.disallowed_tools),
                     add_dirs=_add_dirs(run.cwd, [w.path for w in folders if w.removed_at is None]),
                     settings_file=str(settings_file) if settings_file else None,
                     mcp_file=str(mcp_file) if mcp_file else None,

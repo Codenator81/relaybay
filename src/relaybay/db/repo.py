@@ -45,6 +45,7 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
+from relaybay.domain.profiles import RunProfile, kinds_json, rights_json
 from relaybay.domain.questions import Question
 from relaybay.domain.reports import ReportCheck
 from relaybay.domain.review import Attachment, ReviewStep
@@ -4606,16 +4607,16 @@ async def backlog_assignees(conn: aiosqlite.Connection, project_id: int | None) 
 
 
 def _run_defaults(row: aiosqlite.Row) -> RunDefaults:
+    """Without the mode and tools: the service reads them from the named profile."""
     return RunDefaults(
         project_id=row["project_id"],
         model=row["model"],
         effort=row["effort"],
-        permission_mode=row["permission_mode"],
-        allowed_tools=row["allowed_tools"],
         chrome=bool(row["chrome"]),
         folder=row["folder"],
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
+        profile=row["profile"],
     )
 
 
@@ -4627,12 +4628,13 @@ async def get_run_defaults(conn: aiosqlite.Connection, project_id: int) -> RunDe
 async def upsert_run_defaults(
     conn: aiosqlite.Connection, defaults: RunDefaults, now: str, actor: str
 ) -> None:
+    """The columns permission_mode and allowed_tools of 0030 are no longer written: the
+    profile holds them."""
     await conn.execute(
-        "INSERT INTO project_run_defaults (project_id, folder, model, effort, permission_mode,"
-        " allowed_tools, chrome, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO project_run_defaults (project_id, folder, model, effort, profile,"
+        " chrome, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT (project_id) DO UPDATE SET folder = excluded.folder,"
-        " model = excluded.model, effort = excluded.effort,"
-        " permission_mode = excluded.permission_mode, allowed_tools = excluded.allowed_tools,"
+        " model = excluded.model, effort = excluded.effort, profile = excluded.profile,"
         " chrome = excluded.chrome, updated_at = excluded.updated_at,"
         " updated_by = excluded.updated_by",
         (
@@ -4640,11 +4642,131 @@ async def upsert_run_defaults(
             defaults.folder,
             defaults.model,
             defaults.effort,
-            defaults.permission_mode,
-            defaults.allowed_tools,
+            defaults.profile,
             int(defaults.chrome),
             now,
             actor,
+        ),
+    )
+
+
+def _profile(row: aiosqlite.Row) -> RunProfile:
+    return RunProfile(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"],
+        permission_mode=row["permission_mode"],
+        allowed_tools=row["allowed_tools"],
+        disallowed_tools=row["disallowed_tools"],
+        rights=json.loads(row["rights"] or "{}"),
+        kinds=json.loads(row["kinds"] or "[]"),
+        builtin=bool(row["builtin"]),
+        version=row["version"],
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+    )
+
+
+async def _profile_projects(conn: aiosqlite.Connection) -> dict[str, list[str]]:
+    """Project slugs by the profile their run defaults name; a project without a row of run
+    defaults uses `agent`."""
+    rows = await _all(
+        conn,
+        "SELECT COALESCE(d.profile, 'agent'), p.slug FROM project p"
+        " LEFT JOIN project_run_defaults d ON d.project_id = p.id ORDER BY p.slug",
+    )
+    out: dict[str, list[str]] = {}
+    for name, slug in rows:
+        out.setdefault(name, []).append(slug)
+    return out
+
+
+async def list_profiles(conn: aiosqlite.Connection) -> list[RunProfile]:
+    """Shipped rows first, then by name, each with the projects that use it."""
+    rows = await _all(conn, "SELECT * FROM run_profile ORDER BY builtin DESC, name")
+    users = await _profile_projects(conn)
+    found = [_profile(r) for r in rows]
+    for profile in found:
+        profile.projects = users.get(profile.name, [])
+    return found
+
+
+async def get_profile(conn: aiosqlite.Connection, name: str) -> RunProfile | None:
+    row = await _one(conn, "SELECT * FROM run_profile WHERE name = ?", (name,))
+    if row is None:
+        return None
+    profile = _profile(row)
+    profile.projects = (await _profile_projects(conn)).get(profile.name, [])
+    return profile
+
+
+async def insert_profile(
+    conn: aiosqlite.Connection, name: str, values: dict[str, Any], now: str, actor: str
+) -> None:
+    await conn.execute(
+        "INSERT INTO run_profile (name, description, permission_mode, allowed_tools,"
+        " disallowed_tools, rights, kinds, updated_at, updated_by)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            name,
+            values["description"],
+            values["permission_mode"],
+            values["allowed_tools"],
+            values["disallowed_tools"],
+            rights_json(values["rights"]),
+            kinds_json(values["kinds"]),
+            now,
+            actor,
+        ),
+    )
+
+
+async def update_profile(
+    conn: aiosqlite.Connection, name: str, values: dict[str, Any], now: str, actor: str
+) -> None:
+    """Every edit adds 1 to the version, which the next turn of each run under it records."""
+    await conn.execute(
+        "UPDATE run_profile SET description = ?, permission_mode = ?, allowed_tools = ?,"
+        " disallowed_tools = ?, rights = ?, kinds = ?, version = version + 1,"
+        " updated_at = ?, updated_by = ? WHERE name = ?",
+        (
+            values["description"],
+            values["permission_mode"],
+            values["allowed_tools"],
+            values["disallowed_tools"],
+            rights_json(values["rights"]),
+            kinds_json(values["kinds"]),
+            now,
+            actor,
+            name,
+        ),
+    )
+
+
+async def delete_profile(conn: aiosqlite.Connection, name: str) -> None:
+    await conn.execute("DELETE FROM run_profile WHERE name = ? AND builtin = 0", (name,))
+
+
+async def open_runs_of_profile(conn: aiosqlite.Connection, name: str) -> list[int]:
+    rows = await _all(
+        conn, "SELECT id FROM run WHERE profile = ? AND ended_at IS NULL ORDER BY id", (name,)
+    )
+    return [int(r[0]) for r in rows]
+
+
+async def follow_profile(conn: aiosqlite.Connection, profile: RunProfile, now: str) -> None:
+    """The open runs under the profile show what their next turn starts with: its tools, and
+    its mode unless theirs was chosen for them."""
+    await conn.execute(
+        "UPDATE run SET allowed_tools = ?, disallowed_tools = ?,"
+        " permission_mode = CASE WHEN mode_set = 1 THEN permission_mode ELSE ? END,"
+        " updated_at = ? WHERE profile = ? AND ended_at IS NULL",
+        (
+            profile.allowed_tools,
+            profile.disallowed_tools,
+            profile.permission_mode,
+            now,
+            profile.name,
         ),
     )
 
@@ -4710,6 +4832,9 @@ def _run(row: aiosqlite.Row) -> Run:
         touched_live_at=row["touched_live_at"],
         transcript_path=row["transcript_path"],
         deleted_at=row["deleted_at"],
+        profile=row["profile"],
+        disallowed_tools=row["disallowed_tools"],
+        mode_set=bool(row["mode_set"]),
     )
 
 
@@ -4913,6 +5038,8 @@ _TURN_FIELDS = (
     "cache_read_tokens",
     "cache_write_tokens",
     "denials",
+    "profile",
+    "profile_version",
 )
 
 
@@ -5066,8 +5193,26 @@ async def next_queued_turn(conn: aiosqlite.Connection, run_id: int) -> RunTurn |
     return _turn(row) if row else None
 
 
-async def start_turn(conn: aiosqlite.Connection, turn_id: int, now: str) -> None:
-    await conn.execute("UPDATE run_turn SET started_at = ? WHERE id = ?", (now, turn_id))
+async def start_turn(
+    conn: aiosqlite.Connection,
+    turn_id: int,
+    now: str,
+    profile: str | None = None,
+    version: int | None = None,
+) -> None:
+    await conn.execute(
+        "UPDATE run_turn SET started_at = ?, profile = ?, profile_version = ? WHERE id = ?",
+        (now, profile, version, turn_id),
+    )
+
+
+async def set_turn_profile(
+    conn: aiosqlite.Connection, turn_id: int, profile: str, version: int
+) -> None:
+    await conn.execute(
+        "UPDATE run_turn SET profile = ?, profile_version = ? WHERE id = ? AND ended_at IS NULL",
+        (profile, version, turn_id),
+    )
 
 
 async def set_turn_pid(conn: aiosqlite.Connection, turn_id: int, pid: int) -> None:

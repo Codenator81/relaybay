@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{#- Settings → Profiles: the permission profiles runs start their turns with, edited by the owner
+    only. Expects: profiles, modes, kinds, rights (name, label), per_day, fixed_lines,
+    fixed_disallowed, optional message, error. -#}
+{% block title %}Profiles · relaybay{% endblock %}
+{% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/settings/integrations">Settings</a><span class="crumb-sep">/</span><span class="crumb">Profiles</span>{% endblock %}
+{% macro profile_fields(p) %}
+  <label class="field"><span>Description</span>
+    <input name="description" maxlength="500" value="{{ p.description if p else '' }}">
+  </label>
+  <div class="field-row">
+    <label class="field"><span>Permission mode</span>
+      <select name="permission_mode">{% for m in modes %}<option value="{{ m }}"{% if (p and m == p.permission_mode) or (not p and m == "auto") %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+    </label>
+    <label class="field"><span>run_start a day</span>
+      <input type="number" name="{{ per_day }}" min="0" max="1000" value="{{ p.per_day if p else 0 }}">
+    </label>
+  </div>
+  <label class="field"><span>Allowed tools (one rule per line, each passed with its own --allowedTools)</span>
+    <textarea name="allowed_tools" rows="5" spellcheck="false">{{ p.allowed_rules|join("\n") if p else "mcp__relaybay" }}</textarea>
+  </label>
+  <label class="field"><span>Taken-away tools (one rule per line, each passed with its own --disallowedTools)</span>
+    <textarea name="disallowed_tools" rows="4" spellcheck="false">{{ p.disallowed_rules|join("\n") if p else fixed_disallowed|join("\n") }}</textarea>
+  </label>
+  <p class="muted">Always taken away, whatever this list says: <code>{{ fixed_disallowed|join(", ") }}</code>.</p>
+  <fieldset class="field">
+    <legend>Board rights <span class="muted">(stored and shown; the coordinator's run enforces them)</span></legend>
+    {% for name, label in rights %}
+    <label class="field field-check"><input type="checkbox" name="right_{{ name }}" value="1"{% if p and p.rights.get(name) %} checked{% endif %}> <span>{{ label }}</span></label>
+    {% endfor %}
+  </fieldset>
+  <fieldset class="field">
+    <legend>For run kinds</legend>
+    {% for k in kinds %}
+    <label class="field field-check"><input type="checkbox" name="kinds" value="{{ k }}"{% if (p and k in p.kinds) or (not p and k == "card") %} checked{% endif %}> <span>{{ k }}</span></label>
+    {% endfor %}
+  </fieldset>
+{% endmacro %}
+{% block content %}
+<main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
+  <h1>Profiles</h1>
+  {% with tab = "profiles" %}{% include "_settings_tabs.html" %}{% endwith %}
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+  <section class="panel" id="profiles">
+    <h2>Permission profiles</h2>
+    <p class="muted">What a run's turns start with: the permission mode, the allowed and the taken-away tools. Every turn reads its run's profile when it starts, so an edit takes effect on the next turn of every run that uses it, and the turn records the profile's version. A run whose mode was picked on its Start form or changed between turns keeps that mode; its tools still follow the profile. A project's agent defaults on Stands &amp; access name the profile for its cards.</p>
+    <div class="usage-table-wrap"><table class="usage-table">
+      <thead><tr><th>Name</th><th>Mode</th><th>Kinds</th><th>Version</th><th>Used by</th></tr></thead>
+      <tbody>
+        {% for p in profiles %}
+        <tr>
+          <td><a href="#profile-{{ p.name }}">{{ p.name }}</a>{% if p.builtin %} <span class="muted">(shipped)</span>{% endif %}</td>
+          <td><code>{{ p.permission_mode }}</code></td>
+          <td>{{ p.kinds|join(", ") }}</td>
+          <td>{{ p.version }}</td>
+          <td>{% if p.projects %}{{ p.projects|length }} project{{ "s" if p.projects|length != 1 }}{% else %}<span class="muted">none</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  <section class="panel" id="fixed">
+    <h2>Fixed, in every profile</h2>
+    <ul>
+      {% for line in fixed_lines %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+  </section>
+  {% for p in profiles %}
+  <section class="panel" id="profile-{{ p.name }}">
+    <h2>{{ p.name }}{% if p.builtin %} <span class="muted">(shipped)</span>{% endif %}</h2>
+    <p class="muted">Version {{ p.version }}, changed <time datetime="{{ p.updated_at }}" data-age title="{{ p.updated_at[:19] }}Z">{{ p.updated_at|age }}</time> by {{ p.updated_by }}.{% if p.projects %} Used by {{ p.projects|join(", ") }}.{% endif %}</p>
+    <form class="task-form" method="post" action="/settings/profiles/{{ p.name }}/save">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      {{ profile_fields(p) }}
+      <button type="submit" class="btn primary">Save</button>
+    </form>
+    {% if p.builtin %}
+    <form class="inline-form" method="post" action="/settings/profiles/{{ p.name }}/reset" data-confirm="Reset {{ p.name }} to the values it shipped with?">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Reset to shipped</button>
+    </form>
+    {% elif not p.projects %}
+    <form class="inline-form" method="post" action="/settings/profiles/{{ p.name }}/delete" data-confirm="Delete the profile {{ p.name }}?">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <button type="submit" class="btn danger">Delete</button>
+    </form>
+    {% endif %}
+  </section>
+  {% endfor %}
+  <section class="panel" id="new">
+    <h2>New profile</h2>
+    <form class="task-form" method="post" action="/settings/profiles">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <label class="field"><span>Name (lowercase letters, digits and dashes)</span>
+        <input name="name" maxlength="70" required pattern="[a-z0-9][a-z0-9-]*" placeholder="agent-strict" spellcheck="false">
+      </label>
+      {{ profile_fields(none) }}
+      <button type="submit" class="btn primary">Add</button>
+    </form>
+  </section>
+</main>
+{% endblock %}

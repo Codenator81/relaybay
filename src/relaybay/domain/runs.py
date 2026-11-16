@@ -61,7 +61,7 @@ ALLOWED_RULES_MAX = 30
 ALLOWED_RULE_MAX = 200
 # A tool name, an MCP server or tool (`mcp__name`, `mcp__name__tool`, `*`), with an optional
 # argument pattern in parentheses: `Bash(git diff *)`.
-_RULE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.*-]*(\([^()\r\n]*\))?")
+RULE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.*-]*(\([^()\r\n]*\))?")
 LOGIN_ANY_KEY = "run_login_any"
 # The owner's limits from Settings -> Agents; without a row, config.toml's values hold.
 MAX_RUNNING_KEY = "run_max_running_turns"
@@ -122,7 +122,7 @@ def clean_allowed_tools(value: Any) -> str:
     if len(rules) > ALLOWED_RULES_MAX:
         raise ValidationError(f"allowed tools take at most {ALLOWED_RULES_MAX} rules.")
     for rule in rules:
-        if len(rule) > ALLOWED_RULE_MAX or not _RULE_RE.fullmatch(rule):
+        if len(rule) > ALLOWED_RULE_MAX or not RULE_RE.fullmatch(rule):
             raise ValidationError(
                 f"{rule[:60]!r} is not a tool rule: use a tool name, mcp__server, or"
                 " Tool(pattern) such as Bash(git diff *)."
@@ -218,6 +218,7 @@ class RunDefaults:
     updated_at: str | None = None
     updated_by: str | None = None
     retention: str = DEFAULT_RETENTION  # project.run_retention
+    profile: str = "agent"  # the permission profile; mode and tools above are read from it
 
     @property
     def allowed_rules(self) -> list[str]:
@@ -260,6 +261,9 @@ class Run:
     touched_live_at: str | None = None  # the guard saw a call of it on a live stand
     transcript_path: str | None = None  # its Claude Code transcript, as computed at init
     deleted_at: str | None = None  # its lines and transcript deleted when the card closed
+    profile: str | None = None  # None: started before profiles, it keeps its own mode and tools
+    disallowed_tools: str | None = None  # the profile's taken-away rules as its last turn read
+    mode_set: bool = False  # its mode was chosen for it, not followed from the profile
 
     @property
     def is_open(self) -> bool:
@@ -313,6 +317,8 @@ class RunTurn:
     report_state: str | None = None
     report_size: str | None = None
     events: int = 0  # stored stream-json lines
+    profile: str | None = None  # the profile and its version the turn started with
+    profile_version: int | None = None
 
     @property
     def state(self) -> str:

@@ -1,6 +1,7 @@
 """Short, model-friendly markdown for tool results."""
 
 import json
+from typing import Any
 
 from relaybay.domain import approvals as arules
 from relaybay.domain import questions as qrules
@@ -1092,7 +1093,10 @@ def event_detail(e: Event) -> str:
     if e.kind in ("budget.set", "budget.removed"):
         return str(p.get("target", ""))
     if e.kind == "run.defaults_set":
-        return f"{p.get('model')} · {p.get('effort')} · {p.get('permission_mode')}"
+        profile = f" · profile {p['profile']}" if p.get("profile") else ""
+        return f"{p.get('model')} · {p.get('effort')} · {p.get('permission_mode')}{profile}"
+    if e.kind.startswith("profile."):
+        return profile_change(p)
     if e.kind == "settings.run_login_any":
         return "other sign-ins allowed" if p.get("on") else "subscription sign-ins only"
     if e.kind == "settings.terminal_enabled":
@@ -1257,6 +1261,30 @@ def brake_saved(brake: Brake) -> str:
 RUN_TURNS_SHOWN = 5
 
 
+def run_profile_note(view: RunView) -> str:
+    """`, profile agent v3`: the run's profile and the version its last turn started with."""
+    if view.run.profile is None:
+        return ""
+    versions = [t.profile_version for t in view.turns if t.profile_version is not None]
+    version = f" v{versions[-1]}" if versions else ""
+    return f", profile {view.run.profile}{version}"
+
+
+def profile_change(p: dict[str, Any]) -> str:
+    """A profile's Audit line: its name and version, then each field before and after."""
+    name = f"{p.get('profile')}"
+    if p.get("version") is not None:
+        name += f" v{p.get('version')}"
+    before, after = p.get("before") or {}, p.get("after") or {}
+    if not before or not after:
+        return name
+    moves = []
+    for field_name in after:
+        if before.get(field_name) != after.get(field_name):
+            moves.append(f"{field_name} {before.get(field_name)} to {after.get(field_name)}")
+    return f"{name}: {'; '.join(moves)}" if moves else name
+
+
 def run_status(task: Task, view: RunView | None) -> str:
     """A card's run: status, folders, Claude session id, tokens and the latest turns. Never a
     prompt's text: the card's digest has the work."""
@@ -1269,7 +1297,8 @@ def run_status(task: Task, view: RunView | None) -> str:
     reason = f" ({r.status_reason})" if r.status_reason else ""
     lines = [
         f"Run {r.id} on {task.key}: {r.status}{reason}. {r.model}, effort {r.effort},"
-        f" {r.permission_mode}; started by {r.started_by} ({r.started_by_kind})"
+        f" {r.permission_mode}{run_profile_note(view)}; started by {r.started_by}"
+        f" ({r.started_by_kind})"
         f" {r.created_at[:19]}Z.",
         f"Folder: {r.cwd}",
     ]

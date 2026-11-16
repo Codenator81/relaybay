@@ -10,6 +10,7 @@ Hooks come from the user layer `$CLAUDE_CONFIG_DIR/settings.json` (when `user` i
 text); a command handler defined in several of them runs once, as Claude Code does. Memory: the
 user `$CLAUDE_CONFIG_DIR/CLAUDE.md`, the cwd's `CLAUDE.md` and `CLAUDE.local.md`, and those of each
 `--add-dir` folder only with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`.
+A tool a `--disallowedTools` rule matches is left out of `system/init` and its calls are denied.
 
 Scenario keys, all optional:
   session_id, model, usage (per message), tools (names besides the MCP ones)
@@ -139,6 +140,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--permission-mode", choices=PERMISSION_MODES, default="default")
     parser.add_argument(
         "--allowedTools", "--allowed-tools", nargs="+", action="extend", default=[], dest="allowed"
+    )
+    parser.add_argument(
+        "--disallowedTools",
+        "--disallowed-tools",
+        nargs="+",
+        action="extend",
+        default=[],
+        dest="disallowed",
     )
     parser.add_argument("--model")
     parser.add_argument("--effort", choices=EFFORTS)
@@ -395,6 +404,11 @@ class Run:
 
     # --- permissions --------------------------------------------------------------------------
 
+    def taken_away(self, tool: str, tool_input: dict[str, Any] | None = None) -> bool:
+        """A --disallowedTools rule matches: the tool is gone from the turn's context."""
+        rules = [r.strip() for value in self.args.disallowed for r in value.split(",") if r.strip()]
+        return any(allowed_by_rule(rule, tool, tool_input or {}) for rule in rules)
+
     def needs_approval(self, tool: str, tool_input: dict[str, Any]) -> bool:
         mode = self.args.permission_mode
         if mode == "bypassPermissions" or tool in NO_APPROVAL_TOOLS:
@@ -433,6 +447,9 @@ class Run:
         classifier_denies: bool = False,
     ) -> bool:
         """True when the call may go on; a denial has then been reported."""
+        if self.taken_away(tool, tool_input):
+            self.deny(tool, tool_use_id, tool_input, "rule", f"No such tool available: {tool}")
+            return False
         approved = False
         answers = self.run_hooks(
             "PreToolUse", tool_name=tool, tool_input=tool_input, tool_use_id=tool_use_id
@@ -682,7 +699,11 @@ class Run:
             "apiKeySource": "none",
             "claude_code_version": VERSION.split()[0],
             "cwd": self.cwd,
-            "tools": [*self.scenario.get("tools", ["Bash", "Read"]), *mcp_tools],
+            "tools": [
+                t
+                for t in [*self.scenario.get("tools", ["Bash", "Read"]), *mcp_tools]
+                if not self.taken_away(t)
+            ],
             "mcp_servers": [*self.scenario.get("configured_servers", []), *servers],
             "model": self.model,
             "permissionMode": self.args.permission_mode,

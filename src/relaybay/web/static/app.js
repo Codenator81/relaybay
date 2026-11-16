@@ -39,6 +39,7 @@
     "run.waiting", "run.start_anyway", "run.worktree_removed", "run.worktree_kept",
     "run.secret_seen", "run.touched_live", "run.traces_deleted", "run.events_expired",
     "settings.run_limits", "settings.terminal_enabled",
+    "profile.created", "profile.updated", "profile.deleted", "profile.reset",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn",
     "approval.requested", "approval.decided", "approval.used", "approval.released",

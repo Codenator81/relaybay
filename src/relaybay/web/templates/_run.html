@@ -11,10 +11,11 @@
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   {% if view %}
   {%- set r = view.run %}
+  {%- set profile_versions = view.turns|selectattr("profile_version")|map(attribute="profile_version")|list %}
   <p class="run-head">
     <span class="run-status status-{{ r.status }}">{{ r.status }}</span>
     {% if r.is_open and r.with_owner %}<span class="run-status run-with-owner">with the owner</span>{% endif %}
-    <span class="muted">run {{ r.id }} · {{ r.model }} · {{ r.effort }} · {{ r.permission_mode }} · started by {{ r.started_by }} <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
+    <span class="muted">run {{ r.id }} · {{ r.model }} · {{ r.effort }} · {{ r.permission_mode }}{% if r.profile %} · profile {{ r.profile }}{% if profile_versions %} v{{ profile_versions|last }}{% endif %}{% if r.mode_set %} (mode set for this run){% endif %}{% endif %} · started by {{ r.started_by }} <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
   </p>
   {% if r.status_reason %}<p class="run-reason">{{ r.status_reason }}</p>{% endif %}
   {% if r.is_open and r.in_terminal and terminal_open %}<p class="run-reason run-owner-note">With you in the Terminal tab since <time datetime="{{ r.with_owner_at }}" data-age>{{ r.with_owner_at|age }}</time>: relaybay starts no turn, texts sent wait until the terminal closes.</p>
@@ -131,7 +132,7 @@
           <select name="effort">{% for e in choices.efforts %}<option value="{{ e }}"{% if e == r.effort %} selected{% endif %}>{{ e }}</option>{% endfor %}</select>
         </label>
         <label class="field"><span>Permission mode</span>
-          <select name="permission_mode">{% for m in owner_modes %}<option value="{{ m }}"{% if m == r.permission_mode %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+          <select name="permission_mode">{% if r.profile %}<option value="profile"{% if not r.mode_set %} selected{% endif %}>the profile's ({{ r.profile }})</option>{% endif %}{% for m in owner_modes %}<option value="{{ m }}"{% if m == r.permission_mode and (r.mode_set or not r.profile) %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
         </label>
         <button type="submit" class="btn">Apply</button>
       </fieldset>
@@ -183,11 +184,14 @@
       <label class="field"><span>Effort</span>
         <select name="effort">{% for e in choices.efforts %}<option value="{{ e }}"{% if e == form.defaults.effort %} selected{% endif %}>{{ e }}</option>{% endfor %}</select>
       </label>
+      <label class="field"><span>Permission profile</span>
+        <select name="profile">{% for pr in form.profiles %}<option value="{{ pr.name }}"{% if pr.name == form.defaults.profile %} selected{% endif %}>{{ pr.name }} ({{ pr.permission_mode }})</option>{% endfor %}</select>
+      </label>
       <label class="field"><span>Permission mode</span>
-        <select name="permission_mode">{% for m in owner_modes %}<option value="{{ m }}"{% if m == form.defaults.permission_mode %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        <select name="permission_mode"><option value="" selected>the profile's</option>{% for m in owner_modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select>
       </label>
     </div>
-    <p class="muted">Allowed tools: <code>{{ form.defaults.allowed_tools }}</code>{% if form.defaults.chrome %} · with --chrome{% endif %} (the project's agent defaults on Stands &amp; access).</p>
+    <p class="muted">The project's profile {{ form.defaults.profile }}: <code>{{ form.defaults.permission_mode }}</code>, allowed <code>{{ form.defaults.allowed_tools }}</code>{% if form.defaults.chrome %} · with --chrome{% endif %} (agent defaults on Stands &amp; access, profiles in Settings). A mode picked here stays this run's own; with the profile's, the run follows the profile's edits from its next turn on.</p>
     <label class="field"><span>Brief (the first turn's text, for this run only; relaybay adds the run's header above it)</span>
       <textarea name="brief" rows="10" maxlength="20000">{{ form.brief }}</textarea>
     </label>

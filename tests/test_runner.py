@@ -79,6 +79,12 @@ def test_first_turn_argv_puts_the_prompt_after_p() -> None:
     assert not set(argv) & set(FORBIDDEN)
 
 
+def test_each_taken_away_rule_gets_its_own_flag_after_the_allowed_ones() -> None:
+    argv, _ = build_command(spec(disallowed=("CronCreate", "Bash(rm *)")))
+    tail = argv[argv.index("Bash(git diff *)") + 1 :]
+    assert tail == ["--disallowedTools", "CronCreate", "--disallowedTools", "Bash(rm *)"]
+
+
 def test_resume_and_chrome_come_last_and_a_dash_prompt_stays_text() -> None:
     argv, _ = build_command(spec(resume="cc-1", chrome=True, prompt="-p is not a flag here"))
     assert argv[2] == " -p is not a flag here"
