@@ -175,21 +175,25 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 |---|---|---|
 | A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | done | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
 
-## 0.11 — the coordinator and schedules
+## 0.11 — the coordinator, schedules and profiles
 
 | Item | Status | Design |
 |---|---|---|
-| The coordinator as one permanent run woken by events, profiles as data, the Coordinator page | later | [0023](design/0023-coordinator-and-schedules.md) |
-| Schedules: coordinator turns, read-only `-p` checks, reminders | later | [0023](design/0023-coordinator-and-schedules.md#schedules) |
-| An agents view: who started whom, who writes to whom | later | [0010](design/0010-map-and-usage.md) |
+| The probes of 0023 (nested `CLAUDE.md`, profiles, Claude Code's own schedule tools, `/compact` headless, the cost of a wake, one-shot checks) | done | [0023](design/0023-coordinator-and-schedules.md#probes-2026-11-16) |
+| PR 1: permission profiles as data (`agent`, `coordinator`, `read-only`), editable on the board in Settings → Profiles, read on every turn | in progress | [0023](design/0023-coordinator-and-schedules.md#profiles-as-data) |
+| PR 2: the coordinator as one permanent run without a card, in a folder outside any git repository, with a replaceable starter `CLAUDE.md` | next | [0023](design/0023-coordinator-and-schedules.md#the-coordinator) |
+| PR 3: wakes by events, compaction, the coordinator's budget | next | [0023](design/0023-coordinator-and-schedules.md#wakes) |
+| PR 4: schedules: coordinator turns, read-only `-p` checks, reminders | next | [0023](design/0023-coordinator-and-schedules.md#schedules) |
+| PR 5: the Coordinator page | next | [0023](design/0023-coordinator-and-schedules.md#the-coordinator-page) |
 
-## 0.12 — role profiles
+## After 0.11
 
 | Item | Status | Design |
 |---|---|---|
-| Role profiles editable on the board | later | [0023](design/0023-coordinator-and-schedules.md#profiles-as-data) |
-| A manager per project and a Managers page, only if a week of coordinator work shows the need (default: not built) | later | [0021](design/0021-agents-inside.md) |
+| An agents view: who started whom, who writes to whom (the Coordinator page lists its runs in 0.11) | later | [0010](design/0010-map-and-usage.md) |
 | Agent Client Protocol adapters, containers: not before the runner has run a week | later | [0017](design/0017-readiness-for-agents-inside.md) |
+
+Not planned: project managers and a Managers page (the owner, 2026-11-16).
 
 ## 1.0
 

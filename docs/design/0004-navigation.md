@@ -6,7 +6,7 @@
   removed in 0.8.2 until agents run inside the program). Replaces the planned top tabs (Board | Review | Settings).
 - Size and order: (1) sidebar, Inbox, Sessions, Activity ~1.5–2 agent-days, right after the
   documentation restructure (0.2.0); (2) Map ~2 and Usage ~1 after environments and access
-  ([0010](0010-map-and-usage.md), 0.4.0); (3) Coordinator, Managers, Schedules with the runner
+  ([0010](0010-map-and-usage.md), 0.4.0); (3) Coordinator and Schedules with the runner, 0.11 (no Managers: the owner, 2026-11-16)
   ([0012](0012-runner-and-embedded-terminal.md)). Ctrl+K and saved filters ~0.5 (0.4.0).
 
 ## Goal
@@ -31,7 +31,7 @@ A left sidebar with two levels. Items whose feature does not exist yet are hidde
 - **Activity** — the event feed plus the live-actions journal.
 - **Settings** — Integrations, Rules, notifications.
 
-**Projects**, each expandable: Board, Manager (only if one is assigned), Sessions (hook statuses),
+**Projects**, each expandable: Board, Sessions (hook statuses),
 Schedules, Stands & access, Docs & rules.
 
 **Phone:** a bottom bar or a drawer instead of the sidebar.

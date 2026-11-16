@@ -139,9 +139,8 @@ two writers on one session are never allowed. macOS and Linux use the stdlib `pt
 
 ## Later in the same direction
 
-The coordinator as a permanent run and schedules (0.11, [0023](0023-coordinator-and-schedules.md)),
-role profiles editable on the board (0.12); a manager per project only if a week of coordinator work
-shows the need; ACP adapters for other agents and containers not before the runner has run a week.
+The coordinator as a permanent run, schedules and role profiles editable on the board (0.11,
+[0023](0023-coordinator-and-schedules.md)); no managers per project (the owner, 2026-11-16); ACP adapters for other agents and containers not before the runner has run a week.
 
 ## Risks
 

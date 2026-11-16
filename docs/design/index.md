@@ -26,9 +26,9 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0018 | [Brake and token budgets](0018-brake-and-budgets.md) | Implemented (unreleased) | 0.8.0 |
 | 0019 | [Messages between sessions](0019-session-messages.md) | Implemented (unreleased) | 0.8.0 |
 | 0020 | [Tray notifications](0020-tray-notifications.md) | Implemented (unreleased) | 0.8.0 |
-| 0021 | [Agents inside the program](0021-agents-inside.md) | Proposed | 0.9–0.12 |
+| 0021 | [Agents inside the program](0021-agents-inside.md) | Accepted | 0.9–0.11 |
 | 0022 | [Questions and approvals as objects](0022-questions-and-approvals.md) | Proposed | 0.9 |
-| 0023 | [Coordinator and schedules](0023-coordinator-and-schedules.md) | Proposed | 0.11 |
+| 0023 | [Coordinator, schedules and profiles](0023-coordinator-and-schedules.md) | Accepted | 0.11 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md),
 [ADR-0002 Desktop shell](../adr/0002-desktop-shell.md).
