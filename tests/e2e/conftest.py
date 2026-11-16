@@ -471,8 +471,7 @@ class Runs:
                     "/p/acme-shop/run-defaults",
                     model="opus",
                     effort="medium",
-                    permission_mode="auto",
-                    allowed_tools="mcp__relaybay",
+                    profile="agent",
                     folder=str(folder),
                 )
         return {r["name"]: r["id"] for r in self.rows("SELECT id, name FROM project_repo")}

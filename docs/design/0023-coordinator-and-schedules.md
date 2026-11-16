@@ -146,7 +146,7 @@ records the profile's name and version, so a report can be traced to the rights 
 | Field | Meaning |
 |---|---|
 | name, description | `agent`, `coordinator`, `read-only` ship; the owner may add more (`agent-strict`) |
-| permission mode | one of the CLI's modes; `bypassPermissions` only for a `card` profile, and a run still needs the owner's word per card to use it (0.9) |
+| permission mode | one of the CLI's modes except `bypassPermissions`: that stays the owner's choice for one run on the Start form (0.9), and a profile edit leaves it as it is |
 | allowed tools | `--allowedTools` rules, one per line |
 | taken-away tools | `--disallowedTools` rules, one per line |
 | board rights | what a run under it may do on the board, checkboxes below |

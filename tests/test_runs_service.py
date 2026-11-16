@@ -221,19 +221,31 @@ async def test_a_failed_spawn_stops_the_run_visibly(svc: Service) -> None:
 
 
 async def test_project_defaults_never_bypass_permissions(svc: Service) -> None:
-    saved = await svc.set_run_defaults(
-        "acme-shop",
-        {"model": "sonnet", "effort": "high", "allowed_tools": "mcp__relaybay, Bash(git *)"},
+    await svc.create_profile(
+        "agent-git",
+        {
+            "permission_mode": "auto",
+            "allowed_tools": "mcp__relaybay, Bash(git *)",
+            "kinds": ["card"],
+        },
     )
-    assert (saved.model, saved.effort, saved.allowed_rules) == (
+    saved = await svc.set_run_defaults(
+        "acme-shop", {"model": "sonnet", "effort": "high", "profile": "agent-git"}
+    )
+    assert (saved.model, saved.effort, saved.profile, saved.allowed_rules) == (
         "sonnet",
         "high",
+        "agent-git",
         ["mcp__relaybay", "Bash(git *)"],
     )
-    with pytest.raises(ValidationError, match="permission mode"):
-        await svc.set_run_defaults("acme-shop", {"permission_mode": "bypassPermissions"})
+    with pytest.raises(ValidationError, match="never a profile's mode"):
+        await svc.update_profile(
+            "agent-git",
+            {"permission_mode": "bypassPermissions", "allowed_tools": "Read", "kinds": ["card"]},
+        )
     run = await svc.start_run("acme-shop-1", mode="bypassPermissions")  # the owner, for one run
     assert run.permission_mode == "bypassPermissions" and run.model == "sonnet"
+    assert run.mode_set and run.profile == "agent-git"
     assert stub(svc).started[0][2].allowed == ("mcp__relaybay", "Bash(git *)")
 
 
@@ -596,6 +608,7 @@ async def test_settings_apply_from_the_next_turn_and_are_journaled(svc: Service)
     assert event.payload["changed"] == {
         "permission_mode": {"from": "auto", "to": "bypassPermissions"},
         "model": {"from": "opus", "to": "sonnet"},
+        "follows_profile": {"from": True, "to": False},
     }
     await svc.set_run_settings(run.id, mode="bypassPermissions")  # no change: no event
     assert len(await run_events(svc, "run.settings_changed")) == 1

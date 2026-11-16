@@ -62,14 +62,14 @@ def test_project_defaults_on_stands_and_access(board: TestClient, token: str) ->
     page = board.get("/p/acme-shop/environments")
     assert page.status_code == 200 and "Agent defaults" in page.text
     assert "bypassPermissions" not in page.text
+    assert "agent (auto)" in page.text and "read-only (dontAsk)" not in page.text
     saved = board.post(
         "/p/acme-shop/run-defaults",
         data=form(
             token,
             model="sonnet",
             effort="high",
-            permission_mode="plan",
-            allowed_tools="mcp__relaybay, Bash(git diff *)",
+            profile="agent",
             chrome=["0", "1"],  # type: ignore[arg-type]
         ),
         headers={"Origin": BASE},
@@ -77,13 +77,13 @@ def test_project_defaults_on_stands_and_access(board: TestClient, token: str) ->
     assert saved.status_code == 200 and "Agent defaults saved." in saved.text
     service: Service = board.app.state.service
     defaults = run_in_app(board, service.run_defaults, "acme-shop")
-    assert (defaults.model, defaults.permission_mode, defaults.chrome) == ("sonnet", "plan", True)
+    assert (defaults.model, defaults.permission_mode, defaults.chrome) == ("sonnet", "auto", True)
     bad = board.post(
         "/p/acme-shop/run-defaults",
-        data=form(token, permission_mode="bypassPermissions", allowed_tools="mcp__relaybay"),
+        data=form(token, profile="read-only"),
         headers={"Origin": BASE},
     )
-    assert bad.status_code == 400 and "permission mode must be one of" in bad.text
+    assert bad.status_code == 400 and "not for runs on cards" in bad.text
 
 
 def test_settings_agents_and_the_sign_in_switch(board: TestClient, token: str) -> None:

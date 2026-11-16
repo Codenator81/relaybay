@@ -98,6 +98,17 @@ def is_batch(path: str) -> bool:
     return path.lower().endswith(BATCH_SUFFIXES)
 
 
+def check_batch_word(claude: str, word: str) -> None:
+    """Refuse a word of a turn's command line that a batch shim would let cmd.exe read."""
+    bad = sorted(set(word) & UNSAFE_BATCH_CHARS)
+    if bad:
+        shown = " ".join(repr(c) for c in bad)
+        raise ValidationError(
+            f"{word[:80]!r} holds {shown}, which a {Path(claude).name} shim would"
+            " let cmd.exe read as a command; set claude_path to claude.exe or change it."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class TurnSpec:
     claude: str
@@ -109,6 +120,7 @@ class TurnSpec:
     allowed: tuple[str, ...] = field(default_factory=tuple)
     resume: str | None = None
     chrome: bool = False
+    disallowed: tuple[str, ...] = field(default_factory=tuple)  # taken-away tools
     add_dirs: tuple[str, ...] = field(default_factory=tuple)
     settings_file: str | None = None  # relaybay's hooks, when the user's settings lack them
     mcp_file: str | None = None  # relaybay's MCP server, likewise
@@ -116,9 +128,10 @@ class TurnSpec:
 
 def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
     """argv and the text for stdin (None: nothing). The prompt follows `-p` in argv, or goes on
-    stdin for a batch shim; each allowed-tools rule, extra folder and config file gets its own
-    flag with one value, and no positional comes after a flag. Never --bare, --setting-sources,
-    --strict-mcp-config or a skip of permissions: the turn loads what a manual session loads."""
+    stdin for a batch shim; each allowed or taken-away tools rule, extra folder and config file
+    gets its own flag with one value, and no positional comes after a flag. Never --bare,
+    --setting-sources, --strict-mcp-config or a skip of permissions: the turn loads what a manual
+    session loads."""
     batch = is_batch(spec.claude)
     argv = [spec.claude, "-p"]
     if not batch:
@@ -137,6 +150,8 @@ def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
     ]
     for rule in spec.allowed:
         argv += ["--allowedTools", rule]
+    for rule in spec.disallowed:
+        argv += ["--disallowedTools", rule]
     for folder in spec.add_dirs:
         argv += ["--add-dir", folder]
     if spec.settings_file:
@@ -149,13 +164,7 @@ def build_command(spec: TurnSpec) -> tuple[list[str], str | None]:
         argv += ["--resume", spec.resume]
     if batch:
         for word in argv:
-            bad = sorted(set(word) & UNSAFE_BATCH_CHARS)
-            if bad:
-                shown = " ".join(repr(c) for c in bad)
-                raise ValidationError(
-                    f"{word[:80]!r} holds {shown}, which a {Path(spec.claude).name} shim would"
-                    " let cmd.exe read as a command; set claude_path to claude.exe or change it."
-                )
+            check_batch_word(spec.claude, word)
         return argv, spec.prompt
     return argv, None
 

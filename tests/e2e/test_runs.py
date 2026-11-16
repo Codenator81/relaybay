@@ -8,6 +8,7 @@ import zlib
 from pathlib import Path
 
 from relaybay import doctor
+from relaybay.domain.profiles import FIXED_DISALLOWED
 from relaybay.security import csrf_token
 from tests.e2e.conftest import Runs, alive, poll
 
@@ -32,6 +33,7 @@ def expected_argv(prompt: str | None, resume: str | None = None) -> list[str]:
         "auto",
         "--allowedTools",
         "mcp__relaybay",
+        *(w for tool in FIXED_DISALLOWED for w in ("--disallowedTools", tool)),
         *tail,
     ]
 
@@ -332,3 +334,32 @@ def test_a_turn_with_a_subagent_lands_in_full_masked_with_nested_lines(runs: Run
     assert "  #" in listed  # subagent lines indented under their call
     status = runs.stand.mcp("run_status", task="acme-shop-1")
     assert "Last turn's report: verified · M · the scan is done" in status
+
+
+def test_a_profile_edit_shows_on_the_next_turns_argv(runs: Runs) -> None:
+    runs.scenario({"turns": [[{"text": "First."}], [{"text": "Second."}]]})
+    with runs.stand.board() as board:
+        runs.start(board)
+        run = runs.wait_run(lambda r: r["status"] == "idle")
+        runs.stand.post_form(
+            board,
+            "/settings/profiles/agent/save",
+            permission_mode="acceptEdits",
+            allowed_tools="mcp__relaybay\nBash(git diff *)",
+            disallowed_tools="",
+            kinds="card",
+        )
+        runs.act(board, run["id"], "send", text="Go on")
+        done_turns(runs, run["id"], 2)
+    first, second = runs.trace("argv")
+    assert first["argv"] == expected_argv(first["prompt"])
+
+    def flags(argv: list[str], name: str) -> list[str]:
+        return [argv[i + 1] for i, word in enumerate(argv) if word == name]
+
+    argv = second["argv"]
+    assert flags(argv, "--permission-mode") == ["acceptEdits"]
+    assert flags(argv, "--allowedTools") == ["mcp__relaybay", "Bash(git diff *)"]
+    assert flags(argv, "--disallowedTools") == list(FIXED_DISALLOWED)
+    turns = runs.turns(run["id"])
+    assert [(t["profile"], t["profile_version"]) for t in turns] == [("agent", 1), ("agent", 2)]

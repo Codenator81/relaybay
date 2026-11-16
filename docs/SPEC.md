@@ -4,7 +4,7 @@ How relaybay behaves **now**: the concepts and every shipped feature. This page 
 plans; upcoming work lives in the [roadmap](ROADMAP.md) and the [design documents](design/index.md).
 When a feature ships, its final behaviour moves here in the same pull request.
 
-Version covered: `0.10.0`, plus the Terminal tab of [Unreleased]. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.10.0`, plus the permission profiles of [Unreleased]. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:
@@ -315,7 +315,8 @@ an open run using a repository in place inside it. A run is a list of turns (`ru
 session id>` from the first turn's `system/init`; a text that arrives while a turn runs waits for it,
 so two turns of one run never run at once (also held by a unique index). Each turn's argv is
 `claude -p <text> --output-format stream-json --verbose --model <m> --effort <e>
---permission-mode <mode>`, then one `--allowedTools <rule>` per rule, one `--add-dir <folder>`
+--permission-mode <mode>`, then one `--allowedTools <rule>` per rule and one `--disallowedTools
+<rule>` per taken-away rule of its [profile](#spec-profiles), one `--add-dir <folder>`
 per folder other than the cwd, `--settings <file>` and `--mcp-config <file>` when the run adds
 relaybay's hooks or MCP server (below), `--chrome` when the project says so, `--resume <id>` last;
 each of them one flag with one value; never `--bare`, `--setting-sources`, `--strict-mcp-config` or
@@ -465,7 +466,7 @@ folder or a key variable.
   in the `coordinators` config, checked like `brake_set`) with MCP `run_start`: cards in `plan` or
   `dev`, no open brake of scope `all`, the card's project or the card, and no brake covers the
   caller; the card not bound to a session that is live and not a run's; always new worktrees; model and effort may be chosen, the
-  permission mode and allowed tools are the project's (a `permission_mode` argument is refused).
+  profile is the project's and the run follows its mode (a `permission_mode` argument is refused).
   Any other caller is refused, with "a side task goes to backlog_add". `run_status` and
   `run_events` are open to every caller and change nothing. The caller check is the weak identity of `rules_update` (one
   shared token): it stops mistakes, not a determined agent.
@@ -573,7 +574,42 @@ folder or a key variable.
   a brake on itself or on the card, its project or all) may keep or lower the mode, never raise it
   and never pick `bypassPermissions`, and may change model and effort. Every change is a
   `run.settings_changed` event with who and, per changed value, from and to; it is listed on the
-  Audit page with the changes. Nothing changed: no event.
+  Audit page with the changes. Nothing changed: no event. A mode changed here (by either) stays
+  the run's own (`run.mode_set`) instead of following its profile; the owner's "the profile's"
+  choice in the board's form makes it follow again (`follows_profile` from and to in the event).
+
+<a id="spec-profiles"></a>
+
+**Permission profiles** ([design 0023](design/0023-coordinator-and-schedules.md#profiles-as-data)).
+A profile (`run_profile`, [§11](#spec-data)) is a stored row: name (lowercase letters, digits and
+dashes, unique, fixed once made), description, permission mode (one of the Agent defaults' modes,
+never `bypassPermissions`: that stays the owner's choice for one run on the Start form), allowed
+tools (`--allowedTools` rules, at least one), taken-away tools (`--disallowedTools` rules), board
+rights (`run_start`, `run_start_per_day`, `run_settings`, `tasks_write`, `plan_accept`,
+`rules_update`, `schedule_add`, `messages`) and the run kinds it is for (`card`, `coordinator`,
+`check`), a version (1, then +1 on every edit) and who changed it when. Three ship: `agent`
+(`auto`; `mcp__relaybay`; no board right but messages; for cards), `coordinator` (`dontAsk`;
+`Read`, `Glob`, `Grep`, `Task`, `WebFetch`, `WebSearch`, `mcp__relaybay` and read-only `git` and
+`gh` rules such as `Bash(git log *)`; every right, `run_start_per_day` 10; for the coordinator run)
+and `read-only` (`dontAsk`; `Read`, `Glob`, `Grep` and the same read-only rules; no rights; for
+checks); each lists `CronCreate`, `CronDelete`, `ScheduleWakeup`, `RemoteTrigger` as taken away.
+The coordinator's `Edit` and `Write` inside its own folder come with the coordinator run, not the
+row. **Rights are stored and shown only**: the coordinator run of 0.11's second step enforces them;
+until then the `coordinators` config decides as before. A run records its profile at Start
+(`run.profile`; the Start form offers the profiles for cards, the project's preselected;
+`run_start` always takes the project's). **Every turn reads its run's profile when it is marked
+started**: its allowed and taken-away tools, and its mode unless the run's mode was set for it
+(`run.mode_set`: a mode picked on the Start form, or changed between turns); the run's row is
+updated to what the turn starts with, and the turn records the profile's name and version
+(`run_turn.profile`, `run_turn.profile_version`). So an edit takes effect on the next turn of every
+run that uses it; the open runs under it show the new values at once. **Fixed, whatever a profile
+says**: `CronCreate`, `CronDelete`, `ScheduleWakeup` and `RemoteTrigger` are passed with
+`--disallowedTools` on every turn (probe 17; schedules are relaybay's own), in the profile's list
+or not; no profile is `bypassPermissions`; and the fixed lines of the design (approvals, the
+owner's questions, policy, environments and the brake have no MCP write; live needs an approval;
+never `--bare`; a coordinator never starts a coordinator). A run from before profiles
+(`run.profile` NULL) keeps its own mode and allowed tools; its turns get the fixed taken-away tools
+too. No MCP tool writes a profile.
 
 <a id="spec-run-limits"></a>
 
@@ -1183,9 +1219,12 @@ hooks and MCP server come from (the user's settings, or added by each run), ever
 would be refused, the working folder (the project folder when the defaults set one, else one of
 the repositories, the ones the task touches first), per repository "not used", "a new worktree"
 (default for a git repository the task touches) or "the repository itself", one line saying what
-a new worktree of each repository gets copied, model, effort and permission mode
-(the project's defaults preselected; the owner may pick `bypassPermissions` here for one run), the
-allowed tools and `--chrome` as the project sets them, the brief, and **Start**. With a run (the
+a new worktree of each repository gets copied, model, effort (the project's defaults preselected),
+the permission profile (the profiles for cards, the project's preselected) and the permission
+mode ("the profile's" preselected: the run follows the profile's mode; a mode picked here,
+`bypassPermissions` too, for this one run, stays the run's own), the project's profile with its
+mode and allowed tools and `--chrome` as the project sets it, the brief, and **Start**. The run's
+line shows its profile and the version its last turn started with. With a run (the
 open one, else the latest) it shows status and reason, folder, each repository's folder (a new
 worktree with its branch and what was copied, or the repository itself), where relaybay's hooks
 and MCP server come from, session, the Claude Code session id, total tokens and one row per turn (sent by, queued, outcome, tokens, denials with the tool
@@ -1197,8 +1236,9 @@ since when, "close or leave the session in the desktop app before Back to the pr
 button, and "Opening the desktop app…" in its place while the launch runs), for a run with more
 than one folder a line that only the cwd is a working folder in the desktop app,
 a **Send** text box (Continue, or a text that waits for the running turn or for Back to the
-program), the **From the next turn on** form (model, effort, permission mode with
-`bypassPermissions`, **Apply**; disabled while a turn runs) and **End run** (asks first). Once the
+program), the **From the next turn on** form (model, effort, permission mode with "the
+profile's" and `bypassPermissions`, **Apply**; disabled while a turn runs) and **End run** (asks
+first). Once the
 session was opened in the desktop app, the Claude session line links to it. The posts are
 `/p/<slug>/t/<key>/run/start` and
 `/p/<slug>/t/<key>/run/<id>/send|stop|end|desktop|back|settings`, board only (cookie and CSRF; a Bearer request is
@@ -1230,14 +1270,30 @@ Approve and Refuse post `/approvals/{id}/decide` ([§1](#spec-approvals)).
 
 **Agent defaults.** The Stands & access page has an **Agent defaults** form per project (posted to
 `/p/<slug>/run-defaults`, board only): model (`opus`, `sonnet`, `haiku`; default `opus`), effort
-(`low`, `medium`, `high`, `xhigh`, `max`; default `medium`), permission mode (`manual`, `default`,
-`acceptEdits`, `plan`, `auto`, `dontAsk`; default `auto`, never `bypassPermissions`), allowed tools
-(comma-separated rules, each a tool name, `mcp__<server>` or `Tool(pattern)`; default
-`mcp__relaybay`), `--chrome` (default off) and the project folder (optional, an absolute path,
+(`low`, `medium`, `high`, `xhigh`, `max`; default `medium`), the permission
+[profile](#spec-profiles) (one for cards; default `agent`; its mode and allowed tools are shown and
+edited on [Settings → Profiles](#spec-board-profiles)), `--chrome` (default off) and the project
+folder (optional, an absolute path,
 kept as written; a run may use it as its cwd, with the repositories as worktrees passed with
 `--add-dir`; empty clears it), and how long the runs' stream-json lines are kept (days, default
 30, or `off`; empty keeps it; [lifecycle](#spec-run-lifecycle)). No MCP tool writes them, so an
-agent never widens its own permissions. A save is a `run.defaults_set` event.
+agent never widens its own permissions. A save is a `run.defaults_set` event (with the profile
+and its mode and allowed tools).
+
+<a id="spec-board-profiles"></a>
+
+**Settings → Profiles** (`/settings/profiles`, board only: cookie and CSRF, a Bearer request is
+refused) lists the [profiles](#spec-profiles) with name, mode, kinds, version and how many projects
+use each, then the fixed lines (read-only), then an editor per profile: description, mode (no
+`bypassPermissions`), `run_start` a day, allowed and taken-away rules one per line (commas outside
+parentheses also separate), the rights as checkboxes, the run kinds; **Save**
+(`/settings/profiles/<name>/save`; nothing changed: no new version, no event), **Reset to shipped**
+for a shipped one (`.../reset`), **Delete** for an added one no project uses (`.../delete`), and
+**New profile** (`POST /settings/profiles`). A shipped profile is never deleted and no profile is
+renamed; a profile a project's Agent defaults name or an open run uses is not deleted, nor taken
+off cards (by an edit or a reset). Each create, save, reset and delete is an event
+(`profile.created`, `profile.updated`, `profile.reset`, `profile.deleted`) with the profile, its
+version and the values before and after, listed on the Audit page with the changes.
 
 <a id="spec-board-agents"></a>
 
@@ -3266,6 +3322,8 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0040_run_lifecycle` | `run.secret_seen_at`, `run.touched_live_at`, `run.transcript_path`, `run.deleted_at`; `project.run_retention` (days as text, or `off`; default `30`); `run_worktree.kept_reason`, `run_worktree.question_id` (the owner's question whether to remove it), `run_worktree.kept_at` (the owner's keep); an index on `run_event.ts` for the retention and one on the question of a kept worktree ([§1](#spec-run-lifecycle)). Additive only |
 | `0041_approval_reservation` | `approval.reserved_at`, `approval.reserved_for` (the call's `tool_use_id`), `approval.reserved_call`, `approval.reserved_session_id` (the approval held for one call until it ran), `approval.released_count` (default 0; the third release expires it); a partial index on `reserved_for` of the held ones ([§1](#spec-approvals)). Additive only |
 | `0042_run_terminal` | `run.with_owner_in` (`terminal`: the run is with the owner in the board's Terminal tab; NULL: the Claude desktop app of 0034); a start hands back a run still marked `terminal` ([§1](#spec-run)). Additive only |
+| `0043_run_profile` | `run_profile` (name unique, description, permission mode with a CHECK against `bypassPermissions`, allowed and taken-away rules, rights JSON, kinds JSON, builtin, version, updated at / by), seeded with `agent`, `coordinator` and `read-only` ([§1](#spec-profiles)). Additive only |
+| `0044_run_profile_use` | `project_run_defaults.profile` (default `agent`); a project whose mode and allowed tools differ from `agent`'s gets a profile `agent-<slug>` with that pair and is pointed at it, so no run changes its rights; the old columns stay, unread. `run.profile` (NULL for older runs), `run.disallowed_tools`, `run.mode_set` (1 for older runs: they keep their own mode); `run_turn.profile`, `run_turn.profile_version` ([§1](#spec-profiles)). Additive only |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).

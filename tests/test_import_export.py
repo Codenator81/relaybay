@@ -1294,6 +1294,7 @@ async def test_a_stale_hash_does_not_migrate(
             "run",
             "app_setting",
             "project_run_defaults",
+            "run_profile",
         ):
             conn.execute(f"DROP TABLE {table}")
         conn.execute("PRAGMA user_version = 14")
