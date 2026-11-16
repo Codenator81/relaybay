@@ -69,7 +69,7 @@ def test_a_report_wakes_it_after_a_compact_and_its_budget_warns_on_the_page(runs
         assert runs.rows("SELECT COUNT(*) FROM event WHERE kind = 'budget.warned'")[0][0] == 1
         page = board.get("/coordinator").text
         assert "its daily budget</span>" in page and 'id="coordinator-budget"' in page
-        assert "compacted: 9,010 -&gt;" in page and "woke by 1 event" in page
+        assert "compacted: 9,010 -&gt;" in page and ">1 event</p>" in page
     # Its own budget's warning woke nothing; the wake after it was /compact again (the fake's
     # context does not shrink), all in one Claude session.
     prompts = [entry["prompt"] for entry in runs.trace("argv")]

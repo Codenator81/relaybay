@@ -1754,3 +1754,33 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
 .terminal-status { flex: 1 1 auto; color: var(--muted); }
 .terminal-screen { flex: 1 1 auto; min-height: 320px; background: #000; padding: 4px; border-radius: 6px; overflow: hidden; }
+
+/* --- the Coordinator page ---------------------------------------------------------------- */
+.coordinator-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 10px 0; }
+.coordinator-facts dt { color: var(--muted); }
+.coordinator-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.coordinator-empty { margin: 0 0 10px; }
+#coordinator-live code { overflow-wrap: anywhere; }
+.coordinator-held { border-left: 3px solid var(--warn); padding-left: 10px; }
+.coordinator-say { margin-top: 12px; }
+.coordinator-say textarea { width: 100%; }
+.coordinator-turns { list-style: none; margin: 0; padding-left: 0; }
+.coordinator-turn { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.coordinator-turn.by-owner { border-left: 3px solid var(--accent); }
+.coordinator-turn .run-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; margin: 0 0 6px; }
+.coordinator-exchange { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.coordinator-exchange h3 { margin: 0 0 4px; }
+.coordinator-events { margin: 0; padding-left: 18px; font-size: 13px; }
+.coordinator-events li { overflow-wrap: anywhere; }
+.coordinator-owner-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.coordinator-prompt > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.coordinator-prompt .run-prompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 320px; overflow-y: auto; }
+.coordinator-result { min-width: 0; overflow-wrap: anywhere; }
+.coordinator-paging { margin: 8px 0; }
+.nav-badge-warn { background: var(--chip-bg); color: var(--chip-text); border: 1px solid var(--warn); }
+@media (max-width: 760px) {
+  .coordinator-facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .coordinator-facts dd { margin-bottom: 6px; }
+  .coordinator-exchange { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .coordinator-say .btn { width: 100%; }
+}

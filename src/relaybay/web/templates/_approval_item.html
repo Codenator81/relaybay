@@ -1,10 +1,11 @@
-{#- One approval request, on the card (place "card") and in the Inbox (place "inbox", with its
-    card). The owner approves or refuses it with an optional line; an approved one shows when and
-    by which call it was used. -#}
+{#- One approval request, on the card (place "card"), in the Inbox (place "inbox", with its
+    card) and on the Coordinator page (place "coordinator", with its card, a plain form post).
+    The owner approves or refuses it with an optional line; an approved one shows when and by
+    which call it was used. -#}
 {%- macro approval_item(a, place) -%}
 <li class="approval-row approval-{{ a.status }}" id="approval-{{ a.id }}" data-approval="{{ a.id }}">
   <p class="approval-head">
-    {% if place == "inbox" %}<a class="inbox-link" href="/p/{{ a.project_slug }}?task={{ a.task_key }}"><span class="card-key">{{ a.task_key }}</span> <span class="inbox-title">{{ a.task_title }}</span></a>{% endif %}
+    {% if place in ("inbox", "coordinator") %}<a class="inbox-link" href="/p/{{ a.project_slug }}?task={{ a.task_key }}"><span class="card-key">{{ a.task_key }}</span> <span class="inbox-title">{{ a.task_title }}</span></a>{% endif %}
     <span class="approval-number">#{{ a.id }}</span>
     <span class="chip approval-action">{{ a.action }}</span>
     <span class="muted">{% if a.run_id %}run {{ a.run_id }}{% else %}desktop session{% endif %} · {{ a.requested_by }}{% if a.requested_via == "guard" %} · opened by the guard{% elif a.requested_via == "denial" %} · from a permission denial{% endif %} · requested <time datetime="{{ a.requested_at }}" data-age>{{ a.requested_at|age }}</time></span>
@@ -26,7 +27,7 @@
   {% if a.decision_text %}<p class="approval-line"><span class="muted">Your line:</span> {{ a.decision_text }}</p>{% endif %}
   {% if a.is_open %}
   <form class="approval-decide" method="post" action="/approvals/{{ a.id }}/decide"
-        hx-post="/approvals/{{ a.id }}/decide" hx-target="{{ '#inbox' if place == 'inbox' else '#approvals-' ~ a.task_key }}" hx-swap="outerHTML" hx-disabled-elt="find button">
+        {% if place != "coordinator" %}hx-post="/approvals/{{ a.id }}/decide" hx-target="{{ '#inbox' if place == 'inbox' else '#approvals-' ~ a.task_key }}" hx-swap="outerHTML" hx-disabled-elt="find button"{% endif %}>
     <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
     <input type="hidden" name="from" value="{{ place }}">
     <label class="field"><span>A line for the agent (optional)</span>
