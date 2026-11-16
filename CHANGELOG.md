@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-16
+
 ### Added
 
 - Permission profiles as data, edited on the board (Settings → Profiles, board only): a profile holds the permission mode, the allowed and the taken-away tools (`--allowedTools` and `--disallowedTools`, one rule per line), the board rights a run under it will have and the run kinds it is for. `agent`, `coordinator` and `read-only` ship; the owner may add more, edit any, reset a shipped one and delete an added one no project or open run uses. A project's agent defaults name a profile instead of their own mode and tools, and the Start form offers the profiles for cards. Every turn reads its run's profile when it starts, so an edit takes effect on the next turn of every run under it; each turn records the profile's name and version, shown on the card and in `run_status`. A mode picked on the Start form or changed between turns stays the run's own; the owner's "the profile's" choice makes it follow again. Every turn takes away Claude Code's own scheduling tools (`CronCreate`, `CronDelete`, `ScheduleWakeup`, `RemoteTrigger`), whatever the profile says, and no profile is `bypassPermissions`. Events `profile.created`, `profile.updated`, `profile.reset`, `profile.deleted` with the values before and after (on the Audit page). The coordinator run enforces the rights (below). Migrations 0043 and 0044: a project whose mode and allowed tools differ from `agent`'s keeps them as a profile `agent-<project>`, so no run changes its rights by the upgrade.
@@ -973,7 +975,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.11.0
 [0.10.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.10.0
 [0.9.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.9.0
 [0.8.6]: https://github.com/Codenator81/relaybay/releases/tag/v0.8.6

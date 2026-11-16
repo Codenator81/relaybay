@@ -369,7 +369,10 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.9.0, agents inside** — runs on a card with your own `claude` turn by turn, worktrees per
   repository, the session handed to the desktop app and back, full turn reports with `verified`
   marks, questions and approvals on the board, slots and memory limits, card close and retention;
-  the Terminal tab on a run comes in 0.10, the coordinator and schedules in 0.11.
+  the Terminal tab on a run came in 0.10.
+- **0.11.0, the coordinator** — one coordinator run for all projects, woken by board events,
+  compacting itself, with its own budget; schedules (coordinator turns, read-only checks,
+  reminders); permission profiles edited on the board; the Coordinator and Schedules pages.
 - **0.7+, workers** — scheduled workers per project.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
