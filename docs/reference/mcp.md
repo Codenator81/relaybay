@@ -50,6 +50,9 @@ Deprecations: none.
 | [`run_status`](#run_status) | read |
 | [`run_events`](#run_events) | read |
 | [`run_settings`](#run_settings) | write |
+| [`schedule_add`](#schedule_add) | write |
+| [`schedule_list`](#schedule_list) | read |
+| [`schedule_cancel`](#schedule_cancel) | write |
 | [`question_ask`](#question_ask) | write |
 | [`question_list`](#question_list) | read |
 | [`question_withdraw`](#question_withdraw) | write |
@@ -507,6 +510,44 @@ Change the permission mode, model or effort of the card's open run from its next
 | `permission_mode` | string or null | no | A mode that does not raise the run's current one: plan, then manual / default / dontAsk, then acceptEdits, then auto. Raising it and bypassPermissions are the owner's, on the card. Default: unchanged. |
 | `model` | string or null | no | opus, sonnet or haiku. Default: unchanged. |
 | `effort` | string or null | no | low, medium, high, xhigh or max. Default: unchanged. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `schedule_add`
+
+The coordinator run only (its profile's schedule_add right): a one-off check or reminder, or a check every N minutes bounded by max_times. Coordinator turns, daily schedules and repeating reminders are the owner's, on the board.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `kind` | string | yes | check (a one-shot read-only claude -p in the card's worktree or the project's folder; its answer becomes a report on the card) or reminder (a tray notice and an Inbox line for the owner, no model). |
+| `text` | string | yes | What the check looks at and answers, or the reminder's words. |
+| `project` | string or null | no | Project slug: where a check reads. A check needs it or task. |
+| `task` | string or null | no | Task key such as 'acme-shop-12': the card a check reports on. |
+| `at` | string or null | no | Once at this date and time, 'YYYY-MM-DD HH:MM' in this machine's local time (or ISO 8601 with an offset). Give at or in_minutes. |
+| `in_minutes` | integer or null | no | Once, this many minutes from now (1 to 10080). |
+| `every_minutes` | integer or null | no | A check only: every N minutes (at least 5), the first one N minutes from now, until its answer starts with 'done' or max_times. |
+| `max_times` | integer or null | no | With every_minutes: at most this many times (1 to 24, default 24). |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `schedule_list`
+
+The coordinator run only: every schedule, its own and the owner's, with its next time and last outcome (times in this machine's local time).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `schedule_cancel`
+
+The coordinator run only: remove a schedule a coordinator made; a check of it that runs ends. The owner's schedules are refused.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `schedule_id` | integer | yes | The schedule's number from schedule_list. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

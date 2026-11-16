@@ -45,7 +45,9 @@
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn",
     "approval.requested", "approval.decided", "approval.used", "approval.released",
-    "approval.expired"
+    "approval.expired",
+    "schedule.created", "schedule.updated", "schedule.deleted", "schedule.fired",
+    "schedule.missed", "schedule.skipped", "schedule.ended", "schedule.notice_seen"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -67,7 +69,8 @@
     "budget.exceeded", "concurrency.over",
     "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
     "approval.requested", "approval.decided", "approval.expired",
-    "run.turn_queued", "run.turn_started", "run.start_anyway", "run.ended"
+    "run.turn_queued", "run.turn_started", "run.start_anyway", "run.ended",
+    "schedule.fired", "schedule.ended", "schedule.notice_seen"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",

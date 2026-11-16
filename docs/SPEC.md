@@ -615,8 +615,8 @@ too. No MCP tool writes a profile.
 
 **The coordinator run** ([design 0023](design/0023-coordinator-and-schedules.md#the-coordinator)).
 A run has a **kind** (`run.kind`): `card` (a run on a card, as above), `coordinator` (the one
-permanent run without a card) or `check` (reserved for a schedule's one-shot run; always in a
-project). A coordinator run has no task, no project and no worktree; at most one is open (a unique
+permanent run without a card) or `check` (a [schedule's](#spec-schedules) one-shot read-only run;
+always in a project, never on a card). A coordinator run has no task, no project and no worktree; at most one is open (a unique
 index). It is the owner's: **Start**, **Stop**, **New session**, **End**, the Terminal tab and
 Open in the desktop app are buttons of the [Coordinator page](#spec-board-coordinator); no MCP
 tool starts or stops one, and a coordinator never starts a coordinator.
@@ -707,7 +707,7 @@ wakes no process runs. The events it listens to, since the cursor:
 | `intake.received`, `intake.tied` | new intake (not refused), and intake tied to a card; one line per message: a message tied later is only its `intake.tied` line | `intake 5 from customer-chat tied to acme-shop-12`, `intake 6 from customer-chat: new, not tied to a card` |
 | `message.sent` | only to a coordinator run's session ([§1](#spec-session-messages)) | `message 31 from acme-shop-3 run 41 (messages_list reads it)` |
 | `budget.warned`, `budget.exceeded` | a budget threshold ([§2](#spec-brake)), not of its own budget | `project acme-shop at 80% of its budget this UTC day: 80,000 of 100,000 tokens` |
-| `schedule.fired` | kept for the schedules of design 0023 (nothing writes it yet) | `schedule 3: morning summary` |
+| `schedule.fired` | only of a coordinator turn on a [schedule](#spec-schedules); a check's or a reminder's wakes nothing | `schedule 3: morning summary` |
 
 - **Never its own.** An event written by a coordinator run's session (its id or its name as the
   actor), an event about a coordinator run (`run.*` with its `run_id`) and its own budget's
@@ -774,14 +774,118 @@ its own context line); `stop` sets a brake on its session at 100% (released by t
 owner) and its wakes are held. The Usage page lists it as `session coordinator run N` and may
 remove it; the next Start makes one again.
 
+<a id="spec-schedules"></a>
+
+**Schedules** ([design 0023](design/0023-coordinator-and-schedules.md#schedules), K6). A clock in the
+program: a `schedule` row ([§11](#spec-data)) holds a kind, when, a target, a text, who made it,
+whether it is enabled and its next time; every due time handled is a `schedule_run` row (due, started,
+ended, outcome `ran`, `missed`, `skipped`, `failed` or `stopped`, its reason, tokens, the run, turn and
+report). Kinds:
+
+| Kind | Runs as |
+|---|---|
+| `coordinator` (a coordinator turn) | a `schedule.fired` event the [wakes](#spec-coordinator-wakes) carry as the line `schedule 3: <text>`, framed as data like every wake line, in the next wake; `ran` with "a line in the coordinator's next wake". No open coordinator run: `skipped` with "no coordinator run is open: Start it on the Coordinator page". A stopped, braked or held coordinator keeps the event for a later wake |
+| `check` (a read-only check) | a `check` run (below); its answer becomes a report on the card, else an Inbox line |
+| `reminder` | the server alone, no model: `ran` at once, a `schedule.fired` event the tray shows as a `reminder` notification ([§13](#spec-desktop-notify)) and an Inbox line under Schedules until the owner marks it seen |
+
+| When (`repeat`) | Form | Next time |
+|---|---|---|
+| `once` | a date and time (`at`) | that time; refused on save when it has passed (one minute of slack); after it is handled the schedule is finished (`next_at` empty, `done_at` set) |
+| `daily` | `HH:MM` (`time_of_day`), optionally weekdays only | the next such local time, Saturday and Sunday skipped when asked |
+| `every` | N minutes (`every_minutes`, 5 to 1440) and at most `max_times` times (1 to 24, default 24) | N minutes after it was handled; finished after `max_times` due times, or when a check's answer starts with `done` |
+
+- **Local time.** Times are the machine's local time: a form's `YYYY-MM-DD HH:MM` (or the tool's) is
+  read in it, the row keeps UTC and the local zone's name (`timezone`, shown on the page). A daily time
+  is turned into UTC with that day's rules of the operating system, so it stays at the same clock time
+  across a daylight saving change (decided by default: the operating system's local time, not a time
+  zone database, which Windows lacks without an extra package; a time the change skips comes an hour
+  later on that day).
+- **The clock** is a loop of the server (`schedule_loop`, started with the others): a pass at the
+  next due time, after a schedule is saved, after a check ends, and at least every 30 seconds, so a
+  time passed while the machine slept is found within that. Each due time is handled in one
+  transaction that also plans the next time (`times_run` counts every due time handled).
+- **Missed (K6).** A due time found late by less than an hour (the program was closed or the machine
+  asleep) runs once, on start or after the sleep; one late by an hour or more is a `missed` row (event
+  `schedule.missed`) and the next time is planned from now. One row per pass, however many times
+  passed.
+- **One run at a time.** While a run of a schedule is open (a check queued or running), its next due
+  time is `skipped` with "its last run still runs: one at a time" (a unique index holds it).
+- **Checks.** A check needs a project or a card. It is a run of kind `check` (no card on the run, so a
+  card's one open run, its run views and its close never meet it; its project is set): one turn of
+  `claude -p` **without `--resume`, with `--no-session-persistence` and `--max-turns 8`** (probe 20),
+  under the schedule's profile (default `read-only`; any profile whose kinds include `check`), the
+  project's model and effort, hooks and MCP layers as for card runs, the fixed taken-away tools
+  plus `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `PowerShell` and `mcp__relaybay` (under `dontAsk` the user's and the
+  project's own `permissions.allow` rules are pre-approved, and a deny beats an allow). Its
+  folder is the worktree of the card's open run when it has one (the run's working folder when it is
+  one of them), else the project folder of its agent defaults, else its first repository; none there:
+  `failed`. Its text: `relaybay check (schedule N) for <card or project>, in <folder>: one turn,
+  read-only, at most 8 steps, no session kept. …` (an `every` check adds: start the answer with
+  "done" once what you check is finished), then the schedule's text. It **counts in the slots** of
+  `max_running_turns` and queues for a slot, memory and a brake like a card's turn, with its reason
+  ([run limits](#spec-run-limits)); a brake on all, on its project or on its schedule's card (a
+  card's stop budget too) holds it. Its turns' tokens count
+  in the project's, the card's and the all-projects budgets (`result.usage`: a check keeps no
+  transcript, so the usage reader never sees it; the Usage page's tables do not list them). The
+  sign-in and the layers are checked before it is written; a refusal is `failed` with the reason.
+- **A check's answer.** The turn ends: with a card, its answer becomes a report there (first line
+  `inspected · S · <first line of the answer>`, written by relaybay, then `Check of schedule N (run
+  M).` and the answer; the S does not size the card); without one, the same text is kept on the turn
+  and its first line is an Inbox line. `error_max_turns` gives `inspected · S · check stopped at its
+  step limit` and the outcome `stopped`; another error `failed`; a Stop `stopped`; success `ran` with
+  the answer's first line as the reason. The run then ends (`run.ended`, reason `check of schedule N
+  <outcome>: …`), as a check never keeps a session; event `schedule.ended`. Its `run.*` events carry
+  `run_kind: check` and the project, and wake the coordinator as `run 44 on acme-shop ended: …`. A
+  check whose server stopped between the claim and the run, or whose run was lost or ended before
+  its turn, is closed on the clock's next pass with what happened.
+- **The coordinator's tools** ([§3](#spec-mcp)): `schedule_add` (a one-off check or reminder at a
+  local time or in N minutes, or a check every N minutes bounded by `max_times`), `schedule_list`
+  (every schedule, its own and the owner's) and `schedule_cancel` (only one a coordinator made; it
+  is deleted, a running check of it ended first) are for the coordinator run only, under its
+  profile's `schedule_add` right; any other caller, a coordinator turn, a daily schedule and a
+  repeating reminder are refused ("the owner's, on the board"), and so is an `at` more than a week
+  ahead. **Caps:** at most 10 schedules it made may still run (enabled, not finished, not
+  deleted), and every run of a check it made counts in its profile's `run_start_per_day` with the runs it started (one counter since the local midnight; an `every` check counts each time it runs): a new check is refused once it is used up (checked before and
+  again in the write transaction), and a due check of a coordinator's schedule then ends
+  `failed` with the reason instead of starting. Schedules it makes are `created_by_kind` `coordinator`, `created_by` its session's
+  name.
+- **Deleted** (on the board or by `schedule_cancel`): gone from every list and from the clock; the
+  row and its runs stay (`deleted_at`), so the card's and the project's budgets keep counting the
+  tokens its checks spent.
+- **A coordinator turn's text** is one wake line: at most 200 characters (a longer one is refused
+  on save; the details belong in a document it names).
+- **The profile holds in PreToolUse.** For a turn of a check or of the coordinator run (its open
+  run named by the `relaybay_run` field relaybay's hook command adds to SessionStart and to
+  PreToolUse from `RELAYBAY_RUN_ID`, or found by the hook's session that SessionStart linked;
+  the coordinator's folder is resolved first, so a folder under a link still allows writes),
+  relaybay's PreToolUse hook denies every call that no allow rule of the run's profile matches,
+  whatever the user's or the project's settings pre-approve: a tool name (`*` globs), `mcp__server`
+  or `mcp__server__tool`, or `Tool(pattern)` globbed against the Bash command (one command only:
+  `;`, `&`, `|`, a backquote, `$`, `<`, `>` or a line break never match, nor a word of
+  `REFUSED_OPTIONS` in `relaybay/domain/profiles.py`: `--output`, `--ext-diff`, `--textconv`,
+  `--config-env`, `--exec`, `--exec-path`, `--upload-pack`, `--receive-pack`,
+  `--open-files-in-pager`, `--paginate`, `--web`, `--watch`, any prefix of one (git takes
+  abbreviations), `-c` in any form and `gh … -w` (the short `--web`), since `git log --output=<file>` writes a file and `-c` sets
+  any config; a pattern ending in ` *` also matches the bare command, `git status`) or the call's resolved
+  file path (`..` and links followed; `//` anchors at the root; an `Edit` rule covers Write and
+  NotebookEdit). The coordinator also has its folder's `Edit(//<folder>/**)` rule, so it writes
+  inside its folder only, and its relaybay tools pass (`mcp__relaybay` is in its list). The reason
+  names the profile. **It fails open like every hook** ([§2](#spec-brake)): a server that does
+  not answer, or a failure of the check itself, refuses nothing; the taken-away tools above stay.
+- **Events** `schedule.created`, `schedule.updated` (an edit, enable or disable, or a check that
+  answered `done`), `schedule.deleted`, `schedule.fired`, `schedule.missed`, `schedule.skipped`,
+  `schedule.ended` (each with `schedule_id`, `schedule_kind`, the text as `title`, the project and
+  card when it has them, and the outcome and reason where there is one; on the Audit page with
+  Changes) and `schedule.notice_seen`.
+
 <a id="spec-run-limits"></a>
 
 **Run limits** ([design 0021](design/0021-agents-inside.md), C4, C5). Before each turn of a run (the
 first, a Continue, the owner's answer or decision, a text that waited for the running turn or for
 Back to the program) the queue decides, in the transaction that would mark it started:
 
-- **Slots.** At most `max_running_turns` turns run at once over all runs on cards (the
-  [coordinator run](#spec-coordinator) takes none; default 2; a turn counts
+- **Slots.** At most `max_running_turns` turns run at once over all runs on cards and
+  [checks](#spec-schedules) (the [coordinator run](#spec-coordinator) takes none; default 2; a turn counts
   from the moment it is marked started until it ends, whatever the number of its worktrees; an idle
   run or one with the owner holds none). The count is read in the same write transaction that
   marks a turn started, so two starts can never both take the last slot.
@@ -1236,7 +1340,9 @@ project, with `lines` and `retention`), `run.defaults_set`, `settings.run_login_
 [§1](#spec-questions)), `approval.requested`, `approval.decided`, `approval.used` (with
 `approval_id`, `run_id`, `action`, `target` and `what`), `approval.expired`
 ([§1](#spec-approvals)), `coordinator.woken`, `coordinator.compacting`
-([§1](#spec-coordinator-wakes))
+([§1](#spec-coordinator-wakes)), `schedule.created`, `schedule.updated`, `schedule.deleted`,
+`schedule.fired`, `schedule.missed`, `schedule.skipped`, `schedule.ended`, `schedule.notice_seen`
+([§1](#spec-schedules))
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 
 <a id="spec-comments"></a>
@@ -1344,6 +1450,7 @@ posts; events `filter.saved`, `filter.deleted`.
 | Usage | `/usage` | Tokens per session, model, project, day and week ([below](#spec-usage)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Audit | `/audit` | Who did what on which live stand, with filters ([below](#spec-board-audit)). |
+| Schedules | `/schedules` | Coordinator turns, read-only checks and reminders on the program's clock, with their runs ([below](#spec-board-schedules)). |
 | Messages | `/messages` | What sessions write to each other, with delivery marks ([below](#spec-board-messages)). |
 | Stands & access | `/p/<slug>/environments` | The project's repositories ([below](#spec-board-repos)), environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
 | Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/edit[?section=]`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)); editing a document ([§8](#spec-documents-edit)). |
@@ -1501,8 +1608,27 @@ the reason shown when the folder lies inside a git repository), Stop (while a tu
 anyway (queued for memory), Terminal and Open in the desktop app (between turns, as on a card;
 while either holds it, turns wait), Back to the program, New session and End. The owner's box
 sends a turn framed as the owner's word. Below: its open questions with the answer form (and the
-latest closed ones), then its turns, newest first, each with its text folded and its result text;
+latest closed ones), then its schedules (its coordinator turns on a schedule and the checks and
+reminders it made, each with when, its next time and its last outcome, linking to the Schedules
+page), then its turns, newest first, each with its text folded and its result text;
 a wake's text folds under "woke by N events", a `/compact` turn shows `compacted: X -> Y tokens`.
+
+<a id="spec-board-schedules"></a>
+
+**Schedules** (`/schedules`, in the sidebar after Coordinator; owner only, every form cookie and
+CSRF, a Bearer client is refused with 403). A table of every [schedule](#spec-schedules): number,
+kind, when (`daily at 08:30 on weekdays`, `every 10 min, at most 24 times, or until the answer starts
+with done`), target (its card, project or "the coordinator"), next time in local time (or disabled,
+finished; "running" while a run of it is open), last outcome with its reason, and who made it (the
+owner, or the coordinator with its session). Per schedule: Disable / Enable (enabling plans it from
+now; a passed once needs a new time), **Run now** (one run at once outside its times: its next time
+and count stay; refused while a run of it is open), Stop its check (while one is queued or runs),
+Delete (its runs stay counted in the budgets) and Edit (every field; the count starts anew and the next time is planned
+from now). A form adds one: kind, when (once at a local date and time, daily at a time with weekdays
+only, or every N minutes with at most N times), project, card, the check's profile (the profiles
+for `check`, `read-only` preselected) and the text. Below, the latest 50 runs: schedule, due time,
+outcome, tokens, the reason or answer, a link to the report on the card, the run, and Seen for an
+Inbox line. Events refresh it. A queued check's Start anyway is `POST /schedules/checks/<run>/anyway`.
 Every form is board only (cookie and CSRF, never a Bearer client) and answers with a redirect
 back with the outcome.
 
@@ -1706,9 +1832,13 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
   in backend`), the summary, the rollback (a deploy without one says so), a line for the agent and
   **Approve** / **Refuse**. A decision swaps the Inbox. Each request counts as one row; its card is
   not counted again under Waiting on you. A half-typed line is held like an answer.
+- **Schedules:** reminders that came due and the answers of [checks](#spec-schedules) without a
+  card, oldest first, each linking to its run on the Schedules page, with **Seen**
+  (`POST /schedules/notices/<id>/seen`, event `schedule.notice_seen`). Each counts as one row.
 - **Queued turns:** runs whose next turn waits for a slot, free memory or a brake, the first
-  queued first ([§1](#spec-run-limits)): the card, the run, the reason and since when, and **Start
-  anyway** (not for a braked run). Each counts as one row.
+  queued first ([§1](#spec-run-limits)): the card (a check: "Check in <project>", linking to the
+  Schedules page), the run, the reason and since when, and **Start anyway** (not for a braked run).
+  Each counts as one row.
 - **Answers:** open tasks with the "answer received" mark ([§12](#spec-intake-answer)).
 - **Intake:** new messages that match no task, with Tie to a task, Propose a task, Dismiss and
   Trust this source ([§12](#spec-intake-board)).
@@ -1746,7 +1876,7 @@ sidebar badge shows the total number of rows (hidden at zero); badge and list re
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
 `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
 `policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `intake.*` except `intake.wake` and `intake.forwarded`, `backlog.*`, `brake.*`, `budget.*`, `concurrency.over`, `question.*` except `question.delivered`, `approval.requested`,
-`approval.decided`, `approval.expired`), at most once per 2 s. With
+`approval.decided`, `approval.expired`, `schedule.fired`, `schedule.ended`, `schedule.notice_seen`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
 
 <a id="spec-board-sessions"></a>
@@ -1879,7 +2009,8 @@ not access control: all clients share one token. Events `brake.set`, `brake.rele
 target: all projects, a project or a task, per UTC day or in total, with a limit in tokens and an
 action, `warn` by default, `stop` opt-in. The coordinator run's own budget (scope `session`) is set
 in Settings → Agents, not here ([§1](#spec-coordinator-budget)); it counts its turns' tokens. Counted: the Usage page's token total, cache reads included,
-a session in one project as on that page. A task counts the lines written while a session was bound to
+a session in one project as on that page, plus the turns of [check runs](#spec-schedules) (their
+`result.usage`: a check keeps no transcript), in their project and the card their schedule names. A task counts the lines written while a session was bound to
 it (`usage_task_day`), by the line's own time; a session on several tasks counts in full on each; tokens read while the binding sits on a row without
 a hook link stay out of the task's count; usage
 read before migration 0026 has no task. After each usage pass, never on the hook path and at least once
@@ -1975,6 +2106,7 @@ keep a thread going for its own sake.
 | Usage | `usage_summary`, `budget_get` |
 | Brake | `brake_status`, `brake_set` ([§2](#spec-brake)) |
 | Runs | `run_start`, `run_settings` (coordinators only), `run_status`, `run_events` ([§1](#spec-run)) |
+| Schedules | `schedule_add`, `schedule_list`, `schedule_cancel` (the coordinator run only, under its profile's `schedule_add` right) ([§1](#spec-schedules)) |
 | Questions | `question_ask`, `question_list`, `question_withdraw` (the asker or a coordinator); none answers ([§1](#spec-questions)) |
 | Approvals | `approval_request`, `approval_list`; none decides ([§1](#spec-approvals)) |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
@@ -3523,6 +3655,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0043_run_profile` | `run_profile` (name unique, description, permission mode with a CHECK against `bypassPermissions`, allowed and taken-away rules, rights JSON, kinds JSON, builtin, version, updated at / by), seeded with `agent`, `coordinator` and `read-only` ([§1](#spec-profiles)). Additive only |
 | `0044_run_profile_use` | `project_run_defaults.profile` (default `agent`); a project whose mode and allowed tools differ from `agent`'s gets a profile `agent-<slug>` with that pair and is pointed at it, so no run changes its rights; the old columns stay, unread. `run.profile` (NULL for older runs), `run.disallowed_tools`, `run.mode_set` (1 for older runs: they keep their own mode); `run_turn.profile`, `run_turn.profile_version` ([§1](#spec-profiles)). Additive only |
 | `0045_coordinator_run` | `run` rebuilt: `kind` (`card` for every existing run, `coordinator`, `check`), `task_id` and `project_id` nullable with CHECKs (a `card` has both, a `coordinator` neither, a `check` a project), `started_by_run` (the coordinator run that started it); a unique index allows one open coordinator run. `question` rebuilt: `task_id` nullable, CHECK that a question has a card or a run. Both with foreign keys off; every column, index and value kept. `run_turn.result_md` (the result of a turn without a card) ([§1](#spec-coordinator)) |
+| `0047_schedule` | `schedule` (`kind` `coordinator`, `check` or `reminder`; `repeat` `once` with `at`, `daily` with `time_of_day` and `weekdays_only`, `every` with `every_minutes` at least 5 and `max_times` 1 to 24; `timezone`; `project_id`, `task_id`, `profile` (a check's); `prompt`; `created_by`, `created_by_kind` `owner` or `coordinator`; `enabled`, `next_at`, `times_run`, `done_at`; CHECKs tie each form to its column and a check to a project) and `schedule_run` (`schedule_id`, `due_at`, `started_at`, `ended_at`, `outcome` `ran`, `missed`, `skipped`, `failed` or `stopped`, `reason`, `tokens`, `run_id`, `turn_id`, `report_id`, `notice` and `seen_at` for the Inbox); `schedule.deleted_at` (deleted: the row and its runs stay); a unique index allows one open run of a schedule ([§1](#spec-schedules)). Additive only |
 | `0046_coordinator_wake` | `coordinator_wake` (`run_id`, `turn_id`, `first_event_id`, `last_event_id`, `count`, `created_at`): each wake of the coordinator and the events it carried. `question.overdue_at` (the `question.overdue` event written). `coordinator_wake.returned_at` (a wake given back). `run_turn.compact_pre_tokens`, `compact_post_tokens` (a turn's `compact_boundary`), `context_tokens` (its last assistant message's context). `token_budget` rebuilt with foreign keys off: scope `session` and `session_id` (a CHECK ties them; one budget per session); every budget keeps its id, marks and brakes ([§1](#spec-coordinator-wakes), [§1](#spec-coordinator-budget)) |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
@@ -3764,6 +3897,7 @@ this version or newer). What becomes a notice:
 | `permission` | `session.status_changed` to `waiting` (the `Notification` hook, which an idle prompt raises too); off by default | `<session> is waiting` | the session's activity |
 | `brake` | `brake.set` not by the owner and not a budget's own (`budget` tells that one) | `Brake on <target>` | the reason |
 | `budget` | `budget.warned`, `budget.exceeded` | `Budget nearly spent: <target>`, `Budget spent: <target>`, or with the `stop` action `Budget spent, agents stopped: <target>` | `<used> of <limit> tokens` |
+| `reminder` | `schedule.fired` of a reminder ([§1](#spec-schedules)); it opens the Inbox's Schedules group | `Reminder` | the reminder's text |
 | `server` | the program itself: an external server stops answering (at most one until it answers again) | `The relaybay server is unreachable` | `<URL> does not answer.` |
 
 A write by the owner himself is no notice (actor `board`, `owner` or one of `owner_names`).

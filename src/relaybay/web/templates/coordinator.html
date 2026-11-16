@@ -75,6 +75,16 @@
     </details>
     {% endif %}
   </section>
+  <section class="panel" id="coordinator-schedules">
+    <h2>Its schedules{% if c.schedules %} <span class="col-count">{{ c.schedules|length }}</span>{% endif %}</h2>
+    {% if c.schedules %}
+    <ul class="coordinator-schedules">
+      {% for s in c.schedules %}
+      <li><a href="/schedules#schedule-{{ s.id }}">{{ s.id }}</a> {{ s.kind }}{% if s.target and s.kind != "coordinator" %} on {{ s.target }}{% endif %}, {{ when_text(s) }} · {% if not s.enabled %}<span class="muted">disabled</span>{% elif s.next_at %}next {{ s.next_at|local_time }}{% else %}<span class="muted">finished</span>{% endif %}{% if s.last %} · last {{ s.last.outcome or "running" }}{% if s.last.reason %}: {{ s.last.reason|truncate(120) }}{% endif %}{% endif %} <span class="muted">· by {{ s.created_by_kind }} · {{ s.title|truncate(80) }}</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">No coordinator turns on a schedule and none it made. The owner adds them on <a href="/schedules">Schedules</a>; the coordinator adds one-off checks and reminders with schedule_add.</p>{% endif %}
+  </section>
   {% if c.view and c.view.turns %}
   <section class="panel" id="coordinator-turns">
     <h2>Turns of run {{ r.id }}</h2>

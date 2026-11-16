@@ -48,7 +48,7 @@ WAKE_LINE_MAX = 300
 WAKE_CHECK_SECONDS = 15.0  # the wake loop's pass without a new event (the gap's end)
 WAKE_SETTLE_SECONDS = 0.25  # after an event, the others of its burst come first
 CURSOR_LAG = 1000  # events that are no news the cursor moves past without a wake
-SCHEDULE_FIRED = "schedule.fired"  # a coordinator schedule (design 0023, PR 4 writes it)
+SCHEDULE_FIRED = "schedule.fired"  # a schedule ran; only a coordinator turn's wakes it
 # The events a wake carries. Filters on their payload (a plan draft, new intake, a message to
 # the coordinator) and "never its own" live in `repo.coordinator_wake_events`.
 WAKE_KINDS = (
@@ -124,6 +124,8 @@ class CoordinatorPage:
     wake: WakeState = field(default_factory=WakeState)
     wakes: dict[int, CoordinatorWake] = field(default_factory=dict)  # by turn id
     compacted: dict[int, tuple[int, int | None]] = field(default_factory=dict)  # by turn id
+    # Its schedules: coordinator turns and the ones it made (checks, reminders).
+    schedules: list[Any] = field(default_factory=list)
 
 
 def clean_folder(value: Any) -> str | None:
@@ -284,7 +286,7 @@ def _age(minutes: Any) -> str:
 def wake_line(event: Event) -> str:
     """One fact per event, with its keys (card, run, question, approval, message)."""
     p = event.payload
-    key = p.get("key") or "the coordinator"
+    key = p.get("key") or p.get("project") or "the coordinator"  # a check: its project
     kind = event.kind
     if kind == "report.added":
         gist = " · ".join(str(x) for x in (p.get("state"), p.get("size"), p.get("summary")) if x)

@@ -105,13 +105,22 @@ def post(url: str, token: str, body: bytes, timeout: float) -> bytes:
 
 def with_host_session(body: bytes) -> bytes:
     """SessionStart gets the desktop session id and the relaybay run id from the environment
-    Claude Code runs hooks in; any other body is forwarded as it is (it is not even parsed)."""
+    Claude Code runs hooks in; PreToolUse gets the run id too, so a check's or the
+    coordinator's call is known as theirs even when its SessionStart was spooled. Any other
+    body is forwarded as it is (it is not even parsed)."""
     host = os.environ.get(HOST_SESSION_ENV)
     run_id = os.environ.get(RUN_ID_ENV)
-    if not (host or run_id) or b'"SessionStart"' not in body:
+    start = b'"SessionStart"' in body
+    if not (host or run_id) or not (start or (run_id and b'"PreToolUse"' in body)):
         return body
     payload = json.loads(body)
-    if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
+    if not isinstance(payload, dict):
+        return body
+    event = payload.get("hook_event_name")
+    if event == "PreToolUse" and run_id:
+        payload[RUN_FIELD] = run_id
+        return json.dumps(payload).encode("utf-8")
+    if event != "SessionStart":
         return body
     if host:
         payload[HOST_SESSION_FIELD] = host

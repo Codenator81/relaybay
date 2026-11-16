@@ -837,7 +837,7 @@ async def test_a_failed_check_finds_the_run_without_the_payloads_run_id(
     monkeypatch.setenv("RELAYBAY_RUN_ID", str(run.id))
     body = json.dumps(pre(RUN_CC, run.cwd, "git push origin main")).encode()
     forwarded = json.loads(hook_client.with_host_session(body))
-    assert "relaybay_run" not in forwarded  # command hooks send it on SessionStart only
+    assert forwarded["relaybay_run"] == str(run.id)  # PreToolUse carries the run id too
     answer = await svc.hook_answer(forwarded)
     assert answer is not None
     reason = answer["hookSpecificOutput"]["permissionDecisionReason"]

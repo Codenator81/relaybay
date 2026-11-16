@@ -19,7 +19,7 @@ from relaybay.domain.models import Event
 from relaybay.runner.layers import LayerState
 from relaybay.runner.stream import Context, Result, read_line
 from relaybay.service import Service
-from tests.test_migrations import NOW
+from tests.test_migrations import LATEST, NOW
 from tests.test_runs_service import CC_A, CC_B, StubRuns, stub
 
 
@@ -411,7 +411,7 @@ async def test_migration_0046_keeps_budgets_their_marks_and_brakes(tmp_path: Pat
             (NOW,),
         )
         await conn.commit()
-        assert await migrate(conn) == 46
+        assert await migrate(conn) == LATEST
         conn.row_factory = sqlite3.Row
         async with conn.execute("SELECT * FROM token_budget") as cur:
             [budget] = await cur.fetchall()

@@ -53,6 +53,7 @@ from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
 from relaybay.domain.run_events import StoredLine, StreamEvent, unpack
 from relaybay.domain.runs import DEFAULT_RETENTION, Run, RunDefaults, RunTurn, RunWorktree
+from relaybay.domain.schedules import TITLE_MAX, Schedule, ScheduleRun, flat
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile, UsageLine
 
@@ -5006,6 +5007,7 @@ _WAKE_WHERE = f"""
  AND NOT (e.kind LIKE 'run.%' AND json_extract(e.payload, '$.run_id') IN
           (SELECT id FROM run WHERE kind = 'coordinator'))
  AND (e.kind != 'plan.set' OR json_extract(e.payload, '$.status') = 'draft')
+ AND (e.kind != 'schedule.fired' OR json_extract(e.payload, '$.schedule_kind') = 'coordinator')
  AND (e.kind != 'intake.received' OR (json_extract(e.payload, '$.status') = 'new'
       AND NOT EXISTS (SELECT 1 FROM event t WHERE t.id > e.id AND t.kind = 'intake.tied'
                       AND json_extract(t.payload, '$.message_id')
@@ -6152,3 +6154,326 @@ async def untold_decisions(conn: aiosqlite.Connection, session_id: int) -> list[
         (session_id,),
     )
     return [_approval(r) for r in rows]
+
+
+# --- schedules (design 0023) ------------------------------------------------------------------
+
+_SCHEDULE_SELECT = """
+SELECT s.*, COALESCE(p.slug, '') AS project_slug, COALESCE(t.key, '') AS task_key,
+       EXISTS (SELECT 1 FROM schedule_run o WHERE o.schedule_id = s.id AND o.ended_at IS NULL)
+           AS running
+FROM schedule s
+LEFT JOIN project p ON p.id = s.project_id
+LEFT JOIN task t ON t.id = s.task_id
+"""
+_SCHEDULE_RUN_SELECT = """
+SELECT r.*, s.kind AS schedule_kind, s.prompt AS schedule_prompt,
+       COALESCE(t.key, '') AS task_key, COALESCE(p.slug, '') AS project_slug
+FROM schedule_run r
+JOIN schedule s ON s.id = r.schedule_id
+LEFT JOIN project p ON p.id = s.project_id
+LEFT JOIN task t ON t.id = s.task_id
+"""
+
+
+def _schedule(row: aiosqlite.Row) -> Schedule:
+    return Schedule(
+        id=row["id"],
+        kind=row["kind"],
+        repeat=row["repeat"],
+        at=row["at"],
+        time_of_day=row["time_of_day"],
+        weekdays_only=bool(row["weekdays_only"]),
+        every_minutes=row["every_minutes"],
+        max_times=row["max_times"],
+        timezone=row["timezone"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        profile=row["profile"],
+        prompt=row["prompt"],
+        created_by=row["created_by"],
+        created_by_kind=row["created_by_kind"],
+        enabled=bool(row["enabled"]),
+        next_at=row["next_at"],
+        times_run=row["times_run"],
+        done_at=row["done_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+        project_slug=row["project_slug"],
+        task_key=row["task_key"],
+        running=bool(row["running"]),
+    )
+
+
+def _schedule_run(row: aiosqlite.Row) -> ScheduleRun:
+    return ScheduleRun(
+        id=row["id"],
+        schedule_id=row["schedule_id"],
+        due_at=row["due_at"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+        outcome=row["outcome"],
+        reason=row["reason"],
+        tokens=row["tokens"],
+        run_id=row["run_id"],
+        turn_id=row["turn_id"],
+        report_id=row["report_id"],
+        notice=row["notice"],
+        seen_at=row["seen_at"],
+        schedule_kind=row["schedule_kind"],
+        schedule_title=flat(row["schedule_prompt"], TITLE_MAX),
+        task_key=row["task_key"],
+        project_slug=row["project_slug"],
+    )
+
+
+async def insert_schedule(conn: aiosqlite.Connection, values: dict[str, Any], now: str) -> int:
+    row = {**values, "created_at": now, "updated_at": now}
+    cur = await conn.execute(
+        f"INSERT INTO schedule ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+        tuple(row.values()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_schedule(
+    conn: aiosqlite.Connection, schedule_id: int, values: dict[str, Any], now: str
+) -> None:
+    row = {**values, "updated_at": now}
+    sets = ", ".join(f"{column} = ?" for column in row)
+    await conn.execute(f"UPDATE schedule SET {sets} WHERE id = ?", (*row.values(), schedule_id))
+
+
+async def delete_schedule(
+    conn: aiosqlite.Connection, schedule_id: int, now: str, actor: str
+) -> None:
+    """Marked deleted, never removed: its runs keep counting in the card's and the project's
+    budgets."""
+    await conn.execute(
+        "UPDATE schedule SET deleted_at = ?, enabled = 0, next_at = NULL, updated_at = ?,"
+        " updated_by = ? WHERE id = ?",
+        (now, now, actor, schedule_id),
+    )
+
+
+async def get_schedule(
+    conn: aiosqlite.Connection, schedule_id: int, *, deleted: bool = False
+) -> Schedule | None:
+    """`deleted`: a deleted one too (a check of it that was ending)."""
+    live = "" if deleted else " AND s.deleted_at IS NULL"
+    row = await _one(conn, _SCHEDULE_SELECT + " WHERE s.id = ?" + live, (schedule_id,))
+    if row is None:
+        return None
+    found = _schedule(row)
+    found.last = (await last_schedule_runs(conn, [found.id])).get(found.id)
+    return found
+
+
+async def list_schedules(
+    conn: aiosqlite.Connection, created_by_kind: str | None = None
+) -> list[Schedule]:
+    """Enabled first, then by the next time (finished ones last), then the newest."""
+    where: str = " WHERE s.deleted_at IS NULL"
+    params: tuple[Any, ...] = ()
+    if created_by_kind is not None:
+        where, params = where + " AND s.created_by_kind = ?", (created_by_kind,)
+    rows = await _all(
+        conn,
+        _SCHEDULE_SELECT
+        + where
+        + " ORDER BY s.enabled DESC, s.next_at IS NULL, s.next_at, s.id DESC",
+        params,
+    )
+    found = [_schedule(r) for r in rows]
+    last = await last_schedule_runs(conn, [s.id for s in found])
+    for schedule in found:
+        schedule.last = last.get(schedule.id)
+    return found
+
+
+async def due_schedules(conn: aiosqlite.Connection, now: str) -> list[Schedule]:
+    rows = await _all(
+        conn,
+        _SCHEDULE_SELECT + " WHERE s.enabled = 1 AND s.next_at IS NOT NULL AND s.next_at <= ?"
+        " AND s.deleted_at IS NULL"
+        " ORDER BY s.next_at, s.id",
+        (now,),
+    )
+    return [_schedule(r) for r in rows]
+
+
+async def next_schedule_at(conn: aiosqlite.Connection) -> str | None:
+    row = await _one(
+        conn,
+        "SELECT MIN(next_at) FROM schedule WHERE enabled = 1 AND next_at IS NOT NULL"
+        " AND deleted_at IS NULL",
+        (),
+    )
+    return row[0] if row else None
+
+
+async def insert_schedule_run(conn: aiosqlite.Connection, values: dict[str, Any]) -> int:
+    cur = await conn.execute(
+        f"INSERT INTO schedule_run ({', '.join(values)}) VALUES ({', '.join('?' for _ in values)})",
+        tuple(values.values()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_schedule_run(
+    conn: aiosqlite.Connection, schedule_run_id: int, values: dict[str, Any]
+) -> None:
+    sets = ", ".join(f"{column} = ?" for column in values)
+    await conn.execute(
+        f"UPDATE schedule_run SET {sets} WHERE id = ?", (*values.values(), schedule_run_id)
+    )
+
+
+async def get_schedule_run(conn: aiosqlite.Connection, schedule_run_id: int) -> ScheduleRun | None:
+    row = await _one(conn, _SCHEDULE_RUN_SELECT + " WHERE r.id = ?", (schedule_run_id,))
+    return _schedule_run(row) if row else None
+
+
+async def schedule_run_of_run(conn: aiosqlite.Connection, run_id: int) -> ScheduleRun | None:
+    """The schedule run a `check` run was started for."""
+    row = await _one(conn, _SCHEDULE_RUN_SELECT + " WHERE r.run_id = ?", (run_id,))
+    return _schedule_run(row) if row else None
+
+
+async def open_schedule_runs(conn: aiosqlite.Connection) -> list[ScheduleRun]:
+    rows = await _all(conn, _SCHEDULE_RUN_SELECT + " WHERE r.ended_at IS NULL ORDER BY r.id")
+    return [_schedule_run(r) for r in rows]
+
+
+async def schedule_runs(
+    conn: aiosqlite.Connection, schedule_ids: list[int] | None = None, limit: int = 50
+) -> list[ScheduleRun]:
+    """The newest first; of the given schedules only when named."""
+    where: str = " WHERE s.deleted_at IS NULL"
+    params: tuple[Any, ...] = ()
+    if schedule_ids is not None:
+        if not schedule_ids:
+            return []
+        where += f" AND r.schedule_id IN ({', '.join('?' for _ in schedule_ids)})"
+        params = tuple(schedule_ids)
+    rows = await _all(
+        conn, _SCHEDULE_RUN_SELECT + where + " ORDER BY r.id DESC LIMIT ?", (*params, limit)
+    )
+    return [_schedule_run(r) for r in rows]
+
+
+async def last_schedule_runs(
+    conn: aiosqlite.Connection, schedule_ids: list[int]
+) -> dict[int, ScheduleRun]:
+    if not schedule_ids:
+        return {}
+    marks = ", ".join("?" for _ in schedule_ids)
+    rows = await _all(
+        conn,
+        _SCHEDULE_RUN_SELECT + " WHERE r.id IN (SELECT MAX(id) FROM schedule_run"
+        f" WHERE schedule_id IN ({marks}) GROUP BY schedule_id)",
+        tuple(schedule_ids),
+    )
+    return {row["schedule_id"]: _schedule_run(row) for row in rows}
+
+
+async def schedule_notices(conn: aiosqlite.Connection) -> list[ScheduleRun]:
+    """The Inbox lines: reminders and answers of checks without a card, not marked seen."""
+    rows = await _all(
+        conn,
+        _SCHEDULE_RUN_SELECT + " WHERE r.notice IS NOT NULL AND r.seen_at IS NULL"
+        " AND s.deleted_at IS NULL ORDER BY r.id",
+    )
+    return [_schedule_run(r) for r in rows]
+
+
+async def mark_schedule_notice_seen(
+    conn: aiosqlite.Connection, schedule_run_id: int, now: str
+) -> bool:
+    cur = await conn.execute(
+        "UPDATE schedule_run SET seen_at = ? WHERE id = ? AND notice IS NOT NULL"
+        " AND seen_at IS NULL",
+        (now, schedule_run_id),
+    )
+    return cur.rowcount == 1
+
+
+async def check_tokens(
+    conn: aiosqlite.Connection,
+    *,
+    project_id: int | None = None,
+    task_id: int | None = None,
+    day: str | None = None,
+) -> int:
+    """Tokens of `check` runs' turns (their `result.usage`): a check keeps no transcript, so
+    the usage reader never sees them. Of a project, or of the card its schedule names."""
+    where, params = ["r.kind = 'check'", "t.ended_at IS NOT NULL"], []
+    if project_id is not None:
+        where.append("r.project_id = ?")
+        params.append(project_id)
+    if task_id is not None:
+        where.append(
+            "EXISTS (SELECT 1 FROM schedule_run sr JOIN schedule s ON s.id = sr.schedule_id"
+            " WHERE sr.run_id = r.id AND s.task_id = ?)"
+        )
+        params.append(task_id)
+    if day is not None:
+        where.append("substr(t.ended_at, 1, 10) = ?")
+        params.append(day)
+    row = await _one(
+        conn,
+        "SELECT TOTAL(t.input_tokens + t.output_tokens + t.cache_read_tokens"
+        " + t.cache_write_tokens) FROM run_turn t JOIN run r ON r.id = t.run_id WHERE "
+        + " AND ".join(where),
+        tuple(params),
+    )
+    return int(row[0]) if row else 0
+
+
+async def check_task(conn: aiosqlite.Connection, run_id: int) -> int | None:
+    """The card a `check` run's schedule names (the run itself has none)."""
+    row = await _one(
+        conn,
+        "SELECT s.task_id FROM schedule_run sr JOIN schedule s ON s.id = sr.schedule_id"
+        " WHERE sr.run_id = ?",
+        (run_id,),
+    )
+    return row[0] if row else None
+
+
+async def check_tasks_of_session(conn: aiosqlite.Connection, session_id: int) -> set[int]:
+    """The cards of the open `check` runs on a session (a brake on the card holds them)."""
+    rows = await _all(
+        conn,
+        "SELECT s.task_id FROM run r JOIN schedule_run sr ON sr.run_id = r.id"
+        " JOIN schedule s ON s.id = sr.schedule_id"
+        " WHERE r.session_id = ? AND r.kind = 'check' AND r.ended_at IS NULL"
+        " AND s.task_id IS NOT NULL",
+        (session_id,),
+    )
+    return {int(r[0]) for r in rows}
+
+
+async def coordinator_checks_since(conn: aiosqlite.Connection, since: str) -> int:
+    """Check runs of schedules a coordinator made, started since `since`: each run counts in
+    its run_start_per_day (an `every` check counts every time it runs)."""
+    row = await _one(
+        conn,
+        "SELECT COUNT(*) FROM run r JOIN schedule_run sr ON sr.run_id = r.id"
+        " JOIN schedule s ON s.id = sr.schedule_id"
+        " WHERE r.kind = 'check' AND s.created_by_kind = 'coordinator' AND r.created_at >= ?",
+        (since,),
+    )
+    return int(row[0]) if row else 0
+
+
+async def open_coordinator_schedules(conn: aiosqlite.Connection) -> int:
+    """Schedules a coordinator made that may still run: enabled, not finished, not deleted."""
+    row = await _one(
+        conn,
+        "SELECT COUNT(*) FROM schedule WHERE created_by_kind = 'coordinator' AND enabled = 1"
+        " AND next_at IS NOT NULL AND deleted_at IS NULL",
+        (),
+    )
+    return int(row[0]) if row else 0

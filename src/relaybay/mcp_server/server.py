@@ -1262,6 +1262,105 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         found = await run(service.get_task(changed.task_id))
         return fmt.run_settings_saved(found, changed)
 
+    # --- schedules: the coordinator's one-off checks and reminders ---------------------------
+
+    @write
+    async def schedule_add(
+        kind: Annotated[
+            str,
+            Field(
+                description="check (a one-shot read-only claude -p in the card's worktree or the"
+                " project's folder; its answer becomes a report on the card) or reminder (a tray"
+                " notice and an Inbox line for the owner, no model)."
+            ),
+        ],
+        text: Annotated[
+            str,
+            Field(description="What the check looks at and answers, or the reminder's words."),
+        ],
+        project: Annotated[
+            str | None,
+            Field(description="Project slug: where a check reads. A check needs it or task."),
+        ] = None,
+        task: Annotated[
+            str | None,
+            Field(description="Task key such as 'acme-shop-12': the card a check reports on."),
+        ] = None,
+        at: Annotated[
+            str | None,
+            Field(
+                description="Once at this date and time, 'YYYY-MM-DD HH:MM' in this machine's"
+                " local time (or ISO 8601 with an offset). Give at or in_minutes."
+            ),
+        ] = None,
+        in_minutes: Annotated[
+            int | None,
+            Field(description="Once, this many minutes from now (1 to 10080)."),
+        ] = None,
+        every_minutes: Annotated[
+            int | None,
+            Field(
+                description="A check only: every N minutes (at least 5), the first one N minutes"
+                " from now, until its answer starts with 'done' or max_times."
+            ),
+        ] = None,
+        max_times: Annotated[
+            int | None,
+            Field(description="With every_minutes: at most this many times (1 to 24, default 24)."),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """The coordinator run only (its profile's schedule_add right): a one-off check or
+        reminder, or a check every N minutes bounded by max_times. Coordinator turns, daily
+        schedules and repeating reminders are the owner's, on the board."""
+        made = await run(
+            service.schedule_add_mcp(
+                kind,
+                text,
+                project=project or None,
+                task=task or None,
+                at=at or None,
+                in_minutes=in_minutes,
+                every_minutes=every_minutes,
+                max_times=max_times,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.schedule_added(made, service.local_time)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def schedule_list(
+        session: Session = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """The coordinator run only: every schedule, its own and the owner's, with its next time
+        and last outcome (times in this machine's local time)."""
+        found = await run(service.schedule_list_mcp(session=session, hook_session=hook_session))
+        return fmt.schedules(found, service.local_time)
+
+    @write
+    async def schedule_cancel(
+        schedule_id: Annotated[int, Field(description="The schedule's number from schedule_list.")],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """The coordinator run only: remove a schedule a coordinator made; a check of it that
+        runs ends. The owner's schedules are refused."""
+        found = await run(
+            service.schedule_cancel_mcp(
+                schedule_id,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.schedule_cancelled(found)
+
     # --- questions to the owner ---------------------------------------------------------
 
     @write
