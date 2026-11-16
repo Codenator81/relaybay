@@ -25,6 +25,8 @@ Scenario keys, all optional:
                       Claude Code's own auto mode does). Without it auto acts like Manual.
   end_wait_file       after the result, wait for this file before the SessionEnd hooks (slow
                       hooks while the process ends); traced as {"kind": "result"} first
+  compact_pre_tokens  what a `/compact` turn's compact_boundary names as the context before
+                      (default 50000); `compact_post_tokens` adds the context after
 A step is one of:
   {"text": "..."}                                 an assistant message
   {"tool": "Bash", "input": {...}, "result": "..."}  a tool call; its command never runs.
@@ -49,6 +51,11 @@ also writes `{"kind": "argv", "argv", "prompt", "run_id", "started"}` first and
 `{"kind": "turn_end", "session_id", "started", "ended"}` when it ends normally. Every hook command
 run is `{"kind": "hook", "event", "command"}`; the memory loaded at the start is
 `{"kind": "memory", "files", "lines"}` (the files' paths and their non-empty lines).
+
+The prompt `/compact` with `--resume` compacts the session as the real CLI does headless (probe 18
+of design 0023): no turn steps and no UserPromptSubmit or Stop hooks, the PreCompact hooks, a
+`system/compact_boundary` line (`trigger` manual), then an empty `result` with zero usage under
+the same session id; it takes no entry of `turns`.
 
 `claude --desktop --resume <id>` (no -p) hands the session to the desktop app: it writes
 `{"kind": "desktop", "argv", "cwd", "tty"}` and, like the real CLI, exits 1 with its message when
@@ -715,8 +722,35 @@ class Run:
         if errors:
             init["mcp_server_errors"] = errors
         self.emit(init)
+        if self.compacting:
+            self.compact()
+            return
         self.turn()
         self.result()
+
+    @property
+    def compacting(self) -> bool:
+        return self.resuming and (self.args.prompt or "").strip() == "/compact"
+
+    def compact(self) -> None:
+        self.run_hooks("PreCompact", trigger="manual", custom_instructions="")
+        meta: dict[str, Any] = {
+            "trigger": "manual",
+            "pre_tokens": self.scenario.get("compact_pre_tokens", 50000),
+        }
+        if "compact_post_tokens" in self.scenario:
+            meta["post_tokens"] = self.scenario["compact_post_tokens"]
+        self.write_transcript({"type": "system", "subtype": "compact_boundary"})
+        self.emit(
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": str(uuid.uuid4()),
+                "session_id": self.session_id,
+                "compact_metadata": meta,
+            }
+        )
+        self.result()  # no assistant message: the usage stays zero
 
     def end(self) -> None:
         wait = self.scenario.get("end_wait_file")
@@ -768,6 +802,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.desktop:
         return desktop(words)
     if args.prompt is None and sys.stdin is not None and not sys.stdin.isatty():
+        sys.stdin.reconfigure(encoding="utf-8")  # as the real CLI reads it, not the locale's
         args.prompt = sys.stdin.read()
     # Never the real settings and transcripts of whoever runs the tests.
     config = os.environ.get("CLAUDE_CONFIG_DIR")
@@ -784,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id=os.environ.get("RELAYBAY_RUN_ID"),
         started=started,
     )
-    run.steps = run.turn_steps(Path(config))
+    run.steps = [] if run.compacting else run.turn_steps(Path(config))
     signal.signal(signal.SIGTERM, _terminate)
     if sys.platform == "win32":
         # Windows has no SIGTERM between processes; a console break is the nearest thing.

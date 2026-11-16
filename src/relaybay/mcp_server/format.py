@@ -1106,9 +1106,23 @@ def event_detail(e: Event) -> str:
         return f"run {p.get('run_id')} in {p.get('folder')} · profile {p.get('profile')}"
     if e.kind in ("coordinator.stopped", "coordinator.ended"):
         return f"run {p.get('run_id')}"
+    if e.kind == "coordinator.woken":
+        return (
+            f"run {p.get('run_id')}: woken by {p.get('events')} events"
+            f" ({p.get('first_event_id')}..{p.get('last_event_id')})"
+        )
+    if e.kind == "coordinator.compacting":
+        return f"run {p.get('run_id')}: /compact after {p.get('context')} context tokens"
     if e.kind == "settings.coordinator":
         folder = p.get("folder") or "the default folder"
-        return f"{folder} · profile {p.get('profile')} · {p.get('model')} · {p.get('effort')}"
+        head = f"{folder} · profile {p.get('profile')} · {p.get('model')} · {p.get('effort')}"
+        if p.get("wake_gap_seconds") is None:
+            return head
+        return (
+            f"{head} · wakes {p.get('wake_gap_seconds')} s apart · /compact above"
+            f" {p.get('compact_at_tokens')} · {p.get('daily_tokens')} tokens a day,"
+            f" {p.get('budget_action')}"
+        )
     if e.kind == "settings.terminal_enabled":
         return "Terminal tab on" if p.get("on") else "Terminal tab off"
     if e.kind == "run.terminal_closed":
@@ -1159,6 +1173,8 @@ def event_detail(e: Event) -> str:
             return f"{what} -> {qrules.quoted(str(p['answer']))[:120]}"
         if e.kind == "question.defaulted":
             return f"{what} -> default {qrules.quoted(str(p.get('default') or ''))[:120]}"
+        if e.kind == "question.overdue":
+            return f"{what} open {p.get('open_minutes')} min"
         return what
     if e.kind.startswith("approval."):
         what = f"#{p.get('approval_id')}: {p.get('what') or p.get('action')}"

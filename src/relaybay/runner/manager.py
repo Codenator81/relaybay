@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -27,6 +27,8 @@ from relaybay.runner.proctree import ProcessTree
 from relaybay.runner.stream import (
     HEAD_MAX,
     LINE_MAX,
+    Compact,
+    Context,
     Init,
     Result,
     StreamEvent,
@@ -242,6 +244,8 @@ class RunManager:
         self, active: _Active, proc: subprocess.Popen[str], queue: asyncio.Queue[Any]
     ) -> None:
         result: Result | None = None
+        compact: Compact | None = None
+        context: Context | None = None
         code: int | None = None
         waiter = asyncio.ensure_future(asyncio.to_thread(proc.wait))
         batch: list[StreamEvent] = []
@@ -301,6 +305,10 @@ class RunManager:
                         # The turn goes on and still ends on the card; the next one then starts
                         # without --resume.
                         logger.exception("Storing run %d's session id failed", active.run_id)
+                elif isinstance(item, Compact):
+                    compact = item
+                elif isinstance(item, Context):
+                    context = item
                 elif isinstance(item, Result):
                     result = item
             await flush()
@@ -309,6 +317,14 @@ class RunManager:
             active.tree.close()
             self._active.pop(active.run_id, None)
         stopped = active.stop_reason is not None
+        if result is not None and compact is not None:
+            result = replace(
+                result,
+                compact_pre_tokens=compact.pre_tokens,
+                compact_post_tokens=compact.post_tokens,
+            )
+        if result is not None and context is not None:
+            result = replace(result, context_tokens=context.tokens)
         if result is not None:
             # Stop after the result (SessionEnd hooks run then): the turn's outcome stands, the
             # sink stops the run.

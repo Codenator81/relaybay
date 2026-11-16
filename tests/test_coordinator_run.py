@@ -26,7 +26,7 @@ from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, run_in_app
 from tests.e2e.conftest import make_git_repo
-from tests.test_migrations import NOW
+from tests.test_migrations import LATEST, NOW
 from tests.test_runs_service import CC_A, CC_B, StubRuns, stub
 
 WINDOWS = sys.platform == "win32"
@@ -104,7 +104,7 @@ async def test_migration_keeps_runs_and_questions_and_its_checks_hold(tmp_path: 
             (NOW,),
         )
         await conn.commit()
-        assert await migrate(conn) == 45
+        assert await migrate(conn) == LATEST
         conn.row_factory = sqlite3.Row
         async with conn.execute("SELECT * FROM run") as cur:
             [run] = await cur.fetchall()

@@ -25,6 +25,9 @@ LOOK_OPTIONS = ("fine", "remarks")
 DEFAULT_AFTER = timedelta(hours=1)
 DEFAULT_AFTER_MIN = timedelta(minutes=1)
 DEFAULT_AFTER_MAX = timedelta(days=30)
+# A blocking question has no deadline; open this long it is overdue, as a non-blocking one
+# without a deadline of its own would be.
+BLOCKING_OVERDUE = DEFAULT_AFTER
 QUOTE_MAX = 300  # the question as quoted in the answer's line
 CHECK_SECONDS = 15.0  # how often the server closes questions past their deadline
 # A line that reads like the owner's answer: only an answer from the board may carry one.

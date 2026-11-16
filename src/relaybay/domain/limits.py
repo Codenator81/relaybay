@@ -4,7 +4,9 @@ that reach a session. Pure: the service reads the numbers and stores the marks."
 from dataclasses import dataclass
 
 BRAKE_SCOPES = ("all", "project", "session", "task")
-BUDGET_SCOPES = ("all", "project", "task")
+BUDGET_SCOPES = ("all", "project", "task")  # what the Usage page sets
+# The coordinator run's own budget: set in Settings -> Agents, never on the Usage page.
+SESSION_SCOPE = "session"
 BUDGET_PERIODS = ("day", "total")
 BUDGET_ACTIONS = ("warn", "stop")
 SOURCE_OWNER, SOURCE_COORDINATOR, SOURCE_BUDGET = "owner", "coordinator", "budget"
@@ -67,6 +69,8 @@ class TokenBudget:
     action: str
     updated_at: str
     updated_by: str
+    session_id: int | None = None
+    session_name: str | None = None
 
     @property
     def target(self) -> str:
@@ -74,6 +78,8 @@ class TokenBudget:
             return f"project {self.project_slug}"
         if self.scope == "task":
             return f"task {self.task_key}"
+        if self.scope == SESSION_SCOPE:
+            return f"session {self.session_name or '(removed)'}"
         return "all projects"
 
 

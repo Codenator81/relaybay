@@ -1,5 +1,6 @@
 """The stream-json lines of a turn: every line becomes a masked, compressed event to store, and
-two of them, `system/init` and `result`, also steer the run."""
+some also steer the run: `system/init`, `system/compact_boundary`, the main conversation's
+`assistant` messages (the context of the last one) and `result`."""
 
 import json
 import re
@@ -48,9 +49,30 @@ class Result:
     denied_tools: list[str] = field(default_factory=list)
     text: str = ""  # the turn's final text, masked
     refusals: list[Refusal] = field(default_factory=list)
+    compact_pre_tokens: int | None = None  # from the turn's compact_boundary, if it had one
+    compact_post_tokens: int | None = None
+    # The context the turn ended with: input + cache read + cache write of its last assistant
+    # message (not of a subagent). `usage` above sums every API call of the turn instead.
+    context_tokens: int | None = None
 
 
-StreamItem = Init | Result
+@dataclass(frozen=True, slots=True)
+class Compact:
+    """`system/compact_boundary`: the session was compacted (`/compact`, or Claude Code's own
+    automatic compaction). `post_tokens` only when the CLI names it."""
+
+    pre_tokens: int | None
+    post_tokens: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class Context:
+    """An assistant message of the main conversation: the context its API call read."""
+
+    tokens: int
+
+
+StreamItem = Init | Result | Compact | Context
 
 
 def _int(value: object) -> int | None:
@@ -120,6 +142,25 @@ def _item(message: dict[str, Any], masked: dict[str, Any]) -> StreamItem | None:
     if kind == "system" and message.get("subtype") == "init":
         session_id = _text(message.get("session_id"), CC_ID_MAX)
         return Init(session_id) if session_id else None
+    if kind == "system" and message.get("subtype") == "compact_boundary":
+        meta = message.get("compact_metadata")
+        meta = meta if isinstance(meta, dict) else {}
+        return Compact(_int(meta.get("pre_tokens")), _int(meta.get("post_tokens")))
+    if kind == "assistant" and message.get("parent_tool_use_id") is None:
+        inner = message.get("message")
+        usage = inner.get("usage") if isinstance(inner, dict) else None
+        if not isinstance(usage, dict):
+            return None
+        return Context(
+            sum(
+                _int(usage.get(key)) or 0
+                for key in (
+                    "input_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                )
+            )
+        )
     if kind != "result":
         return None
     usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}

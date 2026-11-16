@@ -2980,9 +2980,22 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         profile: Annotated[str, Form()] = "",
         model: Annotated[str, Form()] = "",
         effort: Annotated[str, Form()] = "",
+        wake_gap_seconds: Annotated[str, Form()] = "",
+        compact_at_tokens: Annotated[str, Form()] = "",
+        daily_tokens: Annotated[str, Form()] = "",
+        budget_action: Annotated[str, Form()] = "",
     ):
         board_only(request, csrf)
-        values = {"folder": folder, "profile": profile, "model": model, "effort": effort}
+        values = {
+            "folder": folder,
+            "profile": profile,
+            "model": model,
+            "effort": effort,
+            "wake_gap_seconds": wake_gap_seconds,
+            "compact_at_tokens": compact_at_tokens,
+            "daily_tokens": daily_tokens,
+            "budget_action": budget_action,
+        }
         try:
             await service.set_coordinator_settings(values, actor="owner")
         except DomainError as exc:

@@ -12,6 +12,7 @@ from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_js
 from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import UNASSIGNED, BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
+from relaybay.domain.coordinator import WAKE_KINDS, CoordinatorWake
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -3987,10 +3988,12 @@ _BRAKE_SELECT = (
     " LEFT JOIN task t ON t.id = b.task_id"
 )
 _BUDGET_SELECT = (
-    "SELECT b.*, COALESCE(p.slug, tp.slug) AS project_slug, t.key AS task_key FROM token_budget b"
+    "SELECT b.*, COALESCE(p.slug, tp.slug) AS project_slug, t.key AS task_key,"
+    " s.name AS session_name FROM token_budget b"
     " LEFT JOIN project p ON p.id = b.project_id"
     " LEFT JOIN task t ON t.id = b.task_id"
     " LEFT JOIN project tp ON tp.id = t.project_id"
+    " LEFT JOIN session s ON s.id = b.session_id"
 )
 
 
@@ -4027,6 +4030,8 @@ def _budget(row: aiosqlite.Row) -> TokenBudget:
         action=row["action"],
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
+        session_id=row["session_id"],
+        session_name=row["session_name"],
     )
 
 
@@ -4115,7 +4120,8 @@ async def list_budgets(conn: aiosqlite.Connection) -> list[TokenBudget]:
     rows = await _all(
         conn,
         _BUDGET_SELECT
-        + " ORDER BY CASE b.scope WHEN 'all' THEN 0 WHEN 'project' THEN 1 ELSE 2 END,"
+        + " ORDER BY CASE b.scope WHEN 'all' THEN 0 WHEN 'project' THEN 1 WHEN 'task' THEN 2"
+        " ELSE 3 END,"
         " project_slug, b.id",
         (),
     )
@@ -4140,6 +4146,66 @@ async def find_budget(
         (scope, project_id, task_id),
     )
     return _budget(row) if row else None
+
+
+async def session_budget(conn: aiosqlite.Connection, session_id: int) -> TokenBudget | None:
+    row = await _one(
+        conn, _BUDGET_SELECT + " WHERE b.scope = 'session' AND b.session_id = ?", (session_id,)
+    )
+    return _budget(row) if row else None
+
+
+async def coordinator_budget(conn: aiosqlite.Connection) -> TokenBudget | None:
+    """The budget of a coordinator run's session, the latest run's first."""
+    row = await _one(
+        conn,
+        _BUDGET_SELECT + " JOIN run r ON r.session_id = b.session_id AND r.kind = 'coordinator'"
+        " WHERE b.scope = 'session' ORDER BY r.id DESC LIMIT 1",
+        (),
+    )
+    return _budget(row) if row else None
+
+
+async def insert_session_budget(
+    conn: aiosqlite.Connection,
+    session_id: int,
+    *,
+    max_tokens: int,
+    action: str,
+    now: str,
+    actor: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO token_budget (scope, session_id, period, max_tokens, action, updated_at,"
+        " updated_by) VALUES ('session', ?, 'day', ?, ?, ?, ?)",
+        (session_id, max_tokens, action, now, actor),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def move_session_budget(
+    conn: aiosqlite.Connection, budget_id: int, session_id: int, now: str, actor: str
+) -> None:
+    await conn.execute(
+        "UPDATE token_budget SET session_id = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+        (session_id, now, actor, budget_id),
+    )
+
+
+async def session_turn_tokens(
+    conn: aiosqlite.Connection, session_id: int, day: str | None = None
+) -> int:
+    """Tokens of the turns of the runs on a session (their `result.usage`), of turns that ended
+    on the UTC day `day` when given."""
+    row = await _one(
+        conn,
+        "SELECT TOTAL(t.input_tokens + t.output_tokens + t.cache_read_tokens"
+        " + t.cache_write_tokens) FROM run_turn t JOIN run r ON r.id = t.run_id"
+        " WHERE r.session_id = ? AND t.ended_at IS NOT NULL"
+        + (" AND substr(t.ended_at, 1, 10) = ?" if day is not None else ""),
+        (session_id, day) if day is not None else (session_id,),
+    )
+    return int(row[0]) if row else 0
 
 
 async def save_budget(
@@ -4920,6 +4986,142 @@ async def coordinator_starts_since(conn: aiosqlite.Connection, since: str) -> in
     return int(row[0]) if row else 0
 
 
+# The events a coordinator wake carries (`domain.coordinator.WAKE_KINDS`), never its own: not
+# written by a coordinator run's session (by id or by name), not about a coordinator run and not
+# of its own budget (its page shows that; a wake for it would spend more). An approval decided
+# is the owner's act whoever's session it names, so only its actor counts. A plan only as a
+# draft, intake only when new and not tied in the same breath (`intake.tied` says it), a
+# message only to a coordinator's session.
+_COORDINATOR_SESSIONS = (
+    "SELECT session_id FROM run WHERE kind = 'coordinator' AND session_id IS NOT NULL"
+)
+_COORDINATOR_NAMES = (
+    "SELECT s.name FROM run r JOIN session s ON s.id = r.session_id WHERE r.kind = 'coordinator'"
+)
+_WAKE_WHERE = f"""
+ e.kind IN ({", ".join("?" for _ in WAKE_KINDS)})
+ AND (e.session_id IS NULL OR e.kind = 'approval.decided'
+      OR e.session_id NOT IN ({_COORDINATOR_SESSIONS}))
+ AND e.actor NOT IN ({_COORDINATOR_NAMES})
+ AND NOT (e.kind LIKE 'run.%' AND json_extract(e.payload, '$.run_id') IN
+          (SELECT id FROM run WHERE kind = 'coordinator'))
+ AND (e.kind != 'plan.set' OR json_extract(e.payload, '$.status') = 'draft')
+ AND (e.kind != 'intake.received' OR (json_extract(e.payload, '$.status') = 'new'
+      AND NOT EXISTS (SELECT 1 FROM event t WHERE t.id > e.id AND t.kind = 'intake.tied'
+                      AND json_extract(t.payload, '$.message_id')
+                          = json_extract(e.payload, '$.message_id'))))
+ AND (e.kind != 'message.sent' OR json_extract(e.payload, '$.recipient') IN ({_COORDINATOR_NAMES}))
+ AND NOT (e.kind LIKE 'budget.%' AND json_extract(e.payload, '$.budget_id') IN
+          (SELECT id FROM token_budget WHERE scope = 'session'
+           AND session_id IN ({_COORDINATOR_SESSIONS})))
+"""
+
+
+async def coordinator_wake_events(
+    conn: aiosqlite.Connection,
+    after_id: int,
+    up_to: int,
+    limit: int,
+    returned: list[tuple[int, int]] | None = None,
+) -> tuple[list[Event], int, int]:
+    """The first `limit` events a wake carries in (after_id, up_to] and in the `returned`
+    ranges (first, last) of wakes whose turn never ran, how many there are in all and the id of
+    the last of them."""
+    spans = ["(e.id > ? AND e.id <= ?)", *("(e.id BETWEEN ? AND ?)" for _ in returned or [])]
+    where = f"({' OR '.join(spans)}) AND {_WAKE_WHERE}"
+    params = (after_id, up_to, *(n for span in returned or [] for n in span), *WAKE_KINDS)
+    row = await _one(
+        conn, f"SELECT COUNT(*), COALESCE(MAX(e.id), 0) FROM event e WHERE {where}", params
+    )
+    total, last = (int(row[0]), int(row[1])) if row else (0, 0)
+    if not total:
+        return [], 0, 0
+    rows = await _all(
+        conn, f"SELECT e.* FROM event e WHERE {where} ORDER BY e.id LIMIT ?", (*params, limit)
+    )
+    return [_event(r) for r in rows], total, last
+
+
+def _wake(row: aiosqlite.Row) -> CoordinatorWake:
+    return CoordinatorWake(
+        id=row["id"],
+        run_id=row["run_id"],
+        turn_id=row["turn_id"],
+        first_event_id=row["first_event_id"],
+        last_event_id=row["last_event_id"],
+        count=row["count"],
+        created_at=row["created_at"],
+        returned_at=row["returned_at"],
+    )
+
+
+async def unreturned_wakes(conn: aiosqlite.Connection) -> list[CoordinatorWake]:
+    """Wakes whose turn ended without a result (cancelled, lost, failed to start, stopped
+    before it): their events never reached the coordinator."""
+    rows = await _all(
+        conn,
+        "SELECT w.* FROM coordinator_wake w JOIN run_turn t ON t.id = w.turn_id"
+        " WHERE w.returned_at IS NULL AND t.ended_at IS NOT NULL AND t.result_subtype IS NULL"
+        " ORDER BY w.id",
+        (),
+    )
+    return [_wake(r) for r in rows]
+
+
+async def mark_wakes_returned(conn: aiosqlite.Connection, ids: list[int], now: str) -> None:
+    marks = ", ".join("?" for _ in ids)
+    await conn.execute(
+        f"UPDATE coordinator_wake SET returned_at = ? WHERE id IN ({marks})", (now, *ids)
+    )
+
+
+async def turns_since_compact(conn: aiosqlite.Connection, run_id: int) -> list[RunTurn] | None:
+    """The ended turns after the run's last `/compact`; None when it had none."""
+    row = await _one(
+        conn,
+        "SELECT MAX(seq) FROM run_turn WHERE run_id = ? AND trim(prompt) = '/compact'",
+        (run_id,),
+    )
+    if row is None or row[0] is None:
+        return None
+    rows = await _all(
+        conn,
+        "SELECT * FROM run_turn WHERE run_id = ? AND seq > ? AND ended_at IS NOT NULL ORDER BY seq",
+        (run_id, row[0]),
+    )
+    return [_turn(r) for r in rows]
+
+
+async def insert_coordinator_wake(
+    conn: aiosqlite.Connection,
+    run_id: int,
+    turn_id: int,
+    first_event_id: int,
+    last_event_id: int,
+    count: int,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO coordinator_wake (run_id, turn_id, first_event_id, last_event_id, count,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, turn_id, first_event_id, last_event_id, count, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def last_coordinator_wake(conn: aiosqlite.Connection) -> CoordinatorWake | None:
+    """The latest wake over every coordinator run: the minimum gap holds across New session."""
+    row = await _one(conn, "SELECT * FROM coordinator_wake ORDER BY id DESC LIMIT 1", ())
+    return _wake(row) if row else None
+
+
+async def coordinator_wakes(conn: aiosqlite.Connection, run_id: int) -> list[CoordinatorWake]:
+    rows = await _all(
+        conn, "SELECT * FROM coordinator_wake WHERE run_id = ? ORDER BY id", (run_id,)
+    )
+    return [_wake(r) for r in rows]
+
+
 _QUEUED_SELECT = """
 SELECT r.*, COALESCE(t.key, '') AS task_key, COALESCE(p.slug, '') AS project_slug,
        s.name AS session_name,
@@ -5090,6 +5292,9 @@ _TURN_FIELDS = (
     "profile",
     "profile_version",
     "result_md",
+    "compact_pre_tokens",
+    "compact_post_tokens",
+    "context_tokens",
 )
 
 
@@ -5123,6 +5328,13 @@ async def insert_turn(
         (run_id, run_id, prompt, sent_by, sent_by_kind, now),
     )
     return int(cur.lastrowid or 0)
+
+
+async def last_turn(conn: aiosqlite.Connection, run_id: int) -> RunTurn | None:
+    row = await _one(
+        conn, "SELECT * FROM run_turn WHERE run_id = ? ORDER BY seq DESC LIMIT 1", (run_id,)
+    )
+    return _turn(row) if row else None
 
 
 async def get_turn(conn: aiosqlite.Connection, turn_id: int) -> RunTurn | None:
@@ -5563,6 +5775,21 @@ async def overdue_questions(conn: aiosqlite.Connection, now: str) -> list[Questi
         _QUESTION_SELECT
         + " WHERE q.status = 'open' AND q.blocking = 0 AND q.default_after <= ? ORDER BY q.id",
         (now,),
+    )
+    return [_question(r) for r in rows]
+
+
+async def overdue_unmarked(
+    conn: aiosqlite.Connection, now: str, asked_before: str
+) -> list[Question]:
+    """Questions past their deadline without a `question.overdue` yet: a non-blocking one at its
+    `default_after`, a blocking one (it has none) once asked before `asked_before`."""
+    rows = await _all(
+        conn,
+        _QUESTION_SELECT + " WHERE q.status = 'open' AND q.overdue_at IS NULL AND"
+        " ((q.blocking = 0 AND q.default_after <= ?) OR (q.blocking = 1 AND q.asked_at <= ?))"
+        " ORDER BY q.id",
+        (now, asked_before),
     )
     return [_question(r) for r in rows]
 

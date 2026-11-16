@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from tests.e2e.conftest import FAKE, FakeRun, poll, write_shim
-from tests.e2e.stream_contract import check_stream
+from tests.e2e.stream_contract import check_compact, check_stream
 
 REPO = Path(__file__).parents[2]
 # Answers per event from a JSON file; every call is logged as `event tool stop_hook_active`.
@@ -71,13 +71,14 @@ class Local:
         answers: dict[str, list[Any]] | None = None,
         flags: tuple[str, ...] = (),
         direct: bool = False,
+        prompt: str = "go",
         **popen: Any,
     ) -> FakeRun:
         (self.root / "scenario.json").write_text(json.dumps(scenario), encoding="utf-8")
         (self.root / "answers.json").write_text(json.dumps(answers or {}), encoding="utf-8")
         program = [sys.executable, str(FAKE)] if direct else [self.claude]
         process = subprocess.Popen(
-            [*program, "-p", "go", "--output-format", "stream-json", "--verbose", *flags],
+            [*program, "-p", prompt, "--output-format", "stream-json", "--verbose", *flags],
             cwd=self.project,
             env=self.env,
             stdin=subprocess.DEVNULL,
@@ -181,6 +182,21 @@ def test_stream_transcript_and_hook_order(local: Local) -> None:
     assert len(assistant) == 4 and all("timestamp" in x for x in lines)
     assert assistant[0]["message"]["usage"]["input_tokens"] > 0
     assert assistant[0]["message"]["model"] == "demo-model-small"
+
+
+def test_compact_keeps_the_session_and_answers_like_the_real_cli(local: Local) -> None:
+    """Probe 18 of design 0023: `/compact` on a resumed session is a compact_boundary and an
+    empty result with zero usage under the same id; it takes no turn of the scenario."""
+    scenario = {"turns": [[{"text": "first"}], [{"text": "second"}]], "compact_pre_tokens": 51514}
+    first = local.start(scenario).finish()
+    session = first.init["session_id"]
+    compact = local.start(scenario, prompt="/compact", flags=("--resume", session)).finish()
+    check_compact(compact.messages)
+    [bound] = compact.of("system", "compact_boundary")
+    assert bound["compact_metadata"] == {"trigger": "manual", "pre_tokens": 51514}
+    assert compact.result["session_id"] == session and compact.result["result"] == ""
+    after = local.start(scenario, prompt="go on", flags=("--resume", session)).finish()
+    assert after.result["result"] == "second" and after.init["session_id"] == session
 
 
 def test_deny_context_and_ask_from_the_hook(local: Local) -> None:
