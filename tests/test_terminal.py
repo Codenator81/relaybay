@@ -1,7 +1,8 @@
 """Open an ended terminal session again from its card (design 0025): the argument lists per
 platform, the refusals, the validation, the endpoint. No test opens a window."""
 
-import shlex
+import asyncio
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from relaybay.config import Settings
 from relaybay.domain.errors import ConflictError, NotFoundError
 from relaybay.security import csrf_token
 from relaybay.service import Service
-from relaybay.terminal import Launch, TerminalLauncher, resume_launch
+from relaybay.terminal import Launch, TerminalLauncher, child_environ, resume_launch, spawn
 from tests.conftest import BASE, run_in_app
 from tests.test_hooks import hook
 
@@ -52,19 +53,27 @@ def test_windows_terminal_is_skipped_for_a_folder_with_a_semicolon(tmp_path: Pat
     assert launch.argv == [CLAUDE, "--resume", CC_ID] and launch.new_console
 
 
-def test_macos_quotes_the_folder_for_the_shell_and_for_applescript(tmp_path: Path) -> None:
-    folder = tmp_path / "it's $x"  # Windows forbids a double quote in a name
+def test_macos_passes_the_folder_as_an_argument(tmp_path: Path) -> None:
+    folder = tmp_path / "demo api $x"
     folder.mkdir()
-    launch = resume_launch(CC_ID, str(folder), "darwin", which_of("claude", "osascript"))
-    assert launch.argv[0] == "/opt/bin/osascript" and launch.argv[1] == "-e"
-    script = launch.argv[2]
-    assert script.startswith('tell application "Terminal" to do script "')
-    # Unescaped for AppleScript, the line is the shell's: the folder one quoted word.
-    line = script.removeprefix('tell application "Terminal" to do script "')[:-1]
-    line = line.replace('\\"', '"').replace("\\\\", "\\")
-    words = shlex.split(line)
-    assert words == ["cd", str(folder), "&&", CLAUDE, "--resume", CC_ID]
-    assert launch.argv[3:] == ["-e", 'tell application "Terminal" to activate']
+    cwd = folder.as_posix()
+    launch = resume_launch(CC_ID, cwd, "darwin", which_of("claude", "osascript"))
+    assert launch.argv[0] == "/opt/bin/osascript"
+    assert launch.argv[-3:] == [cwd, CLAUDE, CC_ID]  # data, never part of the script
+    script = launch.argv[1:-3]
+    assert script[::2] == ["-e"] * (len(script) // 2)
+    lines = script[1::2]
+    assert lines[0] == "on run argv" and lines[-1] == "end run"
+    assert any("quoted form of item 1 of argv" in line for line in lines)
+    assert not any(cwd in line for line in lines)
+
+
+@pytest.mark.parametrize("name", ["it's", "a\\b"])
+def test_macos_refuses_a_folder_with_a_quote_or_a_backslash(tmp_path: Path, name: str) -> None:
+    cwd = (tmp_path / "x").as_posix() + "/" + name
+    Path(cwd).mkdir(parents=True)
+    with pytest.raises(ConflictError, match="backslash or a single quote"):
+        resume_launch(CC_ID, cwd, "darwin", lambda program: f"/opt/bin/{program}")
 
 
 def test_macos_without_osascript_is_refused(folder: Path) -> None:
@@ -227,3 +236,124 @@ def test_endpoint_refusal_is_a_409_with_the_reason(
         f"/sessions/{session_id}/open-terminal", data={"csrf_token": csrf_token(token)}
     )
     assert refused.status_code == 409 and "No terminal found" in refused.text
+
+
+def test_the_terminal_gets_no_claude_code_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    environ = {"PATH": "/bin", "CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "HOME": "/h"}
+    assert child_environ(environ) == {"PATH": "/bin", "HOME": "/h"}
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **options: seen.append(options))
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SSE_PORT", "1234")
+    spawn(Launch(["xterm"], Path.cwd()))
+    spawn(Launch(["claude"], Path.cwd(), new_console=True))
+    for options in seen:
+        env = options["env"]
+        assert isinstance(env, dict) and env
+        assert "CLAUDECODE" not in env and not [k for k in env if k.startswith("CLAUDE_CODE_")]
+
+
+async def test_open_twice_is_refused_until_the_session_starts(
+    service: Service, folder: Path
+) -> None:
+    started = Recorder()
+    service.terminal = launcher(started)
+    session_id = await terminal_session(service, folder)
+    await service.open_terminal(session_id)
+    with pytest.raises(ConflictError, match="has not started yet"):
+        await service.open_terminal(session_id)
+    assert len(started.started) == 1
+    # Its SessionStart ends the hold; an end lets Open go again.
+    await service.record_hook(hook("SessionStart", CC_ID, cwd=str(folder), source="resume"))
+    await service.record_hook(hook("SessionEnd", CC_ID, cwd=str(folder)))
+    await service.open_terminal(session_id)
+    assert len(started.started) == 2
+    # Or the hold runs out.
+    service.terminal_hold = 0.0
+    await service.open_terminal(session_id)
+    assert len(started.started) == 3
+
+
+async def test_two_clicks_at_once_start_one_terminal(service: Service, folder: Path) -> None:
+    started = Recorder()
+    service.terminal = launcher(started)
+    session_id = await terminal_session(service, folder)
+    results = await asyncio.gather(
+        service.open_terminal(session_id),
+        service.open_terminal(session_id),
+        return_exceptions=True,
+    )
+    assert sorted(type(r).__name__ for r in results) == ["ConflictError", "Session"]
+    assert len(started.started) == 1
+
+
+async def test_resume_starts_in_the_folder_of_the_first_session_start(
+    service: Service, folder: Path
+) -> None:
+    started = Recorder()
+    service.terminal = launcher(started)
+    deeper = folder / "src"
+    deeper.mkdir()
+    await service.record_hook(
+        hook("SessionStart", CC_ID, cwd=str(folder), relaybay_entrypoint="cli")
+    )
+    await service.record_hook(hook("PreToolUse", CC_ID, cwd=str(deeper)))
+    await service.record_hook(hook("SessionEnd", CC_ID, cwd=str(deeper)))
+    [row] = [r.session for r in await service.list_sessions()]
+    assert (row.cwd, row.start_cwd) == (str(deeper), str(folder))
+    await service.open_terminal(row.id)
+    assert started.started[0].cwd == folder
+    # A resume keeps the start folder even when it reports from a subfolder.
+    await service.record_hook(hook("SessionStart", CC_ID, cwd=str(deeper), source="resume"))
+    [row] = [r.session for r in await service.list_sessions()]
+    assert row.start_cwd == str(folder)
+
+
+async def test_a_resume_binds_again_what_its_own_end_unbound(
+    service: Service, folder: Path
+) -> None:
+    await service.upsert_project("acme-shop", repo_path=str(folder))
+    mine = await service.create_task("acme-shop", "Mine", stage="dev", session="acme-shop")
+    by_hand = await service.create_task("acme-shop", "By hand", stage="dev", session="acme-shop")
+    taken = await service.create_task("acme-shop", "Taken", stage="dev", session="acme-shop")
+    start = hook("SessionStart", CC_ID, cwd=str(folder), relaybay_entrypoint="cli")
+    await service.record_hook(start)
+    await service.update_task_checked(
+        mine.key, {"branch": "x"}, session="acme-shop", hook_session=CC_ID
+    )
+    await service.unbind_session(by_hand.key, None, actor="board")
+    await service.record_hook(hook("SessionEnd", CC_ID, cwd=str(folder)))
+    assert (await service.get_task(mine.key)).session_id is None
+    await service.bind_session(taken.key, "someone-else")
+    await service.unbind_session(taken.key, None, actor="board")
+    await service.record_hook(hook("SessionStart", CC_ID, cwd=str(folder), source="resume"))
+    tasks = {t.key: t for t in await service.list_tasks(project="acme-shop")}
+    assert tasks[mine.key].session_name == "acme-shop"
+    assert tasks[mine.key].session_status == "working"
+    assert tasks[by_hand.key].session_id is None and tasks[taken.key].session_id is None
+    detail = await service.task_detail(mine.key)
+    assert detail.state.label == "Working"
+
+
+def test_endpoint_refuses_a_board_published_through_a_proxy(
+    settings: Settings, token: str, folder: Path
+) -> None:
+    """A local reverse proxy makes a remote client come from 127.0.0.1; the Host it asked for
+    is the published name."""
+    settings.allowed_hosts = ["board.example"]
+    proxied = "http://board.example"
+    with TestClient(
+        create_app(settings),
+        base_url=proxied,
+        client=("127.0.0.1", 50000),
+        headers={"Origin": proxied},
+    ) as client:
+        assert client.get(f"/login?token={token}", follow_redirects=False).status_code == 303
+        started = Recorder()
+        client.app.state.service.terminal = launcher(started)
+        session_id = run_in_app(client, terminal_session, client.app.state.service, folder)
+        answer = client.post(
+            f"/sessions/{session_id}/open-terminal", data={"csrf_token": csrf_token(token)}
+        )
+    assert answer.status_code == 409 and "only on the machine relaybay runs on" in answer.text
+    assert started.started == []

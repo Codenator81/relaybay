@@ -280,7 +280,7 @@
     if (live.dataset.task) {
       // A hook status comes every few seconds while the session works: only the view (with its
       // state line) is refetched, never the page.
-      if (data.kind === "session.status_changed") {
+      if (data.kind === "session.status_changed" || data.kind === "session.terminal_opened") {
         if ((data.keys || []).indexOf(live.dataset.task) !== -1) {
           unlessAnswering(document, "task-state", function () {
             queue(document.querySelector(".task-view"));
@@ -366,7 +366,8 @@
     if (!document.getElementById("board")) return;
     // Every page listens to all projects (the Inbox count); the board only to its own.
     if (data.project !== live.dataset.project) return;
-    if (data.kind === "session.status_changed" && dialog && dialog.open &&
+    if ((data.kind === "session.status_changed" || data.kind === "session.terminal_opened") &&
+        dialog && dialog.open &&
         (data.keys || []).indexOf(dialog.dataset.key) !== -1) {
       unlessAnswering(dialog, "dialog-state", function () {
         if (dialog.open) queue(dialog.querySelector(".task-view"));  // the state line
@@ -476,7 +477,8 @@
   }
 
   // Open for an ended terminal session: the answer (or the refusal, a 409 with its reason) is
-  // shown in the state line.
+  // shown in the state line. After a success the button stays disabled: the server refuses a
+  // second Open until the session starts, and the card refreshes on `session.terminal_opened`.
   document.addEventListener("submit", function (event) {
     var form = event.target.closest && event.target.closest("form.open-terminal");
     if (!form) return;
@@ -489,10 +491,11 @@
         return response.text().then(function (text) { return { ok: response.ok, text: text }; });
       }, function () { return { ok: false, text: "relaybay did not answer." }; })
       .then(function (answer) {
-        note.textContent = answer.text;
+        note.textContent = answer.ok ? "Opening… " + answer.text : answer.text;
         note.classList.toggle("is-error", !answer.ok);
         note.hidden = false;
-        button.disabled = false;
+        if (answer.ok) button.textContent = "Opening…";
+        else button.disabled = false;
       });
   });
 

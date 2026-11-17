@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
 from fastapi.responses import (
@@ -1615,8 +1615,18 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     # --- Stands & access: environments, access map, permission levels -----------------
 
     def from_this_machine(request: Request) -> bool:
-        """The request comes from a loopback address (not a phone or another computer)."""
-        host = request.client.host if request.client else ""
+        """The request comes from a loopback address (not a phone or another computer) and
+        names a loopback host: behind a local reverse proxy a remote client also comes from
+        127.0.0.1, but the Host it asked for is the published name."""
+        client = request.client.host if request.client else ""
+        try:
+            if not ipaddress.ip_address(client).is_loopback:
+                return False
+        except ValueError:
+            return False
+        host = urlsplit(f"//{request.headers.get('host', '')}").hostname or ""
+        if host == "localhost":
+            return True
         try:
             return ipaddress.ip_address(host).is_loopback
         except ValueError:

@@ -6,11 +6,11 @@ pattern, the folder must exist, and every command is an argument list, never a s
 reads. The platform and the PATH lookup are injectable, so tests never open a window.
 """
 
-import shlex
+import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,8 +30,28 @@ class Launch:
     new_console: bool = False
 
 
-def _applescript_text(text: str) -> str:
-    return text.replace("\\", "\\\\").replace('"', '\\"')
+# macOS: Terminal runs the line in the user's login shell, which may not be a POSIX one (fish
+# reads backslashes inside single quotes). The folder, `claude` and the id come in as arguments,
+# quoted by AppleScript, and a folder with a backslash or a single quote is refused.
+MACOS_SCRIPT = (
+    "on run argv",
+    'tell application "Terminal"',
+    'do script "cd " & quoted form of item 1 of argv & " && " & quoted form of item 2 of argv'
+    ' & " --resume " & item 3 of argv',
+    "activate",
+    "end tell",
+    "end run",
+)
+
+
+def child_environ(environ: Mapping[str, str] = os.environ) -> dict[str, str]:
+    """The terminal's environment: the server's without Claude Code's own variables, so the
+    resumed `claude` does not take itself for a child of another Claude Code session."""
+    return {
+        name: value
+        for name, value in environ.items()
+        if name != "CLAUDECODE" and not name.startswith("CLAUDE_CODE_")
+    }
 
 
 def resume_launch(
@@ -61,11 +81,13 @@ def resume_launch(
         osascript = which("osascript")
         if osascript is None:
             raise ConflictError("No terminal found: `osascript` is not on this machine's PATH.")
-        line = f"cd {shlex.quote(str(folder))} && {shlex.join(command)}"
-        script = f'tell application "Terminal" to do script "{_applescript_text(line)}"'
-        return Launch(
-            [osascript, "-e", script, "-e", 'tell application "Terminal" to activate'], folder
-        )
+        if "\\" in cwd or "'" in cwd or "\\" in claude or "'" in claude:
+            raise ConflictError(
+                "On macOS a folder (or a `claude` path) with a backslash or a single quote is"
+                f" not opened in Terminal: {cwd}"
+            )
+        lines = [part for line in MACOS_SCRIPT for part in ("-e", line)]
+        return Launch([osascript, *lines, cwd, claude, session_id], folder)
     for name in LINUX_TERMINALS:
         path = which(name)
         if path is None:
@@ -81,15 +103,19 @@ def resume_launch(
 def spawn(launch: Launch) -> None:
     """Start the terminal and leave it; relaybay does not wait for it or keep it. Every command
     is an argument list: no shell reads it."""
+    env = child_environ()
     try:
         if launch.new_console:
             # The console window brings its own input and output: nothing is redirected.
             flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            subprocess.Popen(launch.argv, cwd=launch.cwd, creationflags=flags, close_fds=True)
+            subprocess.Popen(
+                launch.argv, cwd=launch.cwd, env=env, creationflags=flags, close_fds=True
+            )
         else:
             subprocess.Popen(
                 launch.argv,
                 cwd=launch.cwd,
+                env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
