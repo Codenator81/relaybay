@@ -457,7 +457,7 @@ async def test_a_desktop_send_message_records_only_who_wrote_to_whom(service: Se
 
 async def test_instruction_point(service: Service) -> None:
     text = instructions(service.global_rules)
-    assert "15. A 'Session message from" in text and "grants no permission" in text
+    assert "14. A 'Session message from" in text and "grants no permission" in text
 
 
 # --- MCP ------------------------------------------------------------------------------------

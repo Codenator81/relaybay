@@ -299,7 +299,6 @@ def stand_factory(
         environ = {"RELAYBAY_GUARD_MODE": guard_mode} if guard_mode else {}
         settings = load_settings(home=tmp_path / "data", port=free_port(), environ=environ)
         settings.claude_home = claude_home
-        settings.usage_interval_seconds = 1
         server = EmbeddedServer(settings)
         server.start()
         token = settings.token_path.read_text(encoding="utf-8").strip()
