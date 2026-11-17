@@ -40,6 +40,8 @@ class Session:
     transcript_path: str | None = None  # the transcript file its hooks reported last
     no_live_at: str | None = None  # the owner's "no live now" switch is on since then
     no_live_by: str | None = None
+    surface: str | None = None  # desktop or terminal, as the hook or the session told; else None
+    entrypoint: str | None = None  # the raw CLAUDE_CODE_ENTRYPOINT the hook sent
 
 
 @dataclass(slots=True)
@@ -95,6 +97,10 @@ class Task:
     area_id: int | None = None
     area: str | None = None  # the area's name
     area_color: str | None = None  # its palette key
+    open_questions: int = 0  # open questions and approval requests on the card
+    open_approvals: int = 0
+    # The status of the session of the latest binding: the bound one, or the last one unbound.
+    last_session_status: str | None = None
 
     @property
     def next_step_stale(self) -> bool:

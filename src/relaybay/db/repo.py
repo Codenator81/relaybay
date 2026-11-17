@@ -74,6 +74,12 @@ SELECT t.*, p.slug AS project_slug,
            AND ps.status = 'in_progress' ORDER BY ps.position LIMIT 1) AS plan_now_position,
        (SELECT MAX(pr.created_at) FROM plan_revision pr WHERE pr.task_id = t.id)
            AS plan_revised_at,
+       (SELECT COUNT(*) FROM question q WHERE q.task_id = t.id AND q.status = 'open')
+           AS open_questions,
+       (SELECT COUNT(*) FROM approval a WHERE a.task_id = t.id AND a.status = 'open')
+           AS open_approvals,
+       (SELECT ls.status FROM task_session b JOIN session ls ON ls.id = b.session_id
+           WHERE b.task_id = t.id ORDER BY b.id DESC LIMIT 1) AS last_session_status,
        pa.name AS area_name, pa.color AS area_color
 FROM task t
 JOIN project p ON p.id = t.project_id
@@ -151,6 +157,9 @@ def _task(row: aiosqlite.Row) -> Task:
         area_id=row["area_id"],
         area=row["area_name"],
         area_color=row["area_color"],
+        open_questions=row["open_questions"],
+        open_approvals=row["open_approvals"],
+        last_session_status=row["last_session_status"],
     )
 
 
@@ -523,6 +532,8 @@ def _session(row: aiosqlite.Row) -> Session:
         transcript_path=row["transcript_path"],
         no_live_at=row["no_live_at"],
         no_live_by=row["no_live_by"],
+        surface=row["surface"],
+        entrypoint=row["entrypoint"],
     )
 
 
