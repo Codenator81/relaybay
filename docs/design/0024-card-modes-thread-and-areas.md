@@ -10,7 +10,7 @@
   run (folder, worktrees, session id, tokens, the table of turns, model, effort) go into a folded
   block. Of 2026-11-10: a card carries a chip that says what it belongs to. Of 2026-11-17: the
   product name in the top bar's breadcrumbs is noise.
-- Size: about 5 agent-days in four pull requests ([plan](#plan-by-pull-request)). Migrations from
+- Size: about 6 agent-days in five pull requests ([plan](#plan-by-pull-request)). Migrations from
   0048, additive only.
 
 ## Problem
@@ -239,6 +239,26 @@ The chip is an **area**: what part of the project a card belongs to ("web shop",
   and the lowered name; `task.area_id` nullable, `ON DELETE SET NULL`. Both by `ALTER TABLE` and
   `CREATE TABLE`; no table is rebuilt. Markdown export and import carry the area by name.
 
+## The Coordinator page
+
+Owner's remark of 2026-11-17 on the page of [0023](0023-coordinator-and-schedules.md): it has the
+run panel's faults. The state is a small word above a table of service facts, there is no place
+to write to the coordinator, a failed sign-in shows in the "Decided" column of an ended run, and
+four empty blocks follow each other. The page takes the skeleton of the agent card:
+
+- **the state line**, large, from the same function, with its reason and one action. A turn that
+  failed because `claude` is not signed in is the state **Failed: sign in again** with the hint
+  `claude auth login`; the run stays open and the next text or wake retries. It is not an ended
+  run and not a decision;
+- **the thread** of the coordinator's run in place of the "came in / decided" table: what came in
+  (the owner's text, a wake with its events) as a prompt, what it answered as a response, its
+  questions with their buttons;
+- **one text field** at the bottom, outside the refetched fragments; with no open run it starts
+  one with the text as its first turn;
+- **service facts** (session id, context and compaction, the day's budget, events waiting, folder,
+  settings) in one folded block; what waits for the owner, runs started today and schedules stay
+  as blocks, and an empty one is a single muted line.
+
 ## The top bar
 
 On pages that have the sidebar the product name in the breadcrumbs becomes a small home icon (an
@@ -315,7 +335,8 @@ except D1's table.
 | 1 | Areas: migration 0048, project settings, form, board chip and filter, lists, MCP, export and import; the top bar without the product name | reviewer: migration, MCP contract | 1 |
 | 2 | Modes and one channel: derived mode and run state in the domain and over MCP; the owner's word routed by mode (field, review decision, annotation; `comment.turn_id`, migration 0049; stuck comments; joined turns); the shared skeleton and the session card | reviewer: delivery, migration | 1.5 |
 | 3 | The agent card: state line, thread, text field outside the refetch, live tail, Run details fold, the run's state on the board card | reviewer: live signal, page weight | 2 |
-| 4 | Release 0.12.0 | — | 0.3 |
+| 4 | The Coordinator page on the same skeleton: state line, thread, text field, service facts folded, the sign-in failure as a state | reviewer: the failed-turn path | 1 |
+| 5 | Release 0.12.0 | — | 0.3 |
 
 A start on a version the data folder has not run yet backs the database and the settings files up
 into `<data>/backups/` before the migrations run ([0016](0016-desktop-program.md)); 0.12 relies on
@@ -325,5 +346,5 @@ it and adds nothing to it.
 
 On the installed program: a card with a run, seen while a turn works and after it reported; the
 next turn sent from the field; a question answered from the same field; a session card with a
-comment delivered as before; two cards of one project told apart by their areas and filtered by
+comment delivered as before; the Coordinator page with a text sent to it; two cards of one project told apart by their areas and filtered by
 one.
