@@ -1,6 +1,7 @@
 """Archiving a done card by hand: the mark, the done window it overrides, the board, MCP for
 coordinators only, and the events on Activity and the Audit page."""
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -78,6 +79,7 @@ async def test_back_from_the_archive_starts_the_window_again(svc: Service) -> No
     assert "task.unarchived" not in await kinds(svc)  # not archived: nothing to bring back
     # Brought back from the done window's archive (a window of 0 days archives it at once).
     svc.done_window_days = 0
+    await asyncio.sleep(0.01)  # the window counts from the close: let the clock pass it
     back = await svc.set_archived(task.key, False, actor="owner")
     svc.done_window_days = 7
     assert back.unarchived_at is not None and back.archived_at is None

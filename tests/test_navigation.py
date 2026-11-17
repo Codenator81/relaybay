@@ -69,13 +69,34 @@ def test_sidebar_on_every_page(board: TestClient, seeded: str) -> None:
     assert '<details class="nav-project" open>' not in board.get("/inbox").text
     # Items without a working feature are not shown.
     assert "Manager" not in board.get("/").text
-    assert 'href="/schedules"' in board.get("/").text
+    for gone in ("/schedules", "/coordinator"):
+        assert f'href="{gone}"' not in board.get("/").text
     assert "Integrations</a>" not in board.get("/").text.split("</nav>")[1]  # no header link
 
 
 def test_the_removed_map_page_is_gone(board: TestClient) -> None:
     assert 'href="/map"' not in board.get("/").text
     for url in ("/map", "/map/graph", "/static/map.js", "/static/cytoscape.min.js"):
+        assert board.get(url).status_code == 404, url
+
+
+def test_the_pages_removed_in_0_12_are_gone(board: TestClient) -> None:
+    for url in (
+        "/schedules",
+        "/coordinator",
+        "/fragments/coordinator-badge",
+        "/settings/agents",
+        "/settings/profiles",
+        "/coordinator/terminal",
+        "/static/terminal.js",
+        "/static/vendor/xterm/xterm.js",
+        "/usage",
+        "/fragments/budgets",
+        "/fragments/brake-banner",
+        "/settings/intake",
+        "/messages",
+        "/fragments/messages",
+    ):
         assert board.get(url).status_code == 404, url
 
 

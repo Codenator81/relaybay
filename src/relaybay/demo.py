@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import contextlib
-import json
 import sqlite3
 import struct
 import zlib
@@ -392,7 +391,7 @@ async def seed(service: Service) -> int:
     )
 
     await seed_memory(service)
-    await seed_environments_and_usage(service)
+    await seed_environments(service)
     await seed_launches(service, v0)
 
     # The desktop session of the checkout task is "working": as if its hook had reported. One
@@ -408,50 +407,15 @@ async def seed(service: Service) -> int:
     return count
 
 
-def demo_transcript(path: Path, seed_number: int, today: datetime) -> None:
-    """A small made-up transcript: two weeks of usage lines, a user line around them. The numbers
-    come from a formula, so screenshots stay the same between runs."""
-    lines = []
-    for back in range(14):
-        moment = (today - timedelta(days=back)).isoformat()
-        lines.append({"type": "user", "timestamp": moment, "message": {"role": "user"}})
-        for n in range(1 + (back + seed_number) % 3):
-            model = "demo-model-large" if (back + n) % 4 else "demo-model-small"
-            usage = {
-                "input_tokens": 120 + 40 * ((back * 7 + seed_number) % 11),
-                "output_tokens": 900 + 150 * ((back * 5 + n) % 13),
-                "cache_read_input_tokens": 4000 + 700 * ((back * 3 + seed_number) % 9),
-                "cache_creation_input_tokens": 300 + 90 * (n + back % 5),
-            }
-            message = {"id": f"demo-{seed_number}-{back}-{n}", "model": model, "usage": usage}
-            lines.append({"type": "assistant", "timestamp": moment, "message": message})
-    text = "".join(json.dumps(line) + "\n" for line in lines)
-    path.write_text(text, encoding="utf-8")
-
-
-async def seed_environments_and_usage(service: Service) -> None:
-    """Two environments, a few messages between sessions for Activity and a small usage history for
-    Usage: all through the real paths, a hook's tool call and transcript files in the data
-    folder."""
+async def seed_environments(service: Service) -> None:
+    """Two environments and a few messages between sessions for Activity, all through the real
+    paths."""
     await service.save_environment("acme-shop", {"name": "test", "kind": "test"}, actor="demo")
     await service.save_environment(
         "acme-shop", {"name": "live", "kind": "live"}, confirm_live=True, actor="demo"
     )
-    folder = service.db_path.parent / "demo-transcripts"
-    folder.mkdir(parents=True, exist_ok=True)
-    today = datetime.now(UTC)
-    for number, hook in enumerate((DEMO_HOOK_SESSION, DEMO_TODO_HOOK, DEMO_REVIEW_HOOK), 1):
-        path = (folder / f"{hook}.jsonl").resolve()
-        demo_transcript(path, number, today)
-        await service.record_hook(
-            {
-                "hook_event_name": "Stop",
-                "session_id": hook,
-                "cwd": ACME_REPO,
-                "transcript_path": str(path),
-            }
-        )
-    await service.usage_pass()
+    for hook in (DEMO_HOOK_SESSION, DEMO_TODO_HOOK, DEMO_REVIEW_HOOK):
+        await service.record_hook({"hook_event_name": "Stop", "session_id": hook, "cwd": ACME_REPO})
     for sender, recipient in (
         (DEMO_TODO_HOOK, DEMO_DESKTOP_SESSION),
         (DEMO_TODO_HOOK, "wishlist-agent"),
@@ -494,12 +458,6 @@ async def seed_launches(service: Service, v0: str) -> None:
             "tool_name": "SendMessage",
             "tool_input": {"to": DEMO_DESKTOP_SESSION},
         }
-    )
-    await service.send_session_message(
-        "Started on the v0 removal; the announcement date is the open question.",
-        to="coordinator",
-        task=v0,
-        session=DEMO_V0_SESSION,
     )
     await service.add_owner_comment(v0, "Put the removal date in the changelog too.")
 
@@ -655,19 +613,11 @@ async def seed_rules_and_filters(service: Service) -> None:
     await service.save_filter("acme-shop", "Waiting on me", waiting_on="owner", actor="owner")
 
 
-async def seed_intake_and_backlog(service: Service) -> None:
-    """Two intake sources (support-chat trusted, team-mail not), acme-shop with autonomy on, an
-    answer that woke the agent of the bound checkout task, one that only notified, a message
-    waiting in the Inbox, and the backlog: a session finding, an intake proposal, a declined item
-    and a planned one."""
+async def seed_backlog(service: Service) -> None:
+    """The backlog: a session finding, a declined item and a planned one."""
     checkout = next(
         t for t in await service.list_tasks(project="acme-shop") if t.title == "One-page checkout"
     )
-    gift = next(
-        t for t in await service.list_tasks(project="acme-shop") if t.title.startswith("Gift")
-    )
-    await service.set_project_autonomy("acme-shop", True, actor="demo")
-    # The checkout agent links its hook session itself: only an exact link can be woken.
     await service.add_backlog_item(
         "acme-shop",
         "Cart badge does not update after a removal",
@@ -680,43 +630,6 @@ async def seed_intake_and_backlog(service: Service) -> None:
         hook_session=DEMO_HOOK_SESSION,
     )
     await service.update_task(checkout.key, {"waiting_on": "client"}, actor="demo")
-    hello = await service.intake_post(
-        "support-chat", "demo-1", "Hello, Dana from the client here.", author="Dana", kind="chat"
-    )
-    await service.intake_dismiss(hello.message.id, actor="owner")
-    await service.set_source_trust("support-chat", True, actor="owner")
-    await service.intake_post(
-        "support-chat",
-        "demo-2",
-        f"About {checkout.key}: yes, keep the order summary sticky on phones too.",
-        author="Dana",
-        thread="chat-7",
-    )
-    await service.intake_post(
-        "team-mail",
-        "demo-mail-1",
-        f"Re {gift.key}: refunds go back to the gift card first.",
-        author="Sam Lee",
-        thread="<refunds@example.com>",
-        kind="email",
-    )
-    proposal = await service.intake_post(
-        "team-mail",
-        "demo-mail-2",
-        "Could the receipts PDF show the shop's VAT number?",
-        author="Sam Lee",
-        thread="<vat@example.com>",
-    )
-    await service.intake_post(
-        "team-mail",
-        "demo-mail-3",
-        "Is the holiday banner coming back next year?",
-        author="Alex Kim",
-        thread="<banner@example.com>",
-    )
-    await service.intake_propose(
-        proposal.message.id, "acme-shop", "VAT number on receipts", actor="demo"
-    )
     declined = await service.add_backlog_item(
         "demo-api", "XML responses", body="One client asked for XML.", area="api", by_owner=True
     )
@@ -729,30 +642,13 @@ async def seed_intake_and_backlog(service: Service) -> None:
     await service.decide_backlog(planned.id, "plan", actor="owner")
 
 
-async def seed_messages(service: Service) -> None:
-    """Two sessions talking: a question answered (and so read), the answer not delivered yet."""
-    question, _ = await service.send_session_message(
-        "Does the wishlist still call the old errors endpoint? I am about to remove it.",
-        to="wishlist-agent",
-        session="errors-agent",
-        hook_session=DEMO_TODO_HOOK,
-    )
-    await service.send_session_message(
-        "Yes, in one place. Give me an hour, I move it to /v2/errors first.",
-        in_reply_to=question.id,
-        session="wishlist-agent",
-        hook_session=DEMO_REVIEW_HOOK,
-    )
-
-
 async def _seed_new(db_path: Path) -> tuple[int, int]:
     service = Service(db_path)
     await service.start()
     try:
         await seed(service)
         await seed_rules_and_filters(service)
-        await seed_intake_and_backlog(service)
-        await seed_messages(service)
+        await seed_backlog(service)
         # "To plan" in the backlog creates a task too: count what the board holds.
         tasks = len(await service.list_tasks(include_done=True))
         projects = len(await service.list_projects())

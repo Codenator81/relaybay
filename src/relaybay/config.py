@@ -35,16 +35,9 @@ from relaybay.domain.plan import DEFAULT_DRAFT_HINT_HOURS, DEFAULT_REMINDER_EVER
 from relaybay.domain.reports import REPORT_HINTS, REPORT_LABELS
 from relaybay.domain.review import DEFAULT_FILE_MAX_MB, DEFAULT_TASK_MAX_MB
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
-from relaybay.domain.runs import (
-    DEFAULT_MAX_RUNNING,
-    DEFAULT_MIN_MEMORY_MB,
-    MAX_RUNNING_MAX,
-    MIN_MEMORY_MAX,
-)
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
-from relaybay.domain.usage import DEFAULT_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS
 from relaybay.policy import PolicyFile
 from relaybay.updates import HOURS_MAX
 
@@ -303,25 +296,6 @@ class Settings:
             env="RELAYBAY_SESSION_CONTEXT_PROJECT_CHARS",
         ),
     )
-    usage_enabled: bool = field(
-        default=True,
-        metadata=_doc(
-            "Read token usage from the Claude Code transcripts the hooks report (only `usage`"
-            " numbers and the model name are kept; no network call). `false` stops the reading"
-            " and the keeping of transcript paths; the Usage page shows what was read before.",
-            key="usage_enabled",
-            env="RELAYBAY_USAGE_ENABLED",
-        ),
-    )
-    usage_interval_seconds: int = field(
-        default=DEFAULT_INTERVAL_SECONDS,
-        metadata=_doc(
-            f"Seconds between passes of the background usage reader (whole number >="
-            f" {MIN_INTERVAL_SECONDS}).",
-            key="usage_interval_seconds",
-            env="RELAYBAY_USAGE_INTERVAL_SECONDS",
-        ),
-    )
     max_concurrent_sessions: int = field(
         default=0,
         metadata=_doc(
@@ -332,44 +306,15 @@ class Settings:
             env="RELAYBAY_MAX_CONCURRENT_SESSIONS",
         ),
     )
-    max_running_turns: int = field(
-        default=DEFAULT_MAX_RUNNING,
-        metadata=_doc(
-            "Turns of runs on cards that run at once, over all runs (whole number from 1 to"
-            f" {MAX_RUNNING_MAX}); a turn past it waits in the queue with its reason. Settings"
-            " → Agents overrides it.",
-            key="max_running_turns",
-            env="RELAYBAY_MAX_RUNNING_TURNS",
-        ),
-    )
-    min_free_memory_mb: int = field(
-        default=DEFAULT_MIN_MEMORY_MB,
-        metadata=_doc(
-            "Free memory in MB a turn of a run needs to start (whole number >= 0; 0 is no"
-            " check); below it the turn waits in the queue with its reason. Settings → Agents"
-            " overrides it.",
-            key="min_free_memory_mb",
-            env="RELAYBAY_MIN_FREE_MEMORY_MB",
-        ),
-    )
     claude_home: Path | None = field(
         default=None,  # None: the real home directory
         metadata=_doc(
             "Folder with Claude Code's `.claude/` and `.claude.json` (setup, doctor,"
-            " Integrations). Runs on cards start only when it is unset or the home folder.",
+            " Integrations).",
             key="claude_home",
             env="RELAYBAY_CLAUDE_HOME",
             flag="--claude-home",
             default="your home directory",
-        ),
-    )
-    claude_path: Path | None = field(
-        default=None,  # None: found on PATH, then in the usual install folders
-        metadata=_doc(
-            "The `claude` a run on a card starts (the user's own, unmodified CLI).",
-            key="claude_path",
-            env="RELAYBAY_CLAUDE_PATH",
-            default="`claude` on PATH, then the usual install folders",
         ),
     )
     update_check: bool = field(
@@ -406,6 +351,8 @@ class Settings:
     external_token_path: Path | None = None
     # internal: where `home` came from (flag, environment, desktop.toml, default), for doctor.
     home_source: str = "default"
+    # Keys of config.toml whose feature was removed: accepted, named once by `relaybay doctor`.
+    ignored_keys: list[str] = field(default_factory=list)
     # internal: the legacy guard_mode / [permission_defaults] as a policy layer, only the keys
     # that config.toml or the environment set (so a preset is not overridden by defaults).
     policy_config: dict[str, Any] = field(default_factory=dict)
@@ -469,6 +416,14 @@ class Settings:
 
 
 # Settings read from `RELAYBAY_<NAME>`; RELAYBAY_HOME is read first, before config.toml.
+# Keys of features removed in 0.12 (design 0025): runs inside the program and the usage reader.
+IGNORED_KEYS = (
+    "max_running_turns",
+    "min_free_memory_mb",
+    "claude_path",
+    "usage_enabled",
+    "usage_interval_seconds",
+)
 ENV_KEYS = tuple(f.name for f in fields(Settings) if f.metadata.get("env") and f.name != "home")
 
 
@@ -536,12 +491,9 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         ("task_stale_days", 1, None),
         ("digest_budget_chars", BUDGET_MIN, BUDGET_MAX),
         ("session_context_project_chars", BUDGET_MIN, BUDGET_MAX),
-        ("usage_interval_seconds", MIN_INTERVAL_SECONDS, None),
         ("update_check_hours", 1, HOURS_MAX),
         ("backup_keep", 0, None),
         ("max_concurrent_sessions", 0, None),
-        ("max_running_turns", 1, MAX_RUNNING_MAX),
-        ("min_free_memory_mb", 0, MIN_MEMORY_MAX),
     ):
         if key in data:
             value = data[key]
@@ -570,7 +522,7 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         if not isinstance(roots, list) or not all(isinstance(r, str) and r.strip() for r in roots):
             raise ValueError(f"{source}: attachment_roots must be a list of folders, got {value!r}")
         settings.attachment_roots = [Path(r.strip()).expanduser() for r in roots]
-    for key in ("require_tracker_log", "usage_enabled", "update_check"):
+    for key in ("require_tracker_log", "update_check"):
         if key in data:
             value = data[key]
             if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:
@@ -616,11 +568,6 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         settings.desktop_link_template = template
     if "claude_home" in data:
         settings.claude_home = Path(str(data["claude_home"])).expanduser()
-    if "claude_path" in data:
-        value = str(data["claude_path"]).strip()
-        if not value:
-            raise ValueError(f"{source}: claude_path must be the path of the claude program")
-        settings.claude_path = Path(value).expanduser()
     if "policy_file" in data:
         settings.policy_file = Path(str(data["policy_file"])).expanduser()
     if "allowed_hosts" in data:
@@ -684,6 +631,7 @@ def load_settings(
         with settings.config_path.open("rb") as fh:
             data = tomllib.load(fh)
         _apply(settings, data, str(settings.config_path))
+        settings.ignored_keys = [key for key in IGNORED_KEYS if key in data]
         labels = data.get("stages", {}).get("labels", {})
         unknown = set(labels) - set(STAGES)
         if unknown:

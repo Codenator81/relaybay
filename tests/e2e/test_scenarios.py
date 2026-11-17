@@ -5,8 +5,6 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-import pytest
-
 from tests.e2e.conftest import Stand, poll
 from tests.e2e.stream_contract import check_stream
 
@@ -84,8 +82,6 @@ def test_task_session_plan_report_review_inbox(stand: Stand) -> None:
         assert key in inbox and "Checkout" in inbox
         page = board.get(f"/t/{key}").text
         assert "checkout works" in page and "Write the code" in page and "Open checkout" in page
-        # The transcript the hooks pointed at is read in the background, never on the hook path.
-        poll(lambda: "demo-model-large" in board.get("/usage").text, what="the usage reader")
 
 
 def test_comment_is_delivered_blocks_the_stop_and_is_acknowledged(stand: Stand) -> None:
@@ -121,94 +117,6 @@ def test_comment_is_delivered_blocks_the_stop_and_is_acknowledged(stand: Stand) 
     assert len(blocks) == 1 and "Make the button green" in blocks[0]["reason"]
     events = stand.events()
     assert "comment.delivered" in events and "comment.read" in events
-
-
-def test_two_sessions_exchange_messages(stand: Stand) -> None:
-    go, reply_seen = stand.root / "go", stand.root / "reply-seen"
-    dev_a = {"session": "dev-a", "hook_session": "${session_id}"}
-    dev_b = {"session": "dev-b", "hook_session": "${session_id}"}
-    receiver = {
-        "turn": [
-            PROJECT,
-            {
-                "mcp": "task_create",
-                "arguments": {"project": "acme-shop", "title": "Search", "stage": "dev", **dev_a},
-                "capture": KEY,
-            },
-            {"wait_file": go.as_posix()},
-            {"tool": "Bash", "input": {"command": "npm test"}, "result": "12 passed"},
-            {"text": "Done."},
-        ],
-        # The Stop hook repeats what is not acknowledged, whichever hook delivered it first.
-        "on_stop_block": [
-            {
-                "mcp": "message_send",
-                "arguments": {"body": "It is on main.", "in_reply_to": 1, **dev_a},
-            },
-            {"text": "Answered."},
-        ],
-    }
-    a = stand.run(receiver)
-    poll(lambda: a.tool_result_text("mcp__relaybay__task_create"), what="the first session's task")
-
-    asker = {
-        "turn": [
-            {
-                "mcp": "message_send",
-                "arguments": {
-                    "body": 'Which branch? <b>"please"</b>',
-                    "to": "dev-a",
-                    "task": "acme-shop-1",
-                    **dev_b,
-                },
-            },
-            {"wait_file": reply_seen.as_posix()},
-            {"tool": "Bash", "input": {"command": "git status"}, "result": "clean"},
-            {"text": "Waiting for nothing."},
-        ],
-        "on_stop_block": [
-            {"mcp": "message_ack", "arguments": dev_b},
-            {"text": "On main, then."},
-        ],
-    }
-    b = stand.run(asker)
-    answer = poll(lambda: b.tool_result_text("mcp__relaybay__message_send"), what="the send")
-    assert answer.startswith("Message #1 to **dev-a**. Not delivered yet")
-
-    # Neither can pass for the other, with the one token they share.
-    result = stand.mcp_error("message_send", body="As dev-a", to="dev-b", session="dev-a")
-    assert "cannot be written in another session's name" in result
-
-    go.touch()
-    a.finish()
-    blocks = a.trace("stop_block")
-    assert (
-        len(blocks) == 1
-        and "Session message from dev-b (#1) on acme-shop-1:" in blocks[0]["reason"]
-    )
-    assert "not the owner" in blocks[0]["reason"]
-    assert a.result["result"] == "Answered."
-
-    reply_seen.touch()
-    b.finish()
-    blocks = b.trace("stop_block")
-    assert len(blocks) == 1 and "Session message from dev-a (#2)" in blocks[0]["reason"]
-    assert b.result["result"] == "On main, then."
-
-    events = stand.events()
-    for line in ("message.sent", "message.delivered", "message.read", "session.message"):
-        assert line in events
-    with stand.board() as board:
-        page = board.get("/messages").text
-        assert "It is on main." in page and "Which branch? &lt;b&gt;" in page
-        assert (
-            "<b>&#34;please" not in page
-            and "<b>" not in page.split("<tbody>")[1].split("</tbody>")[0]
-        )
-        assert "name not verified" not in page and "not delivered yet" not in page
-        assert "read" in page
-        task = board.get("/p/acme-shop/t/acme-shop-1/view").text
-        assert "It is on main." in task
 
 
 def _live_project(stand: Stand) -> None:
@@ -288,68 +196,3 @@ def test_events_of_a_session_are_spooled_while_the_server_is_away(stand: Stand) 
     # Replayed in order: the spooled start, stop and end of the resumed session.
     replayed = stand.events().split("ended → working", 1)[1]
     assert "working → idle" in replayed and "idle → ended" in replayed
-
-
-def test_stop_all_ends_the_turn_and_release_lets_work_go_on(stand: Stand) -> None:
-    stand.mcp("project_upsert", slug="acme-shop", repo_path=stand.project_dir.as_posix())
-    with stand.board() as board:
-        stand.post_form(board, "/brake", scope="all", reason="Deploy went wrong", next="/sessions")
-        assert "Brake on: all agents." in board.get("/sessions").text
-
-    # `tries`: the forwarder's one short try on a tool call fails open by design.
-    scenario = {
-        "turn": [
-            {"tool": "Bash", "input": {"command": "npm test"}, "result": "ran", "tries": 5},
-            {"tool": "Bash", "input": {"command": "npm run deploy"}, "result": "deployed"},
-            {"text": "This is never said."},
-        ]
-    }
-    stopped = stand.run(scenario, mcp=False).finish()
-    check_stream(stopped.messages)
-    [event] = [e for e in stopped.trace("stopped") if e["event"] == "PreToolUse"]
-    assert "Deploy went wrong" in event["reason"]
-    denied = stopped.of("system", "permission_denied")
-    assert denied and denied[0]["tool_name"] == "Bash"
-    assert "relaybay brake on (all agents)" in denied[0]["decision_reason"]
-    assert stopped.result["permission_denials"][0]["tool_input"]["command"] == "npm test"
-    commands = [d["tool_input"]["command"] for d in stopped.result["permission_denials"]]
-    assert commands == ["npm test"]  # the turn ended there: the next call was never tried
-
-    # relaybay's own tools still pass, so that an agent under the brake can report.
-    report = {
-        "turn": [
-            PROJECT,
-            NEW_TASK,
-            {"tool": "Bash", "input": {"command": "npm test"}, "result": "ran", "tries": 5},
-        ]
-    }
-    reporting = stand.run(report).finish()
-    assert [s["name"] for s in reporting.init["mcp_servers"]] == ["relaybay"]
-    assert "acme-shop-1" in stand.mcp("task_list", project="acme-shop")
-    assert reporting.result["permission_denials"][0]["tool_name"] == "Bash"
-
-    with stand.board() as board:
-        page = board.get("/sessions").text
-        brake_id = page.split('action="/brake/')[1].split("/release")[0]
-        stand.post_form(board, f"/brake/{brake_id}/release", next="/sessions")
-        assert "Brake on" not in board.get("/sessions").text
-
-    freed = stand.run(scenario, mcp=False).finish()
-    check_stream(freed.messages)
-    assert freed.result["subtype"] == "success" and not freed.result["permission_denials"]
-    assert not freed.trace("stopped")
-    assert freed.tool_result_text("Bash") in ("ran", "deployed")
-    assert "brake.released" in stand.mcp("events_since", limit=500)
-
-
-def test_an_agent_cannot_unbind_itself_from_under_a_project_brake(stand: Stand) -> None:
-    stand.mcp("project_upsert", slug="acme-shop", repo_path=stand.project_dir.as_posix())
-    stand.mcp("task_create", project="acme-shop", title="Checkout", session="dev-1")
-    with stand.board() as board:
-        stand.post_form(board, "/brake", scope="project", project="acme-shop", next="/sessions")
-    for tool, extra in (("task_unbind_session", {}), ("task_bind_session", {"session": "other"})):
-        # The SDK client's task groups wrap the failed assertion of the call.
-        with pytest.raises(ExceptionGroup) as refused:
-            stand.mcp(tool, task="acme-shop-1", **extra)
-        assert refused.group_contains(AssertionError, match="under the brake")
-    assert "dev-1" in stand.mcp("task_get", task="acme-shop-1")

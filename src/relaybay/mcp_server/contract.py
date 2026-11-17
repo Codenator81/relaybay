@@ -38,8 +38,13 @@ class Deprecation:
     since: str
     remove_not_before: date
     replacement: str | None
+    # The whole notice instead of the generated one: for a tool whose feature is gone and that
+    # stays only so cached schemas keep working.
+    note: str | None = None
 
     def notice(self) -> str:
+        if self.note:
+            return self.note
         what = f"parameter `{self.parameter}` of {self.tool}" if self.parameter else self.tool
         instead = f"; use {self.replacement} instead" if self.replacement else ""
         return (
@@ -51,7 +56,53 @@ class Deprecation:
         return today >= self.remove_not_before and _minor(version) > _minor(self.since)
 
 
-DEPRECATIONS: list[Deprecation] = []
+# Tools of features removed in 0.12 (design 0025): registered with their parameters, they do
+# nothing; the first later minor release past the date removes them and raises the version.
+REMOVED_SINCE = "0.12"
+REMOVED_NOT_BEFORE = date(2026, 12, 17)
+STUB_RESULT = "Nothing done: this tool does nothing since 0.12."
+BRAKE_GONE = "Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app."
+LIMITS_GONE = (
+    "Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app"
+    " shows the plan limits."
+)
+INTAKE_GONE = (
+    "Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates"
+    " the cards itself."
+)
+MESSAGES_GONE = (
+    "Deprecated: messages between sessions were removed in 0.12; sessions message each other"
+    " through the Claude desktop app."
+)
+RUNS_GONE = (
+    "Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by"
+    " a desktop session bound to it."
+)
+
+
+def _gone(tools: tuple[str, ...], note: str) -> list[Deprecation]:
+    return [Deprecation(t, None, REMOVED_SINCE, REMOVED_NOT_BEFORE, None, note) for t in tools]
+
+
+DEPRECATIONS: list[Deprecation] = [
+    *_gone(("run_start", "run_status", "run_events", "run_settings"), RUNS_GONE),
+    *_gone(("schedule_add", "schedule_list", "schedule_cancel"), RUNS_GONE),
+    *_gone(("brake_status", "brake_set"), BRAKE_GONE),
+    *_gone(("usage_summary", "budget_get"), LIMITS_GONE),
+    *_gone(
+        (
+            "intake_post",
+            "intake_list",
+            "intake_tie",
+            "intake_dismiss",
+            "intake_propose",
+            "intake_sources",
+            "relaybay://intake/{source}",
+        ),
+        INTAKE_GONE,
+    ),
+    *_gone(("message_send", "messages_list", "message_ack"), MESSAGES_GONE),
+]
 
 
 def _minor(version: str) -> tuple[int, int]:
@@ -109,9 +160,15 @@ def summary() -> list[str]:
     for d in DEPRECATIONS:
         lines.append(
             f"| `{d.tool}` | {f'`{d.parameter}`' if d.parameter else '—'} | {d.since}"
-            f" | {d.remove_not_before.isoformat()} | {d.replacement or '—'} |"
+            f" | {d.remove_not_before.isoformat()} | {_instead(d)} |"
         )
     return lines
+
+
+def _instead(d: Deprecation) -> str:
+    if d.replacement:
+        return d.replacement
+    return d.note.removeprefix("Deprecated: ") if d.note else "—"
 
 
 # --- the baseline -------------------------------------------------------------

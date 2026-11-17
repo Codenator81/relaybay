@@ -1,8 +1,7 @@
 # 0019 — Messages between sessions
 
-- Status: **Implemented (unreleased)**, for 0.8.0. The behaviour is in
-  [SPEC §1](../SPEC.md#spec-session-messages), [§2](../SPEC.md#spec-board-messages) and
-  [§4](../SPEC.md#spec-hooks-session-messages). Comes from
+- Status: **Superseded by [0025](0025-board-with-the-desktop.md) (removed in 0.12)**; implemented
+  in 0.8.0, frozen as history ([SPEC](../SPEC.md#spec-session-messages)). Comes from
   [0017](0017-readiness-for-agents-inside.md). Needs the hooks of
   [0001](0001-hooks-and-setup.md) and the delivery of [0005](0005-comments-to-agents.md).
 - Size: about 2.5 agent-days.

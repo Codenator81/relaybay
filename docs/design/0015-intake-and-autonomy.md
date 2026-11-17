@@ -136,7 +136,7 @@ and `RELAYBAY_URL`), `examples/intake/telegram_watcher.py` (Bot API long polling
 `TELEGRAM_BOT_TOKEN`, posts every message of allowed chats with `thread` = chat id and `author` =
 first name; no library beyond urllib), `examples/intake/email_watcher.py` (IMAP polling with `IMAP_*`
 variables, `thread` = the `References` / `In-Reply-To` root, `author` = the From display name,
-text/plain part only, capped). Documented in [Intake from chats and e-mail](../how-to/intake.md).
+text/plain part only, capped). The how-to and the watchers were removed with intake in 0.12 ([0025](0025-board-with-the-desktop.md)).
 
 ## Semantic search
 

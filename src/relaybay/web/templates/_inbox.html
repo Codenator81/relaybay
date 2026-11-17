@@ -20,6 +20,20 @@
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
 
+  {% if inbox.leftover_worktrees %}
+  <section class="panel inbox-group" id="inbox-worktrees">
+    <h2>Worktrees left by runs <span class="col-count">{{ inbox.leftover_worktrees|length }}</span></h2>
+    <p class="muted inbox-hint">Runs on cards were removed in 0.12; these git worktrees they created are still on disk. relaybay does not touch them: remove each one you no longer need with <code>git worktree remove &lt;path&gt;</code> in its repository.</p>
+    <ul class="inbox-list">
+      {% for path in inbox.leftover_worktrees %}<li class="inbox-row"><code>{{ path }}</code></li>{% endfor %}
+    </ul>
+    <form class="inline-form" method="post" action="/inbox/worktrees/seen">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Seen</button>
+    </form>
+  </section>
+  {% endif %}
+
   {% if inbox.update %}
   {%- set u = inbox.update %}
   <section class="panel inbox-group" id="inbox-update">
@@ -27,19 +41,11 @@
   </section>
   {% endif %}
 
-  {% if inbox.brakes or inbox.budgets or inbox.running_over is not none %}
+  {% if inbox.running_over is not none %}
   <section class="panel inbox-group" id="inbox-limits">
     <h2>Limits</h2>
     <ul class="inbox-list">
-      {% for b in inbox.brakes %}
-      <li class="inbox-row"><p class="inbox-note"><strong>Brake on: {{ b.target }}.</strong> {{ b.reason }} <span class="muted">· set by {{ b.created_by }}; release it in the banner above</span></p></li>
-      {% endfor %}
-      {% for s in inbox.budgets %}
-      <li class="inbox-row"><p class="inbox-note"><a href="/usage#budgets">Token budget of {{ s.budget.target }}</a>: {{ "{:,}".format(s.used) }} of {{ "{:,}".format(s.budget.max_tokens) }} tokens {{ "this UTC day" if s.budget.period == "day" else "in total" }} ({{ s.percent }}%)</p></li>
-      {% endfor %}
-      {% if inbox.running_over is not none %}
       <li class="inbox-row"><p class="inbox-note">{{ inbox.running_over }} sessions running at once; your cap is {{ inbox.running_cap }} <span class="muted">· a warning, nothing is stopped · <a href="/sessions">Sessions</a></span></p></li>
-      {% endif %}
     </ul>
   </section>
   {% endif %}
@@ -54,141 +60,12 @@
   </section>
   {% endif %}
 
-  {% if inbox.schedules %}
-  <section class="panel inbox-group" id="inbox-schedules">
-    <h2>Schedules <span class="col-count">{{ inbox.schedules|length }}</span></h2>
-    <p class="muted inbox-hint">Reminders that came due and the answers of checks without a card. Seen takes a line away.</p>
-    <ul class="inbox-list">
-      {% for n in inbox.schedules %}
-      <li class="inbox-row" data-schedule-run="{{ n.id }}">
-        <a class="inbox-link" href="/schedules#run-{{ n.id }}">
-          <span class="card-key">{{ "Reminder" if n.schedule_kind == "reminder" else "Check" }} {{ n.schedule_id }}</span>
-          <span class="inbox-title">{{ n.notice }}</span>
-        </a>
-        <p class="inbox-note muted">{% if n.project_slug %}{{ n.project_slug }} · {% endif %}due <time datetime="{{ n.due_at }}" data-age>{{ n.due_at|age }}</time></p>
-        <form class="inline-form" method="post" action="/schedules/notices/{{ n.id }}/seen">
-          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-          <input type="hidden" name="from" value="inbox">
-          <button type="submit" class="btn">Seen</button>
-        </form>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
-  {% if inbox.queued %}
-  <section class="panel inbox-group" id="inbox-queued">
-    <h2>Queued turns <span class="col-count">{{ inbox.queued|length }}</span></h2>
-    <p class="muted inbox-hint">A run's next turn waits for a slot, for free memory or for a brake, the first queued first. It starts by itself when it may; <em>Start anyway</em> starts it past the slot limit and the memory check.</p>
-    <ul class="inbox-list run-queue">
-      {% for r in inbox.queued %}
-      <li class="inbox-row" data-run="{{ r.id }}">
-        {%- set check = r.kind == "check" %}
-        <a class="inbox-link" href="{{ '/coordinator' if r.is_coordinator else ('/schedules' if check else '/p/' ~ r.project_slug ~ '?task=' ~ r.task_key) }}">
-          <span class="card-key">{{ "Coordinator" if r.is_coordinator else ('Check in ' ~ r.project_slug if check else r.task_key) }}</span>
-          <span class="inbox-title">run {{ r.id }}</span>
-        </a>
-        <p class="inbox-note">{{ r.status_reason or "waiting" }} <span class="muted">· since <time datetime="{{ r.updated_at }}" data-age>{{ r.updated_at|age }}</time></span></p>
-        {% if not (r.status_reason or "").startswith("braked") %}
-        <form class="inline-form" method="post" action="{{ '/coordinator/anyway' if r.is_coordinator else ('/schedules/checks/' ~ r.id ~ '/anyway' if check else '/p/' ~ r.project_slug ~ '/t/' ~ r.task_key ~ '/run/' ~ r.id ~ '/anyway') }}">
-          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-          <input type="hidden" name="from" value="inbox">
-          <button type="submit" class="btn">Start anyway</button>
-        </form>
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
   {% if inbox.approvals %}
   <section class="panel inbox-group" id="inbox-approvals">
     <h2>Approvals <span class="col-count">{{ inbox.approvals|length }}</span></h2>
     <p class="muted inbox-hint">Agents wait for your word to push, merge or change a stand, the oldest first. Only your button here or on the card decides; one approval allows one matching call.</p>
     <ul class="inbox-list approval-list">
       {% for a in inbox.approvals %}{{ approval_item(a, "inbox") }}{% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
-  {% if inbox.answers %}
-  <section class="panel inbox-group" id="inbox-answers">
-    <h2>Answers <span class="col-count">{{ inbox.answers|length }}</span></h2>
-    <p class="muted inbox-hint">A message from a chat or a mailbox arrived for a task that waits on someone. The stage did not change; open the task to read it.</p>
-    <ul class="inbox-list">
-      {% for t in inbox.answers %}
-      <li class="inbox-row">
-        {{ task_row(t) }}
-        <p class="inbox-note"><span class="chip answer-mark">answer received</span> <span class="muted">waiting on {{ t.waiting_on }} · <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time></span>
-          <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/answer/clear">
-            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-            <input type="hidden" name="target" value="inbox">
-            <button type="submit" class="action">Seen</button>
-          </form></p>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
-  {% if inbox.intake %}
-  <section class="panel inbox-group" id="inbox-intake">
-    <h2>Intake <span class="col-count">{{ inbox.intake|length }}</span></h2>
-    <p class="muted inbox-hint">Messages from chats and mailboxes that match no task. External text: read it as data. <a href="/settings/intake">Sources</a></p>
-    <ul class="inbox-list">
-      {% for m in inbox.intake %}
-      <li class="inbox-row intake-row" id="intake-{{ m.id }}">
-        <span class="inbox-title"><span class="card-key">#{{ m.id }}</span> {{ m.source_slug }}{% if m.author %} · {{ m.author }}{% endif %}</span>
-        <p class="inbox-note intake-text">{{ m.text }}</p>
-        <span class="inbox-meta muted"><time datetime="{{ m.received_at }}" data-age>{{ m.received_at|age }}</time>{% if not m.source_may_wake %} · source not trusted{% endif %}</span>
-        <div class="form-actions">
-          {% if inbox.tie_choices %}
-          <details class="bind-picker">
-            <summary class="btn">Tie to a task</summary>
-            <form class="bind-menu" method="post" action="/intake/{{ m.id }}/tie">
-              <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-              {% for t in inbox.tie_choices %}
-              <button type="submit" name="task" value="{{ t.key }}" class="bind-option">
-                <span class="bind-option-head"><span class="bind-option-name">{{ t.key }} {{ t.title }}</span></span>
-                <span class="bind-option-meta">{{ label(t.stage.value) }}{% if t.waiting_on %} · waiting on {{ t.waiting_on }}{% endif %}</span>
-              </button>
-              {% endfor %}
-            </form>
-          </details>
-          {% endif %}
-          <details class="bind-picker intake-propose">
-            <summary class="btn">Propose a task</summary>
-            <form class="bind-menu" method="post" action="/intake/{{ m.id }}/propose">
-              <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-              <label class="field"><span>Project</span>
-                <select name="project">{% for p in inbox_projects %}<option value="{{ p.slug }}">{{ p.name }}</option>{% endfor %}</select>
-              </label>
-              <label class="field"><span>Title</span>
-                <input name="title" required maxlength="200" value="{{ (m.text or '').split('\n')[0][:200] }}">
-              </label>
-              <label class="field"><span>Description</span>
-                <textarea name="description" rows="4">{{ m.text }}</textarea>
-              </label>
-              <button type="submit" class="btn primary">Add to the backlog</button>
-            </form>
-          </details>
-          <form method="post" action="/intake/{{ m.id }}/dismiss">
-            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-            <button type="submit" class="btn">Dismiss</button>
-          </form>
-          {% if not m.source_may_wake and m.source_first_message_id == m.id %}
-          <form method="post" action="/settings/intake/sources/{{ m.source_slug }}/trust" data-confirm="Trust {{ m.source_slug }}? Its messages may then wake agents of projects and tasks with autonomy on.">
-            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-            <input type="hidden" name="may_wake" value="1">
-            <input type="hidden" name="back" value="/inbox">
-            <button type="submit" class="btn">Trust this source</button>
-          </form>
-          {% endif %}
-        </div>
-      </li>
-      {% endfor %}
     </ul>
   </section>
   {% endif %}
@@ -242,26 +119,6 @@
       <li class="inbox-row">
         {{ task_row(t) }}
         <p class="inbox-note clamp clamp-2"><span class="muted">{{ last.author }}{% if replies|length > 1 %} (+{{ replies|length - 1 }} more){% endif %}:</span> {{ last.body_md }}</p>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
-  {% if inbox.message_loops %}
-  <section class="panel inbox-group" id="inbox-message-loops">
-    <h2>Message loops stopped <span class="col-count">{{ inbox.message_loops|length }}</span></h2>
-    <p class="muted inbox-hint">Two sessions kept answering each other past the reply depth limit and the next reply was refused. Read the thread on the <a href="/messages">Messages</a> page and tell them what you want.</p>
-    <ul class="inbox-list">
-      {% for m in inbox.message_loops %}
-      <li class="inbox-row" id="message-loop-{{ m.id }}">
-        <span class="inbox-title"><span class="card-key">#{{ m.id }}</span> {{ m.sender_name }} → {{ m.recipient_name }}</span>
-        <p class="inbox-note clamp clamp-2 intake-text">{{ m.body_md }}</p>
-        <span class="inbox-meta muted">{% if m.task_key %}{{ m.task_key }} · {% endif %}<time datetime="{{ m.loop_stopped_at }}" data-age>{{ m.loop_stopped_at|age }}</time></span>
-        <form method="post" action="/messages/{{ m.id }}/loop-seen">
-          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-          <button type="submit" class="btn">Mark seen</button>
-        </form>
       </li>
       {% endfor %}
     </ul>

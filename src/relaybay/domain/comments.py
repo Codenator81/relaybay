@@ -25,7 +25,7 @@ EXTERNAL_ACK_HINT = (
 
 def comment_line(comment: Comment) -> str:
     if comment.author_kind == "external":
-        # The body is already framed as data (domain.intake.frame).
+        # The body was framed as data when 0.11's intake wrote it.
         return f"Comment on {comment.task_key} (#{comment.id}): {comment.body_md}"
     return f"Owner comment on {comment.task_key} (#{comment.id}): {comment.body_md}"
 

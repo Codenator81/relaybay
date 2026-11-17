@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 48
+LATEST = 49
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -298,6 +298,7 @@ async def test_upgrade_from_0023_adds_backlog_priority_and_assignee(tmp_path: Pa
 
 
 async def test_upgrade_from_0024_adds_the_brake_tables_and_keeps_usage(tmp_path: Path) -> None:
+    """The brake, budget and usage tables stay in the file, unread since 0.12."""
     db = tmp_path / "relaybay.sqlite"
     folder = resources.files("relaybay.db").joinpath("migrations")
     names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0025")
@@ -318,16 +319,7 @@ async def test_upgrade_from_0024_adds_the_brake_tables_and_keeps_usage(tmp_path:
 
     svc = Service(db)
     await svc.start()
-    try:
-        assert (await svc.usage_report(days=0)).total.tokens == 7
-        assert await svc.open_brakes() == []
-        budget = await svc.set_budget("all", period="total", max_tokens=5)
-        assert budget.action == "warn"
-        await svc.limits_pass()
-        [state] = await svc.budget_states()
-        assert (state.used, state.level) == (7, "exceeded")
-    finally:
-        await svc.close()
+    await svc.close()
 
     conn = await connect(db)
     try:
@@ -408,18 +400,8 @@ async def test_upgrade_from_0029_adds_the_run_tables(tmp_path: Path) -> None:
         await conn.close()
 
     svc = Service(db)
-    await svc.start()
-    try:
-        defaults = await svc.run_defaults("acme-shop")
-        assert (defaults.model, defaults.effort, defaults.permission_mode) == (
-            "opus",
-            "medium",
-            "auto",
-        )
-        assert defaults.allowed_tools == "mcp__relaybay" and not defaults.chrome
-        assert await svc.run_login_any() is False  # no row: off
-    finally:
-        await svc.close()
+    await svc.start()  # migrates; the run tables stay in the file, unread since 0.12
+    await svc.close()
 
     conn = await connect(db)
     try:

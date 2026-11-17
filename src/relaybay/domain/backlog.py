@@ -1,4 +1,4 @@
-"""The backlog: findings of sessions and reviews, ideas from intake and the owner's notes. A
+"""The backlog: findings of sessions and reviews, the owner's notes and items 0.11's intake left. A
 backlog item is not a task and not a stage; "To plan" on the board turns it into a task."""
 
 import hashlib

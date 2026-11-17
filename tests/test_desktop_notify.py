@@ -82,15 +82,6 @@ def test_only_an_agents_comment_is_a_reply() -> None:
         assert classify(event("comment.added", author_kind=author_kind), OWNERS) is None
 
 
-def test_an_answer_names_its_source() -> None:
-    notice = classify(event("intake.answer_received", source="client-chat"), OWNERS, {7: "Login"})
-    assert notice is not None
-    assert notice.kind == "answer" and notice.title == "Answer received: SHOP-1"
-    assert notice.text == "From client-chat: Login"
-    bare = classify(event("intake.answer_received", source="mail"), OWNERS)
-    assert bare is not None and bare.text == "From mail"
-
-
 def test_a_session_that_starts_waiting() -> None:
     waiting = {"session": "agent-1", "status": "waiting", "activity": "needs permission"}
     notice = classify(event("session.status_changed", previous="working", **waiting), OWNERS)
@@ -116,36 +107,6 @@ def test_unknown_events_and_old_payloads_are_no_notice() -> None:
 
 def test_permission_is_available_but_off() -> None:
     assert set(DEFAULT_KINDS) == set(KINDS) - {"permission"}
-
-
-def test_a_brake_by_an_agent_is_a_notice_and_a_budgets_own_is_not() -> None:
-    brake = event("brake.set", target="project acme-shop", reason="runaway", source="coordinator")
-    notice = classify(brake, OWNERS)
-    assert notice is not None and notice.kind == "brake"
-    assert notice.title == "Brake on project acme-shop" and notice.text == "runaway"
-    assert classify(event("brake.set", target="all", source="budget"), OWNERS) is None
-    assert classify(event("brake.set", actor="board", source="owner"), OWNERS) is None
-
-
-@pytest.mark.parametrize(
-    ("kind", "action", "title"),
-    [
-        ("budget.warned", "warn", "Budget nearly spent: all"),
-        ("budget.exceeded", "warn", "Budget spent: all"),
-        ("budget.exceeded", "stop", "Budget spent, agents stopped: all"),
-    ],
-)
-def test_budgets_are_notices(kind: str, action: str, title: str) -> None:
-    budget = event(kind, target="all", used=90, max_tokens=100, action=action, actor="relaybay")
-    notice = classify(budget, OWNERS)
-    assert notice is not None and notice.kind == "budget"
-    assert (notice.title, notice.text) == (title, "90 of 100 tokens")
-
-
-def test_a_budgets_two_thresholds_do_not_collapse() -> None:
-    warned = classify(event("budget.warned", target="all"), OWNERS)
-    exceeded = classify(event("budget.exceeded", target="all"), OWNERS)
-    assert warned is not None and exceeded is not None and warned.key != exceeded.key
 
 
 # --- the API ----------------------------------------------------------------
@@ -493,7 +454,9 @@ def test_a_state_file_that_cannot_be_written_is_only_logged(
 def test_summary_counts_in_the_order_of_the_kinds() -> None:
     items = [item("reply", "A"), item("review", "B"), item("review", "C")]
     assert summary(items) == "3 need you: 2 reviews, 1 reply"
-    assert summary([item("waiting", "A"), item("answer", "B")]) == "2 need you: 1 waiting, 1 answer"
+    assert summary([item("waiting", "A"), item("question", "B")]) == (
+        "2 need you: 1 waiting, 1 question"
+    )
 
 
 def test_fit_stays_inside_the_balloon_in_utf16_units() -> None:
@@ -685,3 +648,10 @@ def test_the_settings_form_keeps_the_keys_it_does_not_show(tmp_path: Path) -> No
     save_desktop_settings(tmp_path, saved)
     _before, after = apply_form(tmp_path, {"server_mode": "embedded"})
     assert (after.notify, after.notify_quiet, after.notify_kinds) == (False, True, ("reply",))
+
+
+def test_kinds_of_removed_features_are_dropped_quietly(tmp_path: Path) -> None:
+    settings_path(tmp_path).write_text(
+        'notify_kinds = ["reply", "brake", "budget", "reminder"]\n', encoding="utf-8"
+    )
+    assert load_desktop_settings(tmp_path).notify_kinds == ("reply",)

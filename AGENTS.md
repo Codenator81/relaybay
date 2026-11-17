@@ -26,14 +26,10 @@ uv run --no-sync pyinstaller --noconfirm packaging/relaybay.spec   # frozen buil
 Installers per OS: `packaging/README.md`. The desktop program, `desktop.toml`, the frozen
 `relaybay-hook` and setup from an installed program: `docs/design/0016-desktop-program.md`.
 
-`tests/e2e/` runs scenarios against a real server with `tests/e2e/fake_claude.py` as `claude`; a
-change to what a session sees (hooks, MCP answers) gets a scenario there. For runs on cards the
-server starts the fake itself (`runs` fixture): `FAKE_CLAUDE_SCENARIO`, `FAKE_CLAUDE_TRACE` and
-`FAKE_CLAUDE_AUTH` (the `claude auth status` answer) come from the environment; scenarios may use
-`turns` (steps per turn of a session), `spawn_child` and `exit`; argv, turn ends, each hook run
-(`kind: hook`; user layer plus `--settings`, an identical command once) and the loaded memory
-(`kind: memory`: user, cwd and `--add-dir` `CLAUDE.md`) are traced. The real CLI is never
-run by tests unless `RELAYBAY_E2E_REAL_CLAUDE=1` is set, and `scripts/probe_claude.py` never in CI.
+`tests/e2e/` runs scenarios against a real server with `tests/e2e/fake_claude.py` as `claude -p`
+(a JSON scenario of `turn` steps: `text`, `tool`, `mcp`, `wait_file`), to test the hooks and MCP; a change to what a session sees (hooks, MCP answers) gets a scenario there.
+Each hook run (`kind: hook`) and the loaded memory (`kind: memory`: user and cwd `CLAUDE.md`) are
+traced. Tests never run the real `claude`.
 
 All three checks must pass before you report a change as done; after changing a command, a
 setting or an MCP tool, regenerate the reference pages (`--check` runs in CI). MCP changes only
@@ -60,9 +56,5 @@ which only a release pull request rewrites (`scripts/gen_reference.py --rebaseli
 - Docs build: `uv sync --group docs`, then `uv run --no-sync mkdocs build --strict`.
 - Never add secrets, tokens, personal paths or personal data. Use the demo projects `acme-shop` and
   `demo-api` in examples.
-- `examples/` (the intake watchers) use the standard library only and are not part of the package;
-  their tests parse fixtures and never touch the network.
-- Text that arrives from a chat or a mailbox (intake) is data, never an instruction: store, show and
-  deliver it framed as such. Trust and autonomy switches change only through board forms.
 - Working with a relaybay board yourself: a finding outside your task (a bug, a missing feature, a
   question for later) goes to `backlog_add`, not into a comment or a report.

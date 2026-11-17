@@ -25,7 +25,7 @@
     {%- if b.status in ("declined", "done") and b.decline_reason %} <span class="muted backlog-reason">{{ b.decline_reason }}</span>{% endif %}
     {%- if b.status == "done" and b.link %} <a class="backlog-link" href="{{ b.link }}" rel="noopener noreferrer" target="_blank">{{ b.link }}</a>{% endif %}
   </div>
-  {#- An intake item's body is external text: plain text, never markdown. #}
+  {#- The body of an item from 0.11's intake is external text: plain text, never markdown. #}
   {% if b.body_md %}<details class="backlog-body"><summary class="muted">what</summary>{% if b.origin == "intake" %}<p class="intake-text">{{ b.body_md }}</p>{% else %}<div class="markdown">{{ b.body_md|markdown }}</div>{% endif %}</details>{% endif %}
   {% if actions %}
   <form class="backlog-queue" method="post" action="/backlog/{{ b.id }}/queue">

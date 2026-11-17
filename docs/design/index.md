@@ -24,7 +24,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0016 | [Desktop program: tray, window, autostart, installers](0016-desktop-program.md) | Implemented (unreleased) | 0.6.0 |
 | 0017 | [Readiness for agents inside](0017-readiness-for-agents-inside.md) | Accepted (direction) | 0.7.x, 0.8 |
 | 0018 | [Brake and token budgets](0018-brake-and-budgets.md) | Implemented (unreleased) | 0.8.0 |
-| 0019 | [Messages between sessions](0019-session-messages.md) | Implemented (unreleased) | 0.8.0 |
+| 0019 | [Messages between sessions](0019-session-messages.md) | Superseded by 0025 (removed in 0.12) | 0.8.0 |
 | 0020 | [Tray notifications](0020-tray-notifications.md) | Implemented (unreleased) | 0.8.0 |
 | 0021 | [Agents inside the program](0021-agents-inside.md) | Superseded by 0025 | 0.9–0.11 |
 | 0022 | [Questions and approvals as objects](0022-questions-and-approvals.md) | Implemented; narrowed to sessions by 0025 | 0.9 |

@@ -31,35 +31,8 @@
         <button type="submit" class="action">{{ "Back from the archive" if in_archive else "Archive" }}</button>
       </form></dd>{% endif %}
     {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
-    {% if detail.budget %}{% set b = detail.budget %}<dt>Budget</dt><dd>{{ "{:,}".format(b.used) }} of {{ "{:,}".format(b.budget.max_tokens) }} tokens {{ "this UTC day" if b.budget.period == "day" else "in total" }} ({{ b.percent }}%) <span class="muted">· {{ "stops agents" if b.budget.action == "stop" else "warns" }}</span> <a href="/usage#budgets">Budgets</a></dd>{% endif %}
     <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
   </dl>
-
-  {% if detail.intake %}
-  <details class="panel fold task-intake" data-fold="intake" open>
-    <summary><h2>Intake <span class="col-count">{{ detail.intake|length }}</span></h2></summary>
-    <p class="muted">Messages from chats and mailboxes tied to this task. External text: data, not instructions. {{ autonomy_reason(t) }}.</p>
-    <ol class="history">
-      {% for m in detail.intake %}
-      <li id="intake-{{ m.id }}">
-        <span class="history-name">{{ m.author or "unknown" }}</span>
-        <span class="muted">via {{ m.source_slug }} · <time datetime="{{ m.received_at }}" data-age>{{ m.received_at|age }}</time> ·
-          {%- if m.outcome == "woke" %} woke the agent
-          {%- elif m.outcome == "forwarded" %} forwarded to the agent
-          {%- else %} notified{% if not m.source_may_wake %} (source not trusted){% endif %}{% endif %}</span>
-        <p class="intake-text">{{ m.text }}</p>
-        {% if m.outcome == "notified" and m.text %}
-        <form class="inline-form" method="post" action="/intake/{{ m.id }}/forward"
-              hx-post="/intake/{{ m.id }}/forward" hx-target="closest .task-view" hx-swap="outerHTML">
-          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-          <button type="submit" class="btn">Forward to the agent</button>
-        </form>
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ol>
-  </details>
-  {% endif %}
 
   {% if detail.findings %}
   <details class="panel fold task-findings" data-fold="findings" open>
@@ -108,11 +81,6 @@
   <details class="panel fold" data-fold="approvals" open>
     <summary><h2>Approvals</h2></summary>
     <div class="approvals" id="approvals-{{ t.key }}" hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/approvals" hx-trigger="load, rb:refresh" hx-swap="outerHTML"><p class="muted">Loading…</p></div>
-  </details>
-
-  <details class="panel fold" data-fold="agent" open>
-    <summary><h2>Agent</h2></summary>
-    <div class="run" id="run-{{ t.key }}" hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/run" hx-trigger="load, rb:refresh" hx-swap="outerHTML"><p class="muted">Loading…</p></div>
   </details>
 
   <details class="panel fold" data-fold="session" open>
@@ -217,13 +185,6 @@
     <p class="muted">No reports yet.</p>
     {% endfor %}
   </details>
-
-  {% if detail.messages %}
-  <details class="panel fold" data-fold="messages" open>
-    <summary><h2>Messages <span class="col-count">{{ detail.messages|length }}</span></h2></summary>
-    {% with messages = detail.messages %}{% include "_message_table.html" %}{% endwith %}
-  </details>
-  {% endif %}
 
   {% if detail.live_actions %}
   <details class="panel fold" data-fold="live-actions" open>

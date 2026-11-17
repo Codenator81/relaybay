@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import binascii
-import contextlib
 import hashlib
 import json
 import logging
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Header, HTTPException, Query, Request, WebSocket
+from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -26,18 +25,12 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 from starlette.responses import StreamingResponse
-from starlette.websockets import WebSocketDisconnect
 
 from relaybay import __version__, machine_setup
-from relaybay.config import LOCAL_HOSTS, Settings
-from relaybay.domain import coordinator as crules
+from relaybay.config import Settings
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
-from relaybay.domain import profiles as profile_rules
-from relaybay.domain import run_events as run_lines
-from relaybay.domain import runs as run_rules
-from relaybay.domain import schedules as srules
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
 from relaybay.domain.areas import AREA_COLORS
@@ -51,26 +44,18 @@ from relaybay.domain.errors import (
     NotFoundError,
     ValidationError,
 )
-from relaybay.domain.intake import autonomy_reason
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
-from relaybay.domain.rules import rules_markdown, verified_marks_problem
+from relaybay.domain.rules import rules_markdown
 from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage, parse_stage
 from relaybay.domain.tasks import is_archived
-from relaybay.domain.usage import UsageReport
 from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
-from relaybay.runner import auth as run_auth
-from relaybay.runner.coordinator import default_folder as coordinator_default
-from relaybay.runner.terminal import clean_size
-from relaybay.runner.worktrees import summary as worktree_summary
 from relaybay.security import (
     COOKIE_NAME,
-    CSP,
     CSRF_FIELD,
     csrf_token,
-    host_name,
     login_url,
     port_cookie,
     safe_next,
@@ -79,7 +64,7 @@ from relaybay.security import (
     session_cookie_value,
     token_id,
 )
-from relaybay.service import HTTP_URL_RE, TERMINAL_BACK, Inbox, Service, has_hidden_chars
+from relaybay.service import HTTP_URL_RE, Inbox, Service, has_hidden_chars
 from relaybay.web.markdown import render_document, render_markdown
 from relaybay.web.sse import event_stream
 
@@ -224,6 +209,7 @@ EVENT_KINDS = (
     "budget.warned",
     "budget.exceeded",
     "concurrency.over",
+    "inbox.worktrees_seen",
     "run.started",
     "run.turn_started",
     "run.turn_queued",
@@ -270,38 +256,15 @@ EVENT_KINDS = (
     "coordinator.ended",
     "coordinator.woken",
     "coordinator.compacting",
-    *srules.EVENT_KINDS,
+    "schedule.created",
+    "schedule.updated",
+    "schedule.deleted",
+    "schedule.fired",
+    "schedule.missed",
+    "schedule.skipped",
+    "schedule.ended",
 )
 CSRF_HEADER = "x-relaybay-csrf"
-# The Terminal tab: the board's policy plus inline styles, which xterm.js writes.
-TERMINAL_CSP = CSP + "; style-src 'self' 'unsafe-inline'"
-LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")
-TERMINAL_NOT_LOOPBACK = (
-    "The server listens on {host}, not on loopback only: the Terminal tab works only on a server"
-    " bound to 127.0.0.1 (not in Docker or on a LAN address)."
-)
-COORDINATOR_DONE = {
-    "start": "The coordinator is started: it waits for your first text.",
-    "new-session": "A new session of the coordinator is started.",
-    "stop": "Its running turn is stopped.",
-    "end": "The coordinator is ended.",
-    "say": "Sent to the coordinator.",
-    "desktop": "Opened in the Claude desktop app.",
-    "back": "The coordinator is back with relaybay.",
-    "anyway": "Its waiting turn is started.",
-}
-SCHEDULE_ACTIONS = {
-    "save": "Schedule {id} saved.",
-    "enable": "Schedule {id} enabled.",
-    "disable": "Schedule {id} disabled.",
-    "run": "Schedule {id} runs now.",
-    "stop": "The check of schedule {id} is stopped.",
-    "delete": "Schedule {id} deleted.",
-}
-SCHEDULE_HISTORY = 50
-TERMINAL_EXITED = "claude exited"
-TERMINAL_REFUSED = 4000  # a close code of the application's range: the terminal did not open
-TERMINAL_HELD = 4001  # claude exited, but the run stays with the owner (the reason went before)
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
 BOARD_ONLY = (
     "Environments, permission levels and the policy change only from the board in a browser;"
@@ -311,11 +274,6 @@ ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "lev
 JOURNAL_LIMIT = 20
 DOCS_DECISIONS = 200
 DOC_NEW_FIELDS = ("doc", "title", "kind", "source_url", "body", "reason")
-RUN_CHOICES = {
-    "models": run_rules.MODELS,
-    "efforts": run_rules.EFFORTS,
-    "modes": run_rules.PERMISSION_MODES,
-}
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
@@ -324,43 +282,6 @@ QUIET_KINDS = ("session.status_changed",)
 BACKLOG_ROWS = 500
 BACKLOG_STATUSES = ("new", "later", "planned", "done", "declined")
 USAGE_ROWS = 500
-USAGE_DAYS = (7, 30, 90, 365, 0)
-CHART_WIDTH = 720
-CHART_HEIGHT = 120
-CHART_GAP = 2
-
-
-def usage_chart(report: UsageReport) -> dict[str, Any] | None:
-    """Bars for the Usage page as numbers for an inline SVG; drawn from presentation attributes,
-    which the CSP allows, so the page needs no chart library."""
-    if not report.periods:
-        return None
-    top = max(total.tokens for _, total in report.periods) or 1
-    width = CHART_WIDTH / len(report.periods)
-    bars = []
-    for index, (period, total) in enumerate(report.periods):
-        height = round(total.tokens / top * (CHART_HEIGHT - 2), 1)
-        if total.tokens:
-            height = max(height, 2)
-        bars.append(
-            {
-                "x": round(index * width + CHART_GAP / 2, 2),
-                "y": round(CHART_HEIGHT - height, 1),
-                "width": round(max(width - CHART_GAP, 1), 2),
-                "height": height,
-                "hit_x": round(index * width, 2),
-                "hit_width": round(width, 2),
-                "title": f"{period}: {total.tokens:,} tokens",
-            }
-        )
-    return {
-        "width": CHART_WIDTH,
-        "height": CHART_HEIGHT,
-        "bars": bars,
-        "top": top,
-        "first": report.periods[0][0],
-        "last": report.periods[-1][0],
-    }
 
 
 def static_versions(folder: Path = STATIC_DIR) -> dict[str, str]:
@@ -415,11 +336,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         t, utcnow(), settings.done_window_days, settings.require_tracker_log
     )
     env.filters["age"] = age
-    # Schedules show the machine's local time, as they are planned in it.
-    env.filters["local_time"] = lambda value: srules.local_text(value, service.local_time)
-    env.globals["when_text"] = lambda s: srules.when_text(s, service.local_time)
-    env.filters["wake_lines"] = crules.wake_lines
-    env.filters["owner_words"] = crules.owner_words
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
     env.filters["http_url"] = http_url
@@ -427,9 +343,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["event_detail"] = event_detail
     env.filters["event_subject"] = event_subject
     env.filters["change_summary"] = env_domain.change_summary
-    env.filters["copy_summary"] = worktree_summary
     env.globals["fields_text"] = env_domain.fields_text
-    env.globals["autonomy_reason"] = autonomy_reason
     env.filters["tojson_compact"] = lambda value: json.dumps(value, ensure_ascii=False)
 
     def render(request: Request, name: str, status: int = 200, **context: Any) -> HTMLResponse:
@@ -492,7 +406,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `usage`, `activity`, `audit`, `messages`, `settings`, `sessions`;
+        `boards`, `activity`, `audit`, `settings`, `sessions`;
         `board`,
         `sessions`,
         `environments` or
@@ -502,11 +416,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "project": nav_project,
             "projects": [item.project for item in await service.list_projects()],
             "inbox_count": (await inbox()).count,
-            "coordinator_badge": await service.coordinator_badge(),
             "saved_filters": await saved_filters_by_project(),
             "backlog_counts": await service.backlog_counts(),
             "filter_active": bool(context.get("filter_query")),
-            "brakes": await service.open_brakes(),
             "path": request.url.path,
         }
         return render(request, name, nav=nav, **context)
@@ -829,7 +741,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "inbox.html",
             "inbox",
             inbox=await inbox(),
-            inbox_projects=await project_rows(),
             message=flash.get("message"),
             error=flash.get("error"),
             last_event_id=last_event_id,
@@ -838,135 +749,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/fragments/inbox", response_class=HTMLResponse)
     async def inbox_fragment(request: Request):
-        return render(
-            request, "_inbox.html", inbox=await inbox(), inbox_projects=await project_rows()
-        )
+        return render(request, "_inbox.html", inbox=await inbox())
 
     @router.get("/fragments/inbox-badge", response_class=HTMLResponse)
     async def inbox_badge(request: Request):
         return render(request, "_inbox_badge.html", count=(await inbox()).count)
-
-    @router.get("/usage", response_class=HTMLResponse)
-    async def usage_page(
-        request: Request,
-        project: str = "",
-        session: str = "",
-        model: str = "",
-        days: int = 30,
-        group: str = "day",
-    ):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        project = project.strip().lower()
-        if session and not (session.isascii() and session.isdigit() and len(session) <= 18):
-            raise ValidationError("session must be a session's number.")
-        session_id = int(session) if session else None
-        report = await service.usage_report(
-            project=project or None,
-            session_ids=[session_id] if session_id is not None else None,
-            model=model or None,
-            days=days,
-            group=group,
-        )
-        sessions, models = await service.usage_filters()
-        response = await page(
-            request,
-            "usage.html",
-            "usage",
-            budgets=await service.budget_states(),
-            message=flash.get("message"),
-            error=flash.get("error"),
-            report=report,
-            shown_rows=report.rows[:USAGE_ROWS],
-            chart=usage_chart(report),
-            project_filter=project,
-            session_filter=session_id,
-            last_event_id=last_event_id,
-            model_filter=model,
-            sessions=sessions,
-            models=models,
-            days_choices=USAGE_DAYS,
-            usage_enabled=settings.usage_enabled,
-        )
-        return shown_once(request, response)
-
-    @router.get("/fragments/budgets", response_class=HTMLResponse)
-    async def budgets_fragment(request: Request):
-        return render(request, "_budgets.html", budgets=await service.budget_states())
-
-    @router.post("/usage/budgets")
-    async def set_budget(
-        request: Request,
-        scope: Annotated[str, Form()] = "",
-        project: Annotated[str, Form()] = "",
-        task: Annotated[str, Form()] = "",
-        period: Annotated[str, Form()] = "day",
-        max_tokens: Annotated[str, Form()] = "",
-        action: Annotated[str, Form()] = "warn",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        try:
-            budget = await service.set_budget(
-                scope,
-                project=project or None,
-                task=task or None,
-                period=period,
-                max_tokens=max_tokens,
-                action=action,
-            )
-        except DomainError as exc:
-            return flash_redirect(request, "/usage#budgets", error=str(exc))
-        return flash_redirect(
-            request, "/usage#budgets", message=f"Saved the budget of {budget.target}."
-        )
-
-    @router.post("/usage/budgets/{budget_id}/delete")
-    async def remove_budget(
-        request: Request,
-        budget_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        await service.remove_budget(budget_id)
-        return flash_redirect(request, "/usage#budgets", message="Budget removed.")
-
-    @router.get("/fragments/brake-banner", response_class=HTMLResponse)
-    async def brake_banner(request: Request, next: str = "/sessions"):
-        return render(
-            request,
-            "_brake_banner.html",
-            brakes=await service.open_brakes(),
-            back=back_to(next, "/sessions"),
-        )
-
-    @router.post("/brake")
-    async def set_brake(
-        request: Request,
-        scope: Annotated[str, Form()] = "all",
-        project: Annotated[str, Form()] = "",
-        reason: Annotated[str, Form()] = "",
-        next_path: Annotated[str, Form(alias="next")] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        back = back_to(next_path, "/sessions")
-        try:
-            await service.set_board_brake(scope, project=project or None, reason=reason)
-        except DomainError as exc:
-            return flash_redirect(request, back, error=str(exc))
-        return RedirectResponse(back, status_code=303)
-
-    @router.post("/brake/{brake_id}/release")
-    async def release_brake(
-        request: Request,
-        brake_id: int,
-        next_path: Annotated[str, Form(alias="next")] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        await service.release_brake(brake_id, actor="owner")
-        return RedirectResponse(back_to(next_path, "/sessions"), status_code=303)
 
     @router.get("/sessions", response_class=HTMLResponse)
     async def all_sessions_page(request: Request):
@@ -1027,7 +814,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 return f"Live is off for {saved.name}: any touch of a live stand is denied."
             return f"Live is back for {saved.name}: its level on each stand applies again."
 
-        return await intake_write(request, csrf, write, back_to(back, "/sessions"))
+        return await board_write(request, csrf, write, back_to(back, "/sessions"))
 
     async def audit_context(
         project: str,
@@ -1123,55 +910,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             project.strip().lower(), environment, session, decision, days, changes, before, after
         )
         return render(request, "_audit_rows.html", **context)
-
-    async def messages_context(session: str, before: int | None) -> dict[str, Any]:
-        if session and not (session.isascii() and session.isdigit() and len(session) <= 18):
-            raise ValidationError("session must be a session's number.")
-        if before is not None:
-            before = max(-EVENT_ID_MAX, min(before, EVENT_ID_MAX))
-        items = await service.session_messages_page(
-            session_id=int(session) if session else None,
-            before_id=before,
-            limit=MESSAGES_PAGE + 1,
-        )
-        more = len(items) > MESSAGES_PAGE
-        items = items[:MESSAGES_PAGE]
-        kept = {"session": session} if session else {}
-        return {
-            "messages": items,
-            "more_qs": urlencode({**kept, "before": items[-1].id}) if more else "",
-            "filters_qs": urlencode(kept),
-            "live_rows": before is None,
-        }
-
-    @router.get("/messages", response_class=HTMLResponse)
-    async def messages_page(request: Request, session: str = "", before: int | None = None):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        return await page(
-            request,
-            "messages.html",
-            "messages",
-            **await messages_context(session, before),
-            session_filter=session,
-            session_rows=await service.list_sessions(),
-            last_event_id=last_event_id,
-        )
-
-    @router.get("/fragments/messages", response_class=HTMLResponse)
-    async def messages_fragment(request: Request, session: str = ""):
-        return render(request, "_messages.html", **await messages_context(session, None))
-
-    @router.post("/messages/{message_id}/loop-seen")
-    async def message_loop_seen(
-        request: Request,
-        message_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            await service.dismiss_message_loop(message_id, actor="owner")
-            return f"Message #{message_id}: the stopped loop is marked as seen."
-
-        return await intake_write(request, csrf, write)
 
     async def activity_context(
         project: str, kind: str, before: int | None, after: int | None
@@ -1365,17 +1103,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if changes.get("next_step", "") == task.next_step:
             # The form always resends the next step; only an edited one confirms it as current.
             del changes["next_step"]
-        autonomy = form.get("autonomy")
-        if isinstance(autonomy, str) and autonomy != task.autonomy:
-            # Autonomy lets an agent go on by itself: a browser session only, never a Bearer client.
-            board_only(request, csrf)
         try:
             result = await service.update_task_checked(
                 task.key, changes, expected_version=version, actor="board"
             )
-            if isinstance(autonomy, str) and autonomy != result.task.autonomy:
-                saved = await service.set_task_autonomy(task.key, autonomy, actor="owner")
-                result = result._replace(task=saved)
         except ConflictError:
             fresh = await find_task(slug, key)
             return await edit_form(
@@ -1610,556 +1341,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return RedirectResponse(f"/p/{slug}?task={task.key}&tab=plan", status_code=303)
         return await plan_panel(request, task)
 
-    # --- Agent: a run of the user's own claude on the card ---------------------------------
-
-    async def run_panel(request: Request, task: Task, error: str | None = None) -> HTMLResponse:
-        fresh = await service.get_task(task.key)
-        view = await service.run_view(fresh)
-        form = await service.run_form(fresh) if view is None or not view.run.is_open else None
-        runs = service.runs
-        running = view is not None and runs is not None and runs.is_running(view.run.id)
-        return render(
-            request,
-            "_run.html",
-            t=fresh,
-            view=view,
-            form=form,
-            running=running,
-            error=error,
-            choices=RUN_CHOICES,
-            owner_modes=run_rules.PERMISSION_MODES + run_rules.OWNER_ONLY_MODES,
-            desktop_ok=runs is not None and runs.desktop_launcher is not None,
-            launching=view is not None and view.run.id in service.desktop_launching,
-            terminal_on=terminal_here() and await service.terminal_enabled(),
-            terminal_open=view is not None and service.terminals.busy(view.run.id),
-        )
-
-    def terminal_here() -> bool:
-        """The Terminal tab can work on this server: a PTY, and a loopback-only listener."""
-        return service.terminal_available() and settings.host in LOOPBACK_BINDS
-
-    @router.get("/p/{slug}/t/{key}/run", response_class=HTMLResponse)
-    async def run_fragment(request: Request, slug: str, key: str):
-        return await run_panel(request, await find_task(slug, key))
-
-    @router.get("/p/{slug}/t/{key}/run/{run_id}/turns/{seq}", response_class=HTMLResponse)
-    async def run_turn_fragment(request: Request, slug: str, key: str, run_id: int, seq: int):
-        """A turn's report and its stored lines, loaded when the owner opens the turn."""
-        task = await find_task(slug, key)
-        run, turn, report, checks, items = await service.run_turn_detail(
-            await run_of(task, run_id), seq
-        )
-        problem = None
-        if report is not None and report.id >= service.report_marks_from:
-            problem = verified_marks_problem(report.size, len(checks))
-        return render(
-            request,
-            "_run_turn.html",
-            run=run,
-            turn=turn,
-            report=report,
-            checks=checks,
-            warning=f"Warning (rules): {problem}" if problem else None,
-            items=items,
-            board_lines=run_lines.BOARD_LINES,
-        )
-
-    async def run_write(
-        request: Request,
-        slug: str,
-        key: str,
-        csrf: str,
-        write: Callable[[Task, Any], Awaitable[Any]],
-    ) -> Response:
-        """A board act on the card's run: an htmx swap of the panel with the reason in it on a
-        refusal (200, so htmx swaps it), or a redirect for a plain form post."""
-        board_only(request, csrf)
-        task = await find_task(slug, key)
-        form = await request.form()
-        htmx = "hx-request" in request.headers
-        try:
-            await write(task, form)
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            if not htmx:
-                raise
-            return await run_panel(request, task, error=str(exc))
-        if not htmx:
-            # Start anyway from the Inbox goes back there.
-            back = "/inbox" if form.get("from") == "inbox" else f"/p/{slug}?task={task.key}"
-            return RedirectResponse(back, status_code=303)
-        return await run_panel(request, task)
-
-    async def run_of(task: Task, run_id: int) -> int:
-        run = await service.get_run(run_id)
-        if run.task_id != task.id:
-            raise NotFoundError(f"Run #{run_id} is not on {task.key}.")
-        return run.id
-
-    @router.post("/p/{slug}/t/{key}/run/start", response_class=HTMLResponse)
-    async def run_start(
-        request: Request, slug: str, key: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        async def write(task: Task, form: Any) -> None:
-            repo_text = str(form.get("repo") or "").strip()
-            cwd = str(form.get("cwd") or "").strip() or None
-            # Per repository `wt_<id>`: "new" (a new worktree), "self" (in place), "" (not used).
-            picks = [
-                (int(name[3:]), str(form.get(name)) == "new")
-                for name in form
-                if name.startswith("wt_")
-                and name[3:].isdigit()
-                and str(form.get(name)) in ("new", "self")
-            ]
-            await service.start_run(
-                task.key,
-                actor="owner",
-                repo_id=int(repo_text) if repo_text.isdigit() else None,
-                cwd=cwd,
-                repos=picks if cwd is not None else None,
-                model=str(form.get("model") or "") or None,
-                effort=str(form.get("effort") or "") or None,
-                mode=str(form.get("permission_mode") or "") or None,
-                brief=str(form.get("brief") or ""),
-                profile=str(form.get("profile") or "") or None,
-            )
-
-        return await run_write(request, slug, key, csrf, write)
-
-    @router.post("/p/{slug}/t/{key}/run/{run_id}/{action}", response_class=HTMLResponse)
-    async def run_action(
-        request: Request,
-        slug: str,
-        key: str,
-        run_id: int,
-        action: str,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        if action not in ("send", "stop", "end", "desktop", "back", "settings", "anyway"):
-            raise HTTPException(status_code=404)
-
-        async def write(task: Task, form: Any) -> None:
-            own = await run_of(task, run_id)
-            if action == "send":
-                await service.send_to_run(own, str(form.get("text") or ""), actor="owner")
-            elif action == "stop":
-                await service.stop_run(own, actor="owner")
-            elif action == "desktop":
-                await service.open_in_desktop(own, actor="owner")
-            elif action == "back":
-                await service.return_run(own, actor="owner")
-            elif action == "anyway":
-                await service.start_anyway(own, actor="owner")
-            elif action == "settings":
-                await service.set_run_settings(
-                    own,
-                    mode=str(form.get("permission_mode") or ""),
-                    model=str(form.get("model") or ""),
-                    effort=str(form.get("effort") or ""),
-                    actor="owner",
-                )
-            else:
-                await service.end_run(own, actor="owner")
-
-        return await run_write(request, slug, key, csrf, write)
-
-    # --- the Terminal tab of a run: `claude --resume` in a PTY over a WebSocket -------------
-
-    async def terminal_run(slug: str, key: str, run_id: int) -> tuple[Task, Any]:
-        """The card and its run for the terminal routes; 404 while the Terminal tab is off."""
-        if not await service.terminal_enabled():
-            raise HTTPException(status_code=404)
-        task = await find_task(slug, key)
-        return task, await service.get_run(await run_of(task, run_id))
-
-    @router.get("/p/{slug}/t/{key}/run/{run_id}/terminal", response_class=HTMLResponse)
-    async def run_terminal_page(request: Request, slug: str, key: str, run_id: int):
-        task, run = await terminal_run(slug, key, run_id)
-        response = render(
-            request,
-            "terminal.html",
-            t=task,
-            run=run,
-            back=f"/p/{slug}?task={task.key}",
-            base=f"/p/{slug}/t/{task.key}/run/{run.id}/terminal",
-        )
-        # xterm.js styles its rows with <style> elements it writes: this page alone allows
-        # inline styles; scripts stay 'self' only.
-        response.headers["content-security-policy"] = TERMINAL_CSP
-        return response
-
-    @router.post("/p/{slug}/t/{key}/run/{run_id}/terminal/token")
-    async def run_terminal_token(
-        request: Request,
-        slug: str,
-        key: str,
-        run_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        """A one-time token for the WebSocket, from a signed-in browser only (cookie + CSRF, no
-        Bearer); a refusal answers 409 with the reason."""
-        board_only(request, csrf)
-        _, run = await terminal_run(slug, key, run_id)
-        try:
-            if settings.host not in LOOPBACK_BINDS:
-                raise ValidationError(TERMINAL_NOT_LOOPBACK.format(host=settings.host))
-            minted = await service.terminal_token(run.id)
-        except ValidationError as exc:
-            return PlainTextResponse(str(exc), status_code=409)
-        return JSONResponse({"token": minted}, headers={"cache-control": "no-store"})
-
-    def terminal_socket_refusal(websocket: WebSocket) -> str | None:
-        """The SecurityMiddleware passes WebSockets through: every check is made here. The
-        server listens on loopback and the Host is a loopback name; no Bearer client; the
-        board's own cookie; an Origin equal to the board's own origin."""
-        headers = websocket.headers
-        if settings.host not in LOOPBACK_BINDS:
-            return "the server does not listen on loopback only"
-        host = headers.get("host") or ""
-        if host_name(host) not in LOCAL_HOSTS:
-            return "not a loopback host"
-        if "authorization" in headers:
-            return "the board only, not a Bearer client"
-        cookie = websocket.cookies.get(port_cookie(COOKIE_NAME, host))
-        if not same_secret(cookie, session_cookie_value(token)):
-            return "not signed in"
-        origin = headers.get("origin")
-        if origin is None or origin.lower() != f"http://{host.lower()}":
-            return "a foreign origin"
-        return None
-
-    @router.websocket("/p/{slug}/t/{key}/run/{run_id}/terminal")
-    async def run_terminal_socket(websocket: WebSocket, slug: str, key: str, run_id: int):
-        """Text frames out: what the TUI writes. In: JSON `{"type": "input", "data": …}` or
-        `{"type": "resize", "rows": …, "cols": …}`. A refusal closes before the handshake
-        (the browser sees 403); the end closes with the reason."""
-        refusal = terminal_socket_refusal(websocket)
-        if refusal is None and not await service.terminal_enabled():
-            refusal = "the Terminal tab is off"
-        own = run_id
-        if refusal is None:
-            try:
-                task = await find_task(slug, key)
-                own = await run_of(task, run_id)
-            except NotFoundError:
-                refusal = "no such run on this card"
-        await serve_terminal(websocket, own, refusal)
-
-    async def serve_terminal(websocket: WebSocket, own: int, refusal: str | None) -> None:
-        """The run's terminal over an accepted socket, once the checks of its route passed
-        (`refusal` None): the one-time token, then the PTY until the TUI exits or the browser
-        goes."""
-        run_id = own
-        params = websocket.query_params
-        if refusal is None and not service.terminals.take(params.get("token", ""), run_id):
-            refusal = "no valid one-time token"
-        if refusal is not None:
-            logger.warning("Terminal socket of run %d refused: %s", run_id, refusal)
-            await websocket.close(code=1008)
-            return
-        try:
-            terminal = await service.open_terminal(
-                own, params.get("rows", ""), params.get("cols", ""), actor="owner"
-            )
-        except DomainError as exc:
-            # After the handshake, so the page can show why (a close reason holds 123 bytes).
-            await websocket.accept()
-            await websocket.send_text(f"\r\n\x1b[33mrelaybay: {exc}\x1b[0m\r\n")
-            await websocket.close(code=TERMINAL_REFUSED, reason="refused")
-            return
-        reason = "the tab closed"
-        try:
-            await websocket.accept()
-            reason = await pump_terminal(websocket, terminal)
-        finally:
-            # Shielded: a server stop cancels this handler, and the tree must still die first.
-            outcome = await asyncio.shield(
-                service.close_terminal(own, actor="owner", reason=reason)
-            )
-        if reason != TERMINAL_EXITED:
-            return  # the browser went: the card tells the outcome
-        with contextlib.suppress(RuntimeError, WebSocketDisconnect):  # the browser went first
-            if outcome == TERMINAL_BACK:
-                await websocket.close(code=1000, reason="claude exited")
-            else:
-                await websocket.send_text(f"\r\n\x1b[33mrelaybay: {outcome}\x1b[0m\r\n")
-                await websocket.close(code=TERMINAL_HELD, reason="held")
-
-    async def pump_terminal(websocket: WebSocket, terminal: Any) -> str:
-        """Until the TUI exits or the browser goes: the reason the terminal closes."""
-
-        async def out() -> None:
-            while (chunk := await terminal.output()) is not None:
-                await websocket.send_text(chunk)
-
-        async def into() -> None:
-            while True:
-                message = json.loads(await websocket.receive_text())
-                if message.get("type") == "input":
-                    terminal.write(str(message.get("data", "")))
-                elif message.get("type") == "resize":
-                    terminal.resize(*clean_size(message.get("rows"), message.get("cols")))
-
-        writer, reader = asyncio.create_task(out()), asyncio.create_task(into())
-        done, pending = await asyncio.wait({writer, reader}, return_when=asyncio.FIRST_COMPLETED)
-        for job in pending:
-            job.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for job in done:
-            failure = job.exception()
-            if failure is not None and not isinstance(failure, WebSocketDisconnect):
-                logger.warning("The terminal socket of run %d failed: %r", terminal.run_id, failure)
-        if writer in done and writer.exception() is None:
-            return TERMINAL_EXITED
-        return "the tab closed"
-
-    # --- The coordinator: one run without a card, owner only -------------------------------
-
-    async def coordinator_context(before: int | None) -> dict[str, Any]:
-        found = await service.coordinator_page(before)
-        run = found.view.run if found.view is not None else None
-        runs = service.runs
-        return {
-            "c": found,
-            "before": before,
-            "available": runs is not None,
-            "running": run is not None and runs is not None and runs.is_running(run.id),
-            "desktop_ok": runs is not None and runs.desktop_launcher is not None,
-            "terminal_on": terminal_here() and await service.terminal_enabled(),
-            "terminal_open": run is not None and service.terminals.busy(run.id),
-        }
-
-    @router.get("/coordinator", response_class=HTMLResponse)
-    async def coordinator_page(request: Request, before: Annotated[int | None, Query(ge=1)] = None):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        response = await page(
-            request,
-            "coordinator.html",
-            "coordinator",
-            **await coordinator_context(before),
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    @router.get("/fragments/coordinator", response_class=HTMLResponse)
-    async def coordinator_fragment(
-        request: Request, before: Annotated[int | None, Query(ge=1)] = None
-    ):
-        return render(request, "_coordinator.html", **await coordinator_context(before))
-
-    @router.get("/fragments/coordinator-badge", response_class=HTMLResponse)
-    async def coordinator_badge(request: Request):
-        return render(request, "_coordinator_badge.html", badge=await service.coordinator_badge())
-
-    @router.post("/coordinator/{action}", response_class=HTMLResponse)
-    async def coordinator_action(
-        request: Request,
-        action: str,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-        text: Annotated[str, Form()] = "",
-    ):
-        """Start, Stop, New session, End, the owner's box and the hand-overs: from a signed-in
-        browser only (cookie + CSRF, never a Bearer client)."""
-        acts: dict[str, Callable[[], Awaitable[Any]]] = {
-            "start": lambda: service.start_coordinator(actor="owner"),
-            "new-session": lambda: service.start_coordinator(actor="owner", new_session=True),
-            "stop": lambda: service.stop_coordinator(actor="owner"),
-            "end": lambda: service.end_coordinator(actor="owner"),
-            "say": lambda: service.coordinator_say(text, actor="owner"),
-            "desktop": lambda: coordinator_run(service.open_in_desktop),
-            "back": lambda: coordinator_run(service.return_run),
-            "anyway": lambda: coordinator_run(service.start_anyway),
-        }
-        if action not in acts:
-            raise HTTPException(status_code=404)
-        board_only(request, csrf)
-        form = await request.form()
-        back = "/inbox" if form.get("from") == "inbox" else "/coordinator"
-        try:
-            await acts[action]()
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            return flash_redirect(request, back, error=str(exc))
-        return flash_redirect(request, back, message=COORDINATOR_DONE[action])
-
-    # --- Schedules: coordinator turns, read-only checks, reminders (owner only) -----------------
-
-    @router.get("/schedules", response_class=HTMLResponse)
-    async def schedules_page(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        found = await service.schedules()
-        response = await page(
-            request,
-            "schedules.html",
-            "schedules",
-            schedules=found,
-            history=await service.schedule_runs(limit=SCHEDULE_HISTORY),
-            projects=[item.project for item in await service.list_projects()],
-            check_profiles=await service.profiles(run_rules.CHECK),
-            kinds=srules.KINDS,
-            repeats=srules.REPEATS,
-            max_times=srules.MAX_TIMES,
-            every_min=srules.EVERY_MIN,
-            check_profile=srules.CHECK_PROFILE,
-            timezone=service.local_time.name(),
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    async def schedule_form(request: Request) -> dict[str, Any]:
-        form = await request.form()
-        return {
-            name: form.get(name)
-            for name in (
-                "kind",
-                "repeat",
-                "at",
-                "time_of_day",
-                "weekdays_only",
-                "every_minutes",
-                "max_times",
-                "project",
-                "task",
-                "profile",
-                "prompt",
-            )
-        }
-
-    @router.post("/schedules", response_class=HTMLResponse)
-    async def schedule_create(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
-        board_only(request, csrf)
-        try:
-            made = await service.create_schedule(await schedule_form(request), actor="owner")
-        except DomainError as exc:
-            return flash_redirect(request, "/schedules#new", error=str(exc))
-        return flash_redirect(
-            request, f"/schedules#schedule-{made.id}", message=f"Schedule {made.id} added."
-        )
-
-    @router.post("/schedules/notices/{schedule_run_id}/seen", response_class=HTMLResponse)
-    async def schedule_notice_seen(
-        request: Request,
-        schedule_run_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        board_only(request, csrf)
-        form = await request.form()
-        await service.mark_schedule_notice_seen(schedule_run_id, actor="owner")
-        back = "/inbox#inbox-schedules" if form.get("from") == "inbox" else "/schedules#history"
-        return flash_redirect(request, back, message="Marked seen.")
-
-    @router.post("/schedules/checks/{run_id}/anyway", response_class=HTMLResponse)
-    async def schedule_check_anyway(
-        request: Request, run_id: int, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        """Start anyway for a queued check (the Inbox's Queued turns)."""
-        board_only(request, csrf)
-        form = await request.form()
-        back = "/inbox" if form.get("from") == "inbox" else "/schedules"
-        run = await service.get_run(run_id)
-        if run.kind != run_rules.CHECK:
-            raise HTTPException(status_code=404)
-        try:
-            await service.start_anyway(run.id, actor="owner")
-        except DomainError as exc:
-            return flash_redirect(request, back, error=str(exc))
-        return flash_redirect(request, back, message="Its waiting turn is started.")
-
-    @router.post("/schedules/{schedule_id}/{action}", response_class=HTMLResponse)
-    async def schedule_action(
-        request: Request,
-        schedule_id: int,
-        action: str,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        if action not in SCHEDULE_ACTIONS:
-            raise HTTPException(status_code=404)
-        board_only(request, csrf)
-        anchor = f"/schedules#schedule-{schedule_id}"
-        try:
-            if action == "save":
-                await service.update_schedule(
-                    schedule_id, await schedule_form(request), actor="owner"
-                )
-            elif action in ("enable", "disable"):
-                await service.set_schedule_enabled(schedule_id, action == "enable", actor="owner")
-            elif action == "run":
-                await service.run_schedule_now(schedule_id, actor="owner")
-            elif action == "stop":
-                await service.stop_schedule(schedule_id, actor="owner")
-            else:
-                await service.delete_schedule(schedule_id, actor="owner")
-                anchor = "/schedules"
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            return flash_redirect(request, anchor, error=str(exc))
-        return flash_redirect(
-            request, anchor, message=SCHEDULE_ACTIONS[action].format(id=schedule_id)
-        )
-
-    async def coordinator_run(act: Callable[..., Awaitable[Any]]) -> Any:
-        run = await service.coordinator_run_view()
-        if run is None or not run.run.is_open:
-            raise ValidationError("The coordinator is not started.")
-        return await act(run.run.id, actor="owner")
-
-    async def coordinator_terminal_run() -> Any:
-        """The open coordinator run for the terminal routes; 404 while the Terminal tab is off
-        or no coordinator runs."""
-        if not await service.terminal_enabled():
-            raise HTTPException(status_code=404)
-        view = await service.coordinator_run_view()
-        if view is None or not view.run.is_open:
-            raise HTTPException(status_code=404)
-        return view.run
-
-    @router.get("/coordinator/terminal", response_class=HTMLResponse)
-    async def coordinator_terminal_page(request: Request):
-        run = await coordinator_terminal_run()
-        response = render(
-            request,
-            "terminal.html",
-            t=None,
-            run=run,
-            back="/coordinator",
-            base="/coordinator/terminal",
-        )
-        response.headers["content-security-policy"] = TERMINAL_CSP
-        return response
-
-    @router.post("/coordinator/terminal/token")
-    async def coordinator_terminal_token(
-        request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ) -> Response:
-        board_only(request, csrf)
-        run = await coordinator_terminal_run()
-        try:
-            if settings.host not in LOOPBACK_BINDS:
-                raise ValidationError(TERMINAL_NOT_LOOPBACK.format(host=settings.host))
-            minted = await service.terminal_token(run.id)
-        except ValidationError as exc:
-            return PlainTextResponse(str(exc), status_code=409)
-        return JSONResponse({"token": minted}, headers={"cache-control": "no-store"})
-
-    @router.websocket("/coordinator/terminal")
-    async def coordinator_terminal_socket(websocket: WebSocket):
-        refusal = terminal_socket_refusal(websocket)
-        if refusal is None and not await service.terminal_enabled():
-            refusal = "the Terminal tab is off"
-        view = await service.coordinator_run_view()
-        if refusal is None and (view is None or not view.run.is_open):
-            refusal = "the coordinator is not started"
-        await serve_terminal(websocket, view.run.id if view is not None else 0, refusal)
-
     # --- Questions to the owner: answered only here, on the board -------------------------
 
     async def questions_panel(
@@ -2194,12 +1375,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         task = await service.get_task(question.task_id) if question.task_id else None
         htmx = "hx-request" in request.headers
         inbox_side = place == "inbox"
-        if inbox_side:
-            back = "/inbox"
-        elif task is None:
-            back = "/coordinator"
-        else:
-            back = f"/p/{task.project_slug}?task={task.key}"
+        back = "/inbox" if inbox_side or task is None else f"/p/{task.project_slug}?task={task.key}"
         error = None
         try:
             await service.answer_question(
@@ -2220,7 +1396,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 request,
                 "_inbox.html",
                 inbox=await inbox(),
-                inbox_projects=await project_rows(),
                 error=error,
                 message=None if error else f"Question {question_id} answered.",
             )
@@ -2261,12 +1436,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         task = await service.get_task(approval.task_id)
         htmx = "hx-request" in request.headers
         inbox_side = place == "inbox"
-        if inbox_side:
-            back = "/inbox"
-        elif place == "coordinator":
-            back = "/coordinator"
-        else:
-            back = f"/p/{task.project_slug}?task={task.key}"
+        back = "/inbox" if inbox_side else f"/p/{task.project_slug}?task={task.key}"
         error = None
         done = f"Approval {approval_id} {'approved' if decision == 'approve' else 'refused'}."
         try:
@@ -2281,7 +1451,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             if not htmx:
                 return flash_redirect(request, back, error=str(exc))
             error = str(exc)
-        if not htmx or place == "coordinator":
+        if not htmx:
             if error is not None:
                 return flash_redirect(request, back, error=error)
             return flash_redirect(request, back, message=done)
@@ -2290,7 +1460,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 request,
                 "_inbox.html",
                 inbox=await inbox(),
-                inbox_projects=await project_rows(),
                 error=error,
                 message=None if error else done,
             )
@@ -2453,9 +1622,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             repo_kinds=REPO_KINDS,
             areas=(await service.project_areas(project.slug))[1],
             area_colors=AREA_COLORS,
-            run_defaults=await service.run_defaults(project.slug),
-            run_choices=RUN_CHOICES,
-            run_profiles=await service.profiles("card"),
             proposals=await service.proposals(project.slug),
             policies=await service.environment_policies(items),
             project_policy=await service.effective_policy(project.slug),
@@ -2581,29 +1747,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await environment_write(
             request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}", "Environment saved."
-        )
-
-    @router.post("/p/{slug}/run-defaults")
-    async def save_run_defaults(
-        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        async def write(form: Any) -> None:
-            values = {
-                name: str(form.get(name) or "")
-                for name in (
-                    "model",
-                    "effort",
-                    "profile",
-                    "folder",
-                    "retention",
-                )
-            }
-            await service.set_run_defaults(
-                slug, {**values, "chrome": form.getlist("chrome")[-1:] == ["1"]}, actor="owner"
-            )
-
-        return await environment_write(
-            request, slug, csrf, "run-defaults", write, "#run-defaults", "Agent defaults saved."
         )
 
     @router.post("/p/{slug}/repos")
@@ -3187,188 +2330,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     async def settings_index() -> Response:
         return RedirectResponse("/settings/integrations", status_code=303)
 
-    @router.get("/settings/agents", response_class=HTMLResponse)
-    async def agents_settings(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        runs = service.runs
-        login = await runs.login() if runs is not None else None
-        default_folder = None
-        if runs is not None:
-            path, note = await asyncio.to_thread(coordinator_default, runs.config.home)
-            default_folder = (str(path), note)
-        response = await page(
-            request,
-            "agents.html",
-            "settings",
-            available=runs is not None,
-            claude=runs.claude() if runs is not None else None,
-            claude_setting=settings.claude_path,
-            login=login,
-            login_line=run_auth.login_line(login) if login is not None else "",
-            layers=await service.run_layers(),
-            login_any=await service.run_login_any(),
-            terminal_enabled=await service.terminal_enabled(),
-            terminal_available=service.terminal_available(),
-            terminal_bind=None
-            if settings.host in LOOPBACK_BINDS
-            else TERMINAL_NOT_LOOPBACK.format(host=settings.host),
-            fix_command=run_auth.FIX_COMMAND,
-            limits=await service.run_limits(),
-            config_limits=(settings.max_running_turns, settings.min_free_memory_mb),
-            free_mb=await service.free_memory_now(),
-            coordinator=await service.coordinator_settings(),
-            coordinator_default=default_folder,
-            coordinator_profiles=await service.profiles(run_rules.COORDINATOR),
-            choices=RUN_CHOICES,
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    @router.post("/settings/agents/coordinator", response_class=HTMLResponse)
-    async def agents_coordinator(
-        request: Request,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-        folder: Annotated[str, Form()] = "",
-        profile: Annotated[str, Form()] = "",
-        model: Annotated[str, Form()] = "",
-        effort: Annotated[str, Form()] = "",
-        wake_gap_seconds: Annotated[str, Form()] = "",
-        compact_at_tokens: Annotated[str, Form()] = "",
-        daily_tokens: Annotated[str, Form()] = "",
-        budget_action: Annotated[str, Form()] = "",
-    ):
-        board_only(request, csrf)
-        values = {
-            "folder": folder,
-            "profile": profile,
-            "model": model,
-            "effort": effort,
-            "wake_gap_seconds": wake_gap_seconds,
-            "compact_at_tokens": compact_at_tokens,
-            "daily_tokens": daily_tokens,
-            "budget_action": budget_action,
-        }
-        try:
-            await service.set_coordinator_settings(values, actor="owner")
-        except DomainError as exc:
-            return flash_redirect(request, "/settings/agents#coordinator", error=str(exc))
-        return flash_redirect(request, "/settings/agents#coordinator", message="Saved.")
-
-    @router.post("/settings/agents/limits", response_class=HTMLResponse)
-    async def agents_limits(
-        request: Request,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-        max_running_turns: Annotated[str, Form()] = "",
-        min_free_memory_mb: Annotated[str, Form()] = "",
-    ):
-        board_only(request, csrf)
-        try:
-            await service.set_run_limits(max_running_turns, min_free_memory_mb, actor="owner")
-        except ValidationError as exc:
-            return flash_redirect(request, "/settings/agents#limits", error=str(exc))
-        return flash_redirect(request, "/settings/agents#limits", message="Saved.")
-
-    @router.post("/settings/agents/login-methods", response_class=HTMLResponse)
-    async def agents_login_methods(
-        request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        board_only(request, csrf)
-        # A hidden "0" comes before the checkbox, so the last value is the state.
-        allow = (await request.form()).getlist("allow")[-1:] == ["1"]
-        await service.set_run_login_any(allow, actor="owner")
-        return flash_redirect(request, "/settings/agents", message="Saved.")
-
-    @router.post("/settings/agents/terminal", response_class=HTMLResponse)
-    async def agents_terminal(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
-        board_only(request, csrf)
-        # A hidden "0" comes before the checkbox, so the last value is the state.
-        on = (await request.form()).getlist("on")[-1:] == ["1"]
-        problems = await service.set_terminal_enabled(on, actor="owner")
-        if problems:
-            return flash_redirect(request, "/settings/agents#terminal", error=" ".join(problems))
-        return flash_redirect(request, "/settings/agents#terminal", message="Saved.")
-
-    @router.get("/settings/profiles", response_class=HTMLResponse)
-    async def profiles_settings(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        response = await page(
-            request,
-            "profiles.html",
-            "settings",
-            profiles=await service.profiles(),
-            modes=run_rules.PERMISSION_MODES,
-            kinds=profile_rules.KINDS,
-            rights=profile_rules.RIGHTS,
-            per_day=profile_rules.PER_DAY,
-            fixed_lines=profile_rules.FIXED_LINES,
-            fixed_disallowed=profile_rules.FIXED_DISALLOWED,
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    def profile_form(form: Any) -> dict[str, Any]:
-        """A profile's fields as the editor sends them: rules one per line, a checkbox per
-        right and per run kind."""
-        return {
-            "description": str(form.get("description") or ""),
-            "permission_mode": str(form.get("permission_mode") or ""),
-            "allowed_tools": str(form.get("allowed_tools") or ""),
-            "disallowed_tools": str(form.get("disallowed_tools") or ""),
-            "rights": {
-                **{name: form.get(f"right_{name}") == "1" for name in profile_rules.RIGHT_NAMES},
-                profile_rules.PER_DAY: str(form.get(profile_rules.PER_DAY) or "0"),
-            },
-            "kinds": [str(k) for k in form.getlist("kinds")],
-        }
-
-    @router.post("/settings/profiles", response_class=HTMLResponse)
-    async def profile_create(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
-        board_only(request, csrf)
-        form = await request.form()
-        try:
-            made = await service.create_profile(
-                str(form.get("name") or ""), profile_form(form), actor="owner"
-            )
-        except DomainError as exc:
-            return flash_redirect(request, "/settings/profiles#new", error=str(exc))
-        return flash_redirect(
-            request, f"/settings/profiles#profile-{made.name}", message=f"{made.name} added."
-        )
-
-    @router.post("/settings/profiles/{name}/{action}", response_class=HTMLResponse)
-    async def profile_action(
-        request: Request,
-        name: str,
-        action: str,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        if action not in ("save", "reset", "delete"):
-            raise HTTPException(status_code=404)
-        board_only(request, csrf)
-        form = await request.form()
-        anchor = f"/settings/profiles#profile-{name}"
-        try:
-            if action == "save":
-                saved = await service.update_profile(name, profile_form(form), actor="owner")
-                message = f"{saved.name} saved (version {saved.version})."
-            elif action == "reset":
-                saved = await service.reset_profile(name, actor="owner")
-                message = f"{saved.name} reset to shipped (version {saved.version})."
-            else:
-                await service.delete_profile(name, actor="owner")
-                anchor, message = "/settings/profiles", f"{name} deleted."
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            return flash_redirect(request, anchor, error=str(exc))
-        return flash_redirect(request, anchor, message=message)
-
     @router.get("/settings/notifications", response_class=HTMLResponse)
     async def notifications(request: Request):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
@@ -3710,14 +2671,14 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await rules_write(request, csrf, proposal.scope, write)
 
-    # --- Intake: Inbox actions, Settings → Intake, the task's answer mark --------------------
+    # --- Board writes that answer with a flash; the done card's archive ----------------------
 
     def back_to(value: str, default: str) -> str:
         """Only a local path (`safe_next`): a form field must not send the browser elsewhere."""
         safe = safe_next(value)
         return safe if value and safe == value else default
 
-    async def intake_write(
+    async def board_write(
         request: Request, csrf: str, write: Callable[[], Awaitable[str]], back: str = "/inbox"
     ) -> Response:
         board_only(request, csrf)
@@ -3729,88 +2690,15 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return flash_redirect(request, back, error=str(exc))
         return flash_redirect(request, back, message=message)
 
-    @router.post("/intake/{message_id}/tie")
-    async def intake_tie(
-        request: Request,
-        message_id: int,
-        task: Annotated[str, Form()] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    @router.post("/inbox/worktrees/seen")
+    async def leftover_worktrees_seen(
+        request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
     ) -> Response:
         async def write() -> str:
-            tied = await service.intake_tie(message_id, task, actor="owner")
-            done = "the agent was woken" if tied.woke else "notification only"
-            return f"Message #{message_id} tied to {tied.task.key}: {done}."
+            await service.dismiss_leftover_worktrees(actor="owner")
+            return "The list of leftover worktrees is gone; the folders stay."
 
-        return await intake_write(request, csrf, write)
-
-    @router.post("/intake/{message_id}/dismiss")
-    async def intake_dismiss(
-        request: Request, message_id: int, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ) -> Response:
-        async def write() -> str:
-            await service.intake_dismiss(message_id, actor="owner")
-            return f"Message #{message_id} dismissed."
-
-        return await intake_write(request, csrf, write)
-
-    @router.post("/intake/{message_id}/propose")
-    async def intake_propose(
-        request: Request,
-        message_id: int,
-        project: Annotated[str, Form()] = "",
-        title: Annotated[str, Form()] = "",
-        description: Annotated[str, Form()] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            item = await service.intake_propose(
-                message_id, project, title, description, actor="owner"
-            )
-            return (
-                f"Backlog item #{item.id} added to {item.project_slug}: plan it from the backlog."
-            )
-
-        return await intake_write(request, csrf, write)
-
-    @router.post("/intake/{message_id}/forward", response_class=HTMLResponse)
-    async def intake_forward(
-        request: Request, message_id: int, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        board_only(request, csrf)
-        message = await service.intake_message(message_id)
-        if message.task_key is None:
-            raise ValidationError(f"Message #{message_id} is not tied to a task.")
-        error = None
-        try:
-            await service.intake_forward(message_id, actor="owner")
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            error = str(exc)
-        if "hx-request" not in request.headers:
-            return RedirectResponse(f"/t/{message.task_key}", status_code=303)
-        detail = await service.task_detail(message.task_key, reports=TASK_PAGE_REPORTS)
-        return render(request, "_task_view.html", detail=detail, error=error)
-
-    @router.post("/p/{slug}/t/{key}/answer/clear", response_class=HTMLResponse)
-    async def clear_answer(
-        request: Request,
-        slug: str,
-        key: str,
-        target: Annotated[str, Form()] = "view",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        board_only(request, csrf)
-        task = await service.clear_answer((await find_task(slug, key)).key, actor="owner")
-        if target == "inbox":
-            return RedirectResponse("/inbox#inbox-answers", status_code=303)
-        if "hx-request" not in request.headers:
-            return RedirectResponse(f"/p/{slug}?task={task.key}", status_code=303)
-        if target == "card":
-            code = {task.id: await service.task_code(task)}
-            return render(request, "_card.html", t=task, slug=slug, code=code)
-        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
-        return render(request, "_task_view.html", detail=detail)
+        return await board_write(request, csrf, write)
 
     async def archive_answer(
         request: Request, slug: str, key: str, archived: bool, target: str, csrf: str
@@ -3853,51 +2741,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ) -> Response:
         return await archive_answer(request, slug, key, False, target, csrf)
-
-    @router.get("/settings/intake", response_class=HTMLResponse)
-    async def intake_settings(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        response = await page(
-            request,
-            "intake.html",
-            "settings",
-            sources=await service.intake_sources(),
-            projects=await project_rows(),
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    @router.post("/settings/intake/sources/{source}/trust")
-    async def trust_source(
-        request: Request,
-        source: str,
-        may_wake: Annotated[str, Form()] = "0",
-        back: Annotated[str, Form()] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            saved = await service.set_source_trust(source, may_wake == "1", actor="owner")
-            state = "may wake agents" if saved.may_wake else "notification only"
-            return f"{saved.slug}: {state}."
-
-        return await intake_write(request, csrf, write, back_to(back, "/settings/intake"))
-
-    @router.post("/settings/intake/projects/{slug}")
-    async def project_autonomy(
-        request: Request,
-        slug: str,
-        autonomy: Annotated[str, Form()] = "0",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            saved = await service.set_project_autonomy(slug, autonomy == "1", actor="owner")
-            state = "on" if saved.autonomy else "off"
-            return f"Autonomy for {saved.slug}: {state}."
-
-        return await intake_write(request, csrf, write, "/settings/intake")
 
     # --- Backlog -------------------------------------------------------------------------
 
@@ -4006,7 +2849,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             )
             return f"Backlog item #{item.id} added."
 
-        return await intake_write(request, csrf, write, backlog_url(project, back))
+        return await board_write(request, csrf, write, backlog_url(project, back))
 
     # Before the decision route, which would take `queue` as a decision.
     @router.post("/backlog/{item_id}/queue")
@@ -4022,7 +2865,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             item = await service.set_backlog_queue(item_id, priority, assignee, actor="owner")
             return f"Backlog item #{item.id} saved."
 
-        return await intake_write(request, csrf, write, back_to(back, "/backlog"))
+        return await board_write(request, csrf, write, back_to(back, "/backlog"))
 
     @router.post("/backlog/{item_id}/{decision}")
     async def backlog_decide(
@@ -4045,7 +2888,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 return f"Backlog item #{item.id} planned as {item.task_key}."
             return f"Backlog item #{item.id}: {item.status}."
 
-        return await intake_write(request, csrf, write, back_to(back, "/backlog"))
+        return await board_write(request, csrf, write, back_to(back, "/backlog"))
 
     @router.get("/favicon.ico")
     async def favicon() -> Response:

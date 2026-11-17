@@ -5,7 +5,7 @@
 {% block content %}
 <main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}"{% if backlog_project %} data-project="{{ backlog_project.slug }}"{% endif %}>
   <h1>Backlog{% if not backlog_project %} <span class="muted">· all projects</span>{% endif %}</h1>
-  <p class="muted">Findings of sessions and reviews, proposals from intake and your own notes. An item is not a task: <em>To plan</em> creates the task in {{ label("plan") }}.</p>
+  <p class="muted">Findings of sessions and reviews and your own notes. An item is not a task: <em>To plan</em> creates the task in {{ label("plan") }}.</p>
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   {%- set base = "/p/" ~ backlog_project.slug ~ "/backlog" if backlog_project else "/backlog" %}

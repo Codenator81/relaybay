@@ -6,7 +6,6 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from starlette.background import BackgroundTask
 
 from relaybay.domain.hooks import (
     ATTENDED_FIELD,
@@ -14,8 +13,6 @@ from relaybay.domain.hooks import (
     HOOK_PATH,
     HOST_SESSION_FIELD,
     HOST_SESSION_HEADER,
-    RUN_FIELD,
-    RUN_HEADER,
     SPOOLED_FIELD,
     WAKE_HOLD_SECONDS,
     WAKE_PATH,
@@ -58,12 +55,6 @@ def build_hooks_router(
 ) -> APIRouter:
     router = APIRouter()
 
-    async def record_after_stop(payload: Any) -> None:
-        try:
-            await service.record_hook(payload)
-        except Exception:
-            logger.exception("Recording a hook event after a brake stop failed")
-
     @router.post(HOOK_PATH)
     async def claude_code_hook(request: Request) -> Response:
         payload = await _payload(request)
@@ -77,28 +68,20 @@ def build_hooks_router(
             # http hooks: the desktop session id comes as a header (command hooks: in the body).
             payload.setdefault(HOST_SESSION_FIELD, host)
             payload.setdefault(ATTENDED_FIELD, request.headers.get(ATTENDED_HEADER, ""))
-        run_id = request.headers.get(RUN_HEADER)
-        if run_id and isinstance(payload, dict):
-            payload.setdefault(RUN_FIELD, run_id)
-        if not (isinstance(payload, dict) and SPOOLED_FIELD in payload):
-            stopped = await service.brake_stop(payload)
-            if stopped is not None:
-                # The stop goes out first: a slow or failing write of the event must not lose it.
-                return JSONResponse(stopped, background=BackgroundTask(record_after_stop, payload))
         await service.record_hook(payload)
         if isinstance(payload, dict) and SPOOLED_FIELD in payload:
             # A replay from the forwarder's spool: nobody reads its answer, so owner comments
             # are not marked delivered to it.
             return Response(status_code=204)
         # SessionStart: the agent's exact id to pass as `hook_session` on writes. Prompt, tool
-        # and Stop events: owner comments and session messages for the exactly linked session.
+        # and Stop events: owner comments for the exactly linked session.
         answer = await service.hook_answer(payload)
         return JSONResponse(answer) if answer else Response(status_code=204)
 
     @router.post(WAKE_PATH)
     async def claude_code_wait(request: Request) -> Response:
-        """Long poll of the opt-in wake-up hook: `{"wake": text}` when an owner comment or a
-        session message arrived for the idle session, 204 when there is nothing to wake it for."""
+        """Long poll of the opt-in wake-up hook: `{"wake": text}` when an owner comment arrived for
+        the idle session, 204 when there is nothing to wake it for."""
         payload = await _payload(request)
         if payload is None or payload is _INVALID:
             return Response(status_code=204)

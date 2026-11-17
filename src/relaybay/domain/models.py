@@ -18,7 +18,6 @@ class Project:
     pulse: str | None = None  # where the project stands, at most 5 lines
     pulse_at: str | None = None
     pulse_by: str | None = None
-    autonomy: bool = False  # agents may continue by themselves after a trusted message
 
 
 @dataclass(slots=True)
@@ -89,24 +88,13 @@ class Task:
     plan_now: str | None = None  # title of the step in progress
     plan_now_position: int | None = None
     plan_revised_at: str | None = None  # when the newest plan revision was written
-    autonomy: str = "project"  # project (follows the project's switch), on, off
     rank: int = 0  # the owner's order within the stage column, lower first
-    project_autonomy: bool = False
-    answer_received_at: str | None = None  # an external message answered `waiting_on`
-    answer_message_id: int | None = None
     archived_at: str | None = None  # sent to the archive by hand (done only)
     archived_by: str | None = None
     unarchived_at: str | None = None  # the last "Back from the archive"
     area_id: int | None = None
     area: str | None = None  # the area's name
     area_color: str | None = None  # its palette key
-
-    @property
-    def autonomy_on(self) -> bool:
-        """Effective autonomy: the task's own switch, or the project's when it follows it."""
-        if self.autonomy == "project":
-            return self.project_autonomy
-        return self.autonomy == "on"
 
     @property
     def next_step_stale(self) -> bool:
@@ -196,7 +184,7 @@ class Comment:
 
     id: int
     task_id: int
-    author_kind: str  # 'owner', 'agent' or 'external' (an intake message forwarded to the agent)
+    author_kind: str  # 'owner', 'agent' or 'external' (an intake message of 0.11, forwarded)
     author: str
     session_id: int | None
     body_md: str

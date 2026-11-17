@@ -100,12 +100,15 @@ def test_require_tracker_log(tmp_path: Path) -> None:
             load_settings(home=tmp_path, environ={})
 
 
-def test_claude_path_from_file_and_env(tmp_path: Path) -> None:
-    assert load_settings(home=tmp_path, environ={}).claude_path is None
-    (tmp_path / "config.toml").write_text('claude_path = "/opt/claude/bin/claude"\n', "utf-8")
-    assert load_settings(home=tmp_path, environ={}).claude_path == Path("/opt/claude/bin/claude")
-    env = {"RELAYBAY_CLAUDE_PATH": "/usr/local/bin/claude"}
-    assert load_settings(home=tmp_path, environ=env).claude_path == Path("/usr/local/bin/claude")
-    (tmp_path / "config.toml").write_text('claude_path = " "\n', "utf-8")
-    with pytest.raises(ValueError, match="claude_path"):
-        load_settings(home=tmp_path, environ={})
+def test_the_keys_of_runs_are_accepted_and_ignored(tmp_path: Path) -> None:
+    assert load_settings(home=tmp_path, environ={}).ignored_keys == []
+    (tmp_path / "config.toml").write_text(
+        'claude_path = "/opt/claude/bin/claude"\nmax_running_turns = 0\n'
+        'min_free_memory_mb = "a lot"\nport = 8790\n',
+        "utf-8",
+    )
+    env = {"RELAYBAY_CLAUDE_PATH": " ", "RELAYBAY_MAX_RUNNING_TURNS": "x"}
+    settings = load_settings(home=tmp_path, environ=env)
+    assert settings.port == 8790
+    assert settings.ignored_keys == ["max_running_turns", "min_free_memory_mb", "claude_path"]
+    assert not hasattr(settings, "claude_path")

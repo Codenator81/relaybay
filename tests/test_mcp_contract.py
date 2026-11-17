@@ -301,12 +301,32 @@ async def test_every_deprecation_is_marked_on_the_server(tmp_path: Path) -> None
             assert entry.notice() in (tools[entry.tool].description or ""), entry
 
 
+async def test_a_removed_tool_does_nothing_and_says_why(tmp_path: Path) -> None:
+    mcp = build_mcp(Service(tmp_path / "relaybay.sqlite"))
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for entry in contract.DEPRECATIONS:
+        if entry.note is None or entry.tool not in tools:
+            continue
+        assert entry.note in (tools[entry.tool].description or ""), entry
+        schema = tools[entry.tool].input_schema
+        properties = schema.get("properties", {})
+        args = {
+            name: 1 if "integer" in json.dumps(properties.get(name, {})) else "x"
+            for name in schema.get("required", [])
+        }
+        result = await mcp.call_tool(entry.tool, args)
+        text = "".join(getattr(c, "text", "") for c in result.content)
+        assert text == contract.STUB_RESULT + "\n" + entry.note, (entry.tool, text)
+
+
 async def test_the_contract_resource_and_the_instructions(tmp_path: Path) -> None:
     mcp = build_mcp(Service(tmp_path / "relaybay.sqlite"))
     text = next(iter(await mcp.read_resource("relaybay://contract"))).content
     assert text.startswith(f"# relaybay MCP contract\n\nServer {relaybay.__version__}.\n\n")
     assert f"Contract version {contract.CONTRACT_VERSION}." in text
-    assert contract.RULE in text and "Deprecations: none." in text
+    assert contract.RULE in text
+    for entry in contract.DEPRECATIONS:
+        assert f"| `{entry.tool}` |" in text, entry
     assert "(contract v1: relaybay://contract)" in instructions(Rules(DEFAULT_RULES))
 
 

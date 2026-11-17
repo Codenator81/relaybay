@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from relaybay.domain.errors import NotFoundError, ValidationError
 from relaybay.security import csrf_token
-from relaybay.service import AUDIT_CHANGE_KINDS, Service
+from relaybay.service import AUDIT_CHANGE_KINDS, HISTORIC_AUDIT_KINDS, Service
 from relaybay.web.routes import EVENT_KINDS
 from tests.conftest import BASE, LiveServer, run_in_app
 from tests.test_environments import SECRET, answer, bash, live_project
@@ -47,7 +47,7 @@ async def test_audit_filters(service: Service) -> None:
     assert [e.id for e in await service.audit(decision="allow")] == [everything[1].id]
     assert await service.audit(environment="test") == []
     assert len(await service.audit(environment="live", project="acme-shop")) == 2
-    ids = await service.usage_session_ids(DESKTOP_A)
+    ids = await service.named_session_ids(DESKTOP_A)
     assert len(await service.audit(session_ids=ids)) == 2
     assert await service.audit(session_ids=[ids[0] + 1000]) == []
     assert [e.id for e in await service.audit(before_id=everything[0].id)] == [everything[1].id]
@@ -98,7 +98,7 @@ def test_every_audited_kind_is_a_known_event_kind() -> None:
     app_js = (Path(__file__).parents[1] / "src/relaybay/web/static/app.js").read_text(
         encoding="utf-8"
     )
-    for kind in AUDIT_CHANGE_KINDS:
+    for kind in set(AUDIT_CHANGE_KINDS) - set(HISTORIC_AUDIT_KINDS):
         assert f'"{kind}"' in app_js, kind
 
 

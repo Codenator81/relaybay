@@ -6,17 +6,13 @@ import base64
 import binascii
 import contextlib
 import dataclasses
-import functools
 import hashlib
 import json
 import logging
 import os
 import re
 import secrets
-import subprocess
-import sys
 import tempfile
-import threading
 import time
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -24,12 +20,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple, NoReturn
+from typing import Any, NamedTuple
 from urllib.parse import urlencode
 
 import aiosqlite
 
-from relaybay import updates
+from relaybay import gitinfo, updates
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain import annotations as ann
@@ -37,19 +33,11 @@ from relaybay.domain import approvals as arules
 from relaybay.domain import areas as area_rules
 from relaybay.domain import backlog, guard, intake
 from relaybay.domain import comments as comment_text
-from relaybay.domain import coordinator as crules
 from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
-from relaybay.domain import limits as agent_limits
 from relaybay.domain import memory as mem
-from relaybay.domain import messages as message_text
-from relaybay.domain import profiles as prules
 from relaybay.domain import questions as qrules
-from relaybay.domain import run_events as run_lines
-from relaybay.domain import runs as run_rules
-from relaybay.domain import schedules as srules
-from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
@@ -100,11 +88,8 @@ from relaybay.domain.hooks import (
     parse_hook,
     parse_launched_session,
     parse_message_recipient,
-    run_of_payload,
     session_start_context,
 )
-from relaybay.domain.intake import IntakeMessage
-from relaybay.domain.messages import SessionMessage
 from relaybay.domain.models import (
     Binding,
     Comment,
@@ -150,7 +135,6 @@ from relaybay.domain.plan import (
 )
 from relaybay.domain.plan import STEP_DETAILS_MAX as PLAN_DETAILS_MAX
 from relaybay.domain.plan import clean_step_title as clean_plan_title
-from relaybay.domain.profiles import RunProfile
 from relaybay.domain.questions import Question
 from relaybay.domain.reports import REPORT_SIZES, ReportCheck, parse_checks, parse_report
 from relaybay.domain.review import (
@@ -195,7 +179,6 @@ from relaybay.domain.rules import (
     verified_marks_problem,
     warning_text,
 )
-from relaybay.domain.runs import Run, RunDefaults, RunTurn, RunView, RunWorktree
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.switcher import (
@@ -219,7 +202,6 @@ from relaybay.domain.task_fields import (
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
 from relaybay.install import install_kind
-from relaybay.machine_setup import claude_paths
 from relaybay.policy import (
     DEFAULT_PRESET,
     EffectivePolicy,
@@ -234,17 +216,6 @@ from relaybay.policy import (
     validate_layer,
     widened_on_live,
 )
-from relaybay.runner import auth as run_auth
-from relaybay.runner import coordinator as coordinator_folder
-from relaybay.runner import desktop as run_desktop
-from relaybay.runner import memory as run_memory
-from relaybay.runner import terminal as run_terminal
-from relaybay.runner import transcripts, worktrees
-from relaybay.runner.claude_cli import TurnSpec, build_command, check_batch_word, is_batch
-from relaybay.runner.layers import LayerState, run_files, user_layer_state, write_run_files
-from relaybay.runner.manager import RunManager, RunnerConfig
-from relaybay.runner.stream import Result
-from relaybay.runner.worktrees import WorktreeSpec
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -259,38 +230,11 @@ HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatc
 LIVE_ACTION = "live.action"
 NO_LIVE_ON = "session.no_live_on"
 NO_LIVE_OFF = "session.no_live_off"
-# What the Audit page adds to the journal when asked: changes to who may do what, and done
-# cards archived or brought back by hand.
-AUDIT_CHANGE_KINDS = (
-    "policy.updated",
-    "policy.proposed",
-    "policy.proposal_accepted",
-    "policy.proposal_rejected",
-    "policy.proposal_reopened",
-    "environment.created",
-    "environment.updated",
-    "environment.deleted",
-    "environment.access_added",
-    "environment.access_updated",
-    "environment.access_removed",
-    "environment.proposed",
-    "environment.proposal_accepted",
-    "environment.proposal_rejected",
-    NO_LIVE_ON,
-    NO_LIVE_OFF,
+# Kinds of features removed in 0.12 (design 0025): never written again, still shown for the
+# rows already in the journal.
+HISTORIC_AUDIT_KINDS = (
     "run.settings_changed",
-    "question.asked",
-    "question.answered",
-    "question.defaulted",
-    "question.delivered",
-    "question.withdrawn",
-    "task.archived",
-    "task.unarchived",
-    "approval.requested",
-    "approval.decided",
-    "approval.used",
     "approval.released",
-    "approval.expired",
     "run.turn_queued",
     "run.start_anyway",
     "run.worktree_removed",
@@ -312,13 +256,57 @@ AUDIT_CHANGE_KINDS = (
     "coordinator.new_session",
     "coordinator.stopped",
     "coordinator.ended",
-    *srules.EVENT_KINDS,
+    "schedule.created",
+    "schedule.updated",
+    "schedule.deleted",
+    "schedule.fired",
+    "schedule.missed",
+    "schedule.skipped",
+    "schedule.ended",
+)
+# What the Audit page adds to the journal when asked: changes to who may do what, and done
+# cards archived or brought back by hand.
+AUDIT_CHANGE_KINDS = (
+    "policy.updated",
+    "policy.proposed",
+    "policy.proposal_accepted",
+    "policy.proposal_rejected",
+    "policy.proposal_reopened",
+    "environment.created",
+    "environment.updated",
+    "environment.deleted",
+    "environment.access_added",
+    "environment.access_updated",
+    "environment.access_removed",
+    "environment.proposed",
+    "environment.proposal_accepted",
+    "environment.proposal_rejected",
+    NO_LIVE_ON,
+    NO_LIVE_OFF,
+    "question.asked",
+    "question.answered",
+    "question.defaulted",
+    "question.delivered",
+    "question.withdrawn",
+    "task.archived",
+    "task.unarchived",
+    "approval.requested",
+    "approval.decided",
+    "approval.used",
+    "approval.expired",
+    *HISTORIC_AUDIT_KINDS,
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
 # Left free in the SessionStart answer next to the lines it holds anyway.
 SESSION_CONTEXT_RESERVE = 500
-LIMIT_LINE_EVENTS = ("UserPromptSubmit", "PostToolUse")
+# Written by migration 0049: the worktrees runs left behind, for one Inbox line.
+LEFTOVER_WORKTREES_KEY = "removed_runs_worktrees"
+WORKTREES_SEEN = "inbox.worktrees_seen"
+# Too many sessions at once: looked at every CONCURRENCY_CHECK_SECONDS; a session counts as
+# running with activity in the last CONCURRENCY_MINUTES, which is also the event's quiet time.
+CONCURRENCY_CHECK_SECONDS = 60.0
+CONCURRENCY_MINUTES = 10
 
 
 # Lines a write wants its caller to see without failing (e.g. a hook_session that was not
@@ -345,15 +333,6 @@ def _note(text: str) -> None:
 REPORT_MARKS_FROM_KEY = "report_marks_from"
 
 
-def _reason_kind(reason: str | None) -> str:
-    """`waiting for memory: 1.2 GB free, …` -> `waiting for memory`; a brake keeps its target."""
-    return (reason or "").split(":", 1)[0]
-
-
-def _cut_text(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
 def _first_line(text: str) -> str:
     return next((line.strip() for line in text.splitlines() if line.strip()), "")
 
@@ -368,28 +347,6 @@ def _note_closed_plan(task: Task) -> None:
 
 
 _last_now: datetime | None = None
-
-
-def _check_disallowed(stored: str | None) -> tuple[str, ...]:
-    rules = prules.turn_disallowed(stored)
-    return rules + tuple(t for t in prules.CHECK_DISALLOWED if t not in rules)
-
-
-def _turn_disallowed(run: Run) -> tuple[str, ...]:
-    """A turn's --disallowedTools: its profile's and the fixed ones; a check also has no file
-    writes and no relaybay tools."""
-    if run.kind == run_rules.CHECK:
-        return _check_disallowed(run.disallowed_tools)
-    return prules.turn_disallowed(run.disallowed_tools)
-
-
-def _ticked(value: Any) -> bool:
-    """A form's checkbox or a tool's flag."""
-    return value is True or str(value or "").strip().lower() in ("1", "true", "on", "yes")
-
-
-def _wake_span(wake: crules.CoordinatorWake) -> tuple[int, int]:
-    return wake.first_event_id, wake.last_event_id
 
 
 def _iso_before(now: str, delta: timedelta) -> str:
@@ -411,12 +368,6 @@ def now_iso() -> str:
 
 # Calls that may be a git action that needs an approval; without environments the rest is free.
 _APPROVAL_HINT_RE = re.compile(r"\b(git|gh)(\.exe)?\b", re.IGNORECASE)
-# The owner's approval on the board is stronger than Claude Code's own checks (a classifier, a
-# mode that refuses Bash): an approved run call is answered `allow` in every other mode.
-# The mode in which an approved call needs no `allow`: Claude Code skips its checks there.
-_SKIPPING_MODES = ("bypassPermissions",)
-# The owner's choice between turns that makes a run follow its profile's mode again.
-FOLLOW_PROFILE = "profile"
 # The approval check answers within the hook client's GUARDED_TIMEOUT_SECONDS (5 s): one read of
 # the current branch waits at most GATE_BRANCH_TIMEOUT_SECONDS, all reads of one check together
 # GATE_GIT_SECONDS. A branch read is reused for BRANCH_CACHE_SECONDS while the HEAD file of its
@@ -445,12 +396,11 @@ class _ApprovalScope:
     """What an approval check of one session's calls reads (`Service._approval_scope`)."""
 
     session: Session
-    run: Run | None
     tasks: list[Task]  # the card the request opens on first
     policy: EffectivePolicy  # of that card's project
     environments: list[Environment]
     policies: dict[int, EffectivePolicy]  # by environment id
-    folders: list[tuple[str, str]]  # (repository name, folder): worktrees and repositories
+    folders: list[tuple[str, str]]  # (repository name, folder) of the project repositories
 
 
 @dataclass(slots=True)
@@ -510,11 +460,8 @@ class TaskDetail:
     # Board targets of the document links in the description, progress, reports and comments.
     doc_refs: dict[str, mem.DocRef] = field(default_factory=dict)
     document: "TaskDocument | None" = None  # when the document field is a relaybay://doc link
-    intake: list[IntakeMessage] = field(default_factory=list)  # messages tied to the task
     from_backlog: BacklogItem | None = None  # the item "To plan" created this task from
     findings: list[BacklogItem] = field(default_factory=list)  # items this task is the origin of
-    budget: agent_limits.BudgetState | None = None  # the task's own token budget
-    messages: list[SessionMessage] = field(default_factory=list)  # newest first
     code: TaskCode = field(default_factory=lambda: TaskCode([], [], []))
     checks: dict[int, list[ReportCheck]] = field(default_factory=dict)  # `verified:` marks
     marks_from: int = 0  # reports with a smaller id were written before marks existed
@@ -554,33 +501,22 @@ class Inbox:
     review: list[Task] = field(default_factory=list)  # tasks in review/test with a checklist
     rule_proposals: list[RuleProposal] = field(default_factory=list)
     rule_notices: list[RuleVersion] = field(default_factory=list)  # direct rules_update, unread
-    intake: list[IntakeMessage] = field(default_factory=list)  # new messages, not tied yet
-    answers: list[Task] = field(default_factory=list)  # tasks with "answer received"
     backlog_new: int = 0  # one Inbox line, however many items
-    tie_choices: list[Task] = field(default_factory=list)  # "Tie to a task": waiting ones first
     # A newer relaybay release: one line on the Inbox page, not counted (badge, digests).
     update: updates.UpdateNotice | None = None
-    brakes: list[agent_limits.Brake] = field(default_factory=list)  # open: only the owner releases
-    budgets: list[agent_limits.BudgetState] = field(default_factory=list)  # past a threshold now
+    # Worktrees that runs of 0.11 created and left (paths), until the owner marks them seen.
+    leftover_worktrees: list[str] = field(default_factory=list)
     running_over: int | None = None  # sessions running while above the concurrency cap
     running_cap: int = 0
-    message_loops: list[SessionMessage] = field(default_factory=list)  # replies refused
     questions: list[Question] = field(default_factory=list)  # open, of all cards
     approvals: list[Approval] = field(default_factory=list)  # open requests, of all cards
-    queued: list[Run] = field(default_factory=list)  # runs whose turn waits in the queue
-    # Reminders and answers of checks without a card, until the owner marks them seen.
-    schedules: list[srules.ScheduleRun] = field(default_factory=list)
 
     @property
     def count(self) -> int:
         asked = {q.task_id for q in self.questions} | {a.task_id for a in self.approvals}
         return (
             len(self.questions)
-            + len(self.schedules)
             + len(self.approvals)
-            + len(self.queued)
-            + len(self.intake)
-            + len(self.answers)
             + (1 if self.backlog_new else 0)
             # A card waiting on the owner for its open question or request counts once, as that.
             + len({t.id for t in self.waiting} - asked)
@@ -593,10 +529,8 @@ class Inbox:
             + len(self.rule_proposals)
             + len(self.rule_notices)
             + len(self.review)
-            + len(self.brakes)
-            + len(self.budgets)
             + (1 if self.running_over is not None else 0)
-            + len(self.message_loops)
+            + (1 if self.leftover_worktrees else 0)
         )
 
 
@@ -604,7 +538,6 @@ class Inbox:
 class SessionRow:
     session: Session
     tasks: list[Task]  # bound to the session now
-    unread_messages: int = 0  # session messages to it not acknowledged yet
 
 
 FILTER_NAME_MAX = 60
@@ -814,45 +747,6 @@ def _project_override(slug: str, body: str) -> dict[str, Any]:
 
 def _context(event: str, text: str) -> dict[str, Any]:
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
-
-
-def _clean_message(body: Any) -> str:
-    # Control characters and line separators would grow several times as a quoted literal.
-    kept = []
-    for char in str(body or ""):
-        kind = unicodedata.category(char)
-        if kind in ("Zl", "Zp"):
-            kept.append("\n")
-        elif char in "\n\r\t" or kind not in ("Cc", "Cf", "Cs"):
-            kept.append(char)
-    text = _clean_text("".join(kept), "Message", message_text.MESSAGE_MAX)
-    if not text:
-        raise ValidationError("Message must not be empty.")
-    if message_text.too_long_quoted(text):
-        raise ValidationError(
-            "Message is too long for one hook answer once quoted: line breaks, quotes and"
-            " backslashes count double. Shorten it."
-        )
-    return text
-
-
-def _hook_proven(session: Session) -> bool:
-    """Exactly linked and its hooks report: an id only written on a row proves nothing."""
-    return session.cc_exact and session.status not in (None, "ended")
-
-
-def _message_arrival(recipient: Session) -> str:
-    """When a new message can reach `recipient`, said as it is."""
-    name = intake.one_line(recipient.name)
-    reason = message_text.no_delivery_reason(recipient.cc_exact, recipient.status)
-    if reason is not None:
-        return (
-            f"Not delivered: {reason}. It stays unread until then; {name} can also read it"
-            " with messages_list."
-        )
-    if recipient.status == "idle":
-        return f"Not delivered yet: {name} is idle. It sees this at its next prompt or wake-up."
-    return f"Not delivered yet: it reaches {name} at its next tool call or prompt."
 
 
 def _clean_comment(body: Any) -> str:
@@ -1083,56 +977,11 @@ def _first_words(text: str, limit: int = 80) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
-def _clean_source_slug(value: Any) -> str:
-    slug = str(value or "").strip().lower()
-    if not intake.SOURCE_SLUG_RE.match(slug):
-        raise ValidationError(
-            f"Invalid source {value!r}: use lowercase letters, digits and dashes (up to 40),"
-            " e.g. 'support-chat'."
-        )
-    return slug
-
-
 def _clean_id(value: Any, name: str) -> int:
     text = str(value if value is not None else "").strip().lstrip("#")
     if not text.isdigit() or len(text) > 18:
         raise ValidationError(f"{name} must be a number such as 12, got {value!r}.")
     return int(text)
-
-
-def _clean_moment(value: Any, name: str) -> str | None:
-    """An ISO 8601 time from a watcher, stored in UTC; None when not given."""
-    text = _clean_text(value, name, 40)
-    if not text:
-        return None
-    try:
-        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValidationError(f"{name} must be an ISO time like 2026-11-05T10:00:00Z.") from None
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).isoformat(timespec="milliseconds")
-
-
-def _rate_limited(message: IntakeMessage) -> bool:
-    return message.status == "refused" and (message.refused_reason or "").startswith("rate limit")
-
-
-TIE_CHOICES_MAX = 40
-
-
-def _tie_choices(tasks: list[Task]) -> list[Task]:
-    """Open tasks for the Inbox's task picker: those waiting on someone first."""
-    open_tasks = [t for t in tasks if t.stage != Stage.DONE]
-    return sorted(open_tasks, key=lambda t: not t.waiting_on)[:TIE_CHOICES_MAX]
-
-
-@dataclass(slots=True)
-class PostTie:
-    message: IntakeMessage
-    task: Task
-    woke: bool
-    reason: str
 
 
 def _clean_slug(value: str) -> str:
@@ -1145,167 +994,11 @@ def _clean_slug(value: str) -> str:
     return slug
 
 
-CLAUDE_MISSING = (
-    "claude was not found on PATH or in the usual install folders; install Claude Code or set"
-    " claude_path in config.toml."
-)
-NO_RUN_REPO = "A run works in one of the project's repositories: add one on Stands & access first."
-SEND_REPEAT_SECONDS = 5.0  # the same text from the same sender this soon is one turn
-BRIEF_ROOM = 500  # left in BRIEF_MAX for the run header and the report line
-RUN_REPORT_LINE = (
-    "At the end of each turn add a report with report_add on this card; its first line is"
-    " `state · size · gist`."
-)
-RUN_START_STAGES = ("plan", "dev")
-COORDINATOR_REF = "coordinator"  # run_status's name for the coordinator run
-RUN_START_NOT_COORDINATOR = (
-    "run_start is only for the coordinator sessions named in the server's config; a side task"
-    " goes to backlog_add. Nothing started."
-)
 ARCHIVE_NOT_COORDINATOR = (
     "{tool} is only for the coordinator sessions named in the server's config; a desktop id also"
     " needs that session's own hook_session. Nothing changed. The owner archives done cards on"
     " the board."
 )
-RUN_SETTINGS_NOT_COORDINATOR = (
-    "run_settings is only for the coordinator sessions named in the server's config; the owner"
-    " changes a run on the card. Nothing changed."
-)
-CLAUDE_SESSION_RE = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-RUN_CHECK_SECONDS = 15.0  # how often queued turns, closes and the retention are looked at
-RETENTION_SECONDS = 3600.0  # how often old run lines are deleted
-# The options of relaybay's question about a worktree a card's close kept.
-WORKTREE_REMOVE = "remove"
-WORKTREE_KEEP = "keep"
-SERVER_STOPPING = "waiting for the server to start again"
-TERMINAL_OFF = "The Terminal tab is off; the owner turns it on in Settings -> Agents."
-# What closing a terminal left: the run handed back, or held with the reason (`close_terminal`).
-TERMINAL_BACK = "the run is back with relaybay"
-TERMINAL_MISSING = (
-    "The Terminal tab needs a pseudo-terminal: on Windows the pywinpty package, which this"
-    " install lacks (reinstall relaybay)."
-)
-
-
-@dataclass(slots=True)
-class RunForm:
-    """What the Start form of a card shows."""
-
-    defaults: RunDefaults
-    repos: list[ProjectRepo]
-    task_repo_ids: set[int]
-    brief: str
-    claude: str | None
-    login: run_auth.LoginState | None
-    login_line: str
-    layers: LayerState | None
-    refusals: list[str]
-    fix_command: str
-    repo_modes: dict[int, str] = field(default_factory=dict)  # "new" or "self", the default
-    copy_line: str = ""
-    profiles: list[RunProfile] = field(default_factory=list)  # the ones for runs on cards
-
-
-PREVIEW_TIMEOUT_SECONDS = 10.0
-PREVIEW_CACHE_SECONDS = 15.0
-# The Start form renders on every live event of the card: what a worktree of a repository gets
-# copied is asked of git at most every PREVIEW_CACHE_SECONDS. Start itself always asks again.
-_preview_cache: dict[str, tuple[float, list[str]]] = {}
-
-
-def _preview_names(path: str, git: str) -> list[str]:
-    now = time.monotonic()
-    cached = _preview_cache.get(path)
-    if cached is not None and now - cached[0] < PREVIEW_CACHE_SECONDS:
-        return cached[1]
-    names = worktrees.copy_list(path, git, timeout=PREVIEW_TIMEOUT_SECONDS)
-    _preview_cache[path] = (now, names)
-    return names
-
-
-def _worktree_preview(repos: list[ProjectRepo], git: str | None) -> tuple[dict[int, str], str]:
-    """Per repository the Start form's default (a new worktree for a git repository, else the
-    repository itself) and one line saying what a new worktree of each gets copied."""
-    if git is None:
-        return {r.id: "self" for r in repos}, "git is not on PATH: runs use the repositories."
-    modes: dict[int, str] = {}
-    parts = []
-    for r in repos:
-        is_git = os.path.lexists(Path(r.path) / ".git")
-        modes[r.id] = "new" if is_git else "self"
-        if not is_git:
-            continue
-        try:
-            names = _preview_names(r.path, git)
-        except ValidationError as exc:
-            parts.append(f"{r.name}: cannot tell ({exc})")
-            continue
-        listed = (Path(r.path) / worktrees.INCLUDE_FILE).is_file()
-        by = f" (by its {worktrees.INCLUDE_FILE})" if listed else ""
-        parts.append(f"{r.name}{by}: {worktrees.summary(names)}")
-    if not parts:
-        return modes, ""
-    return modes, (
-        "Copied into a new worktree, untracked and never added to git (CLAUDE.md,"
-        " CLAUDE.local.md, .claude/, .mcp.json, or the repository's .worktreeinclude): "
-        + "; ".join(parts)
-        + "."
-    )
-
-
-async def _make_worktrees(
-    specs: list[WorktreeSpec], git: str | None, task_key: str, run_id: int
-) -> list[WorktreeSpec]:
-    """`worktrees.add_all` in a thread. A Start cancelled while it works (the request went away,
-    the server stops) does not stop the thread: what it made is removed once it is done."""
-    made: list[WorktreeSpec] = []
-    work = asyncio.ensure_future(
-        asyncio.to_thread(worktrees.add_all, specs, git, task_key, run_id, made=made)
-    )
-    try:
-        return await asyncio.shield(work)
-    except asyncio.CancelledError:
-
-        def undo(_: object) -> None:
-            threading.Thread(
-                target=worktrees.remove_created, args=(list(made), git), daemon=True
-            ).start()
-
-        work.add_done_callback(undo)
-        raise
-
-
-def _ended_hint(run: Run) -> str:
-    if run.is_coordinator:
-        return f"Run {run.id} has ended; start the coordinator again on the Coordinator page."
-    return f"Run {run.id} has ended; start a new run on {run.task_key}."
-
-
-def _owner_place(run: Run) -> str:
-    return "in the Terminal tab" if run.in_terminal else "in the desktop app"
-
-
-def _add_dirs(cwd: str, paths: list[str]) -> tuple[str, ...]:
-    """Every folder of the run other than the cwd, once each."""
-    seen = {worktrees.path_key(cwd)}
-    out = []
-    for path in paths:
-        key = worktrees.path_key(path)
-        if key not in seen:
-            seen.add(key)
-            out.append(path)
-    return tuple(out)
-
-
-def _same_folder(a: Path, b: Path) -> bool:
-    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
-
-
-def _paths_overlap(a: str, b: str) -> bool:
-    """The same folder, or one inside the other."""
-    x = os.path.normcase(os.path.normpath(a)).rstrip(os.sep)
-    y = os.path.normcase(os.path.normpath(b)).rstrip(os.sep)
-    return x == y or x.startswith(y + os.sep) or y.startswith(x + os.sep)
 
 
 class Service:
@@ -1335,13 +1028,9 @@ class Service:
         digest_budget_chars: int = limits.DEFAULT_BUDGET,
         session_context: str = "auto",
         session_context_project_chars: int = limits.DEFAULT_SESSION_PROJECT_CHARS,
-        usage_enabled: bool = True,
         coordinators: list[str] | None = None,
         max_concurrent_sessions: int = 0,
         rules_table: dict[str, Any] | None = None,
-        runner: RunnerConfig | None = None,
-        max_running_turns: int = run_rules.DEFAULT_MAX_RUNNING,
-        min_free_memory_mb: int = run_rules.DEFAULT_MIN_MEMORY_MB,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -1372,10 +1061,6 @@ class Service:
         self._config_table_hash = rules_hash(table)
         self.rules_mode = rules_mode
         self.coordinators = [c.strip() for c in coordinators or [] if c.strip()]
-        # Runs whose `claude --desktop` is being launched now (Back waits for it).
-        self.desktop_launching: set[int] = set()
-        # The Terminal tab's `claude --resume` per run; tests put a fake backend in it.
-        self.terminals = run_terminal.TerminalManager(run_terminal.default_backend())
         # The first report id the missing-marks warning applies to: reports written before
         # migration 0036 never warn (set at start).
         self.report_marks_from = 0
@@ -1429,39 +1114,12 @@ class Service:
         self.digest_budget_chars = digest_budget_chars
         self.session_context = session_context
         self.session_context_project_chars = session_context_project_chars
-        self.usage_enabled = usage_enabled
         self.max_concurrent_sessions = max_concurrent_sessions
-        # Budgets each session has heard about in this context: (budget, period key, level).
-        self._budget_told: dict[int, set[tuple[int, str, str]]] = {}
-        self._limits_wake = asyncio.Event()  # a new budget does not wait out the reader's sleep
-        self._wake_kick = asyncio.Event()  # a committed event: the coordinator's wakes look
-        # When a message event was last written, per sender and recipient; what a hook's
-        # transcript path was found to be, so the file system is asked once per path; subagent
-        # files over the limit, per transcript file.
+        # When a message event was last written, per sender and recipient.
         self._message_written: dict[int, dict[str, float]] = {}
-        self._transcript_checked: dict[str, bool] = {}
-        self._usage_capped: dict[int, int] = {}
         self.update = updates.UpdateStatus()  # the last update check, in memory only
         # Projects whose missing or stale pulse a stage move already mentioned in this run.
         self._pulse_noted: set[int] = set()
-        # The turns of runs on cards; None without a runner config (runs are then refused).
-        self.runs: RunManager | None = RunManager(self, runner) if runner is not None else None
-        # config.toml's limits; the owner's values from Settings -> Agents win over them.
-        self.max_running_turns = max_running_turns
-        self.min_free_memory_mb = min_free_memory_mb
-        # Free memory in MB (None: not readable here); tests put their own reader here.
-        self.memory_reader: Callable[[], int | None] | None = None
-        # Closings of cards gone to done (end the run, remove worktrees, delete traces).
-        self._closings: dict[int, asyncio.Task[None]] = {}
-        self._brake_stops: set[asyncio.Task[None]] = set()
-        self._braked_runs: set[int] = set()  # a brake stop of these is under way
-        self._trace_failures: dict[int, list[str]] = {}  # per run: what its last delete left
-        self._retention_at: float | None = None  # monotonic time of the last retention pass
-        # The schedules' clock (UTC now) and the machine's local time; tests put their own.
-        self.clock: Callable[[], datetime] = lambda: datetime.now(UTC)
-        self.local_time: srules.LocalTime = srules.SystemTime()
-        self._schedule_kick = asyncio.Event()  # a schedule saved: the clock looks again
-        self._schedule_lock = asyncio.Lock()  # one pass (or Run now) handles due times at once
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1482,7 +1140,6 @@ class Service:
         for row in await repo.list_policy_layers(self._read_conn):
             self._db_layer(row)
         await self._sweep_attachments()
-        await self._recover_runs()
         await self._backfill_report_marks()
 
     async def _backfill_report_marks(self) -> None:
@@ -1505,13 +1162,6 @@ class Service:
         self.report_marks_from = int(value)
 
     async def close(self) -> None:
-        # A card's close that is under way finishes first: it may be removing a worktree.
-        pending = [*self._closings.values(), *self._brake_stops]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        if self.runs is not None:
-            await self.runs.close()  # the turns end `stopped` while the database is still open
-        await self._close_terminals("server stopped")
         for timer in [*self._activity_timers.values(), *self._status_timers.values()]:
             timer.cancel()
         self._activity_timers.clear()
@@ -1548,12 +1198,8 @@ class Service:
 
     async def _commit_and_publish(self, conn: aiosqlite.Connection, events: list[Event]) -> None:
         await conn.execute("COMMIT")
-        if events:
-            self._wake_kick.set()
         for event in events:
             self.bus.publish(event)
-            if event.kind == "task.stage_changed" and event.payload.get("to") == Stage.DONE.value:
-                self._schedule_close(event.task_id, event.actor)
 
     def desktop_link(self, external_id: str) -> str:
         return self.desktop_link_template.replace("{id}", external_id)
@@ -1788,18 +1434,6 @@ class Service:
                 " and its hook link stays as it is."
             )
             return session
-        # The same for a session brake, on a guessed row too: the row keeps its hooks.
-        if (
-            held
-            and not from_window
-            and session.cc_session_id not in (None, cc_id)
-            and await repo.session_brake_open(tx.conn, session.id)
-        ):
-            _note(
-                f"Warning: hook_session {cc_id} not linked: this session is braked and its hook"
-                " link stays as it is."
-            )
-            return session
         if (
             other is not None
             and other.id != session.id
@@ -1815,20 +1449,13 @@ class Service:
             return session
         if other is not None and other.id != session.id:
             await repo.move_session_todo(tx.conn, other.id, session.id, cc_id)
-            await repo.move_usage(tx.conn, other.id, session.id)
-            await repo.move_session_brakes(tx.conn, other.id, session.id)
             changes.update(
                 status=other.status,
                 activity=other.activity,
                 activity_at=other.activity_at,
                 cwd=other.cwd,
             )
-            if other.transcript_path:
-                changes["transcript_path"] = other.transcript_path
             if other.kind == "hook" and not await repo.has_bindings(tx.conn, other.id):
-                # Only a guess is merged: naming the id of an ended session takes no mail.
-                if not other.cc_exact:
-                    await repo.move_session_messages(tx.conn, other.id, session.id)
                 await repo.delete_session(tx.conn, other.id)
             else:
                 await repo.move_open_bindings(tx.conn, other.id, session.id)
@@ -1981,17 +1608,6 @@ class Service:
         desktop session bound in the project of `cwd`; several possible ones (or a folder of
         several projects) stay unlinked; none, a plain session named after the folder."""
         found = await repo.get_session_by_cc(tx.conn, hook.cc_session_id)
-        if hook.run_id is not None:
-            linked = await self._run_hook_session(tx, hook)
-            if linked is not None:
-                return linked
-            if found is not None:
-                return found
-            # Not that run's turn (a `claude` started inside it inherits the id): its own row,
-            # never a guess onto a desktop session.
-            projects = await repo.projects_with_repo_path(tx.conn)
-            project, _ = self._project_for_cwd(projects, hook.cwd)
-            return await self._new_hook_session(tx, hook, project.id if project else None, None)
         desktop = await self._host_desktop(tx, hook, found)
         if desktop is not None:
             return await self._link_hook_session(tx, desktop, hook.cc_session_id, from_window=True)
@@ -2101,20 +1717,6 @@ class Service:
                 to=recipient,
             )
 
-    async def _allowed_transcript(self, value: str | None) -> str | None:
-        """The hook's transcript path when it may be kept. The answer is remembered per path:
-        most hook events repeat the path and none of them should touch the disk for it. The one
-        check runs in a worker thread: a path can take long to answer, the hook path must not."""
-        if value is None or not self.usage_enabled:
-            return None
-        allowed = self._transcript_checked.get(value)
-        if allowed is None:
-            if len(self._transcript_checked) >= HOOK_MEMO_MAX:
-                self._transcript_checked.clear()
-            allowed = await asyncio.to_thread(usage_data.transcript_file, value) is not None
-            self._transcript_checked[value] = allowed
-        return value if allowed else None
-
     async def _stale_replay(self, hook: HookEvent) -> bool:
         """A spooled event older than the session's last status or activity change: newer
         events already got through (an old SessionEnd must not end a session that started
@@ -2176,7 +1778,6 @@ class Service:
         return session
 
     async def _apply_hook_status(self, hook: HookEvent) -> Session:
-        transcript = await self._allowed_transcript(hook.transcript_path)
         async with self._tx() as tx:
             session = await self._hook_session(tx, hook)
             timer = self._activity_timers.pop(session.id, None)
@@ -2189,9 +1790,6 @@ class Service:
             if changes["status"] != session.status or changes["activity"] != session.activity:
                 # A replay keeps its own time, so the spooled events after it stay in order.
                 changes["activity_at"] = hook.spooled_at or tx.now
-            if transcript is not None and transcript != session.transcript_path:
-                changes["transcript_path"] = transcript
-                await repo.track_usage_file(tx.conn, session.id, transcript, tx.now)
             await repo.touch_session(tx.conn, session.id, tx.now, changes)
             updated = await repo.get_session_by_id(tx.conn, session.id)
             assert updated is not None
@@ -2237,13 +1835,8 @@ class Service:
     def _continues(session: Session, hook: HookEvent) -> bool:
         """A SessionEnd after which the session goes on under a new Claude Code id keeps its
         tasks: /clear and /resume in any session, every end of a desktop session (its id
-        outlives the Claude Code processes; the next SessionStart links the new one) and of a
-        run's session."""
-        return (
-            session.external_id is not None
-            or session.kind == "run"  # every turn of a run ends its process; the run goes on
-            or hook.end_reason in CONTINUED_END_REASONS
-        )
+        outlives the Claude Code processes; the next SessionStart links the new one)."""
+        return session.external_id is not None or hook.end_reason in CONTINUED_END_REASONS
 
     # --- comment delivery through hooks ------------------------------------
 
@@ -2305,18 +1898,10 @@ class Service:
         )
         args = (session.id, BOARD_ACTORS, ACCEPTANCE_TOLD, since)
         bound = await repo.untold_plan_acceptances(self._r, *args)
-        coordinator_run = (
-            await repo.open_coordinator_run(self._r) if session.kind == "run" else None
-        )
-        own = coordinator_run is not None and coordinator_run.session_id == session.id
-        others = (
-            await repo.untold_board_acceptances(self._r, *args) if self.coordinators or own else []
-        )
+        others = await repo.untold_board_acceptances(self._r, *args) if self.coordinators else []
         # Asked only when there is something to tell: the check reads several rows.
-        # The coordinator run's own session row is relaybay's, not a caller's claim.
         coordinator = bool(others) and (
-            bool(own)
-            or await self._is_coordinator(
+            await self._is_coordinator(
                 self._r, session.external_id or session.name, session.cc_session_id
             )
         )
@@ -2346,10 +1931,6 @@ class Service:
                 lines.append(line)
         return lines
 
-    async def _unread_messages_line(self, session: Session) -> str:
-        count = len(await repo.unread_session_messages(self._r, session.id))
-        return " " + message_text.unread_line(count) if count else ""
-
     async def hook_answer(self, payload: Any) -> dict[str, Any] | None:
         """The JSON a hook event is answered with, or None for an empty answer. Comment text goes
         only to the hook session its agent linked itself and only for the tasks bound to it."""
@@ -2365,11 +1946,9 @@ class Service:
             if unread:
                 context += " " + comment_text.unread_line(unread)
             if session is not None:
-                context += await self._unread_messages_line(session)
                 # A new context: the agent has seen nothing yet.
                 self._tool_events[session.id] = 0
                 self._reminded.pop(session.id, None)
-                self._budget_told.pop(session.id, None)
             # Always computed: it is marked as sent, and the fallback when no context is added.
             reminder = await self._plan_reminder(session) if session is not None else None
             room = CONTEXT_MAX - len(context) - len(reminder or "") - SESSION_CONTEXT_RESERVE
@@ -2389,9 +1968,8 @@ class Service:
         except Exception:
             # The approval stays held; it expires by its valid_until.
             logger.exception("relaybay could not settle the approvals held for a call")
-        lines = await self._limit_lines(hook) if hook.event in LIMIT_LINE_EVENTS else []
         if session is None:
-            return _context(hook.event, "\n".join(lines)) if lines else None
+            return None
         if hook.event == "UserPromptSubmit":
             self._stop_blocks.pop(session.id, None)  # a new turn
         if hook.event in DELIVERY_EVENTS:
@@ -2400,23 +1978,16 @@ class Service:
             if due is not None:
                 reminder = await self._plan_reminder(session, repeat=due == "periodic")
             budget = CONTEXT_MAX - (len(reminder) + 1 if reminder else 0)
-            budget -= sum(len(line) + 1 for line in lines)
             accepted = await self._take_plan_acceptances(session, budget)
             budget -= sum(len(line) + 1 for line in accepted)
             shown, total = await self._take_undelivered(session, budget, alone=not accepted)
-            parts = [*accepted, *await self._take_waiting_answers(session)]
+            parts = [*accepted]
             if shown:
                 parts.append(comment_text.delivery_text(shown, total))
             if reminder:
                 parts.append(reminder)
-            parts += lines
-            parts += await self._message_parts(session, *parts)
             return _context(hook.event, "\n".join(parts)) if parts else None
         if hook.event == "Stop":
-            if await self._braked(session, hook.cwd):
-                # The owner stopped it: no comment keeps the turn going.
-                self._stop_blocks.pop(session.id, None)
-                return None
             return await self._stop_answer(session, hook.stop_hook_active)
         return None
 
@@ -2425,12 +1996,6 @@ class Service:
     ) -> dict[str, Any] | None:
         """PreToolUse: the guard's decision plus owner comments for an exactly linked session.
         The guard never stands in the way through a failure of its own: it then says nothing."""
-        stopped = await self._brake_answer(payload, hook)
-        if stopped is not None:
-            return stopped
-        refused = await self._profile_answer(payload, hook)
-        if refused is not None:
-            return refused
         try:
             touch, warnings = await self._guard(payload, hook)
         except Exception:
@@ -2442,8 +2007,7 @@ class Service:
             try:
                 gate = await self._approval_gate(payload, hook)
             except Exception:
-                logger.exception("relaybay approval check failed")
-                gate = await self._approval_check_failed(payload, hook)
+                logger.exception("relaybay approval check failed; the tool call goes on")
         contexts = list(warnings)
         if exact is not None:
             budget = CONTEXT_MAX - sum(len(line) + 1 for line in contexts)
@@ -2451,17 +2015,15 @@ class Service:
             contexts += accepted
             budget -= sum(len(line) + 1 for line in accepted)
             shown, total = await self._take_undelivered(exact, budget, alone=not accepted)
-            contexts += await self._take_waiting_answers(exact)
             if shown:
                 contexts.append(comment_text.delivery_text(shown, total))
-            contexts += await self._message_parts(exact, *contexts)
         out: dict[str, Any] = {"hookEventName": "PreToolUse"}
         if touch is not None:
             # Never "allow": that would skip Claude Code's own permission prompt.
             out["permissionDecision"] = touch.decision
             out["permissionDecisionReason"] = touch.reason
         elif gate is not None:
-            # "allow" only for a call the owner approved on the board, one approval per call.
+            # The gate asks or denies; it never answers "allow".
             out["permissionDecision"], out["permissionDecisionReason"] = gate
         if contexts:
             out["additionalContext"] = "\n".join(contexts)
@@ -2520,12 +2082,6 @@ class Service:
         actor = session.name if session else "hook"
         command = guard_command(call, test_secrets)
         async with self._tx() as tx:
-            if session is not None and session.kind == "run":
-                # Its lines and transcript go when the card closes, allowed call or not.
-                for run in await repo.open_runs_of_session(tx.conn, session.id):
-                    if await repo.mark_run(tx.conn, run.id, "touched_live_at", tx.now):
-                        task = await self._run_task(tx.conn, run)
-                        await self._run_event(tx, "run.touched_live", "relaybay", task, run.id)
             bound = await repo.open_tasks_of_session(tx.conn, session.id) if session else []
             for touch in touches:
                 env = touch.environment
@@ -2564,9 +2120,7 @@ class Service:
         turn). After that the SessionStart line and comments_list remind of them."""
         blocks = self._stop_blocks.get(session.id, 0)
         allowed = blocks < STOP_BLOCK_CAP and (blocks > 0 or not stop_hook_active)
-        due = (await self._stop_candidates(self._r, session))[0] or (
-            await self._stop_message_due(self._r, session)
-        )
+        due = (await self._stop_candidates(self._r, session))[0]
         if not allowed or not due:
             self._stop_blocks.pop(session.id, None)  # the turn ends
             return None
@@ -2578,14 +2132,11 @@ class Service:
                 await self._deliver(tx, session, fresh)
             if shown:
                 await repo.count_stop_blocks(tx.conn, [c.id for c in shown])
-            reason = comment_text.stop_reason(shown, total) if shown else None
-            messages = await self._stop_message_text(tx, session, reason)
-        if not shown and not messages:
+        if not shown:
             self._stop_blocks.pop(session.id, None)
             return None
         self._stop_blocks[session.id] = blocks + 1
-        text = "\n".join(part for part in (reason, messages) if part)
-        return {"decision": "block", "reason": text}
+        return {"decision": "block", "reason": comment_text.stop_reason(shown, total)}
 
     async def wait_for_comments(
         self,
@@ -2595,8 +2146,8 @@ class Service:
         poll: float = 1.0,
         gone: Callable[[], Awaitable[bool]] | None = None,
     ) -> str | None:
-        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment, a
-        session message or the owner's acceptance of a plan (as the tool hooks tell it) arrives
+        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment or
+        the owner's acceptance of a plan (as the tool hooks tell it) arrives
         for the idle, exactly linked session of `payload`, mark it delivered and return the
         text for the agent. None when the time is up, the session is not idle (its own hooks
         deliver then), a newer wait for the same session started, or `gone()` says the hook
@@ -2605,9 +2156,7 @@ class Service:
         if not isinstance(cc_id, str) or not cc_id.strip():
             return None
         session = await self._exact_session(cc_id.strip()[:CC_ID_MAX])
-        # A run's turn ends its process: nothing would read a wake-up, and what it took would
-        # be marked delivered and lost. The next turn's hooks tell it instead.
-        if session is None or session.kind == "run":
+        if session is None:
             return None
         self._waiter_seq += 1
         me = self._waiters[session.id] = self._waiter_seq
@@ -2622,8 +2171,6 @@ class Service:
                 current = await self._exact_session(cc_id.strip()[:CC_ID_MAX])
                 if current is None or current.id != session.id:
                     return None
-                if await self._braked(current, current.cwd):
-                    return None
                 # Not while a turn goes on: a Stop block of this turn means it continues.
                 if current.status != "idle" or session.id in self._stop_blocks:
                     continue
@@ -2632,7 +2179,6 @@ class Service:
                 shown, total = await self._take_undelivered(current, budget, alone=not parts)
                 if shown:
                     parts.append(comment_text.delivery_text(shown, total))
-                parts += await self._message_parts(current, *parts)
                 if parts:
                     return "\n".join(parts)
             return None
@@ -2677,35 +2223,41 @@ class Service:
         for reply in await repo.unread_agent_replies(self._r):
             replies.setdefault(reply.task_id, []).append(reply)
         return Inbox(
-            waiting,
-            warned,
-            not_logged,
-            await self.unlinked_hook_sessions(),
-            [(by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id],
-            await repo.list_proposals(self._r),
-            await repo.list_policy_proposals(self._r),
-            await repo.review_queue(self._r),
-            await repo.list_rule_proposals(self._r),
-            await repo.list_rule_notices(self._r),
-            await repo.list_messages(self._r, status="new", limit=intake.LIST_MAX),
-            [t for t in tasks if t.answer_received_at and t.stage != Stage.DONE],
-            sum((await repo.backlog_new_counts(self._r)).values()),
-            _tie_choices(tasks),
-            self.update_notice(),
-            await repo.open_brakes(self._r),
-            await self._marked_budgets(
-                self._r,
-                now.date().isoformat(),
-                await repo.budget_marks(self._r, now.date().isoformat(), agent_limits.TOTAL_KEY),
-            ),
-            await self._concurrency_over(now),
-            self.max_concurrent_sessions,
-            await repo.open_message_loops(self._r),
-            await self.open_questions(),
-            await self.open_approval_requests(),
-            await self.queued_runs(),
-            await repo.schedule_notices(self._r),
+            waiting=waiting,
+            rule_warnings=warned,
+            not_logged=not_logged,
+            unlinked=await self.unlinked_hook_sessions(),
+            replies=[
+                (by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id
+            ],
+            proposals=await repo.list_proposals(self._r),
+            policy_proposals=await repo.list_policy_proposals(self._r),
+            review=await repo.review_queue(self._r),
+            rule_proposals=await repo.list_rule_proposals(self._r),
+            rule_notices=await repo.list_rule_notices(self._r),
+            backlog_new=sum((await repo.backlog_new_counts(self._r)).values()),
+            update=self.update_notice(),
+            leftover_worktrees=await self.leftover_worktrees(),
+            running_over=await self._concurrency_over(now),
+            running_cap=self.max_concurrent_sessions,
+            questions=await self.open_questions(),
+            approvals=await self.open_approval_requests(),
         )
+
+    async def leftover_worktrees(self) -> list[str]:
+        """The worktrees runs of 0.11 created and did not remove, as migration 0049 listed
+        them; relaybay touches none of them."""
+        value = await repo.get_app_setting(self._r, LEFTOVER_WORKTREES_KEY)
+        if not value:
+            return []
+        paths = json.loads(value)
+        return [str(p) for p in paths] if isinstance(paths, list) else []
+
+    async def dismiss_leftover_worktrees(self, *, actor: str = "owner") -> None:
+        """The owner's Seen on the Inbox line: the list goes, the folders stay."""
+        async with self._tx() as tx:
+            if await repo.delete_app_setting(tx.conn, LEFTOVER_WORKTREES_KEY):
+                await tx.event(WORKTREES_SEEN, actor)
 
     def update_notice(self) -> updates.UpdateNotice | None:
         """The Inbox line about a newer release, with the upgrade command of this install."""
@@ -2741,8 +2293,7 @@ class Service:
         for task in await repo.list_tasks(self._r, session_ids=list(bound)):
             if task.session_id is not None:
                 bound[task.session_id].append(task)
-        unread = await repo.unread_session_message_counts(self._r, list(bound))
-        return [SessionRow(s, bound[s.id], unread.get(s.id, 0)) for s in sessions]
+        return [SessionRow(s, bound[s.id]) for s in sessions]
 
     async def activity(
         self,
@@ -2840,113 +2391,7 @@ class Service:
             assert found is not None
             return found
 
-    # --- usage -------------------------------------------------------------
-
-    async def usage_pass(
-        self,
-        *,
-        budget: int = usage_data.PASS_BYTES,
-        chunk_bytes: int = usage_data.CHUNK_BYTES,
-        max_lines: int = usage_data.LINES_PER_TRANSACTION,
-    ) -> tuple[int, bool]:
-        """One bounded round over the tracked transcripts: returns the messages newly counted and
-        whether a file is still behind. Files are read in a worker thread with no transaction
-        open; each read is stored in one transaction. A file that fails for any reason keeps its
-        rows, the page says so, and the next file is read. Only a read that moved on is charged to
-        `budget`: a partial line waiting for its end costs nothing and goes to the back."""
-        spent = counted = 0
-        await self._find_subagent_files()
-        for file in await repo.list_usage_files(self._r):
-            offset, skipping, error = file.read_offset, file.skipping, file.error
-            try:
-                while True:
-                    if spent >= budget:
-                        return counted, True
-                    chunk = await asyncio.to_thread(
-                        usage_data.read_file, file.path, offset, skipping, chunk_bytes, max_lines
-                    )
-                    moved = chunk.shrunk or chunk.offset != offset or chunk.skipping != skipping
-                    if moved:
-                        spent += chunk.read_bytes
-                    if moved or chunk.lines or chunk.unknown or error is not None:
-                        async with self._tx() as tx:
-                            counted += await repo.apply_usage_chunk(tx.conn, file.id, chunk, tx.now)
-                    elif chunk.read_bytes:
-                        async with self._tx() as tx:
-                            await repo.touch_usage_file(tx.conn, file.id, tx.now)
-                    offset, skipping, error = chunk.offset, chunk.skipping, None
-                    if not (moved and chunk.behind):
-                        break
-            except FileNotFoundError:
-                continue  # not written yet, or removed: what was read stays counted
-            except Exception as exc:
-                await self._usage_file_failed(file, exc, error)
-        return counted, False
-
-    async def _usage_file_failed(
-        self, file: usage_data.UsageFile, exc: Exception, previous: str | None
-    ) -> None:
-        """Only the kind of failure is kept: an exception's text could quote a line."""
-        reason = (exc.strerror if isinstance(exc, OSError) else None) or type(exc).__name__
-        logger.warning("Usage: transcript file #%d not read: %s", file.id, reason)
-        if reason != previous:
-            async with self._tx() as tx:
-                await repo.set_usage_error(tx.conn, file.id, reason, tx.now)
-
-    async def _find_subagent_files(self) -> None:
-        """Track the subagent transcripts beside each reported transcript, for the same session,
-        up to `SUBAGENT_FILES_MAX` per session. Here and not on the hook path: they appear while
-        a session works, long after it reported its transcript."""
-        files = await repo.list_usage_files(self._r)
-        known = {f.path for f in files}
-        per_session: dict[int | None, int] = {}
-        for file in files:
-            if file.parent_id is not None:
-                per_session[file.session_id] = per_session.get(file.session_id, 0) + 1
-        for file in files:
-            if file.parent_id is not None:
-                continue
-            used = per_session.get(file.session_id, 0)
-            room = max(usage_data.SUBAGENT_FILES_MAX - used, 0)
-            try:
-                found, over = await asyncio.to_thread(
-                    usage_data.subagent_files, file.path, known, room
-                )
-                self._usage_capped[file.id] = over
-                if found:
-                    async with self._tx() as tx:
-                        await repo.add_subagent_files(tx.conn, file, found, tx.now)
-                    known.update(found)
-                    per_session[file.session_id] = used + len(found)
-            except Exception as exc:
-                await self._usage_file_failed(file, exc, file.error)
-
-    async def usage_loop(self, interval: float) -> None:
-        """The background reader and the budget check: never on the hook path, sooner again while
-        a file is behind. With `usage_enabled` false nothing is read; the check still runs for the
-        new day's release and the concurrency cap."""
-        while True:
-            behind = False
-            wait = interval
-            try:
-                if self.usage_enabled:
-                    _, behind = await self.usage_pass()
-            except Exception:
-                logger.exception("Reading transcripts failed; the next pass tries again")
-            try:
-                await self.limits_pass()
-                if await self._limits_active():
-                    wait = min(interval, agent_limits.CHECK_SECONDS)
-            except Exception:
-                logger.exception("Checking budgets failed; the next pass tries again")
-            await self._limits_sleep(usage_data.CATCH_UP_SECONDS if behind else wait)
-
-    async def _limits_sleep(self, seconds: float) -> None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(self._limits_wake.wait(), seconds)
-        self._limits_wake.clear()
-
-    async def usage_session_ids(self, ref: str) -> list[int]:
+    async def named_session_ids(self, ref: str) -> list[int]:
         """Sessions a name, external id, alias or Claude Code id names."""
         found = await repo.find_sessions(self._r, ref)
         if not found:
@@ -2956,715 +2401,28 @@ class Service:
             raise NotFoundError(f"Session {ref!r} not found.")
         return [s.id for s in found]
 
-    async def usage_report(
-        self,
-        *,
-        project: str | None = None,
-        session_ids: list[int] | None = None,
-        model: str | None = None,
-        days: int = 30,
-        group: str = "day",
-    ) -> usage_data.UsageReport:
-        """Tokens per period, session and model. `days` 0 means all of it."""
-        if group not in ("day", "week"):
-            raise ValidationError("group must be day or week.")
-        if not 0 <= days <= usage_data.DAYS_MAX:
-            raise ValidationError(f"days must be from 0 (all) to {usage_data.DAYS_MAX}.")
-        today = datetime.now(UTC).date()
-        since = (today - timedelta(days=days - 1)).isoformat() if days else None
-        project_id = (await self.get_project(project)).id if project else None
-        rows = await repo.usage_day_rows(
-            self._r, since=since, project_id=project_id, session_ids=session_ids, model=model
-        )
-        files, unread, unknown = await repo.usage_file_stats(self._r)
-        return usage_data.build_report(
-            rows,
-            group=group,
-            days=days,
-            today=today,
-            files=files,
-            unread_files=unread,
-            unknown_lines=unknown,
-            capped_files=sum(self._usage_capped.values()),
-        )
-
-    async def usage_filters(self) -> tuple[list[tuple[int, str]], list[str]]:
-        return await repo.usage_sessions(self._r), await repo.usage_models(self._r)
-
     async def unlinked_hook_sessions(self, limit: int = 50) -> list[Session]:
         """Hook sessions that could not be linked to one relaybay session (Settings page)."""
         return await repo.list_unlinked_hook_sessions(self._r, limit)
 
-    # --- brake and token budgets ---------------------------------------------
+    # --- too many sessions at once ------------------------------------------
 
-    async def _brake_for(
-        self, session: Session | None, cwd: str | None
-    ) -> agent_limits.Brake | None:
-        """The open brake that covers a session: every kind of link counts, a guessed one too.
-        A read on every tool call; without an open brake nothing else is asked."""
-        brakes = await repo.open_brakes(self._r)
-        if not brakes:
-            return None
-        # All of them, not the guard's "the folder only without links": a brake on a project
-        # also holds a session that works in its folder for a task elsewhere.
-        project_ids = set(await self._guard_projects(session, cwd))
-        # Two projects on one folder: a brake on either holds it, the guard's tie does not apply.
-        projects = await repo.projects_with_repo_path(self._r)
-        project_ids.update(p.id for p in self._projects_at_cwd(projects, cwd))
-        task_ids = (
-            {t.id for t in await repo.open_tasks_of_session(self._r, session.id)}
-            if session is not None
-            else set()
-        )
-        if session is not None and session.kind == "run":
-            # A check's session is bound to no card: its schedule names the card.
-            task_ids.update(await repo.check_tasks_of_session(self._r, session.id))
-        for brake in brakes:
-            if (
-                brake.scope == "all"
-                or (brake.scope == "project" and brake.project_id in project_ids)
-                or (brake.scope == "task" and brake.task_id in task_ids)
-                or (
-                    brake.scope == "session"
-                    and session is not None
-                    and brake.session_id == session.id
-                )
-            ):
-                return brake
-        return None
-
-    async def _braked(self, session: Session, cwd: str | None) -> bool:
-        """Fails open, like the guard: a brake that cannot be read blocks nothing."""
-        try:
-            return await self._brake_for(session, cwd) is not None
-        except Exception:
-            logger.exception("Reading the brake failed; the session goes on")
-            return False
-
-    async def _brake_answer(self, payload: Any, hook: HookEvent) -> dict[str, Any] | None:
-        """PreToolUse under the brake: `continue: false` ends the turn, `deny` covers a client
-        that reads only the decision. relaybay's own tools pass: the agent may still report."""
-        tool = payload.get("tool_name") if isinstance(payload, dict) else None
-        if isinstance(tool, str) and (
-            tool.startswith(guard.OWN_TOOL_PREFIX) or tool in agent_limits.FREE_TOOLS
-        ):
-            return None
-        try:
-            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
-            brake = await self._brake_for(session, hook.cwd)
-        except Exception:
-            logger.exception("Reading the brake failed; the tool call goes on")
-            return None
-        if brake is None:
-            return None
-        reason = agent_limits.deny_reason(brake)
-        return {
-            "continue": False,
-            "stopReason": reason,
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            },
-        }
-
-    async def brake_stop(self, payload: Any) -> dict[str, Any] | None:
-        """The stop of a `PreToolUse` under the brake, or None. Reads only: the receiver asks it
-        before it writes the event, so a slow or failing write cannot lose the stop. A refused
-        call of a run's turn also has the turn's process tree killed, in the background."""
-        hook = parse_hook(payload)
-        if hook is None or hook.event != "PreToolUse":
-            return None
-        answer = await self._brake_answer(payload, hook)
-        if answer is not None and self.runs is not None:
-            for run_id in await self._runs_of_hook(payload, hook):
-                if run_id not in self._braked_runs:
-                    self._braked_runs.add(run_id)
-                    stop = asyncio.create_task(self._stop_braked_run(run_id))
-                    self._brake_stops.add(stop)
-                    stop.add_done_callback(self._brake_stops.discard)
-        return answer
-
-    async def _profile_answer(self, payload: Any, hook: HookEvent) -> dict[str, Any] | None:
-        """PreToolUse of a check's or the coordinator's turn: a call that no allow rule of its
-        profile matches (the coordinator also has its folder's Edit rule) is denied. Under
-        `dontAsk` the user's and the project's own `permissions.allow` rules are pre-approved,
-        so the allow list alone is not a wall. Fails open, like every hook: a failure here
-        refuses nothing."""
-        if not isinstance(payload, dict):
-            return None
-        tool = payload.get("tool_name")
-        tool_input = payload.get("tool_input")
-        if not isinstance(tool, str) or tool in agent_limits.FREE_TOOLS:
-            return None
-        try:
-            run = None
-            for run_id in sorted(await self._runs_of_hook(payload, hook)):
-                found = await repo.get_run(self._r, run_id)
-                if (
-                    found is not None
-                    and found.is_open
-                    and found.kind in (run_rules.CHECK, run_rules.COORDINATOR)
-                    and found.claude_session_id in (None, hook.cc_session_id)
-                ):
-                    run = found
-                    break
-            if run is None:
-                return None
-            windows = sys.platform == "win32"
-            rules = list(run.allowed_rules)
-            if run.is_coordinator:
-                # The call's path is resolved (links followed): so is the folder.
-                folder = await asyncio.to_thread(lambda: str(Path(run.cwd).resolve()))
-                rules.append(crules.edit_rule(folder, windows=windows))
-            allowed = prules.call_allowed(
-                rules,
-                tool,
-                tool_input if isinstance(tool_input, dict) else {},
-                cwd=hook.cwd or run.cwd,
-                windows=windows,
-            )
-        except Exception:
-            logger.exception("Checking a call against its run's profile failed; it goes on")
-            return None
-        if allowed:
-            return None
-        reason = (
-            f"relaybay: {tool} is outside the allow list of profile {run.profile} for this"
-            f" {run.kind} run{'' if run.is_coordinator else ' (read-only)'}; a Bash command must"
-            " match one rule as a single command. Nothing ran."
-        )
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }
-
-    async def _runs_of_hook(self, payload: Any, hook: HookEvent) -> set[int]:
-        """The runs a refused call may come from: the open run of the hook's session row (a
-        command hook carries the run id on SessionStart only, which linked the row) and the run
-        an http hook names in its header. Each is checked again before anything is killed."""
-        found: set[int] = set()
-        named = run_of_payload(payload)
-        if named is not None:
-            found.add(named)
-        try:
-            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
-            if session is not None and session.kind == "run":
-                found.update(r.id for r in await repo.open_runs_of_session(self._r, session.id))
-        except Exception:
-            logger.exception("Finding the run of a braked call failed; only its own stop holds")
-        return found
-
-    async def _stop_braked_run(self, run_id: int) -> None:
-        """Kill the turn of a run whose call the brake refused, when a brake holds the run itself
-        (the run id came with the hook, so it is checked here, not trusted)."""
-        try:
-            runs = self.runs
-            run = await repo.get_run(self._r, run_id)
-            if runs is None or run is None or not run.is_open or not runs.is_running(run.id):
-                return
-            brake = await self._run_brake(self._r, run)
-            if brake is not None:
-                await runs.stop(run.id, run_rules.brake_reason(brake.target, brake.reason))
-        except Exception:
-            logger.exception("Stopping braked run %d failed; its turn may still run", run_id)
-        finally:
-            self._braked_runs.discard(run_id)
-
-    async def _limit_lines(self, hook: HookEvent) -> list[str]:
-        """Context lines of the brake (on the owner's prompt, which is never blocked) and of a
-        budget past a threshold (once per session). Any link counts: no comment text is in them."""
-        try:
-            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
-            lines = []
-            if hook.event == "UserPromptSubmit":
-                brake = await self._brake_for(session, hook.cwd)
-                if brake is not None:
-                    lines.append(agent_limits.prompt_line(brake))
-            if session is not None:
-                lines += await self._budget_lines(session, hook.cwd)
-            return lines
-        except Exception:
-            logger.exception("Reading the limits failed; the session goes on")
-            return []
-
-    async def _budget_lines(self, session: Session, cwd: str | None) -> list[str]:
-        today = datetime.now(UTC).date().isoformat()
-        rows = await repo.budget_mark_rows(self._r, today, agent_limits.TOTAL_KEY)
-        told = self._budget_told.setdefault(session.id, set())
-        if not set(rows) - told:
-            return []
-        marks: dict[int, set[str]] = {}
-        for budget_id, _, level in rows:
-            marks.setdefault(budget_id, set()).add(level)
-        project_ids = await self._guard_projects(session, cwd)
-        task_ids = {t.id for t in await repo.open_tasks_of_session(self._r, session.id)}
-        lines = []
-        for state in await self._marked_budgets(self._r, today, marks):
-            budget = state.budget
-            covers = (
-                budget.scope == "all"
-                or (budget.scope == "project" and budget.project_id in project_ids)
-                or (budget.scope == "task" and budget.task_id in task_ids)
-                or (budget.scope == agent_limits.SESSION_SCOPE and budget.session_id == session.id)
-            )
-            own = {row for row in rows if row[0] == budget.id}
-            if covers and own - told:
-                lines.append(agent_limits.budget_line(state))
-                told.update(own)
-        return lines
-
-    def _forget_told(self, budget_id: int) -> None:
-        for told in self._budget_told.values():
-            told -= {entry for entry in told if entry[0] == budget_id}
-
-    async def _budget_used(
-        self, conn: aiosqlite.Connection, budget: agent_limits.TokenBudget, today: str
-    ) -> int:
-        day = today if budget.period == "day" else None
-        if budget.scope == agent_limits.SESSION_SCOPE:
-            assert budget.session_id is not None
-            return await repo.session_turn_tokens(conn, budget.session_id, day)
-        if budget.scope == "task":
-            assert budget.task_id is not None
-            return await repo.task_tokens(conn, budget.task_id, day) + await repo.check_tokens(
-                conn, task_id=budget.task_id, day=day
-            )
-        project_id = budget.project_id if budget.scope == "project" else None
-        return await repo.usage_tokens(
-            conn, project_id=project_id, day=day
-        ) + await repo.check_tokens(conn, project_id=project_id, day=day)
-
-    async def _marked_budgets(
-        self, conn: aiosqlite.Connection, today: str, marks: dict[int, set[str]]
-    ) -> list[agent_limits.BudgetState]:
-        """The budgets past a threshold in their current period, the highest one of each."""
-        found = []
-        for budget in await repo.list_budgets(conn):
-            levels = marks.get(budget.id)
-            if levels:
-                level = (
-                    agent_limits.EXCEEDED
-                    if agent_limits.EXCEEDED in levels
-                    else agent_limits.WARNED
-                )
-                used = await self._budget_used(conn, budget, today)
-                found.append(agent_limits.BudgetState(budget, used, level))
-        return found
-
-    async def _insert_brake(
-        self,
-        tx: _Tx,
-        *,
-        scope: str,
-        project: Project | None = None,
-        session: Session | None = None,
-        task: Task | None = None,
-        reason: str,
-        source: str,
-        actor: str,
-        budget_id: int | None = None,
-        caller_id: int | None = None,
-    ) -> agent_limits.Brake:
-        """A brake already open on the same target is answered with that one, not a second row;
-        a budget's own brake is apart, so releasing one never lifts the other."""
-        project_id = project.id if project else (task.project_id if task else None)
-        if session is not None and project_id is None:
-            project_id = session.project_id
-        session_id = session.id if session else None
-        task_id = task.id if task else None
-        for open_brake in await repo.open_brakes(tx.conn):
-            if (
-                (open_brake.scope, open_brake.session_id, open_brake.task_id)
-                == (scope, session_id, task_id)
-                and (scope != "project" or open_brake.project_id == project_id)
-                and open_brake.budget_id == budget_id
-            ):
-                return open_brake
-        brake_id = await repo.insert_brake(
-            tx.conn,
-            scope=scope,
-            project_id=project_id,
-            session_id=session_id,
-            task_id=task_id,
-            reason=reason,
-            source=source,
-            budget_id=budget_id,
-            now=tx.now,
-            actor=actor,
-        )
-        brake = await repo.get_brake(tx.conn, brake_id)
-        assert brake is not None
-        await tx.event(
-            "brake.set",
-            actor,
-            project_id=project_id,
-            task_id=task_id,
-            session_id=caller_id,
-            brake_id=brake_id,
-            scope=scope,
-            target=brake.target,
-            reason=reason,
-            source=source,
-            **({"project": brake.project_slug} if brake.project_slug else {}),
-            **({"key": task.key, "stage": task.stage.value} if task else {}),
-        )
-        return brake
-
-    @staticmethod
-    def _clean_brake_reason(value: Any, default: str | None = None) -> str:
-        text = _clean_text(value, "reason", agent_limits.REASON_MAX) or default
-        if not text:
-            raise ValidationError("reason must say why the agents stop.")
-        envs.check_secret("reason", text)
-        return text
-
-    async def set_board_brake(
-        self, scope: str, *, project: str | None = None, reason: str | None = None
-    ) -> agent_limits.Brake:
-        """The owner's "Stop all agents": everything, or one project. Board only."""
-        if scope not in ("all", "project"):
-            raise ValidationError("The board stops all agents or the agents of one project.")
-        text = self._clean_brake_reason(reason, agent_limits.DEFAULT_BOARD_REASON)
-        async with self._tx() as tx:
-            target = await self.get_project(project or "", tx.conn) if scope == "project" else None
-            return await self._insert_brake(
-                tx,
-                scope=scope,
-                project=target,
-                reason=text,
-                source=agent_limits.SOURCE_OWNER,
-                actor="owner",
-            )
-
-    async def set_brake(
-        self,
-        scope: str,
-        *,
-        project: str | None = None,
-        target_session: str | None = None,
-        task: str | None = None,
-        reason: str,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> agent_limits.Brake:
-        """Stop agents, for a coordinator session. Only the owner releases, on the board."""
-        if scope not in agent_limits.BRAKE_SCOPES:
-            raise ValidationError(f"scope must be one of: {', '.join(agent_limits.BRAKE_SCOPES)}.")
-        text = self._clean_brake_reason(reason)
-        async with self._tx() as tx:
-            if not await self._is_coordinator(tx.conn, session, hook_session):
-                raise ValidationError(
-                    "brake_set is only for the coordinator sessions named in the server's config;"
-                    " a desktop id also needs that session's own hook_session. Nothing changed."
-                    " Ask the owner: the board has Stop all agents."
-                )
-            caller = await self._session(tx, session, session_title, hook_session)
-            assert caller is not None
-            needed = {"project": project, "session": target_session, "task": task}.get(scope)
-            if scope != "all" and not (needed or "").strip():
-                raise ValidationError(f"scope {scope} needs its {scope} named.")
-            target = (
-                await self._brake_target(tx.conn, target_session or "")
-                if scope == "session"
-                else None
-            )
-            if target is not None and target.cc_session_id is None:
-                _note(
-                    f"Warning: {target.name} is not linked to hooks yet: this brake reaches it only"
-                    " once it is linked."
-                )
-            braked_task = await self.get_task(task or "", tx.conn) if scope == "task" else None
-            if braked_task is not None:
-                await self._note_task_brake_reach(tx.conn, braked_task)
-            return await self._insert_brake(
-                tx,
-                scope=scope,
-                project=await self.get_project(project or "", tx.conn)
-                if scope == "project"
-                else None,
-                session=target,
-                task=braked_task,
-                reason=text,
-                source=agent_limits.SOURCE_COORDINATOR,
-                actor=caller.name,
-                caller_id=caller.id,
-            )
-
-    @staticmethod
-    async def _note_task_brake_reach(conn: aiosqlite.Connection, task: Task) -> None:
-        """A task brake holds the session bound to the task, seen by its hooks: say when none is."""
-        bound = await repo.open_binding(conn, task.id)
-        session = await repo.get_session_by_id(conn, bound) if bound is not None else None
-        if session is None:
-            _note(
-                f"Warning: no session is bound to {task.key}: this brake reaches nobody until one"
-                " is."
-            )
-        elif session.cc_session_id is None:
-            _note(
-                f"Warning: {session.name}, bound to {task.key}, is not linked to hooks yet: this"
-                " brake reaches it only once it is linked."
-            )
-
-    @staticmethod
-    async def _brake_target(conn: aiosqlite.Connection, ref: str) -> Session:
-        """The one session a name, external id, alias or Claude Code id names. Never upserts: a
-        misspelt name must not brake a new, empty session."""
-        text = ref.strip()
-        found = await repo.find_sessions(conn, text)
-        if not found:
-            by_cc = await repo.get_session_by_cc(conn, text)
-            found = [by_cc] if by_cc else []
-        if not found:
-            raise NotFoundError(f"Session {ref!r} not found.")
-        if len(found) > 1:
-            ids = ", ".join(s.external_id or s.name for s in found)
-            raise ValidationError(f"{ref!r} names several sessions: {ids}. Pass the desktop id.")
-        return found[0]
-
-    async def release_brake(self, brake_id: int, *, actor: str = "owner") -> agent_limits.Brake:
-        """Board only. Releasing a released brake changes nothing."""
-        async with self._tx() as tx:
-            brake = await repo.get_brake(tx.conn, brake_id)
-            if brake is None:
-                raise NotFoundError(f"Brake #{brake_id} not found.")
-            if brake.released_at is None:
-                await self._release(tx, brake, actor)
-            return brake
-
-    async def _release(self, tx: _Tx, brake: agent_limits.Brake, actor: str) -> None:
-        await repo.release_brake(tx.conn, brake.id, tx.now, actor)
-        await tx.event(
-            "brake.released",
-            actor,
-            project_id=brake.project_id,
-            task_id=brake.task_id,
-            brake_id=brake.id,
-            scope=brake.scope,
-            target=brake.target,
-            **({"project": brake.project_slug} if brake.project_slug else {}),
-            **({"key": brake.task_key} if brake.task_key else {}),
-        )
-
-    async def open_brakes(self, project: str | None = None) -> list[agent_limits.Brake]:
-        """Open brakes; with `project`, those that reach it by name or by every agent."""
-        brakes = await repo.open_brakes(self._r)
-        if project is None:
-            return brakes
-        project_id = (await self.get_project(project)).id
-        return [b for b in brakes if b.scope == "all" or b.project_id == project_id]
-
-    async def set_budget(
-        self,
-        scope: str,
-        *,
-        project: str | None = None,
-        task: str | None = None,
-        period: str = "day",
-        max_tokens: Any = None,
-        action: str = "warn",
-        actor: str = "owner",
-    ) -> agent_limits.TokenBudget:
-        """Set the one budget of a target. Board only. A change forgets the thresholds marked so
-        far: the next check counts them again against the new numbers. An open brake stays."""
-        if scope not in agent_limits.BUDGET_SCOPES:
-            raise ValidationError(f"scope must be one of: {', '.join(agent_limits.BUDGET_SCOPES)}.")
-        if period not in agent_limits.BUDGET_PERIODS:
-            raise ValidationError(
-                f"period must be one of: {', '.join(agent_limits.BUDGET_PERIODS)}."
-            )
-        if action not in agent_limits.BUDGET_ACTIONS:
-            raise ValidationError(
-                f"action must be one of: {', '.join(agent_limits.BUDGET_ACTIONS)}."
-            )
-        try:
-            tokens = int(str(max_tokens).replace(",", "").replace(" ", ""))
-        except ValueError:
-            raise ValidationError("The limit must be a whole number of tokens.") from None
-        if not 1 <= tokens <= usage_data.NUMBER_MAX:
-            raise ValidationError(f"The limit must be from 1 to {usage_data.NUMBER_MAX} tokens.")
-        if scope == "project" and not (project or "").strip():
-            raise ValidationError("A project budget needs its project.")
-        if scope == "task" and not (task or "").strip():
-            raise ValidationError("A task budget needs its task.")
-        async with self._tx() as tx:
-            target = await self.get_project(project or "", tx.conn) if scope == "project" else None
-            bound = await self.get_task(task or "", tx.conn) if scope == "task" else None
-            project_id = target.id if target else None
-            task_id = bound.id if bound else None
-            old = await repo.find_budget(tx.conn, scope, project_id, task_id)
-            if old is not None and (old.period, old.max_tokens, old.action) == (
-                period,
-                tokens,
-                action,
-            ):
-                return old  # the same numbers again: the marks stay, nothing is announced twice
-            budget_id = await repo.save_budget(
-                tx.conn,
-                old.id if old else None,
-                scope=scope,
-                project_id=project_id,
-                task_id=task_id,
-                period=period,
-                max_tokens=tokens,
-                action=action,
-                now=tx.now,
-                actor=actor,
-            )
-            await repo.clear_budget_marks(tx.conn, budget_id)
-            self._forget_told(budget_id)
-            budget = await repo.get_budget(tx.conn, budget_id)
-            assert budget is not None
-            await tx.event(
-                "budget.set",
-                actor,
-                project_id=project_id or (bound.project_id if bound else None),
-                task_id=task_id,
-                budget_id=budget_id,
-                target=budget.target,
-                period=period,
-                max_tokens=tokens,
-                action=action,
-                **({"project": budget.project_slug} if budget.project_slug else {}),
-                **({"key": bound.key, "stage": bound.stage.value} if bound else {}),
-            )
-        # After the commit: woken earlier, the loop would read no budget and sleep again.
-        self._limits_wake.set()
-        return budget
-
-    async def remove_budget(self, budget_id: int, *, actor: str = "owner") -> None:
-        """Board only. A brake the budget set stays until the owner releases it."""
-        async with self._tx() as tx:
-            budget = await repo.get_budget(tx.conn, budget_id)
-            if budget is None:
-                raise NotFoundError(f"Budget #{budget_id} not found.")
-            await repo.delete_budget(tx.conn, budget_id)
-            self._forget_told(budget_id)
-            await tx.event(
-                "budget.removed",
-                actor,
-                project_id=budget.project_id,
-                task_id=budget.task_id,
-                budget_id=budget_id,
-                target=budget.target,
-                **({"project": budget.project_slug} if budget.project_slug else {}),
-                **({"key": budget.task_key} if budget.task_key else {}),
-            )
-
-    async def budget_states(
-        self, *, project: str | None = None, task: str | None = None
-    ) -> list[agent_limits.BudgetState]:
-        """Every budget with its current numbers; with `project` or `task`, those that count it:
-        its own, its project's and the one over all projects."""
-        today = datetime.now(UTC).date().isoformat()
-        marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
-        budgets = await repo.list_budgets(self._r)
-        if task:
-            found = await self.get_task(task)
-            budgets = [
-                b
-                for b in budgets
-                if b.scope == "all"
-                or b.task_id == found.id
-                or (b.scope == "project" and b.project_id == found.project_id)
-            ]
-        elif project:
-            project_id = (await self.get_project(project)).id
-            budgets = [
-                b
-                for b in budgets
-                if b.scope == "all" or (b.scope == "project" and b.project_id == project_id)
-            ]
-        states = []
-        for budget in budgets:
-            levels = marks.get(budget.id, set())
-            level = (
-                agent_limits.EXCEEDED
-                if agent_limits.EXCEEDED in levels
-                else next(iter(levels), None)
-            )
-            used = await self._budget_used(self._r, budget, today)
-            states.append(agent_limits.BudgetState(budget, used, level))
-        return states
-
-    async def limits_pass(self) -> None:
-        """After each usage pass, never on the hook path. A threshold counts once per period; its
-        mark, its event and a `stop` budget's brake are written together."""
-        now = datetime.now(UTC)
-        today = now.date().isoformat()
-        for brake in await repo.daily_brakes_before(self._r, today):
-            async with self._tx() as tx:
-                if (await repo.get_brake(tx.conn, brake.id) or brake).released_at is None:
-                    await self._release(tx, brake, agent_limits.NEW_DAY)
-        marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
-        for budget in await repo.list_budgets(self._r):
-            used = await self._budget_used(self._r, budget, today)
-            level = agent_limits.level_for(used, budget.max_tokens)
-            if level is not None and level not in marks.get(budget.id, set()):
-                await self._cross_threshold(budget.id, today)
-        await self._check_concurrency(now)
-
-    async def _cross_threshold(self, budget_id: int, today: str) -> None:
-        """Numbers and marks are read again inside the transaction: the owner may have changed
-        the budget since the pass looked at it."""
-        async with self._tx() as tx:
-            budget = await repo.get_budget(tx.conn, budget_id)
-            if budget is None:
-                return
-            used = await self._budget_used(tx.conn, budget, today)
-            level = agent_limits.level_for(used, budget.max_tokens)
-            marks = await repo.budget_marks(tx.conn, today, agent_limits.TOTAL_KEY)
-            if level is None or level in marks.get(budget_id, set()):
-                return
-            key = agent_limits.period_key(budget.period, today)
-            # A jump past both thresholds is one event, not a warning followed by the real one.
-            for mark in {level, agent_limits.WARNED}:
-                await repo.add_budget_mark(tx.conn, budget_id, key, mark, tx.now)
-            state = agent_limits.BudgetState(budget, used, level)
-            task = await repo.get_task_by_id(tx.conn, budget.task_id) if budget.task_id else None
-            await tx.event(
-                f"budget.{level}",
-                "relaybay",
-                project_id=budget.project_id or (task.project_id if task else None),
-                task_id=budget.task_id,
-                budget_id=budget_id,
-                target=budget.target,
-                used=used,
-                max_tokens=budget.max_tokens,
-                period=budget.period,
-                period_key=key,
-                action=budget.action,
-                **({"project": budget.project_slug} if budget.project_slug else {}),
-                **({"key": task.key, "stage": task.stage.value} if task else {}),
-            )
-            if level == agent_limits.EXCEEDED and budget.action == "stop":
-                project = session = None
-                if budget.scope == "project":
-                    project = await repo.get_project_by_id(tx.conn, budget.project_id or 0)
-                if budget.scope == agent_limits.SESSION_SCOPE:
-                    session = await repo.get_session_by_id(tx.conn, budget.session_id or 0)
-                await self._insert_brake(
-                    tx,
-                    scope=budget.scope,
-                    project=project,
-                    session=session,
-                    task=task,
-                    reason=agent_limits.budget_reason(state),
-                    source=agent_limits.SOURCE_BUDGET,
-                    actor="budget",
-                    budget_id=budget_id,
-                )
+    async def concurrency_loop(self, interval: float = CONCURRENCY_CHECK_SECONDS) -> None:
+        """The warning when more sessions work at once than `max_concurrent_sessions`: one
+        `concurrency.over` event per CONCURRENCY_MINUTES at most. It stops nothing."""
+        while True:
+            if self.max_concurrent_sessions:
+                try:
+                    await self._check_concurrency(datetime.now(UTC))
+                except Exception:
+                    logger.exception("Checking the running sessions failed; the next pass tries")
+            await asyncio.sleep(interval)
 
     async def _concurrency_over(self, now: datetime) -> int | None:
         """How many sessions run when that is above the cap, else None. The cap only warns."""
         if not self.max_concurrent_sessions:
             return None
-        since = now - timedelta(minutes=agent_limits.CONCURRENCY_MINUTES)
+        since = now - timedelta(minutes=CONCURRENCY_MINUTES)
         running = await repo.running_sessions(self._r, since.isoformat(timespec="milliseconds"))
         return running if running > self.max_concurrent_sessions else None
 
@@ -3673,7 +2431,7 @@ class Service:
         if running is None:
             return
         last = await repo.last_event_of_kind(self._r, "concurrency.over")
-        window = now - timedelta(minutes=agent_limits.CONCURRENCY_MINUTES)
+        window = now - timedelta(minutes=CONCURRENCY_MINUTES)
         if last is not None and last > window.isoformat(timespec="milliseconds"):
             return
         async with self._tx() as tx:
@@ -3683,9 +2441,6 @@ class Service:
                 running=running,
                 max_sessions=self.max_concurrent_sessions,
             )
-
-    async def _limits_active(self) -> bool:
-        return bool(self.max_concurrent_sessions) or await repo.has_budgets(self._r)
 
     # --- reads -------------------------------------------------------------
 
@@ -3783,14 +2538,8 @@ class Service:
             plan=await self._load_plan(self._r, task),
             todo=await self._task_todo(self._r, task),
             plan_history=await self._plan_history(task),
-            intake=await repo.list_messages(self._r, task_id=task.id, limit=50),
             from_backlog=next(iter(await repo.list_backlog(self._r, task_id=task.id)), None),
             findings=await repo.list_backlog(self._r, origin_task_id=task.id, limit=50),
-            budget=next(
-                (s for s in await self.budget_states(task=task.key) if s.budget.task_id == task.id),
-                None,
-            ),
-            messages=await repo.list_session_messages(self._r, task_id=task.id, limit=50),
             code=await self.task_code(task),
         )
 
@@ -4388,7 +3137,6 @@ class Service:
         hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Task:
-        await self._coordinator_right(self._r, session, hook_session, "tasks_write", "task_create")
         clean_area = _clean_area(area)
         fields: dict[str, Any] = {
             "title": _clean_title(title),
@@ -4504,7 +3252,6 @@ class Service:
     ) -> Saved:
         """`update_task` that also returns the rule warnings of a stage move. `repos` and `prs`
         in `changes` add or remove the task's code links in the same transaction."""
-        await self._coordinator_right(self._r, session, hook_session, "tasks_write", "task_update")
         links = {k: _link_entries(changes[k], k) for k in LINK_NAMES if k in changes}
         changes = {k: v for k, v in changes.items() if k not in LINK_NAMES}
         async with self._tx() as tx:
@@ -4608,8 +3355,6 @@ class Service:
             )
             if diff["stage"] == Stage.DONE:
                 await self._close_owner_items(tx, task, actor)
-            elif task.stage == Stage.DONE:
-                await self._withdraw_worktree_questions(tx, task, actor)
         # An automatic unlog has its own event; a new issue's reset is an ordinary change.
         others = {k: v for k, v in (diff if unlog else writes).items() if k != "stage"}
         others |= linked
@@ -4796,9 +3541,6 @@ class Service:
     ) -> Saved:
         """Move the task; `next_step` / `waiting_on`, if given, are saved in the same
         transaction ('' clears them). Returns the task and the rule warnings of the move."""
-        await self._coordinator_right(
-            self._r, session, hook_session, "tasks_write", "task_set_stage"
-        )
         changes: dict[str, Any] = {"stage": stage}
         for name, value in (
             ("stage_note", note),
@@ -4913,7 +3655,6 @@ class Service:
             raise ValidationError("session must not be empty.")
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
-            await self._refuse_under_brake(tx.conn, task, caller, hook_session)
             if parse_session_id(name) is None:
                 current_id = await repo.open_binding(tx.conn, task.id)
                 current = await repo.get_session_by_id(tx.conn, current_id) if current_id else None
@@ -4963,23 +3704,6 @@ class Service:
             previous=previous.name if previous is not None else None,
         )
 
-    async def _refuse_under_brake(
-        self, conn: aiosqlite.Connection, task: Task, caller: str | None, hook_session: str | None
-    ) -> None:
-        """Over MCP a binding does not change while a brake holds the task or its project: moving
-        the session off the task would lift the brake. Scope `all` is left out, a binding cannot
-        lift it. The board and coordinators may."""
-        for brake in await repo.open_brakes(conn):
-            if (brake.scope == "task" and brake.task_id == task.id) or (
-                brake.scope == "project" and brake.project_id == task.project_id
-            ):
-                if await self._is_coordinator(conn, caller, hook_session):
-                    return
-                raise ValidationError(
-                    f"{task.key} is under the brake ({brake.target}): its binding stays until the"
-                    " owner releases the brake on the board. Nothing changed."
-                )
-
     async def unbind_session(
         self,
         ref: str | int,
@@ -4999,8 +3723,6 @@ class Service:
         needle = (parse_session_id(expected) or expected) if expected else None
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
-            if actor != "board":
-                await self._refuse_under_brake(tx.conn, task, caller, hook_session)
             current_id = await repo.open_binding(tx.conn, task.id) or task.session_id
             if current_id is None:
                 if needle is not None:
@@ -5090,7 +3812,7 @@ class Service:
         format_problem: str | None,
         size_task: bool = True,
     ) -> int:
-        """The writes of one report, for report_add and a run's turn alike: the rules warnings
+        """The writes of one report: the rules warnings
         (`format_problem`, the first line's, checked by the caller; no `verified:` mark on an M or
         L report), the task's fields, the report with its marks, its event and its index row.
         `size_task` off: the report's size does not size the task (a check's `S`)."""
@@ -6705,718 +5427,7 @@ class Service:
         task = await self.get_task(ref)
         return task, await repo.list_comments(self._r, task.id, unread_only=unread_only)
 
-    # --- session messages --------------------------------------------------
-
-    async def _message_caller(
-        self,
-        tx: _Tx,
-        session: str | None,
-        title: str | None,
-        hook_session: str | None,
-        *,
-        create: bool = True,
-    ) -> tuple[Session, bool]:
-        """Who writes, and whether its hook link proves it. Every session the name may mean counts,
-        desktop titles too: a live, exactly linked one is only itself with that link's id, and an
-        id a live session linked belongs to that session. All clients share one token, so this
-        stops mistakes and casual impersonation, it is not access control; a message never grants
-        anything, and a name no hook proved is framed as not verified. `create`: a new name may
-        become a row (a send), or it is an error (an ack)."""
-        cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
-        value = intake.one_line(_clean_text(session, "session", NAME_MAX)) or None
-        if value is None and cc_id is None:
-            raise ValidationError(
-                "Say who is calling: pass session, and hook_session if the session start gave you"
-                " one."
-            )
-        holder = await repo.get_session_by_cc(tx.conn, cc_id) if cc_id else None
-        if value is None and holder is None:
-            raise ValidationError(f"Hook session {cc_id} is not known yet: pass session too.")
-        if value is None:
-            matches = [holder]
-        else:
-            matches = await repo.find_sessions(tx.conn, parse_session_id(value) or value)
-        proven = [s for s in matches if _hook_proven(s)]
-        own = next((s for s in proven if s.cc_session_id == cc_id), None)
-        if proven and own is None:
-            raise ValidationError(
-                f"{proven[0].name} is a live session with its own hook link: pass its hook_session."
-                " A session message cannot be written in another session's name. If that is you"
-                " after a restart with no session end, any other write with session and your new"
-                " hook_session (report_add, task_update) moves the link."
-            )
-        if holder is not None and _hook_proven(holder) and own is None:
-            raise ValidationError(
-                f"That hook_session belongs to another session ({holder.name}). Pass your own."
-            )
-        row = own or await self._message_row(tx.conn, value, matches)
-        if row is None:
-            if not create:
-                raise NotFoundError(f"No session called {value!r}. Nothing was acknowledged.")
-            caller = await self._session(tx, value, title, cc_id)
-        elif value is None:
-            assert cc_id is not None
-            caller = await self._link_hook_session(tx, row, cc_id)
-        else:
-            caller = await self._session(tx, row.external_id or value, title, cc_id)
-        assert caller is not None
-        return caller, _hook_proven(caller) and caller.cc_session_id == cc_id
-
-    async def _message_row(
-        self, conn: aiosqlite.Connection, value: str | None, matches: list[Session]
-    ) -> Session | None:
-        """The one row a caller's name means, none of them live. Its plain name or alias goes
-        first, as on every other write; desktop titles may repeat, and then only the id says."""
-        known = await self._known_session(value, conn) if value else None
-        if known is not None or len(matches) < 2:
-            return known or (matches[0] if matches else None)
-        ids = ", ".join(s.external_id or s.name for s in matches)
-        raise ValidationError(f"{len(matches)} sessions are called {value!r}: {ids}.")
-
-    async def _named_session(self, conn: aiosqlite.Connection, ref: str, field: str) -> Session:
-        """The one session a name, desktop id, alias or hook session id names, without creating
-        or touching a row. None or several: an error that says so."""
-        text = _clean_text(ref, field, CC_ID_MAX)
-        if text is None:
-            raise ValidationError(f"{field} must not be empty.")
-        external_id = parse_session_id(text)
-        found = await repo.find_sessions(conn, external_id or text)
-        if not found:
-            by_cc = await repo.get_session_by_cc(conn, text)
-            found = [by_cc] if by_cc else []
-        if not found:
-            raise NotFoundError(f"No session called {text!r}. Nothing was sent or listed.")
-        if len(found) > 1:
-            names = ", ".join(
-                f"{s.external_id or 'a plain session, reach it through its task'}"
-                f" ({s.status or 'no hook status'})"
-                for s in found
-            )
-            raise ValidationError(f"{len(found)} sessions are called {text!r}: {names}.")
-        return found[0]
-
-    async def _message_recipient(
-        self,
-        tx: _Tx,
-        to: str | None,
-        task: Task | None,
-        parent: SessionMessage | None,
-        sender: Session,
-    ) -> Session:
-        """`to`; a reply goes to the other side of the message it answers; else the session
-        bound to `task`."""
-        if to:
-            return await self._named_session(tx.conn, to, "to")
-        other_id = None
-        if parent is not None:
-            mine = parent.recipient_session_id == sender.id
-            other_id = parent.sender_session_id if mine else parent.recipient_session_id
-        elif task is not None:
-            other_id = await repo.open_binding(tx.conn, task.id)
-            if other_id is None:
-                raise ValidationError(f"No session is bound to {task.key}: name one with to.")
-        else:
-            raise ValidationError("Say who it is for: pass to, or task for its bound session.")
-        found = await repo.get_session_by_id(tx.conn, other_id) if other_id else None
-        if found is None:
-            raise ValidationError("That session's row is gone: name the recipient with to.")
-        return found
-
-    async def _message_event(
-        self, tx: _Tx, kind: str, actor: str, message: SessionMessage, session: Session
-    ) -> None:
-        """Marks and names only: the text is in the message row, not in the event feed."""
-        about: dict[str, Any] = {"project_id": session.project_id}
-        if message.task_id is not None:
-            about = {
-                "project_id": message.task_project_id,
-                "task_id": message.task_id,
-                "project": message.project_slug,
-                "key": message.task_key,
-                "stage": message.task_stage,
-            }
-        await tx.event(
-            kind,
-            actor,
-            session_id=session.id,
-            message_id=message.id,
-            sender=message.sender_name,
-            recipient=message.recipient_name,
-            **about,
-        )
-
-    async def _read_session_messages(
-        self, tx: _Tx, messages: list[SessionMessage], reader: Session, verified: bool
-    ) -> list[int]:
-        unread = [m for m in messages if m.read_at is None]
-        if not unread:
-            return []
-        await repo.mark_session_messages_read(
-            tx.conn, [m.id for m in unread], tx.now, verified=verified
-        )
-        for message in unread:
-            await self._message_event(tx, "message.read", reader.name, message, reader)
-        return [m.id for m in unread]
-
-    async def send_session_message(
-        self,
-        body: Any,
-        *,
-        to: str | None = None,
-        task: str | int | None = None,
-        in_reply_to: int | None = None,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> tuple[SessionMessage, str]:
-        """A message to another session; returns it and an honest line on when it can arrive.
-        A reply over the depth limit is refused and shown in the Inbox, so that mark commits
-        and the error follows it."""
-        await self._coordinator_right(self._r, session, hook_session, "messages", "message_send")
-        text = _clean_message(body)
-        refused = None
-        async with self._tx() as tx:
-            sender, verified = await self._message_caller(tx, session, session_title, hook_session)
-            parent = None
-            if in_reply_to is not None:
-                parent = await repo.get_session_message(tx.conn, in_reply_to)
-                if parent is None:
-                    raise NotFoundError(f"Session message #{in_reply_to} not found.")
-                if sender.id not in (parent.sender_session_id, parent.recipient_session_id):
-                    raise ValidationError(
-                        f"Session message #{in_reply_to} is between {parent.sender_name} and"
-                        f" {parent.recipient_name}: {sender.name} cannot answer it."
-                    )
-            row = await self.get_task(task, tx.conn) if task else None
-            recipient = await self._message_recipient(tx, to, row, parent, sender)
-            if recipient.id == sender.id:
-                raise ValidationError("A session cannot send a message to itself.")
-            if row is None and parent is not None and parent.task_id is not None:
-                row = await self.get_task(parent.task_id, tx.conn)
-            project = await self.get_project(row.project_slug, tx.conn) if row else None
-            _scan(await self._secret_rules(tx.conn, project), body=text)
-            start = datetime.now(UTC) - timedelta(seconds=message_text.RATE_SECONDS)
-            sent = await repo.session_messages_sent_since(
-                tx.conn, sender.id, start.isoformat(timespec="milliseconds")
-            )
-            if sent >= message_text.RATE_MAX:
-                raise ValidationError(
-                    f"Too many session messages: at most {message_text.RATE_MAX} per sender per"
-                    " minute. Is this a loop? Wait, or ask the owner."
-                )
-            if parent is not None and parent.depth >= message_text.DEPTH_MAX:
-                refused = (
-                    f"Reply refused: the thread of #{parent.id} is {parent.depth} replies deep,"
-                    f" the limit is {message_text.DEPTH_MAX}. This looks like a loop; the owner"
-                    " sees it in the Inbox. Stop answering, or start over with the owner's word."
-                )
-                if await repo.stop_message_loop(tx.conn, parent.id, tx.now):
-                    await self._message_event(
-                        tx, "message.loop_stopped", sender.name, parent, sender
-                    )
-            else:
-                message_id = await repo.insert_session_message(
-                    tx.conn,
-                    sender=sender,
-                    verified=verified,
-                    recipient=recipient,
-                    task_id=row.id if row else None,
-                    body_md=text,
-                    in_reply_to=parent.id if parent else None,
-                    depth=parent.depth + 1 if parent else 0,
-                    now=tx.now,
-                )
-                saved = await repo.get_session_message(tx.conn, message_id)
-                assert saved is not None
-                await self._message_event(tx, "message.sent", sender.name, saved, sender)
-                # Who wrote to whom, as for a desktop SendMessage (Activity shows it).
-                await tx.event(
-                    "session.message",
-                    sender.name,
-                    project_id=row.project_id if row else sender.project_id,
-                    session_id=sender.id,
-                    session=sender.name,
-                    to=recipient.name,
-                )
-                # The same rule as message_ack: an exact link has to be proven.
-                mine = parent is not None and parent.recipient_session_id == sender.id
-                if mine and (verified or not sender.cc_exact):
-                    await self._read_session_messages(tx, [parent], sender, verified)
-        if refused is not None:
-            raise ValidationError(refused)
-        if not verified:
-            _note(
-                "Warning: your name is not verified, the recipient is told so: pass your own"
-                " hook_session from the session start."
-            )
-        return saved, _message_arrival(recipient)
-
-    async def ack_session_messages(
-        self,
-        *,
-        message_id: int | None = None,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> list[int]:
-        """Mark messages to the caller read: one by id, or all unread ones. Returns those that
-        were unread. It creates no row. A session with an exact link has to prove it, or a
-        message acknowledged in its name would never be handed over when it comes back; a
-        row that never linked can only be believed, and the mark says so."""
-        async with self._tx() as tx:
-            caller, verified = await self._message_caller(
-                tx, session, session_title, hook_session, create=False
-            )
-            if not verified and caller.cc_exact:
-                raise ValidationError(
-                    f"{caller.name} has an exact hook link that this call does not prove: pass"
-                    " its live hook_session. A message cannot be acknowledged in another"
-                    " session's name."
-                )
-            if message_id is None:
-                targets = await repo.unread_session_messages(tx.conn, caller.id)
-            else:
-                message = await repo.get_session_message(tx.conn, message_id)
-                if message is None:
-                    raise NotFoundError(f"Session message #{message_id} not found.")
-                if message.recipient_session_id != caller.id:
-                    raise ValidationError(
-                        f"Session message #{message_id} is for {message.recipient_name}, not for"
-                        f" {caller.name}."
-                    )
-                targets = [message]
-            return await self._read_session_messages(tx, targets, caller, verified)
-
-    async def list_session_messages(
-        self,
-        session: str,
-        *,
-        box: str = "inbox",
-        unread_only: bool = False,
-        task: str | int | None = None,
-        limit: int = 50,
-    ) -> tuple[Session, list[SessionMessage]]:
-        """A session's messages, newest first. Reading delivers and acknowledges nothing."""
-        if box not in message_text.BOXES:
-            raise ValidationError(f"box must be one of: {', '.join(message_text.BOXES)}.")
-        found = await self._named_session(self._r, session, "session")
-        row = await self.get_task(task) if task else None
-        items = await repo.list_session_messages(
-            self._r,
-            recipient_id=found.id if box == "inbox" else None,
-            sender_id=found.id if box == "sent" else None,
-            task_id=row.id if row else None,
-            unread_only=unread_only,
-            limit=max(1, min(limit, message_text.LIST_MAX)),
-        )
-        return found, items
-
-    async def session_messages_page(
-        self, *, session_id: int | None = None, before_id: int | None = None, limit: int = 50
-    ) -> list[SessionMessage]:
-        """The board's list, newest first."""
-        return await repo.list_session_messages(
-            self._r, either_id=session_id, before_id=before_id, limit=limit
-        )
-
-    async def dismiss_message_loop(self, message_id: int, *, actor: str) -> None:
-        """The owner has seen a stopped loop: its Inbox line goes."""
-        async with self._tx() as tx:
-            message = await repo.get_session_message(tx.conn, message_id)
-            if message is None:
-                raise NotFoundError(f"Session message #{message_id} not found.")
-            await repo.dismiss_message_loop(tx.conn, message_id, tx.now)
-            await tx.event("message.loop_dismissed", actor, message_id=message_id)
-
-    async def _message_parts(self, session: Session, *taken: str) -> list[str]:
-        """What is waiting for an exactly linked session, as parts of a hook answer: messages share
-        what `taken` (comments, warnings, a reminder) left of the answer."""
-        if not await repo.undelivered_session_messages(self._r, session.id):
-            return []  # the common case: no write transaction per tool call
-        budget = CONTEXT_MAX - sum(len(t) + 1 for t in taken)
-        async with self._tx() as tx:
-            waiting = await repo.undelivered_session_messages(tx.conn, session.id)
-            shown = message_text.fit(waiting, budget, alone=not taken)
-            await self._deliver_session_messages(tx, session, shown)
-        return [message_text.delivery_text(shown, len(waiting))] if shown else []
-
-    async def _deliver_session_messages(
-        self, tx: _Tx, session: Session, messages: list[SessionMessage]
-    ) -> None:
-        if not messages:
-            return
-        await repo.mark_session_messages_delivered(tx.conn, [m.id for m in messages], tx.now)
-        for message in messages:
-            await self._message_event(tx, "message.delivered", session.name, message, session)
-
-    async def _stop_message_text(self, tx: _Tx, session: Session, taken: str | None) -> str | None:
-        """The messages a Stop block shows, each at most STOP_MESSAGE_CAP times in all."""
-        unread = await repo.unread_session_messages(tx.conn, session.id)
-        due = [m for m in unread if m.stop_blocks < message_text.STOP_MESSAGE_CAP]
-        budget = CONTEXT_MAX - (len(taken) + 1 if taken else 0)
-        shown = message_text.fit(due, budget, alone=not taken)
-        if not shown:
-            return None
-        await self._deliver_session_messages(tx, session, [m for m in shown if not m.delivered_at])
-        await repo.count_session_message_stop_blocks(tx.conn, [m.id for m in shown])
-        return message_text.stop_reason(shown, len(unread))
-
-    async def _stop_message_due(self, conn: aiosqlite.Connection, session: Session) -> bool:
-        unread = await repo.unread_session_messages(conn, session.id)
-        return any(m.stop_blocks < message_text.STOP_MESSAGE_CAP for m in unread)
-
-    # --- intake: messages from chats and mailboxes -----------------------------------------
-
-    async def _intake_match(
-        self, conn: aiosqlite.Connection, source_id: int, thread: str | None, text: str, ref: Any
-    ) -> tuple[Task | None, str | None]:
-        """The task a new message belongs to and the route that found it: the watcher's `task`,
-        a thread tied before, or the one task key of a known project the text names."""
-        if ref:
-            return await self.get_task(ref, conn), "watcher"
-        if thread:
-            task_id = await repo.thread_task(conn, source_id, thread)
-            if task_id is not None:
-                return await self.get_task(task_id, conn), "thread"
-        slugs = [p.slug for p in await repo.list_projects(conn)]
-        found = []
-        for key in intake.named_keys(text, slugs):
-            task = await repo.get_task_by_key(conn, key)
-            if task is not None:
-                found.append(task)
-        if len(found) == 1:
-            return found[0], "task key"
-        return None, None
-
-    async def _forward(self, tx: _Tx, message: IntakeMessage, task: Task) -> Comment:
-        """The message as an `external` comment: the comment channel delivers it to the exactly
-        linked bound session only, like an owner comment."""
-        body = intake.frame(message.source_slug, message.author, message.text or "", task.next_step)
-        return await self._insert_comment(
-            tx,
-            task,
-            author_kind="external",
-            author=message.source_slug,
-            session_id=None,
-            body=body,
-            in_reply_to=None,
-        )
-
-    async def _tie(
-        self, tx: _Tx, message: IntakeMessage, task: Task, actor: str, route: str
-    ) -> tuple[bool, str]:
-        """Tie `message` to `task`: the thread is remembered, a task waiting on someone gets the
-        "answer received" mark, and the bound agent is woken when the one rule allows it. The
-        stage never changes. Returns whether the agent was woken and why (or why not)."""
-        await repo.update_message(tx.conn, message.id, {"status": "tied", "task_id": task.id})
-        if message.thread:
-            await repo.set_thread(tx.conn, message.source_id, message.thread, task.id, tx.now)
-        ids = {"project_id": task.project_id, "task_id": task.id}
-        about = {
-            "project": task.project_slug,
-            "key": task.key,
-            "stage": task.stage.value,
-            "message_id": message.id,
-            "source": message.source_slug,
-        }
-        await tx.event("intake.tied", actor, **ids, **about, route=route)
-        if task.waiting_on and task.stage != Stage.DONE:
-            await repo.set_answer_mark(tx.conn, task.id, tx.now, message.id)
-            await tx.event(
-                "intake.answer_received", actor, **ids, **about, waiting_on=task.waiting_on
-            )
-        bound = await repo.get_session_by_id(tx.conn, task.session_id) if task.session_id else None
-        if task.stage == Stage.DONE:
-            reason = "Notification only: the task is done"
-        elif not intake.wake_allowed(task, message.source_may_wake):
-            reason = intake.autonomy_reason(task, message.source_may_wake)
-        elif bound is None:
-            reason = "Notification only: no session is bound to the task"
-        elif not bound.cc_exact:
-            # A comment written for it could never be delivered: say so instead of "woke".
-            reason = "Notification only: the bound session is not linked exactly"
-        else:
-            comment = await self._forward(tx, message, task)
-            reason = intake.autonomy_reason(task, True)
-            await repo.update_message(tx.conn, message.id, {"outcome": "woke"})
-            await tx.event(
-                "intake.wake", actor, **ids, **about, comment_id=comment.id, reason=reason
-            )
-            return True, reason
-        if message.outcome not in ("woke", "forwarded"):
-            # A message that already reached an agent keeps saying so after a re-tie.
-            await repo.update_message(tx.conn, message.id, {"outcome": "notified"})
-        return False, reason
-
-    async def intake_post(
-        self,
-        source: str,
-        external_id: str,
-        text: str,
-        *,
-        author: str | None = None,
-        thread: str | None = None,
-        received_at: str | None = None,
-        task: str | None = None,
-        kind: str | None = None,
-        actor: str = "mcp",
-    ) -> intake.PostResult:
-        """Store one message from a watcher. The source is created on its first message,
-        untrusted. Idempotent on (source, external_id): a repeat returns the stored message and
-        writes nothing. A secret value or a source over its hourly limit is stored as `refused`
-        without text. Then it is matched to a task (see `_intake_match`) and tied."""
-        slug = _clean_source_slug(source)
-        ext = _clean_text(external_id, "external_id", intake.EXTERNAL_ID_MAX)
-        if not ext:
-            raise ValidationError("external_id must not be empty.")
-        body = str(text or "").replace("\r\n", "\n").strip()
-        if not body:
-            raise ValidationError("text must not be empty.")
-        if len(body) > intake.TEXT_MAX:
-            body = body[: intake.TEXT_MAX - 1].rstrip() + "…"
-        # One line each: a name or thread printed in a frame can never start a line of its own.
-        thread_id = intake.one_line(_clean_text(thread, "thread", intake.THREAD_MAX)) or None
-        who = intake.one_line(_clean_text(author, "author", intake.AUTHOR_MAX)) or None
-        source_kind = (kind or "other").strip().lower()
-        if source_kind not in intake.SOURCE_KINDS:
-            raise ValidationError(f"kind must be one of {', '.join(intake.SOURCE_KINDS)}.")
-        received = _clean_moment(received_at, "received_at")
-        # Idempotency first: a repeated post writes nothing, not even the source. Only a message
-        # refused for the rate limit may come again, once the window has room.
-        known = await repo.get_source(self._r, slug)
-        if known is not None:
-            repeat = await repo.find_message(self._r, known.id, ext)
-            if repeat is not None and not _rate_limited(repeat):
-                found = await self.get_task(repeat.task_id) if repeat.task_id else None
-                return intake.PostResult(repeat, False, found, repeat.outcome == "woke")
-        rules = await self._secret_rules(self._r, None)
-        secrets_found = [
-            name
-            for value in (body, who, thread_id)
-            if value
-            for _, name in envs.find_secrets(value, rules)
-        ]
-        async with self._tx() as tx:
-            src = await repo.get_source(tx.conn, slug)
-            retry = None
-            if src is None:
-                await repo.insert_source(tx.conn, slug, source_kind, slug, tx.now)
-                src = await repo.get_source(tx.conn, slug)
-                assert src is not None
-            elif (repeat := await repo.find_message(tx.conn, src.id, ext)) is not None:
-                if not _rate_limited(repeat):
-                    return intake.PostResult(repeat, False, None, repeat.outcome == "woke")
-                retry = repeat
-            since = (datetime.now(UTC) - timedelta(seconds=intake.RATE_WINDOW_SECONDS)).isoformat(
-                timespec="milliseconds"
-            )
-            refused = None
-            if await repo.count_messages_since(tx.conn, src.id, since) >= intake.RATE_LIMIT:
-                if retry is not None:
-                    return intake.PostResult(retry, False)  # still no room: nothing changes
-                refused = intake.RATE_REASON.format(limit=intake.RATE_LIMIT)
-            elif secrets_found:
-                refused = f"looks like it contains a secret value ({secrets_found[0]})"
-            # A secret may sit in any field: a refused message keeps no text, author or thread.
-            secret = bool(refused and secrets_found)
-            values = {
-                "thread": None if secret else thread_id,
-                "author": None if secret else who,
-                "text": None if refused else body,
-                "received_at": received or tx.now,
-                "status": "refused" if refused else "new",
-                "refused_reason": refused,
-            }
-            if retry is not None:
-                message_id = retry.id
-                await repo.update_message(tx.conn, message_id, {**values, "created_at": tx.now})
-            else:
-                message_id = await repo.insert_message(
-                    tx.conn, source_id=src.id, external_id=ext, now=tx.now, **values
-                )
-            await repo.touch_source(tx.conn, src.id, tx.now)
-            await tx.event(
-                "intake.received",
-                actor,
-                message_id=message_id,
-                source=slug,
-                status="refused" if refused else "new",
-                **({"reason": refused} if refused else {}),
-            )
-            message = await repo.get_message(tx.conn, message_id)
-            assert message is not None
-            if refused:
-                return intake.PostResult(message, True)
-            found, route = await self._intake_match(tx.conn, src.id, thread_id, body, task)
-            if found is None or route is None:
-                return intake.PostResult(message, True)
-            woke, reason = await self._tie(tx, message, found, actor, route)
-            fresh = await repo.get_message(tx.conn, message_id)
-            assert fresh is not None
-            return intake.PostResult(fresh, True, found, woke, reason)
-
-    async def _message(self, conn: aiosqlite.Connection, ref: Any) -> IntakeMessage:
-        number = _clean_id(ref, "message")
-        found = await repo.get_message(conn, number)
-        if found is None:
-            raise NotFoundError(f"Intake message #{number} not found.")
-        return found
-
-    async def intake_message(self, ref: Any) -> IntakeMessage:
-        return await self._message(self._r, ref)
-
-    async def intake_tie(self, ref: Any, task: str | int, *, actor: str = "owner") -> PostTie:
-        """Tie a message (new, or tied to another task) to a task; the owner's tie on the board
-        teaches the thread. Refused and dismissed messages stay where they are."""
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.status in ("refused", "dismissed"):
-                raise ValidationError(
-                    f"Message #{message.id} is {message.status}; nothing changed."
-                )
-            target = await self.get_task(task, tx.conn)
-            woke, reason = await self._tie(tx, message, target, actor, "tie")
-            fresh = await repo.get_message(tx.conn, message.id)
-            assert fresh is not None
-            return PostTie(fresh, target, woke, reason)
-
-    async def intake_dismiss(self, ref: Any, *, actor: str = "owner") -> IntakeMessage:
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.status != "new":
-                raise ValidationError(
-                    f"Message #{message.id} is {message.status}; only a new one is dismissed."
-                )
-            await repo.update_message(tx.conn, message.id, {"status": "dismissed"})
-            await tx.event(
-                "intake.dismissed", actor, message_id=message.id, source=message.source_slug
-            )
-            fresh = await repo.get_message(tx.conn, message.id)
-            assert fresh is not None
-            return fresh
-
-    async def intake_forward(self, ref: Any, *, actor: str = "owner") -> Comment:
-        """ "Forward to the agent": the owner sends a tied message to the bound session, framed
-        the same way. The owner's own act, so no `intake.wake`."""
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.task_id is None or not message.text:
-                raise ValidationError(f"Message #{message.id} is not tied to a task.")
-            if message.outcome in ("forwarded", "woke"):
-                raise ValidationError(f"Message #{message.id} already reached the agent.")
-            task = await self.get_task(message.task_id, tx.conn)
-            comment = await self._forward(tx, message, task)
-            await repo.update_message(tx.conn, message.id, {"outcome": "forwarded"})
-            await tx.event(
-                "intake.forwarded",
-                actor,
-                project_id=task.project_id,
-                task_id=task.id,
-                project=task.project_slug,
-                key=task.key,
-                stage=task.stage.value,
-                message_id=message.id,
-                source=message.source_slug,
-                comment_id=comment.id,
-            )
-            return comment
-
-    async def intake_list(
-        self,
-        *,
-        source: str | None = None,
-        status: str | None = None,
-        task: str | int | None = None,
-        limit: int = 20,
-    ) -> list[IntakeMessage]:
-        source_id = None
-        if source:
-            found = await repo.get_source(self._r, _clean_source_slug(source))
-            if found is None:
-                raise NotFoundError(f"Intake source {source!r} not found.")
-            source_id = found.id
-        if status and status not in intake.STATUSES:
-            raise ValidationError(f"status must be one of {', '.join(intake.STATUSES)}.")
-        task_id = (await self.get_task(task)).id if task else None
-        return await repo.list_messages(
-            self._r,
-            source_id=source_id,
-            status=status or None,
-            task_id=task_id,
-            limit=max(1, min(int(limit), intake.LIST_MAX)),
-        )
-
-    async def intake_sources(self) -> list[intake.IntakeSource]:
-        return await repo.list_sources(self._r)
-
-    async def set_source_trust(
-        self, slug: str, may_wake: bool, *, actor: str = "owner"
-    ) -> intake.IntakeSource:
-        """Board only: whether messages from this source may wake agents."""
-        async with self._tx() as tx:
-            src = await repo.get_source(tx.conn, _clean_source_slug(slug))
-            if src is None:
-                raise NotFoundError(f"Intake source {slug!r} not found.")
-            if src.may_wake != may_wake:
-                await repo.set_source_may_wake(tx.conn, src.id, may_wake)
-                kind = "intake.source_trusted" if may_wake else "intake.source_untrusted"
-                await tx.event(kind, actor, source=src.slug)
-            fresh = await repo.get_source(tx.conn, src.slug)
-            assert fresh is not None
-            return fresh
-
-    async def set_task_autonomy(self, ref: str | int, value: str, *, actor: str = "owner") -> Task:
-        """Board only: the task's autonomy switch (project, on, off)."""
-        choice = str(value or "").strip().lower()
-        if choice not in intake.AUTONOMY_VALUES:
-            raise ValidationError(f"autonomy must be one of {', '.join(intake.AUTONOMY_VALUES)}.")
-        async with self._tx() as tx:
-            task = await self.get_task(ref, tx.conn)
-            if task.autonomy != choice:
-                await repo.update_task(tx.conn, task.id, {"autonomy": choice}, tx.now)
-                await tx.event(
-                    "task.updated",
-                    actor,
-                    project_id=task.project_id,
-                    task_id=task.id,
-                    project=task.project_slug,
-                    key=task.key,
-                    stage=task.stage.value,
-                    changes={"autonomy": choice},
-                )
-            return await self.get_task(task.id, tx.conn)
-
-    async def set_project_autonomy(self, slug: str, on: bool, *, actor: str = "owner") -> Project:
-        """Board only: whether the project's agents may continue after a trusted message."""
-        async with self._tx() as tx:
-            project = await self.get_project(slug, tx.conn)
-            if project.autonomy != on:
-                await repo.update_project(tx.conn, project.id, {"autonomy": int(on)}, tx.now)
-                await tx.event(
-                    "project.updated",
-                    actor,
-                    project_id=project.id,
-                    project=project.slug,
-                    changes={"autonomy": on},
-                )
-            return await self.get_project(project.slug, tx.conn)
-
-    async def clear_answer(self, ref: str | int, *, actor: str = "owner") -> Task:
-        """The owner clears the "answer received" mark on the card."""
-        async with self._tx() as tx:
-            task = await self.get_task(ref, tx.conn)
-            if task.answer_received_at:
-                await repo.set_answer_mark(tx.conn, task.id, None, None)
-                await tx.event(
-                    "intake.answer_cleared",
-                    actor,
-                    project_id=task.project_id,
-                    task_id=task.id,
-                    project=task.project_slug,
-                    key=task.key,
-                    stage=task.stage.value,
-                )
-            return await self.get_task(task.id, tx.conn)
+    # --- the done card's archive ---------------------------------------------
 
     async def set_archived(self, ref: str | int, archived: bool, *, actor: str = "owner") -> Task:
         """The board's "Archive" / "Back from the archive" on a done card."""
@@ -7436,7 +5447,6 @@ class Service:
     ) -> Task:
         """`task_archive` / `task_unarchive`: for coordinator sessions only."""
         tool = "task_archive" if archived else "task_unarchive"
-        await self._coordinator_right(self._r, session, hook_session, "tasks_write", tool)
         async with self._tx() as tx:
             if not await self._is_coordinator(tx.conn, session, hook_session):
                 raise ValidationError(ARCHIVE_NOT_COORDINATOR.format(tool=tool))
@@ -7476,46 +5486,6 @@ class Service:
             **payload,
             archived_by=task.archived_by,  # None: the done window had archived it
         )
-
-    async def intake_propose(
-        self,
-        ref: Any,
-        project: str,
-        title: str,
-        description: str | None = None,
-        *,
-        actor: str = "mcp",
-    ) -> BacklogItem:
-        """A backlog item from a message (origin `intake`); "To plan" on the board is the
-        confirmation that creates the task. A watcher or agent never creates tasks directly."""
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.status in ("refused", "dismissed", "proposed"):
-                raise ValidationError(
-                    f"Message #{message.id} is {message.status}; nothing changed."
-                )
-            proj = await self.get_project(project, tx.conn)
-            item = await self._add_backlog(
-                tx,
-                proj,
-                title,
-                description if description is not None else message.text,
-                None,
-                origin="intake",
-                created_by=actor,
-                intake_message_id=message.id,
-            )
-            await repo.update_message(tx.conn, message.id, {"status": "proposed"})
-            await tx.event(
-                "intake.proposed",
-                actor,
-                project_id=proj.id,
-                project=proj.slug,
-                message_id=message.id,
-                source=message.source_slug,
-                backlog_id=item.id,
-            )
-            return item
 
     # --- backlog -----------------------------------------------------------------------------
 
@@ -7744,9 +5714,6 @@ class Service:
         only for a configured coordinator; `planned` never (only "To plan" on the board creates
         the task). Anyone else may edit title, body, area, priority and assignee of an item that
         is still new and that the same session added."""
-        await self._coordinator_right(
-            self._r, session, hook_session, "tasks_write", "backlog_update"
-        )
         async with self._tx() as tx:
             item = await self._backlog(tx.conn, ref)
             coordinator = await self._is_coordinator(tx.conn, session, hook_session)
@@ -8022,16 +5989,6 @@ class Service:
             item.id,
             {"status": "planned", "task_id": task_id, "decided_at": tx.now, "decided_by": actor},
         )
-        if item.intake_message_id is not None:
-            message = await repo.get_message(tx.conn, item.intake_message_id)
-            if message is not None:
-                await repo.update_message(
-                    tx.conn, message.id, {"status": "tied", "task_id": task_id}
-                )
-                if message.thread:
-                    await repo.set_thread(
-                        tx.conn, message.source_id, message.thread, task_id, tx.now
-                    )
         await tx.event(
             "backlog.planned",
             actor,
@@ -8613,7 +6570,6 @@ class Service:
     ) -> tuple[Task, Plan, bool]:
         """Accept the task's plan (the owner on the board, the coordinator over MCP). The third
         value is False when it was accepted already (nothing written)."""
-        await self._coordinator_right(self._r, session, hook_session, "plan_accept", "plan_accept")
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
             sess = await self._session(tx, session, session_title, hook_session)
@@ -10286,77 +8242,14 @@ class Service:
                     reason="The project_rules row was removed by hand.",
                 )
 
-    async def _coordinator_run_of(
-        self, conn: aiosqlite.Connection, value: str | None, hook_session: str | None
-    ) -> Run | None:
-        """The open coordinator run when it is the caller: the call's `hook_session` is the run's
-        Claude session id (relaybay records it at the turn's init, not from a hook link), or the
-        session named is the run's own and carries that hook session. The same weak identity as
-        the `coordinators` config: one shared token, so it stops mistakes, not an attacker."""
-        cc_id = (hook_session or "").strip()
-        if not cc_id:
-            return None
-        run = await repo.open_coordinator_run(conn)
-        if run is None:
-            return None
-        if run.claude_session_id == cc_id:
-            return run
-        needle = (value or "").strip()
-        if needle and run.session_id is not None:
-            session = await self._known_session(needle, conn)
-            if session is not None and session.id == run.session_id:
-                return run if session.cc_session_id == cc_id else None
-        return None
-
-    async def _coordinator_right(
-        self,
-        conn: aiosqlite.Connection,
-        value: str | None,
-        hook_session: str | None,
-        right: str,
-        tool: str,
-    ) -> Run | None:
-        """For a call of the coordinator run: refused when its profile has `right` off; returns
-        the run when it is the caller (None: another caller, whose rights are checked as
-        before). A call that names the coordinator run's own session is held to the rights
-        too, whatever its hook_session says: a missing or stale hook never widens them."""
-        run = await self._coordinator_run_of(conn, value, hook_session)
-        named = run or await self._named_coordinator_run(conn, value)
-        if named is None:
-            return None
-        run, caller = named, run
-        profile = await repo.get_profile(conn, run.profile or crules.DEFAULT_PROFILE)
-        if profile is None or not profile.rights.get(right):
-            name = profile.name if profile is not None else run.profile
-            raise ValidationError(
-                f"{tool} is off for the coordinator: its profile {name} does not grant"
-                f" {right}. The owner changes that in Settings -> Profiles. Nothing changed."
-            )
-        return caller
-
-    async def _named_coordinator_run(
-        self, conn: aiosqlite.Connection, value: str | None
-    ) -> Run | None:
-        """The open coordinator run when `value` names its session (by name, alias or id)."""
-        needle = (value or "").strip()
-        if not needle:
-            return None
-        run = await repo.open_coordinator_run(conn)
-        if run is None or run.session_id is None:
-            return None
-        session = await self._known_session(needle, conn)
-        return run if session is not None and session.id == run.session_id else None
-
     async def _is_coordinator(
         self, conn: aiosqlite.Connection, value: str | None, hook_session: str | None
     ) -> bool:
-        """Is the caller the open coordinator run, or an entry of `coordinators`? Asked before
+        """Is the caller an entry of `coordinators`? Asked before
         the call's own `hook_session` is linked, or it would prove itself. A desktop id needs
         that session's exact hook id, which no tool prints; a name or an alias only has to be
         passed, so it guards against mistakes, it is not access control: all clients share one
         token."""
-        if await self._coordinator_run_of(conn, value, hook_session) is not None:
-            return True
         needle = (value or "").strip()
         if not needle:
             return False
@@ -10469,9 +8362,6 @@ class Service:
     ) -> tuple[str, int]:
         """A new version of the scope's rules, for a coordinator session; returns the canonical
         scope and the version. The owner sees it in the Inbox until it is marked read."""
-        await self._coordinator_right(
-            self._r, session, hook_session, "rules_update", "rules_update"
-        )
         async with self._tx() as tx:
             if not await self._is_coordinator(tx.conn, session, hook_session):
                 raise self._not_a_coordinator()
@@ -10809,3967 +8699,6 @@ class Service:
                 "filter.deleted", actor, project_id=proj.id, project=proj.slug, name=found.name
             )
 
-    # --- runs on a card ------------------------------------------------------
-
-    def _claude_missing(self) -> str:
-        configured = self.runs.config.claude_path if self.runs is not None else None
-        if configured is not None:
-            return f"claude_path is {configured}, which is not a file; fix it in config.toml."
-        return CLAUDE_MISSING
-
-    def _run_home_problem(self) -> str | None:
-        """The settings check reads `claude_home`, but a run's claude runs with the server's own
-        home folder: when they differ the check would judge files the turn never loads."""
-        home = self.runs.config.claude_home if self.runs is not None else None
-        if home is None or _same_folder(home, Path.home()):
-            return None
-        return (
-            f"claude_home is {home}, but a run's claude uses the home folder {Path.home()}:"
-            " runs need claude_home unset (or equal to that folder)."
-        )
-
-    def _run_manager(self) -> RunManager:
-        if self.runs is None:
-            raise ValidationError("Runs need a server started by relaybay serve or the program.")
-        return self.runs
-
-    async def run_defaults(
-        self, slug: str, conn: aiosqlite.Connection | None = None
-    ) -> RunDefaults:
-        """The project's run defaults, with the mode and tools of the profile they name."""
-        conn = conn or self._r
-        project = await self.get_project(slug, conn)
-        found = await repo.get_run_defaults(conn, project.id) or RunDefaults(project.id)
-        profile = await self.get_profile(found.profile, conn)
-        found.permission_mode = profile.permission_mode
-        found.allowed_tools = profile.allowed_tools
-        retention = await repo.get_project_retention(conn, project.id)
-        found.retention = retention or run_rules.DEFAULT_RETENTION
-        return found
-
-    async def set_run_defaults(
-        self, slug: str, values: dict[str, Any], *, actor: str = "owner"
-    ) -> RunDefaults:
-        """The project's run defaults. Board only (no MCP tool): an agent never widens its own
-        permissions. The mode and tools come from the profile named, one for runs on cards."""
-        async with self._tx() as tx:
-            project = await self.get_project(slug, tx.conn)
-            current = await repo.get_run_defaults(tx.conn, project.id) or RunDefaults(project.id)
-            profile = await self._card_profile(tx.conn, values.get("profile") or current.profile)
-            new = RunDefaults(
-                project.id,
-                model=run_rules.clean_model(values.get("model", current.model)),
-                effort=run_rules.clean_effort(values.get("effort", current.effort)),
-                chrome=bool(values.get("chrome", current.chrome)),
-                folder=run_rules.clean_folder(values.get("folder", current.folder)),
-                profile=profile.name,
-            )
-            retention = await repo.get_project_retention(tx.conn, project.id)
-            new.retention = run_rules.clean_retention(
-                values.get("retention"), retention or run_rules.DEFAULT_RETENTION
-            )
-            await repo.upsert_run_defaults(tx.conn, new, tx.now, actor)
-            if new.retention != retention:
-                await repo.set_project_retention(tx.conn, project.id, new.retention, tx.now)
-            await tx.event(
-                "run.defaults_set",
-                actor,
-                project_id=project.id,
-                project=project.slug,
-                model=new.model,
-                effort=new.effort,
-                profile=new.profile,
-                permission_mode=profile.permission_mode,
-                allowed_tools=profile.allowed_tools,
-                chrome=new.chrome,
-                folder=new.folder,
-                retention=new.retention,
-            )
-            return await self.run_defaults(slug, tx.conn)
-
-    # --- permission profiles -------------------------------------------------
-
-    async def profiles(self, kind: str | None = None) -> list[RunProfile]:
-        """All profiles, shipped ones first; `kind`: only those for that run kind."""
-        found = await repo.list_profiles(self._r)
-        return [p for p in found if kind is None or kind in p.kinds]
-
-    async def get_profile(self, name: str, conn: aiosqlite.Connection | None = None) -> RunProfile:
-        found = await repo.get_profile(conn or self._r, str(name or "").strip().lower())
-        if found is None:
-            raise NotFoundError(f"Profile {name!r} not found.")
-        return found
-
-    async def _card_profile(self, conn: aiosqlite.Connection, name: str) -> RunProfile:
-        profile = await self.get_profile(name, conn)
-        if "card" not in profile.kinds:
-            raise ValidationError(
-                f"Profile {profile.name} is not for runs on cards (it is for"
-                f" {', '.join(profile.kinds)})."
-            )
-        return profile
-
-    def _profile_values(self, values: dict[str, Any]) -> dict[str, Any]:
-        cleaned = {
-            "description": prules.clean_description(values.get("description")),
-            "permission_mode": prules.clean_mode(values.get("permission_mode")),
-            "allowed_tools": prules.clean_rules(
-                values.get("allowed_tools"), "allowed tools", required=True
-            ),
-            "disallowed_tools": prules.clean_rules(
-                values.get("disallowed_tools"), "taken-away tools", required=False
-            ),
-            "rights": prules.clean_rights(values.get("rights") or {}),
-            "kinds": prules.clean_kinds(values.get("kinds")),
-        }
-        self._check_batch_rules(cleaned)
-        return cleaned
-
-    def _check_batch_rules(self, values: dict[str, Any]) -> None:
-        """A save reaches the open runs at once: under a batch shim a rule cmd.exe would read
-        would fail every next turn, so it is refused here, as a turn would refuse it."""
-        claude = self.runs.claude() if self.runs is not None else None
-        if claude is None or not is_batch(claude):
-            return
-        for text in (values["allowed_tools"], values["disallowed_tools"]):
-            for rule in run_rules.split_rules(text):
-                check_batch_word(claude, rule)
-
-    async def _profile_saved(
-        self,
-        tx: _Tx,
-        kind: str,
-        actor: str,
-        name: str,
-        before: RunProfile | None,
-    ) -> None:
-        """The event (an Audit line) with the before and after, and the open runs under the
-        profile updated to show what their next turn starts with."""
-        after = await repo.get_profile(tx.conn, name)
-        payload: dict[str, Any] = {"profile": name}
-        if before is not None:
-            payload["before"] = before.snapshot()
-            payload["version_before"] = before.version
-        if after is not None:
-            payload["after"] = after.snapshot()
-            payload["version"] = after.version
-            await repo.follow_profile(tx.conn, after, tx.now)
-        await tx.event(kind, actor, **payload)
-
-    async def create_profile(
-        self, name: str, values: dict[str, Any], *, actor: str = "owner"
-    ) -> RunProfile:
-        """A new profile, board only (no MCP write): the owner's alone."""
-        clean = prules.clean_name(name)
-        cleaned = self._profile_values(values)
-        async with self._tx() as tx:
-            if await repo.get_profile(tx.conn, clean) is not None:
-                raise ConflictError(f"A profile named {clean} exists already.")
-            await repo.insert_profile(tx.conn, clean, cleaned, tx.now, actor)
-            await self._profile_saved(tx, "profile.created", actor, clean, None)
-            return await self.get_profile(clean, tx.conn)
-
-    async def update_profile(
-        self, name: str, values: dict[str, Any], *, actor: str = "owner"
-    ) -> RunProfile:
-        """An edit of a profile, board only; its version grows by one and the next turn of
-        every run under it starts with it. A profile still named by a project's run defaults
-        or used by an open run on a card stays for cards; one the open coordinator run uses
-        stays for the coordinator."""
-        cleaned = self._profile_values(values)
-        async with self._tx() as tx:
-            before = await self.get_profile(name, tx.conn)
-            await self._refuse_kinds_in_use(tx.conn, before, cleaned["kinds"], "taken off")
-            if before.snapshot() == cleaned:
-                return before
-            await repo.update_profile(tx.conn, before.name, cleaned, tx.now, actor)
-            await self._profile_saved(tx, "profile.updated", actor, before.name, before)
-            return await self.get_profile(before.name, tx.conn)
-
-    async def reset_profile(self, name: str, *, actor: str = "owner") -> RunProfile:
-        """A shipped profile back to its shipped values (a new version when they differ)."""
-        async with self._tx() as tx:
-            before = await self.get_profile(name, tx.conn)
-            shipped = prules.BUILTIN.get(before.name)
-            if not before.builtin or shipped is None:
-                raise ValidationError(f"{before.name} is not a shipped profile: nothing to reset.")
-            if before.snapshot() == shipped:
-                return before
-            self._check_batch_rules(shipped)
-            await self._refuse_kinds_in_use(tx.conn, before, shipped["kinds"], "reset off")
-            await repo.update_profile(tx.conn, before.name, shipped, tx.now, actor)
-            await self._profile_saved(tx, "profile.reset", actor, before.name, before)
-            return await self.get_profile(before.name, tx.conn)
-
-    async def delete_profile(self, name: str, *, actor: str = "owner") -> None:
-        """A profile the owner added, when no project's run defaults name it and no open run
-        uses it. A shipped one is never deleted."""
-        async with self._tx() as tx:
-            before = await self.get_profile(name, tx.conn)
-            if before.builtin:
-                raise ValidationError(
-                    f"{before.name} ships with relaybay: it can be edited or reset, not deleted."
-                )
-            await self._refuse_profile_in_use(tx.conn, before, "deleted")
-            if (await self.coordinator_settings(tx.conn)).profile == before.name:
-                raise ConflictError(
-                    f"{before.name} is the coordinator's profile in Settings -> Agents: pick"
-                    " another one there first."
-                )
-            await repo.delete_profile(tx.conn, before.name)
-            await self._profile_saved(tx, "profile.deleted", actor, before.name, before)
-
-    async def _refuse_kinds_in_use(
-        self, conn: aiosqlite.Connection, profile: RunProfile, kinds: list[str], what: str
-    ) -> None:
-        """A run kind leaves the profile only when nothing of that kind uses it."""
-        if "card" not in kinds:
-            await self._refuse_profile_in_use(conn, profile, f"{what} cards", "card")
-        if run_rules.COORDINATOR not in kinds:
-            await self._refuse_profile_in_use(
-                conn, profile, f"{what} the coordinator", run_rules.COORDINATOR
-            )
-
-    @staticmethod
-    async def _refuse_profile_in_use(
-        conn: aiosqlite.Connection, profile: RunProfile, what: str, kind: str | None = None
-    ) -> None:
-        """Refused while a project's run defaults name it (unless `kind` is not `card`) or an
-        open run (of `kind`, None: of any kind) uses it."""
-        if profile.projects and kind in (None, "card"):
-            raise ConflictError(
-                f"{profile.name} is the profile of {', '.join(profile.projects)}: it cannot be"
-                f" {what} while a project's agent defaults name it. Pick another profile there"
-                " first."
-            )
-        runs = await repo.open_runs_of_profile(conn, profile.name, kind)
-        if runs:
-            listed = ", ".join(str(r) for r in runs)
-            raise ConflictError(
-                f"{profile.name} is used by open run {listed}: it cannot be {what} until"
-                " the run ends."
-            )
-
-    async def run_login_any(self) -> bool:
-        return await repo.get_app_setting(self._r, run_rules.LOGIN_ANY_KEY) == "1"
-
-    async def set_run_login_any(self, on: bool, *, actor: str = "owner") -> None:
-        """The owner's switch in Settings → Agents: runs may start under an API key or another
-        sign-in that is not a subscription."""
-        async with self._tx() as tx:
-            value = "1" if on else "0"
-            await repo.set_app_setting(tx.conn, run_rules.LOGIN_ANY_KEY, value, tx.now, actor)
-            await tx.event("settings.run_login_any", actor, on=on)
-
-    async def run_layers(self) -> LayerState | None:
-        if self.runs is None:
-            return None
-        paths = claude_paths(self.runs.config.claude_home)
-        return await asyncio.to_thread(user_layer_state, paths, self.runs.config.base_url)
-
-    async def run_brief(self, task: Task) -> str:
-        """The first turn's text without the run header: the task's digest and the report line."""
-        budget = min(self.digest_budget_chars, run_rules.BRIEF_MAX - BRIEF_ROOM)
-        text, _ = await self._task_context(task, None, None, budget)
-        return f"{text}\n\n{RUN_REPORT_LINE}"
-
-    @staticmethod
-    def _run_header(
-        task: Task, run_id: int, session_name: str, cwd: str, specs: list[WorktreeSpec]
-    ) -> str:
-        lines = [
-            f"relaybay run {run_id} on card {task.key} ({task.project_slug}).",
-            f'In relaybay writes pass session "{session_name}" and the hook session your'
-            " SessionStart gave you as hook_session.",
-            f"Your working folder: {cwd}",
-        ]
-        for spec in specs:
-            how = f"new worktree, branch {spec.branch}" if spec.create else "the repository itself"
-            lines.append(f"- {spec.repo_name}: {spec.path} ({how})")
-        lines += ["Work only in these folders.", ""]
-        return "\n".join(lines)
-
-    def _worktree_root(self) -> Path:
-        return self._run_manager().config.home / "worktrees"
-
-    def _run_folder(self, run_id: int) -> Path:
-        """The run's own files (its --settings and --mcp-config) in the data folder."""
-        return self._run_manager().config.home / "runs" / str(run_id)
-
-    async def run_form(self, task: Task) -> RunForm:
-        """What the Start form shows: defaults, the folder and repositories, what a new worktree
-        gets copied, the brief and why Start would be refused (the sign-in, http hooks of an
-        older setup)."""
-        defaults = await self.run_defaults(task.project_slug)
-        repos = await repo.list_project_repos(self._r, task.project_id)
-        linked = {link.repo_id for link in await repo.task_repo_links(self._r, task_id=task.id)}
-        refusals: list[str] = []
-        login, layers, claude = None, None, None
-        if self.runs is None:
-            refusals.append("Runs need a server started by relaybay serve or the program.")
-        else:
-            claude = self.runs.claude()
-            login = await self.runs.login()
-            why = run_auth.refusal(login, await self.run_login_any())
-            if claude is None:
-                refusals.append(self._claude_missing())
-            elif why:
-                refusals.append(why)
-            home = self._run_home_problem()
-            if home:
-                refusals.append(home)
-            layers = await self.run_layers()
-            if layers is not None and layers.refusal:
-                refusals.append(layers.refusal)
-        if not repos:
-            refusals.append(NO_RUN_REPO)
-        git = worktrees.find_git()
-        modes, copy_line = await asyncio.to_thread(_worktree_preview, repos, git)
-        return RunForm(
-            defaults=defaults,
-            repos=repos,
-            task_repo_ids=linked or ({repos[0].id} if repos else set()),
-            brief=await self.run_brief(task),
-            claude=claude,
-            login=login,
-            login_line=run_auth.login_line(login) if login is not None else "",
-            layers=layers,
-            refusals=refusals,
-            fix_command=run_auth.FIX_COMMAND,
-            repo_modes=modes,
-            copy_line=copy_line,
-            profiles=await self.profiles("card"),
-        )
-
-    async def run_view(self, task: Task) -> RunView | None:
-        """The card's open run, else its latest one."""
-        run = await repo.latest_run_of_task(self._r, task.id)
-        if run is None:
-            return None
-        turns = await repo.list_turns(self._r, run.id)
-        folders = await repo.list_run_worktrees(self._r, run.id)
-        view = RunView(run, turns, run_rules.totals(turns), folders)
-        reported = [t for t in turns if t.report_id is not None]
-        report = await repo.get_report(self._r, reported[-1].report_id) if reported else None
-        if report is not None:
-            view.last_report = next(
-                (line.strip() for line in report.body_md.splitlines() if line.strip()), ""
-            )
-        started = [t for t in turns if t.started_at is not None]
-        if started:
-            view.last_counts = await repo.run_event_counts(self._r, started[-1].id)
-        return view
-
-    async def _run_turn(self, run_id: int, seq: int | None) -> tuple[Run, RunTurn]:
-        """A turn of a run by its number; None: the latest one that started."""
-        run = await self.get_run(run_id)
-        turns = await repo.list_turns(self._r, run.id)
-        if seq is None:
-            started = [t for t in turns if t.started_at is not None]
-            if not started:
-                raise NotFoundError(f"Run {run.id} has no turn that started.")
-            return run, started[-1]
-        turn = next((t for t in turns if t.seq == seq), None)
-        if turn is None:
-            raise NotFoundError(f"Run {run.id} has no turn {seq}.")
-        return run, turn
-
-    async def run_turn_detail(
-        self, run_id: int, seq: int
-    ) -> tuple[Run, RunTurn, Report | None, list[ReportCheck], list[run_lines.EventItem]]:
-        """The board's view of a turn: its report with its marks and its last BOARD_LINES lines,
-        nested under the calls of their subagents, their texts within BOARD_TOTAL_MAX."""
-        run, turn = await self._run_turn(run_id, seq)
-        report = await repo.get_report(self._r, turn.report_id) if turn.report_id else None
-        checks = []
-        if report is not None:
-            checks = (await repo.report_checks(self._r, [report.id])).get(report.id, [])
-        lines = await repo.list_run_events(self._r, turn.id, limit=run_lines.BOARD_LINES, last=True)
-        items = run_lines.items(lines, total=run_lines.BOARD_TOTAL_MAX)
-        return run, turn, report, checks, run_lines.nest(items)
-
-    async def run_events(
-        self, run_id: int, seq: int | None, *, limit: int, from_seq: int | None = None
-    ) -> tuple[Run, RunTurn, list[run_lines.EventItem]]:
-        """run_events over MCP, open to every caller, changing nothing: a turn's lines as short
-        items, from `from_seq` on, else the last `limit` lines."""
-        run, turn = await self._run_turn(run_id, seq)
-        lines = await repo.list_run_events(
-            self._r, turn.id, from_seq=from_seq, limit=limit, last=from_seq is None
-        )
-        return run, turn, run_lines.items(lines, run_lines.COMPACT_TEXT_MAX)
-
-    async def run_status(self, ref: str | int) -> tuple[Task | None, RunView | None]:
-        """run_status over MCP: open to every caller, it changes nothing. `coordinator`: the
-        coordinator run (the open one, else the latest), which has no card."""
-        if str(ref).strip().lower() == COORDINATOR_REF:
-            return None, await self.coordinator_run_view()
-        task = await self.get_task(ref)
-        return task, await self.run_view(task)
-
-    async def get_run(self, run_id: int, conn: aiosqlite.Connection | None = None) -> Run:
-        run = await repo.get_run(conn or self._r, run_id)
-        if run is None:
-            raise NotFoundError(f"Run #{run_id} not found.")
-        return run
-
-    async def _run_preflight(
-        self, runs: RunManager, run_id: int | None = None
-    ) -> tuple[str, LayerState | None]:
-        """The sign-in and the user layer, right before a turn; returns the sign-in method and
-        where relaybay's hooks and MCP server come from. `run_id`: counted as checked since this
-        server started, so its next turn does not ask `claude auth status` again."""
-        if runs.claude() is None:
-            raise ValidationError(self._claude_missing())
-        state = await runs.login(force=True)
-        why = run_auth.refusal(state, await self.run_login_any())
-        if why:
-            raise ValidationError(why)
-        home = self._run_home_problem()
-        if home:
-            raise ValidationError(home)
-        layers = await self.run_layers()
-        if layers is not None and layers.refusal:
-            raise ValidationError(layers.refusal)
-        if run_id is not None:
-            runs.checked_since_start.add(run_id)
-        return state.method or "unknown", layers
-
-    async def _run_choices(
-        self,
-        task: Task,
-        defaults: RunDefaults,
-        *,
-        repo_id: int | None,
-        cwd: str | None,
-        repos: list[tuple[int, bool]] | None,
-        coordinator: bool,
-    ) -> tuple[int | None, list[tuple[int | None, str, str, bool]]]:
-        """The cwd (None: the project folder; else the repository id) and, per repository the
-        run works in, (id, name, path, new worktree?). Nothing chosen (the 1a form, an MCP call
-        without repos): the card's linked repositories, else the first one; the owner's default
-        is the repository itself, the coordinator always gets new worktrees."""
-        project_repos = await repo.list_project_repos(self._r, task.project_id)
-        if not project_repos:
-            raise ValidationError(NO_RUN_REPO)
-        by_id = {r.id: r for r in project_repos}
-        first = 0  # not an id: the first repository chosen
-        cwd_repo: int | None
-        if cwd == "folder" or (not cwd and repo_id is None and coordinator and defaults.folder):
-            if not defaults.folder:
-                raise ValidationError(
-                    f"{task.project_slug} has no project folder: set it in the agent defaults on"
-                    " Stands & access, or start in one of its repositories."
-                )
-            cwd_repo = None
-        elif cwd:
-            if not cwd.isdigit() or int(cwd) not in by_id:
-                raise NotFoundError(f"{task.project_slug} has no repository #{cwd}.")
-            cwd_repo = int(cwd)
-        else:
-            cwd_repo = repo_id if repo_id is not None else first
-        if repos is None:
-            if cwd_repo:
-                picked = [cwd_repo]
-            else:
-                linked = await repo.task_repo_links(self._r, task_id=task.id)
-                picked = [x.repo_id for x in linked if x.repo_id in by_id] or [project_repos[0].id]
-            repos = [(rid, coordinator) for rid in picked]
-        for rid, _ in repos:
-            if rid not in by_id:
-                raise NotFoundError(f"{task.project_slug} has no repository #{rid}.")
-        if cwd_repo == first:
-            cwd_repo = repos[0][0] if repos else project_repos[0].id
-        if cwd_repo is not None and cwd_repo not in {rid for rid, _ in repos}:
-            repos = [(cwd_repo, coordinator), *repos]
-        if not repos:
-            raise ValidationError("Choose at least one repository for the run to work in.")
-        choices: list[tuple[int | None, str, str, bool]] = []
-        for rid, create in dict(repos).items():
-            found = by_id[rid]
-            choices.append((found.id, found.name, found.path, create or coordinator))
-        return cwd_repo, choices
-
-    async def _worktree_conflict(
-        self, conn: aiosqlite.Connection, specs: list[WorktreeSpec], cwd_folder: str | None
-    ) -> None:
-        """One open run per folder. A repository used in place conflicts with another one in
-        place (the same folder or one inside the other) and with an open run's project folder
-        it lies in; a worktree a run made only with the same path (it may lie inside a
-        repository when the data folder does). A new run in a project folder conflicts with an
-        open run using a repository in place inside it."""
-        in_use: list[tuple[str, bool, int, str]] = [  # path, made by the run, run, card
-            (w.path, w.created_by_run, w.run_id, key) for w, key in await repo.open_worktrees(conn)
-        ]
-        folders: list[tuple[str, int, str]] = []
-        with_rows = {run_id for _, _, run_id, _ in in_use}
-        for other in await repo.open_runs(conn):
-            if other.kind != run_rules.CARD:
-                # The coordinator's folder is outside any repository and never a project's; a
-                # check only reads, so it shares a folder with a card's run.
-                continue
-            if other.cwd_repo_id is None:
-                folders.append((other.cwd, other.id, other.task_key))
-            elif other.id not in with_rows:
-                # Started before its folders were recorded: its cwd is its one repository.
-                in_use.append((other.cwd, False, other.id, other.task_key))
-
-        def refuse(name: str, path: str, run_id: int, key: str) -> NoReturn:
-            raise ConflictError(
-                f"{name} ({path}) is in use by run {run_id} on {key}; end that run first."
-            )
-
-        for spec in specs:
-            for path, made, run_id, key in in_use:
-                if spec.create or made:
-                    if worktrees.path_key(path) == worktrees.path_key(spec.path):
-                        refuse(spec.repo_name, spec.path, run_id, key)
-                elif _paths_overlap(path, spec.path):
-                    refuse(spec.repo_name, spec.path, run_id, key)
-            if not spec.create:
-                for folder, run_id, key in folders:
-                    if _paths_overlap(folder, spec.path):
-                        refuse(spec.repo_name, spec.path, run_id, key)
-        if cwd_folder is not None:
-            for path, made, run_id, key in in_use:
-                if not made and _paths_overlap(cwd_folder, path):
-                    refuse("The project folder", cwd_folder, run_id, key)
-
-    async def start_run(
-        self,
-        ref: str | int,
-        *,
-        actor: str = "owner",
-        repo_id: int | None = None,
-        cwd: str | None = None,
-        repos: list[tuple[int, bool]] | None = None,
-        model: str | None = None,
-        effort: str | None = None,
-        mode: str | None = None,
-        brief: str | None = None,
-        caller_kind: str = "owner",
-        profile: str | None = None,
-        started_by_run: int | None = None,
-    ) -> Run:
-        """Start a run on the card: the owner's board button, or `run_start` of a coordinator
-        (`start_run_mcp` checks the caller). Checks come first; then the new worktrees are made
-        (no transaction is open); one transaction writes the run, its folders, its session, the
-        binding and turn 1; the process starts after the commit. When the transaction fails,
-        the worktrees just made are removed again.
-
-        `cwd`: "folder" (the project folder) or a repository id; `repos`: (repository id, new
-        worktree?) per repository the run works in. `profile`: the owner's pick of a profile for
-        cards (default: the project's); `mode`: the owner's pick for this run, which then stays
-        the run's own instead of following the profile (empty: the profile's)."""
-        runs = self._run_manager()
-        coordinator = caller_kind == "coordinator"
-        task = await self.get_task(ref)
-        defaults = await self.run_defaults(task.project_slug)
-        model = run_rules.clean_model(model or defaults.model)
-        effort = run_rules.clean_effort(effort or defaults.effort)
-        picked = (profile or "").strip()
-        if coordinator or not picked:
-            picked = defaults.profile
-        run_profile = await self._card_profile(self._r, picked)
-        mode_set = not coordinator and bool((mode or "").strip())
-        mode = run_rules.clean_mode(mode, owner=True) if mode_set else run_profile.permission_mode
-        if brief and brief.strip():
-            text = run_rules.clean_prompt(brief, "brief")
-        else:
-            text = await self.run_brief(task)
-        if coordinator:
-            qrules.check_no_answer_line(text, "The brief")
-            arules.check_no_decision_line(text, "The brief")
-        cwd_repo, choices = await self._run_choices(
-            task, defaults, repo_id=repo_id, cwd=cwd, repos=repos, coordinator=coordinator
-        )
-        if cwd_repo is None and not await asyncio.to_thread(Path(defaults.folder or "").is_dir):
-            raise ValidationError(f"The project folder {defaults.folder} is not a folder here.")
-        if await repo.open_run_of_task(self._r, task.id) is not None:
-            raise ConflictError(f"{task.key} already has an open run; end it first.")
-        run_id = await repo.next_run_id(self._r)
-        specs = worktrees.plan_worktrees(task.key, run_id, choices, self._worktree_root())
-        cwd_folder = defaults.folder if cwd_repo is None else None
-        await self._worktree_conflict(self._r, specs, cwd_folder)
-        method, layers = await self._run_preflight(runs, run_id)
-        hooks_source = layers.hooks_source if layers is not None else "user"
-        mcp_source = layers.mcp_source if layers is not None else "user"
-        claude = runs.claude()
-        assert claude is not None
-        settings_file, mcp_file = run_files(
-            self._run_folder(run_id), hooks=hooks_source == "run", mcp=mcp_source == "run"
-        )
-        # The batch-shim check of the whole command line, before anything is made or written.
-        build_command(
-            TurnSpec(
-                claude,
-                "",
-                defaults.folder or specs[0].path,
-                model,
-                effort,
-                mode,
-                tuple(run_profile.allowed_rules),
-                disallowed=prules.turn_disallowed(run_profile.disallowed_tools),
-                add_dirs=tuple(s.path for s in specs),
-                settings_file=str(settings_file) if settings_file else None,
-                mcp_file=str(mcp_file) if mcp_file else None,
-            )
-        )
-        git = worktrees.find_git()
-        made = await _make_worktrees(specs, git, task.key, run_id)
-        # The paths as made: a taken run folder moves to a numbered one.
-        by_repo = {spec.repo_id: spec for spec in made}
-        cwd_path = (defaults.folder or "") if cwd_repo is None else by_repo[cwd_repo].path
-        free = await self._free_memory()
-        try:
-            launches = await self._insert_run(
-                task,
-                run_id,
-                made,
-                actor=actor,
-                caller_kind=caller_kind,
-                cwd_path=cwd_path,
-                cwd_repo=cwd_repo,
-                values={
-                    "model": model,
-                    "effort": effort,
-                    "permission_mode": mode,
-                    "allowed_tools": run_profile.allowed_tools,
-                    "disallowed_tools": run_profile.disallowed_tools,
-                    "profile": run_profile.name,
-                    "mode_set": int(mode_set),
-                    "chrome": int(defaults.chrome),
-                    "auth_method": method,
-                    "hooks_source": hooks_source,
-                    "mcp_source": mcp_source,
-                    "started_by_run": started_by_run,
-                },
-                text=text,
-                free_mb=free,
-            )
-        except BaseException:
-            await asyncio.shield(asyncio.to_thread(worktrees.remove_created, made, git))
-            raise
-        await self._spawn_all(launches)
-        return await self.get_run(run_id)
-
-    async def _insert_run(
-        self,
-        task: Task,
-        run_id: int,
-        made: list[WorktreeSpec],
-        *,
-        actor: str,
-        caller_kind: str,
-        cwd_path: str,
-        cwd_repo: int | None,
-        values: dict[str, Any],
-        text: str,
-        free_mb: int | None,
-    ) -> list[tuple[int, int]]:
-        """The one transaction of a Start: the run is written `queued` with turn 1, then the
-        queue starts what the slots, memory and brakes allow (turn 1 too, unless it waits).
-        Returns the turns to spawn after the commit."""
-        async with self._tx() as tx:
-            task = await self.get_task(task.id, tx.conn)
-            if await repo.open_run_of_task(tx.conn, task.id) is not None:
-                raise ConflictError(f"{task.key} already has an open run; end it first.")
-            await self._worktree_conflict(tx.conn, made, cwd_path if cwd_repo is None else None)
-            if await repo.next_run_id(tx.conn) != run_id:
-                raise ConflictError("Another run started at the same moment; start this one again.")
-            if values.get("started_by_run") is not None:
-                await self._check_coordinator_cap(tx.conn, values["started_by_run"])
-            await repo.insert_run(
-                tx.conn,
-                {
-                    "id": run_id,
-                    "task_id": task.id,
-                    "project_id": task.project_id,
-                    "cwd": cwd_path,
-                    "cwd_repo_id": cwd_repo,
-                    **values,
-                    "status": "queued",
-                    "started_by": actor,
-                    "started_by_kind": caller_kind,
-                },
-                tx.now,
-            )
-            for spec in made:
-                await repo.insert_run_worktree(
-                    tx.conn,
-                    run_id,
-                    {
-                        "project_repo_id": spec.repo_id,
-                        "repo_name": spec.repo_name,
-                        "source_path": spec.source,
-                        "path": spec.path,
-                        "path_key": worktrees.path_key(spec.path),
-                        "branch": spec.branch,
-                        "created_by_run": int(spec.create),
-                        "copied": list(spec.copied),
-                    },
-                    tx.now,
-                )
-            name = f"{task.key} run {run_id}"
-            session_id = await repo.insert_session(tx.conn, name, tx.now, kind="run")
-            await repo.touch_session(
-                tx.conn, session_id, tx.now, {"project_id": task.project_id, "cwd": cwd_path}
-            )
-            await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
-            await tx.event(
-                "session.seen",
-                name,
-                project_id=task.project_id,
-                session_id=session_id,
-                session=name,
-            )
-            session = await repo.get_session_by_id(tx.conn, session_id)
-            assert session is not None
-            await self._bind(tx, task, session, actor)
-            prompt = self._run_header(task, run_id, name, cwd_path, made) + text
-            await repo.insert_turn(tx.conn, run_id, prompt, actor, caller_kind, tx.now)
-            await self._run_event(
-                tx,
-                "run.started",
-                actor,
-                task,
-                run_id,
-                model=values["model"],
-                mode=values["permission_mode"],
-                profile=values["profile"],
-                worktrees=sum(1 for s in made if s.create),
-            )
-            return await self._dispatch(tx, free_mb, actor)
-
-    async def start_run_mcp(
-        self,
-        ref: str,
-        *,
-        repos: list[str] | None = None,
-        cwd: str | None = None,
-        model: str | None = None,
-        effort: str | None = None,
-        brief: str | None = None,
-        permission_mode: str | None = None,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> Run:
-        """`run_start`: a coordinator starts a run on a card in plan or dev with no brake on it,
-        in new worktrees, with the project's permission profile. Anyone else is refused. The
-        coordinator run under its profile's rights: run_start on, at most run_start_per_day runs
-        a local day; it starts only runs on cards, never a coordinator."""
-        own = await self._coordinator_right(
-            self._r, session, hook_session, "run_start", "run_start"
-        )
-        if not await self._is_coordinator(self._r, session, hook_session):
-            raise ValidationError(RUN_START_NOT_COORDINATOR)
-        if own is not None:
-            await self._check_coordinator_cap(self._r, own.id)
-        if (permission_mode or "").strip() not in ("", "-"):
-            raise ValidationError(
-                "run_start takes no permission mode: a run started over MCP uses the project's"
-                " agent defaults, which only the owner changes on the board. Nothing started."
-            )
-        stopped = ("no run starts", "Nothing started.")
-        await self._refuse_braked_caller(session, *stopped)
-        task = await self.get_task(ref)
-        if task.stage.value not in RUN_START_STAGES:
-            raise ValidationError(
-                f"run_start works on cards in plan or dev; {task.key} is in {task.stage.value}."
-                " Nothing started."
-            )
-        await self._refuse_braked_task(task, *stopped)
-        bound_id = await repo.open_binding(self._r, task.id)
-        bound = await repo.get_session_by_id(self._r, bound_id) if bound_id else None
-        if bound is not None and bound.kind != "run" and bound.status != "ended":
-            raise ValidationError(
-                f"{task.key} is bound to {bound.name}, which is not ended: a run would take the"
-                " card from it. Unbind it first or ask the owner. Nothing started."
-            )
-        project_repos = await repo.list_project_repos(self._r, task.project_id)
-        by_name = {r.name.lower(): r.id for r in project_repos}
-        picked: list[tuple[int, bool]] | None = None
-        if repos:
-            unknown = [name for name in repos if name.strip().lower() not in by_name]
-            if unknown:
-                raise NotFoundError(
-                    f"{task.project_slug} has no repository {', '.join(unknown)}; it has"
-                    f" {', '.join(r.name for r in project_repos) or 'none'}."
-                )
-            picked = [(by_name[name.strip().lower()], True) for name in repos]
-        where = (cwd or "").strip()
-        if where.lower() in ("folder", "-"):
-            where = where.lower()
-        elif where:
-            if where.lower() not in by_name:
-                raise NotFoundError(
-                    f"cwd is 'folder' or one of {task.project_slug}'s repositories:"
-                    f" {', '.join(r.name for r in project_repos) or 'none'}."
-                )
-            where = where.lower()
-        cwd_value = (
-            None if where in ("", "-") else "folder" if where == "folder" else str(by_name[where])
-        )
-        async with self._tx() as tx:
-            caller = await self._session(tx, session, session_title, hook_session)
-            assert caller is not None
-        return await self.start_run(
-            task.key,
-            actor=caller.name,
-            cwd=cwd_value,
-            repos=picked,
-            model=model,
-            effort=effort,
-            brief=brief,
-            caller_kind="coordinator",
-            started_by_run=own.id if own is not None else None,
-        )
-
-    async def _check_coordinator_cap(self, conn: aiosqlite.Connection, run_id: int) -> None:
-        """The coordinator's run_start_per_day since the local midnight, counting the runs it
-        started and the checks it scheduled; asked before the checks and again in the write
-        transaction of the start, so two calls at once cannot pass it."""
-        run = await self.get_run(run_id, conn)
-        why = await self._coordinator_cap_reason(conn, run.profile)
-        if why:
-            raise ValidationError(f"{why} Nothing started; the owner may start more on the cards.")
-
-    async def _coordinator_cap_reason(
-        self, conn: aiosqlite.Connection, profile_name: str | None
-    ) -> str | None:
-        """Why the coordinator's run_start_per_day is used up (None: it is not): the runs it
-        started and the check runs of the schedules it made since the local midnight."""
-        profile = await self.get_profile(profile_name or crules.DEFAULT_PROFILE, conn)
-        since = crules.local_day_start(datetime.now(UTC))
-        started = await repo.coordinator_starts_since(conn, since)
-        checks = await repo.coordinator_checks_since(conn, since)
-        if started + checks < profile.per_day:
-            return None
-        ran = f" and ran {checks} check(s) of its schedules" if checks else ""
-        return (
-            f"The coordinator started {started} run(s){ran} today, its profile {profile.name}"
-            f" allows {profile.per_day} a day."
-        )
-
-    async def _refuse_braked_caller(self, session: str | None, what: str, nothing: str) -> None:
-        """A coordinator's run tool: refused while a brake covers the caller."""
-        caller_row = await self._known_session((session or "").strip(), self._r)
-        brake = await self._brake_for(caller_row, None)
-        if brake is not None:
-            raise ValidationError(
-                f"You are under the brake ({brake.target}): {what} until the owner releases it"
-                f" on the board. {nothing}"
-            )
-
-    async def _refuse_braked_task(self, task: Task, what: str, nothing: str) -> None:
-        """A coordinator's run tool: refused while a brake of scope all, the card's project or
-        the card is open."""
-        for brake in await repo.open_brakes(self._r):
-            if (
-                brake.scope == "all"
-                or (brake.scope == "project" and brake.project_id == task.project_id)
-                or (brake.scope == "task" and brake.task_id == task.id)
-            ):
-                raise ValidationError(
-                    f"{task.key} is under the brake ({brake.target}): {what} until the owner"
-                    f" releases it on the board. {nothing}"
-                )
-
-    async def set_run_settings(
-        self,
-        run_id: int,
-        *,
-        mode: str | None = None,
-        model: str | None = None,
-        effort: str | None = None,
-        actor: str = "owner",
-        caller_kind: str = "owner",
-    ) -> Run:
-        """The permission mode, model and effort of the run's next turns, passed to `claude -p
-        --resume` from the next turn on; never while a turn runs. The owner may pick any mode; a
-        coordinator only one that does not raise it (`domain.runs.MODE_RANK`) and never
-        `bypassPermissions`. Empty or "-" keeps a value. A mode changed here stays the run's own
-        instead of following its profile; the owner's "profile" makes it follow again. A change
-        is a `run.settings_changed` event with the old and the new values."""
-        owner = caller_kind == "owner"
-        runs = self._run_manager()
-
-        def keep(value: str | None) -> bool:
-            return (value or "").strip() in ("", "-")
-
-        if not owner and (mode or "").strip() in run_rules.OWNER_ONLY_MODES:
-            raise ValidationError(
-                f"{mode} is the owner's alone, picked on the card. Nothing changed."
-            )
-
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            if not run.is_open:
-                raise ValidationError(f"Run {run.id} has ended. Nothing changed.")
-            if (
-                run.status == "running"
-                or runs.is_running(run.id)
-                or await repo.active_turn(tx.conn, run.id) is not None
-            ):
-                raise ValidationError(
-                    f"A turn of run {run.id} is running: the mode, model and effort change"
-                    " between turns. Wait until it ends or stop it. Nothing changed."
-                )
-            follows = not run.mode_set
-            if owner and (mode or "").strip() == FOLLOW_PROFILE:
-                if run.profile is None:
-                    raise ValidationError(
-                        f"Run {run.id} started before profiles: it has no profile to follow."
-                        " Nothing changed."
-                    )
-                mode_value = (await self.get_profile(run.profile, tx.conn)).permission_mode
-                follows = True
-            elif keep(mode):
-                mode_value = run.permission_mode
-            else:
-                mode_value = run_rules.clean_mode(mode, owner=owner)
-                follows = follows and mode_value == run.permission_mode
-            new = {
-                "permission_mode": mode_value,
-                "model": run.model if keep(model) else run_rules.clean_model(model),
-                "effort": run.effort if keep(effort) else run_rules.clean_effort(effort),
-            }
-            if not owner and run_rules.raises_mode(run.permission_mode, new["permission_mode"]):
-                raise ValidationError(
-                    f"{run.permission_mode} to {new['permission_mode']} raises the permission"
-                    " mode, which only the owner does on the card. Nothing changed."
-                )
-            old = {
-                "permission_mode": run.permission_mode,
-                "model": run.model,
-                "effort": run.effort,
-            }
-            changed = {k: {"from": old[k], "to": v} for k, v in new.items() if old[k] != v}
-            values: dict[str, Any] = {k: new[k] for k in changed}
-            if follows == run.mode_set:
-                changed["follows_profile"] = {"from": not run.mode_set, "to": follows}
-                values["mode_set"] = int(not follows)
-            if changed:
-                task = await self._run_task(tx.conn, run)
-                await repo.update_run(tx.conn, run.id, values, tx.now)
-                await self._run_event(
-                    tx, "run.settings_changed", actor, task, run.id, changed=changed
-                )
-        return await self.get_run(run_id)
-
-    async def run_settings_mcp(
-        self,
-        ref: str,
-        *,
-        permission_mode: str | None = None,
-        model: str | None = None,
-        effort: str | None = None,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> Run:
-        """`run_settings`: a coordinator changes the mode (never raising it), model or effort of
-        the card's open run between turns, under the brake rules of `run_start`."""
-        await self._coordinator_right(
-            self._r, session, hook_session, "run_settings", "run_settings"
-        )
-        if not await self._is_coordinator(self._r, session, hook_session):
-            raise ValidationError(RUN_SETTINGS_NOT_COORDINATOR)
-        stopped = ("no run changes", "Nothing changed.")
-        await self._refuse_braked_caller(session, *stopped)
-        task = await self.get_task(ref)
-        await self._refuse_braked_task(task, *stopped)
-        run = await repo.open_run_of_task(self._r, task.id)
-        if run is None:
-            raise NotFoundError(f"{task.key} has no open run. Nothing changed.")
-        async with self._tx() as tx:
-            caller = await self._session(tx, session, session_title, hook_session)
-            assert caller is not None
-        return await self.set_run_settings(
-            run.id,
-            mode=permission_mode,
-            model=model,
-            effort=effort,
-            actor=caller.name,
-            caller_kind="coordinator",
-        )
-
-    async def open_in_desktop(self, run_id: int, *, actor: str = "owner") -> Run:
-        """Hand the run's session to the owner in the Claude desktop app (the board only):
-        `claude --desktop --resume <id>` in the run's cwd, in a console of its own, its stderr in
-        a file of the run's folder so a refusal is shown. The run is with the owner from before
-        the launch, so no turn starts meanwhile; a failed launch hands it back and starts a
-        waiting text. A run handed back or ended while the launch ran keeps only the time."""
-        runs = self._run_manager()
-        run = await self.get_run(run_id)
-        self._check_hand_over(run, runs.is_running(run.id))
-        cc_id = run.claude_session_id
-        if cc_id is None or not CLAUDE_SESSION_RE.fullmatch(cc_id):
-            raise ValidationError(
-                f"Run {run.id} has no Claude session yet: its first turn has not started."
-            )
-        launcher = runs.desktop_launcher
-        if launcher is None:
-            raise ValidationError(
-                "relaybay opens the desktop app only on Windows, where it can give the command a"
-                f" console of its own. {self._desktop_hint(run, cc_id)}"
-            )
-        claude = runs.claude()
-        if claude is None:
-            raise ValidationError(self._claude_missing())
-        stderr_file = self._run_folder(run.id) / "desktop-stderr.txt"
-        command = run_desktop.desktop_command_line(claude, cc_id, stderr_file)
-        if run.id in self.desktop_launching:
-            raise ValidationError(f"The desktop app is being opened for run {run.id} already.")
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            self._check_hand_over(run, runs.is_running(run.id))
-            if await repo.active_turn(tx.conn, run.id) is not None:
-                raise ValidationError(f"A turn of run {run.id} is running; wait or stop it.")
-            await repo.update_run(
-                tx.conn, run.id, {"with_owner_at": tx.now, "with_owner_by": actor}, tx.now
-            )
-        self.desktop_launching.add(run.id)  # no await since the commit
-        why: str | None = None
-        try:
-            await asyncio.to_thread(stderr_file.parent.mkdir, parents=True, exist_ok=True)
-            env = run_desktop.desktop_env(os.environ)
-            code = await asyncio.to_thread(
-                launcher, command, run.cwd, env, run_desktop.DESKTOP_TIMEOUT_SECONDS
-            )
-            if code != 0:
-                why = f"claude --desktop exited with code {code}"
-        except subprocess.TimeoutExpired:
-            why = f"claude --desktop did not finish in {run_desktop.DESKTOP_TIMEOUT_SECONDS:.0f} s"
-        except OSError as exc:
-            why = f"claude --desktop did not start: {exc}"
-        finally:
-            self.desktop_launching.discard(run.id)
-            reason = await asyncio.to_thread(run_desktop.take_reason, stderr_file)
-        if why is not None:
-            if reason:
-                why = f"{why}: {reason}"
-            try:
-                await self._hand_back(run.id, actor, event=False)
-                stays = "the run stays with relaybay"
-            except ValidationError as exc:  # the check before a waiting text refused
-                stays = f"the run stays with the owner until Back to the program ({exc})"
-            raise ValidationError(f"{why}; {stays}. {self._desktop_hint(run, cc_id)}")
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            await repo.update_run(tx.conn, run.id, {"desktop_opened_at": tx.now}, tx.now)
-            if run.is_open and run.with_owner:
-                task = await self._run_task(tx.conn, run)
-                await self._run_event(
-                    tx, "run.opened_in_desktop", actor, task, run.id, claude_session_id=cc_id
-                )
-        return await self.get_run(run_id)
-
-    @staticmethod
-    def _desktop_hint(run: Run, cc_id: str) -> str:
-        """Where else the session opens: the desktop app's link once it was opened there (a
-        terminal would meet the same refusal), else the terminal command."""
-        if run.desktop_link:
-            return f"Open it in the desktop app: {run.desktop_link}"
-        return f"Open the session in a terminal in {run.cwd}: {run_desktop.terminal_command(cc_id)}"
-
-    @staticmethod
-    def _check_hand_over(run: Run, running: bool) -> None:
-        if not run.is_open:
-            raise ValidationError(f"Run {run.id} has ended.")
-        if run.with_owner:
-            raise ValidationError(f"Run {run.id} is already with the owner {_owner_place(run)}.")
-        if running or run.status == "running":
-            raise ValidationError(f"A turn of run {run.id} is running; wait or stop it.")
-
-    async def return_run(self, run_id: int, *, actor: str = "owner") -> Run:
-        """Back to the program: the run is relaybay's again; the first waiting text starts. Not
-        while the desktop app is still being opened (that launch would end on a run handed back)."""
-        run = await self.get_run(run_id)
-        if not run.with_owner:
-            raise ValidationError(f"Run {run.id} is not with the owner.")
-        if self.terminals.busy(run.id):
-            if self.terminals.get(run.id) is None:
-                raise ValidationError(
-                    f"The terminal of run {run.id} is starting; try again in a moment."
-                )
-            outcome = await self.close_terminal(run.id, actor=actor, reason="Back to the program")
-            if outcome is not None and outcome != TERMINAL_BACK:
-                raise ValidationError(f"The terminal closed, but {outcome}.")
-            return await self.get_run(run_id)
-        if run.in_terminal:  # its terminal ended, the hand-back then was refused: try again
-            await self._hand_back(run.id, actor, event=True)
-            return await self.get_run(run_id)
-        if run.id in self.desktop_launching:
-            raise ValidationError(
-                f"The desktop app is still being opened for run {run.id}; try again in a moment."
-            )
-        await self._hand_back(run.id, actor, event=True)
-        return await self.get_run(run_id)
-
-    async def _hand_back(self, run_id: int, actor: str, *, event: bool) -> None:
-        """Clear the owner's hold and start the first waiting text, if any. `event`: a
-        `run.returned` in the journal (not after a launch that failed)."""
-        runs = self._run_manager()
-        queued = await repo.next_queued_turn(self._r, run_id)
-        if queued is not None and run_id not in runs.checked_since_start:
-            await self._run_preflight(runs, run_id)  # the first turn after a restart checks again
-        free = await self._free_memory()
-        launches: list[tuple[int, int]] = []
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            if not run.with_owner:
-                return
-            task = await self._run_task(tx.conn, run)
-            await repo.update_run(
-                tx.conn,
-                run.id,
-                {"with_owner_at": None, "with_owner_by": None, "with_owner_in": None},
-                tx.now,
-            )
-            run.with_owner_at = None
-            if event:
-                await self._run_event(tx, "run.returned", actor, task, run.id)
-            if run.is_open and run.status != "running":
-                launches = await self._dispatch(tx, free, actor)
-        await self._spawn_all(launches)
-
-    # --- the Terminal tab: `claude --resume` of the run in a PTY on this server -------------
-
-    async def terminal_enabled(self, conn: aiosqlite.Connection | None = None) -> bool:
-        return await repo.get_app_setting(conn or self._r, run_rules.TERMINAL_KEY) == "1"
-
-    def terminal_available(self) -> bool:
-        return self.terminals.backend is not None
-
-    async def set_terminal_enabled(self, on: bool, *, actor: str = "owner") -> list[str]:
-        """The owner's switch in Settings -> Agents (board only); off closes the open terminals,
-        which hands their runs back. Returns what went wrong per run (each run is tried); a
-        terminal still starting is closed by its start, which checks the switch again."""
-        async with self._tx() as tx:
-            value = "1" if on else "0"
-            await repo.set_app_setting(tx.conn, run_rules.TERMINAL_KEY, value, tx.now, actor)
-            await tx.event("settings.terminal_enabled", actor, on=on)
-        problems: list[str] = []
-        if on:
-            return problems
-        for run_id in sorted(self.terminals.open_runs()):
-            try:
-                outcome = await self.close_terminal(
-                    run_id, actor=actor, reason="the Terminal tab was turned off"
-                )
-            except Exception as exc:  # the kill failed: the run stays held, the next try below
-                logger.exception("Closing the terminal of run %d failed", run_id)
-                problems.append(f"Run {run_id}: its terminal could not be closed ({exc}).")
-                continue
-            if outcome is not None and outcome != TERMINAL_BACK:
-                problems.append(f"Run {run_id}: the terminal closed, but {outcome}.")
-        return problems
-
-    async def _terminal_check(self, run: Run) -> tuple[str, str]:
-        """Why the run's terminal may not open now, raised; else (claude, Claude session id)."""
-        if not await self.terminal_enabled():
-            raise ValidationError(TERMINAL_OFF)
-        runs = self._run_manager()
-        if not self.terminal_available():
-            raise ValidationError(TERMINAL_MISSING)
-        if self.terminals.busy(run.id):
-            raise ValidationError(f"A terminal of run {run.id} is open already: one at a time.")
-        self._check_hand_over(run, runs.is_running(run.id))
-        cc_id = run.claude_session_id
-        if cc_id is None or not CLAUDE_SESSION_RE.fullmatch(cc_id):
-            raise ValidationError(
-                f"Run {run.id} has no Claude session yet: its first turn has not started."
-            )
-        claude = runs.claude()
-        if claude is None:
-            raise ValidationError(self._claude_missing())
-        return claude, cc_id
-
-    async def terminal_token(self, run_id: int) -> str:
-        """The one-time token for the terminal's WebSocket (board only): minted only when the
-        terminal could open now, spent by the socket's first use."""
-        run = await self.get_run(run_id)
-        await self._terminal_check(run)
-        return self.terminals.mint(run.id)
-
-    async def open_terminal(
-        self, run_id: int, rows: int, cols: int, *, actor: str = "owner"
-    ) -> run_terminal.Terminal:
-        """The run's session in the Terminal tab. The hard rule: from before the process exists
-        until it is dead the run is with the owner (`with_owner_in = 'terminal'`), so no turn
-        starts and texts sent wait. Two writers on one session fork its transcript: a turn run
-        while the TUI is open passes, then is lost from the session's history. A failed start
-        hands the run back."""
-        runs = self._run_manager()
-        run = await self.get_run(run_id)
-        claude, cc_id = await self._terminal_check(run)
-        folders = await repo.list_run_worktrees(self._r, run.id)
-        live = [w.path for w in folders if w.removed_at is None]
-        argv = run_terminal.terminal_command(claude, cc_id, _add_dirs(run.cwd, live))
-        rows, cols = run_terminal.clean_size(rows, cols)
-        if not self.terminals.reserve(run.id):
-            raise ValidationError(f"A terminal of run {run.id} is open already: one at a time.")
-        try:
-            async with self._tx() as tx:
-                run = await self.get_run(run_id, tx.conn)
-                self._check_hand_over(run, runs.is_running(run.id))
-                if await repo.active_turn(tx.conn, run.id) is not None:
-                    raise ValidationError(f"A turn of run {run.id} is running; wait or stop it.")
-                await repo.update_run(
-                    tx.conn,
-                    run.id,
-                    {
-                        "with_owner_at": tx.now,
-                        "with_owner_by": actor,
-                        "with_owner_in": run_rules.TERMINAL,
-                    },
-                    tx.now,
-                )
-        except BaseException:
-            self.terminals.release(run.id)
-            raise
-        env = run_terminal.terminal_env(os.environ, run.id)
-        try:
-            terminal = await self.terminals.spawn(run.id, argv, run.cwd, env, rows, cols)
-        except Exception as exc:  # pywinpty raises its own kinds besides OSError
-            why = f"claude did not start in the terminal: {exc}"
-            try:
-                await self._hand_back(run.id, actor, event=False)
-                stays = "the run stays with relaybay"
-            except ValidationError as refused:  # the check before a waiting text refused
-                stays = f"the run stays with the owner until Back to the program ({refused})"
-            raise ValidationError(f"{why}; {stays}.") from exc
-        # End or the switch off while the process started saw no terminal to close yet.
-        now = await self.get_run(run.id)
-        if not now.is_open or not now.in_terminal or not await self.terminal_enabled():
-            why = "the run ended" if not now.is_open else "the Terminal tab was turned off"
-            await self.close_terminal(run.id, actor=actor, reason=f"{why} while it started")
-            raise ValidationError(f"The terminal did not open: {why} while it started.")
-        async with self._tx() as tx:
-            task = await self._run_task(tx.conn, run)
-            await self._run_event(
-                tx,
-                "run.terminal_opened",
-                actor,
-                task,
-                run.id,
-                claude_session_id=cc_id,
-                pid=terminal.pty.pid,
-            )
-        return terminal
-
-    async def close_terminal(
-        self, run_id: int, *, actor: str = "owner", reason: str, hand_back: bool = True
-    ) -> str | None:
-        """The tab closed, the TUI exited, Back to the program, End, the switch off or the server
-        stopping: the process tree is killed and waited for first, then (`hand_back`) the run is
-        relaybay's again and its first waiting text starts. A kill that fails raises and keeps
-        the run with the owner. Returns TERMINAL_BACK, or why the run stays with the owner (the
-        check before a waiting text refused: Back to the program on the card tries again; the
-        reason is on the run too); None: no terminal of the run was open."""
-        closed = await self.terminals.close(run_id)
-        if closed is None:
-            return None
-        terminal, code = closed
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            task = await self._run_task(tx.conn, run)
-            opened = datetime.fromtimestamp(terminal.opened_at, UTC).isoformat()
-            await self._run_event(
-                tx,
-                "run.terminal_closed",
-                actor,
-                task,
-                run.id,
-                reason=reason,
-                exit_code=code,
-                opened_at=opened,
-            )
-        if not hand_back:
-            return "the run is not handed back"  # End and the server stop: no waiting text
-        try:
-            await self._hand_back(run_id, actor, event=False)
-        except ValidationError as refused:
-            held = f"the run stays with you until Back to the program: {refused}"
-            async with self._tx() as tx:
-                await repo.update_run(
-                    tx.conn,
-                    run_id,
-                    {"status_reason": f"Back to the program refused: {refused}"},
-                    tx.now,
-                )
-            return held
-        return TERMINAL_BACK
-
-    async def _close_terminals(self, reason: str) -> None:
-        """Server stop: every terminal is killed and journaled; the runs stay marked, and the
-        next start hands them back (`_recover_runs`)."""
-        for run_id in self.terminals.open_runs():
-            try:
-                await self.close_terminal(run_id, actor="relaybay", reason=reason, hand_back=False)
-            except Exception:
-                logger.exception("Closing the terminal of run %d at server stop failed", run_id)
-
-    # --- limits before each turn: slots, free memory, the brake ----------------------------
-
-    async def run_limits(self, conn: aiosqlite.Connection | None = None) -> tuple[int, int]:
-        """(turns that may run at once, MB of free memory a turn needs; 0 is no check): the
-        owner's values from Settings -> Agents, else config.toml's."""
-        conn = conn or self._r
-        top = await repo.get_app_setting(conn, run_rules.MAX_RUNNING_KEY)
-        need = await repo.get_app_setting(conn, run_rules.MIN_MEMORY_KEY)
-        return (
-            int(top) if top is not None else self.max_running_turns,
-            int(need) if need is not None else self.min_free_memory_mb,
-        )
-
-    async def set_run_limits(
-        self, max_running_turns: Any, min_free_memory_mb: Any, *, actor: str = "owner"
-    ) -> tuple[int, int]:
-        """The owner's limits in Settings -> Agents (board only). Turns that wait start at once
-        when the new limits let them."""
-        top = run_rules.clean_limit(
-            max_running_turns, "Turns at once", 1, run_rules.MAX_RUNNING_MAX
-        )
-        need = run_rules.clean_limit(
-            min_free_memory_mb, "Free memory before a turn", 0, run_rules.MIN_MEMORY_MAX
-        )
-        async with self._tx() as tx:
-            for key, value in ((run_rules.MAX_RUNNING_KEY, top), (run_rules.MIN_MEMORY_KEY, need)):
-                await repo.set_app_setting(tx.conn, key, str(value), tx.now, actor)
-            await tx.event(
-                "settings.run_limits", actor, max_running_turns=top, min_free_memory_mb=need
-            )
-        await self.dispatch_queued(actor)
-        return top, need
-
-    async def _free_memory(self) -> int | None:
-        reader = self.memory_reader or run_memory.free_mb
-        return await asyncio.to_thread(reader)
-
-    async def free_memory_now(self) -> int | None:
-        """For Settings -> Agents: this machine's free memory in MB, None when unreadable."""
-        return await self._free_memory()
-
-    async def _run_brake(self, conn: aiosqlite.Connection, run: Run) -> agent_limits.Brake | None:
-        """The open brake that holds a run: all agents, its project (or one whose folder it
-        works in), its card or its session; a stop budget's brake too."""
-        brakes = await repo.open_brakes(conn)
-        if not brakes:
-            return None
-        if run.is_coordinator:
-            # For all projects: a project's or a card's brake does not hold it, `all` does.
-            return next(
-                (
-                    b
-                    for b in brakes
-                    if b.scope == "all"
-                    or (
-                        b.scope == "session"
-                        and run.session_id is not None
-                        and b.session_id == run.session_id
-                    )
-                ),
-                None,
-            )
-        at_cwd = self._projects_at_cwd(await repo.projects_with_repo_path(conn), run.cwd)
-        projects = {run.project_id, *(p.id for p in at_cwd)}
-        task_id = run.task_id
-        if run.kind == run_rules.CHECK:
-            task_id = await repo.check_task(conn, run.id)  # its schedule's card, if any
-        for brake in brakes:
-            if (
-                brake.scope == "all"
-                or (brake.scope == "project" and brake.project_id in projects)
-                or (brake.scope == "task" and task_id is not None and brake.task_id == task_id)
-                or (
-                    brake.scope == "session"
-                    and run.session_id is not None
-                    and brake.session_id == run.session_id
-                )
-            ):
-                return brake
-        return None
-
-    async def _dispatch(self, tx: _Tx, free_mb: int | None, actor: str) -> list[tuple[int, int]]:
-        """Start the waiting turns the limits allow, first queued first over all runs: no brake
-        on the run, a free slot (turns running over all runs, counted in this transaction, so
-        two starts cannot both take the last one) and `free_mb` (read before the transaction;
-        None: not readable, no check) at least the need. A turn that may not start stays queued
-        with its reason on the run. Each start takes the need off the reading, so one reading
-        does not start several turns that together need more. While the server stops nothing
-        starts: a turn that would have stays queued for the next server. Returns (run, turn) to
-        spawn after the commit."""
-        if self.runs is not None and self.runs.closing:
-            for run, turn_id in await repo.queued_runs(tx.conn):
-                if run.status != "queued":
-                    await self._hold_turn(tx, run, turn_id, SERVER_STOPPING)
-            return []
-        top, need = await self.run_limits(tx.conn)
-        running = await repo.count_running_turns(tx.conn)
-        launches: list[tuple[int, int]] = []
-        for run, turn_id in await repo.queued_runs(tx.conn):
-            if self.terminals.busy(run.id):
-                # The hard rule's second lock: with_owner_at already keeps such a run out of
-                # the queue; a terminal open on it never shares its session with a turn.
-                continue
-            brake = await self._run_brake(tx.conn, run)
-            if brake is not None:
-                reason = run_rules.brake_reason(brake.target, brake.reason)
-            elif running >= top and not run.is_coordinator:
-                reason = run_rules.slot_reason(running, top)
-            elif need and free_mb is not None and free_mb < need:
-                reason = run_rules.memory_reason(free_mb, need)
-            else:
-                task = await self._run_task(tx.conn, run)
-                await self._start_queued_turn(tx, run, task, turn_id, actor)
-                if not run.is_coordinator:  # it takes no slot
-                    running += 1
-                if free_mb is not None:
-                    free_mb -= need
-                launches.append((run.id, turn_id))
-                continue
-            await self._hold_turn(tx, run, turn_id, reason)
-        return launches
-
-    async def _start_queued_turn(
-        self, tx: _Tx, run: Run, task: Task | None, turn_id: int, actor: str
-    ) -> None:
-        turn = await repo.get_turn(tx.conn, turn_id)
-        assert turn is not None
-        if run.is_coordinator:
-            await self._follow_coordinator_settings(tx, run)
-        # Every turn reads its run's profile now: a profile edit takes effect on the next turn.
-        # A run from before profiles keeps its own mode and tools.
-        profile = await repo.get_profile(tx.conn, run.profile) if run.profile else None
-        if profile is not None:
-            await repo.follow_profile(tx.conn, profile, tx.now)
-        await repo.start_turn(
-            tx.conn,
-            turn_id,
-            tx.now,
-            profile.name if profile else None,
-            profile.version if profile else None,
-        )
-        await self._set_run_status(tx, run, "running", None)
-        await self._run_event(tx, "run.turn_started", actor, task, run.id, seq=turn.seq)
-
-    async def _hold_turn(self, tx: _Tx, run: Run, turn_id: int, reason: str) -> None:
-        """The run waits with its reason; a `run.turn_queued` event only when the kind of
-        reason changes (slot, memory, brake), so the periodic re-check does not journal every
-        change of the free memory or of the running count: those only update the reason."""
-        if run.status == "queued" and run.status_reason == reason:
-            return
-        if run.status == "queued" and _reason_kind(run.status_reason) == _reason_kind(reason):
-            await repo.update_run(tx.conn, run.id, {"status_reason": reason}, tx.now)
-            return
-        task = await self._run_task(tx.conn, run)
-        turn = await repo.get_turn(tx.conn, turn_id)
-        assert turn is not None
-        await self._set_run_status(tx, run, "queued", reason)
-        await self._run_event(
-            tx, "run.turn_queued", "relaybay", task, run.id, seq=turn.seq, reason=reason
-        )
-
-    async def dispatch_queued(self, actor: str = "relaybay") -> int:
-        """Start what waits and may start now (the periodic re-check of memory and brakes, a
-        changed limit); returns how many turns started."""
-        if self.runs is None or not await repo.queued_runs(self._r):
-            return 0
-        free = await self._free_memory()
-        async with self._tx() as tx:
-            launches = await self._dispatch(tx, free, actor)
-        await self._spawn_all(launches)
-        return len(launches)
-
-    async def queued_runs(self) -> list[Run]:
-        """The Inbox's runs whose next turn waits for a slot, memory or a brake."""
-        return [run for run, _ in await repo.queued_runs(self._r) if run.status == "queued"]
-
-    @staticmethod
-    def _check_anyway(run: Run) -> None:
-        if not run.is_open:
-            raise ValidationError(f"Run {run.id} has ended.")
-        if run.with_owner:
-            raise ValidationError(f"Run {run.id} is with the owner {_owner_place(run)}.")
-        if run.status != "queued":
-            raise ValidationError(
-                f"Run {run.id} is {run.status}: no turn of it waits in the queue."
-            )
-
-    async def start_anyway(self, run_id: int, *, actor: str = "owner") -> Run:
-        """Start anyway (the board only): the run's waiting turn starts past the slot limit and
-        the memory check, never past a brake, which only the owner's release lifts. Journaled
-        with what it went past."""
-        runs = self._run_manager()
-        run = await self.get_run(run_id)
-        self._check_anyway(run)
-        if run.id not in runs.checked_since_start:
-            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
-        free = await self._free_memory()
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            self._check_anyway(run)
-            brake = await self._run_brake(tx.conn, run)
-            if brake is not None:
-                raise ValidationError(
-                    f"Run {run.id} is under the brake ({brake.target}): Start anyway does not go"
-                    " past a brake; release it in the banner first."
-                )
-            turn = await repo.next_queued_turn(tx.conn, run.id)
-            if turn is None or await repo.active_turn(tx.conn, run.id) is not None:
-                raise ValidationError(f"No turn of run {run.id} waits in the queue.")
-            task = await self._run_task(tx.conn, run)
-            top, need = await self.run_limits(tx.conn)
-            await self._run_event(
-                tx,
-                "run.start_anyway",
-                actor,
-                task,
-                run.id,
-                seq=turn.seq,
-                reason=run.status_reason,
-                running=await repo.count_running_turns(tx.conn),
-                max_running_turns=top,
-                free_mb=free,
-                min_free_memory_mb=need,
-            )
-            await self._start_queued_turn(tx, run, task, turn.id, actor)
-        await self._spawn_all([(run.id, turn.id)])
-        return await self.get_run(run_id)
-
-    async def _run_task(self, conn: aiosqlite.Connection, run: Run) -> Task | None:
-        """The run's card; None for the coordinator run."""
-        return None if run.task_id is None else await self.get_task(run.task_id, conn)
-
-    async def _run_event(
-        self, tx: _Tx, kind: str, actor: str, task: Task | None, run_id: int, **payload: Any
-    ) -> None:
-        if task is None:
-            run = await repo.get_run(tx.conn, run_id)
-            if run is not None and run.kind == run_rules.CHECK:
-                await tx.event(
-                    kind,
-                    actor,
-                    project_id=run.project_id,
-                    project=run.project_slug,
-                    run_id=run_id,
-                    run_kind=run_rules.CHECK,
-                    **payload,
-                )
-                return
-            await tx.event(kind, actor, run_id=run_id, run_kind=run_rules.COORDINATOR, **payload)
-            return
-        await tx.event(
-            kind,
-            actor,
-            project_id=task.project_id,
-            task_id=task.id,
-            project=task.project_slug,
-            key=task.key,
-            stage=task.stage.value,
-            run_id=run_id,
-            **payload,
-        )
-
-    async def _set_run_status(
-        self, tx: _Tx, run: Run, new: str, reason: str | None, **changes: Any
-    ) -> None:
-        """The one writer of a run's status: `domain.runs.check_transition` decides."""
-        run_rules.check_transition(run.status, new)
-        values: dict[str, Any] = {"status": new, "status_reason": reason, **changes}
-        if new == "ended":
-            values["ended_at"] = tx.now
-        await repo.update_run(tx.conn, run.id, values, tx.now)
-        run.status = new
-
-    async def _spawn_all(self, launches: list[tuple[int, int]]) -> None:
-        """Spawn turns marked started. Called right after the commit that marked them: every
-        run's slot is reserved before the first spawn awaits, so a Stop of any of them waits
-        for its process instead of seeing none."""
-        if not launches:
-            return
-        runs = self._run_manager()
-        held = {run_id: runs.reserve(run_id) for run_id, _ in launches}
-        for run_id, turn_id in launches:
-            await self._spawn_turn(run_id, turn_id, held[run_id])
-
-    async def _spawned_profile(self, run_id: int, turn_id: int) -> Run:
-        """The run as its turn's process gets it: an edit may have landed since the turn was
-        marked started, so its profile is read again, with the run's row and the turn's
-        recorded version, in one transaction the spawn then reads."""
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            profile = await repo.get_profile(tx.conn, run.profile) if run.profile else None
-            if profile is None:
-                return run
-            await repo.follow_profile(tx.conn, profile, tx.now)
-            await repo.set_turn_profile(tx.conn, turn_id, profile.name, profile.version)
-            return await self.get_run(run_id, tx.conn)
-
-    async def _spawn_turn(self, run_id: int, turn_id: int, reserved: bool) -> None:
-        """Start the process of a turn already marked started; a failure ends it visibly.
-        `reserved`: what `reserve` answered right after the commit that marked it started."""
-        runs = self._run_manager()
-        try:
-            run = await self._spawned_profile(run_id, turn_id)
-            turn = await repo.get_turn(self._r, turn_id)
-            folders = await repo.list_run_worktrees(self._r, run_id)
-        except BaseException:
-            if reserved:
-                runs.release(run_id)
-            raise
-        assert turn is not None
-        if run.status != "running" or turn.ended_at is not None:
-            # Stopped, ended or lost before the process existed: nothing to start.
-            if reserved:
-                runs.release(run_id)
-            return
-        claude = runs.claude()
-        error = self._claude_missing() if claude is None else None
-        if not reserved:
-            error = "the server is stopping" if runs.closing else "a turn of this run is running"
-        if claude is not None and reserved and run.id not in runs.checked_since_start:
-            # Started by the queue after a restart: the sign-in is checked first, as on Send.
-            try:
-                await self._run_preflight(runs, run.id)
-            except ValidationError as exc:
-                error = str(exc)
-        pid = None
-        if claude is not None and reserved and error is None:
-            try:
-                settings_file, mcp_file = await asyncio.to_thread(
-                    write_run_files,
-                    self._run_folder(run.id),
-                    hooks=run.hooks_source == "run",
-                    mcp=run.mcp_source == "run",
-                    base_url=runs.config.base_url,
-                    token_path=runs.config.token_path,
-                )
-                allowed = tuple(run.allowed_rules)
-                if run.is_coordinator:
-                    # Edit and Write inside its own folder only, added at each turn (not stored).
-                    allowed += (crules.edit_rule(run.cwd, windows=sys.platform == "win32"),)
-                check = run.kind == run_rules.CHECK
-                spec = TurnSpec(
-                    claude,
-                    turn.prompt,
-                    run.cwd,
-                    run.model,
-                    run.effort,
-                    run.permission_mode,
-                    allowed,
-                    None if check else run.claude_session_id,
-                    run.chrome,
-                    disallowed=_turn_disallowed(run),
-                    add_dirs=_add_dirs(run.cwd, [w.path for w in folders if w.removed_at is None]),
-                    settings_file=str(settings_file) if settings_file else None,
-                    mcp_file=str(mcp_file) if mcp_file else None,
-                    no_session_persistence=check,
-                    max_turns=srules.CHECK_MAX_TURNS if check else None,
-                )
-                pid = await runs.start_turn(run.id, turn.id, spec, reserved=True)
-            except (OSError, ValidationError, RuntimeError) as exc:
-                error = f"claude did not start: {exc}"
-        if pid is None and reserved:
-            runs.release(run_id)
-        async with self._tx() as tx:
-            if pid is not None:
-                runs.checked_since_start.add(run.id)
-                await repo.set_turn_pid(tx.conn, turn.id, pid)
-                await self._answers_delivered(
-                    tx, await repo.undelivered_answers_of_turn(tx.conn, turn.id), run.session_name
-                )
-                await self._decisions_delivered(
-                    tx, await repo.undelivered_decisions_of_turn(tx.conn, turn.id)
-                )
-                return
-            run = await self.get_run(run_id, tx.conn)
-            task = await self._run_task(tx.conn, run)
-            await repo.end_turn(tx.conn, turn.id, {"outcome": "failed_to_start"}, tx.now)
-            await repo.cancel_queued(tx.conn, run.id, tx.now)
-            await self._set_run_status(tx, run, "stopped", error)
-            await self._run_event(tx, "run.stopped", "relaybay", task, run.id, reason=error)
-            if run.kind == run_rules.CHECK:
-                await self._end_check(tx, run, turn.id, "failed_to_start", None, error)
-        await self.dispatch_queued()  # its slot is free again
-
-    async def turn_init(self, turn_id: int, claude_session_id: str) -> None:
-        """The turn's `system/init`: the Claude Code session id every later turn resumes, and
-        where Claude Code keeps that session's transcript."""
-        async with self._tx() as tx:
-            turn = await repo.get_turn(tx.conn, turn_id)
-            run = await repo.get_run(tx.conn, turn.run_id) if turn is not None else None
-            if run is not None and run.claude_session_id != claude_session_id:
-                path = transcripts.transcript_path(self._claude_data(), run.cwd, claude_session_id)
-                await repo.update_run(
-                    tx.conn,
-                    run.id,
-                    {"claude_session_id": claude_session_id, "transcript_path": str(path)},
-                    tx.now,
-                )
-
-    def _claude_data(self) -> Path:
-        """Claude Code's data folder, where a run's transcript is (`CLAUDE_CONFIG_DIR`, else
-        `~/.claude`; the runner's `claude_dir` in tests)."""
-        configured = self.runs.config.claude_dir if self.runs is not None else None
-        return transcripts.data_folder(configured)
-
-    async def turn_events(self, turn_id: int, events: list[run_lines.StreamEvent]) -> None:
-        """A batch of a turn's stream-json lines, masked and compressed by the runner, stored
-        unless the project's retention is off. A line the masking changed marks the run "saw a
-        secret" (once, with an event). No board event for the lines: the card shows them when
-        asked, and the turn's end refreshes it."""
-        async with self._tx() as tx:
-            found = await repo.run_of_turn_retention(tx.conn, turn_id)
-            if found is None:
-                return
-            run_id, retention = found
-            if any(e.secret for e in events) and await repo.mark_run(
-                tx.conn, run_id, "secret_seen_at", tx.now
-            ):
-                run = await self.get_run(run_id, tx.conn)
-                task = await self._run_task(tx.conn, run)
-                await self._run_event(tx, "run.secret_seen", "relaybay", task, run_id)
-            if retention != run_rules.RETENTION_OFF:
-                await repo.insert_run_events(tx.conn, turn_id, events)
-
-    async def _turn_report(
-        self,
-        tx: _Tx,
-        task: Task | None,
-        run: Run,
-        turn: RunTurn,
-        outcome: str,
-        result: Result,
-        notes: dict[int, str] | None = None,
-    ) -> None:
-        """The turn's result as a report on the card, in the turn's end transaction. A report
-        that cannot be written must not keep the turn from ending: its writes are undone to a
-        savepoint and the failure is logged. When the agent already reported this turn with
-        report_add (the run's session, since the turn started) and the result adds nothing (no
-        text, or the same first line, and no refusals), the turn links that report instead.
-        A turn without a card (the coordinator's) keeps the text on the turn itself."""
-        if task is None:
-            refusals = [(r.tool, r.input) for r in result.refusals]
-            body = run_rules.turn_report(run.id, turn.seq, outcome, result.text, refusals, notes)
-            await repo.set_turn_result(tx.conn, turn.id, body)
-            return
-        own = None
-        if run.session_id is not None and turn.started_at is not None and not result.refusals:
-            own = await repo.latest_report_of_session(
-                tx.conn, task.id, run.session_id, turn.started_at
-            )
-        if own is not None:
-            text = result.text.strip()
-            if not text or _first_line(text) == _first_line(own.body_md):
-                await repo.set_turn_report(tx.conn, turn.id, own.id)
-                return
-        body = run_rules.turn_report(
-            run.id,
-            turn.seq,
-            outcome,
-            result.text,
-            [(r.tool, r.input) for r in result.refusals],
-            notes,
-        )
-        await tx.conn.execute("SAVEPOINT turn_report")
-        events = len(tx.events)
-        try:
-            # No first-line warning: the turn's text is not a report_add the agent can fix.
-            report_id = await self._write_report(
-                tx,
-                task,
-                body,
-                {},
-                session_id=run.session_id,
-                actor=run.session_name or f"run {run.id}",
-                format_problem=None,
-            )
-            await repo.set_turn_report(tx.conn, turn.id, report_id)
-        except Exception:
-            await tx.conn.execute("ROLLBACK TO turn_report")
-            del tx.events[events:]
-            logger.exception("Writing the report of run %d turn %d failed", run.id, turn.seq)
-        await tx.conn.execute("RELEASE turn_report")
-
-    async def turn_done(
-        self,
-        turn_id: int,
-        outcome: str,
-        result: Result | None,
-        exit_code: int | None,
-        reason: str | None,
-        stopped: bool = False,
-    ) -> None:
-        """A turn's process ended. The run goes idle (a result came), stopped (Stop, also after
-        a result while the process was still ending) or lost; Stop and lost cancel the texts
-        that waited. Its slot is free: the queue starts what may start, this run's next text
-        among them."""
-        denied: list[tuple[arules.Need, str]] = []
-        refused: dict[int, list[Approval]] = {}
-        if result is not None and result.refusals:
-            # Read before the transaction: the current branch comes from git.
-            ended = await repo.get_turn(self._r, turn_id)
-            assert ended is not None
-            try:
-                run = await self.get_run(ended.run_id)
-                if run.kind == run_rules.CARD:  # only a card's run asks an approval
-                    denied, refused = await self._denied_needs(run, ended, result)
-            except Exception:
-                logger.exception("Reading the denials of turn %d for approvals failed", turn_id)
-        free = await self._free_memory()
-        async with self._tx() as tx:
-            turn = await repo.get_turn(tx.conn, turn_id)
-            assert turn is not None
-            run = await self.get_run(turn.run_id, tx.conn)
-            task = await self._run_task(tx.conn, run)
-            changes: dict[str, Any] = {"outcome": outcome, "exit_code": exit_code}
-            if result is not None:
-                changes.update(
-                    result_subtype=result.subtype,
-                    num_turns=result.num_turns,
-                    duration_ms=result.duration_ms,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    cache_read_tokens=result.cache_read_tokens,
-                    cache_write_tokens=result.cache_write_tokens,
-                    denials=result.denials,
-                    denied_tools=result.denied_tools,
-                )
-                if result.compact_pre_tokens is not None:
-                    changes["compact_pre_tokens"] = result.compact_pre_tokens
-                    changes["compact_post_tokens"] = result.compact_post_tokens
-                if result.context_tokens is not None:
-                    changes["context_tokens"] = result.context_tokens
-            await repo.end_turn(tx.conn, turn.id, changes, tx.now)
-            notes = await self._settle_turn_reservations(tx, run, refused)
-            if result is not None and run.kind != run_rules.CHECK:
-                await self._turn_report(tx, task, run, turn, outcome, result, notes)
-            if task is not None:
-                await self._requests_from_denials(tx, run, task, turn, denied)
-            tokens = sum(
-                changes.get(k, 0)
-                for k in (
-                    "input_tokens",
-                    "output_tokens",
-                    "cache_read_tokens",
-                    "cache_write_tokens",
-                )
-            )
-            await self._run_event(
-                tx,
-                "run.turn_ended",
-                "relaybay",
-                task,
-                run.id,
-                seq=turn.seq,
-                outcome=outcome,
-                tokens=tokens,
-            )
-            if outcome in ("success", "error") and not stopped:
-                subtype = result.subtype if result is not None else "unknown"
-                why = None if outcome == "success" else f"the turn ended with an error ({subtype})"
-                blocking = await repo.open_blocking_questions(tx.conn, run_id=run.id)
-                requests = await repo.open_approvals(tx.conn, run_id=run.id)
-                queued = None if run.with_owner else await repo.next_queued_turn(tx.conn, run.id)
-                if (blocking or requests) and queued is None:
-                    await self._run_waits(tx, run, task, blocking, why, requests)
-                else:
-                    await self._set_run_status(tx, run, "idle", why)
-            else:
-                new = "lost" if outcome == "lost" else "stopped"
-                await self._set_run_status(tx, run, new, reason)
-                await repo.cancel_queued(tx.conn, run.id, tx.now)
-                await self._run_event(tx, f"run.{new}", "relaybay", task, run.id, reason=reason)
-                await self._end_run_session(tx, run)
-            if run.kind == run_rules.CHECK:
-                await self._end_check(tx, run, turn.id, outcome, result, reason)
-            launches = await self._dispatch(tx, free, "relaybay")
-        await self._spawn_all(launches)
-        if run.kind == run_rules.CHECK:
-            self._schedule_kick.set()  # a repeating check's next time may have changed
-
-    async def _end_run_session(self, tx: _Tx, run: Run) -> None:
-        """A killed turn sends no SessionEnd (Windows kills hard): the row ends here."""
-        session = await repo.get_session_by_id(tx.conn, run.session_id) if run.session_id else None
-        if session is None or session.status == "ended":
-            return
-        await repo.touch_session(
-            tx.conn,
-            session.id,
-            tx.now,
-            {"status": "ended", "activity": "turn stopped", "activity_at": tx.now},
-        )
-        ended = await repo.get_session_by_id(tx.conn, session.id)
-        assert ended is not None
-        await self._session_events(tx, ended, ended.name, previous=session.status)
-
-    async def send_to_run(self, run_id: int, text: str, *, actor: str = "owner") -> RunTurn:
-        """Continue the run with the owner's text: a new turn with --resume, or, while a turn
-        runs, a turn that waits for it (never two at once)."""
-        runs = self._run_manager()
-        prompt = run_rules.clean_prompt(text)
-        run = await self.get_run(run_id)
-        if not run.is_open:
-            raise ValidationError(_ended_hint(run))
-        if (
-            not run.with_owner
-            and not runs.is_running(run.id)
-            and run.id not in runs.checked_since_start
-        ):
-            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
-        free = await self._free_memory()
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            if not run.is_open:
-                raise ValidationError(_ended_hint(run))
-            task = await self._run_task(tx.conn, run)
-            repeat = await self._repeated_send(tx, run.id, prompt, actor)
-            if repeat is not None:
-                return repeat
-            turn_id, launches = await self._queue_turn(tx, run, task, prompt, actor, free)
-        await self._spawn_all(launches)
-        found = await repo.get_turn(self._r, turn_id)
-        assert found is not None
-        return found
-
-    async def _queue_turn(
-        self,
-        tx: _Tx,
-        run: Run,
-        task: Task | None,
-        text: str | None,
-        actor: str,
-        free_mb: int | None,
-        *,
-        kind: str = "owner",
-        carry: bool = True,
-    ) -> tuple[int, list[tuple[int, int]]]:
-        """A new turn of the owner's (or relaybay's, `kind`) on the run. When no turn of the run
-        runs and it is not with the owner, the queue decides (`_dispatch`): it starts now, or
-        waits for a slot, memory or a brake with its reason; else it waits for the running turn
-        or for Back to the program. The owner's answers that no turn's process got yet (their
-        turn was cancelled) go first in its text, unless `carry` is off (a `/compact` must be
-        the whole text). Returns the turn's id and the turns to spawn after the commit."""
-        pending = await repo.pending_answers(tx.conn, run.id) if carry else []
-        decided = await repo.pending_decisions(tx.conn, run.id) if carry else []
-        parts = [qrules.answer_line(q) for q in pending]
-        parts += [arules.decision_line(a) for a in decided]
-        if text:
-            parts.append(text)
-        if run.is_coordinator and run.claude_session_id is None:
-            parts[0] = crules.header(run.id, run.session_name or "", run.cwd) + parts[0]
-        turn_id = await repo.insert_turn(tx.conn, run.id, "\n\n".join(parts), actor, kind, tx.now)
-        if pending:
-            await repo.put_answers_on_turn(tx.conn, [q.id for q in pending], turn_id)
-        if decided:
-            await repo.put_decisions_on_turn(tx.conn, [a.id for a in decided], turn_id)
-        turn = await repo.get_turn(tx.conn, turn_id)
-        assert turn is not None
-        # With the owner in the desktop app: the text waits for Back to the program.
-        if (
-            not run.with_owner
-            and run.status != "running"
-            and await repo.active_turn(tx.conn, run.id) is None
-        ):
-            return turn_id, await self._dispatch(tx, free_mb, actor)
-        await self._run_event(tx, "run.turn_queued", actor, task, run.id, seq=turn.seq)
-        return turn_id, []
-
-    @staticmethod
-    async def _repeated_send(tx: _Tx, run_id: int, prompt: str, actor: str) -> RunTurn | None:
-        """The run's last turn when it is this text from this sender a moment ago (a double
-        click), so the second send adds nothing."""
-        turns = await repo.list_turns(tx.conn, run_id)
-        last = turns[-1] if turns else None
-        if last is None or last.ended_at is not None or last.sent_by != actor:
-            return None
-        # The owner's answers that waited for a turn go first in its text: compare the rest.
-        carried = sorted(await repo.list_questions(tx.conn, turn_id=last.id), key=lambda q: q.id)
-        decided = sorted(await repo.list_approvals(tx.conn, turn_id=last.id), key=lambda a: a.id)
-        head = "".join(qrules.answer_line(q) + "\n\n" for q in carried)
-        head += "".join(arules.decision_line(a) + "\n\n" for a in decided)
-        if not last.prompt.startswith(head) or last.prompt[len(head) :] != prompt:
-            return None
-        queued = datetime.fromisoformat(last.queued_at)
-        age = datetime.fromisoformat(tx.now) - queued
-        return last if age.total_seconds() < SEND_REPEAT_SECONDS else None
-
-    async def stop_run(self, run_id: int, *, actor: str = "owner") -> Run:
-        """Kill the running turn's process tree; the session stays resumable."""
-        runs = self._run_manager()
-        run = await self.get_run(run_id)
-        if await self._lose_orphan(runs, run):
-            return await self.get_run(run_id)
-        if not await runs.stop(run.id, f"stopped by {actor}"):
-            raise ValidationError(f"No turn of run {run.id} is running.")
-        return await self.get_run(run_id)
-
-    async def _lose_orphan(self, runs: RunManager, run: Run) -> bool:
-        """A run marked running with no process behind it (its end could not be stored, or
-        the start failed oddly) is marked lost, so Stop and End work again. True if it was."""
-        if run.status != "running" or runs.is_running(run.id):
-            return False
-        async with self._tx() as tx:
-            run = await self.get_run(run.id, tx.conn)
-            if run.status != "running" or runs.is_running(run.id):
-                return False
-            task = await self._run_task(tx.conn, run)
-            reason = "no claude process was running for this turn"
-            active = await repo.active_turn(tx.conn, run.id)
-            if active is not None:
-                await repo.end_turn(tx.conn, active.id, {"outcome": "lost"}, tx.now)
-            await repo.cancel_queued(tx.conn, run.id, tx.now)
-            await self._settle_turn_reservations(tx, run, {})
-            await self._set_run_status(tx, run, "lost", reason)
-            await self._run_event(tx, "run.lost", "relaybay", task, run.id, reason=reason)
-            await self._end_run_session(tx, run)
-        return True
-
-    async def end_run(self, run_id: int, *, actor: str = "owner", reason: str | None = None) -> Run:
-        """No more turns: a running one is stopped first, waiting texts are cancelled. `reason`:
-        the run's status reason instead of "ended by <actor>"."""
-        runs = self._run_manager()
-        run = await self.get_run(run_id)
-        if not run.is_open:
-            raise ValidationError(f"Run {run.id} has already ended.")
-        why = reason or f"ended by {actor}"
-        if self.terminals.busy(run.id):
-            await self.close_terminal(run.id, actor=actor, reason=why, hand_back=False)
-        if runs.is_running(run.id):
-            await runs.stop(run.id, why)
-        await self._lose_orphan(runs, run)
-        async with self._tx() as tx:
-            run = await self.get_run(run_id, tx.conn)
-            task = await self._run_task(tx.conn, run)
-            await repo.cancel_queued(tx.conn, run.id, tx.now)
-            if not run.is_open:  # ended meanwhile (a card's close and the owner's End)
-                return run
-            await self._set_run_status(
-                tx,
-                run,
-                "ended",
-                why,
-                ended_by=actor,
-                with_owner_at=None,
-                with_owner_by=None,
-                with_owner_in=None,
-            )
-            await self._run_event(tx, "run.ended", actor, task, run.id, reason=why)
-            if task is None:
-                return await self.get_run(run_id)  # its next run carries the waiting answers
-            # No next turn will carry them: the owner's answers go to the card's session instead.
-            for q in await repo.pending_answers(tx.conn, run.id):
-                comment = await self._insert_comment(
-                    tx,
-                    task,
-                    author_kind="owner",
-                    author=actor,
-                    session_id=None,
-                    body=qrules.answer_line(q),
-                    in_reply_to=None,
-                )
-                await repo.update_question(tx.conn, q.id, {"comment_id": comment.id})
-            for a in await repo.pending_decisions(tx.conn, run.id):
-                comment = await self._decision_comment(tx, task, a, actor)
-                await repo.update_approval(tx.conn, a.id, {"comment_id": comment.id})
-        return await self.get_run(run_id)
-
-    async def _recover_runs(self) -> None:
-        """At start: a run still `running` lost its process with the previous server; a run
-        held by the Terminal tab lost its terminal with it and is handed back (its waiting text
-        starts from the queue's next pass)."""
-        async with self._tx() as tx:
-            for run in await repo.open_runs(tx.conn):
-                if run.in_terminal:
-                    task = await self._run_task(tx.conn, run)
-                    await repo.update_run(
-                        tx.conn,
-                        run.id,
-                        {"with_owner_at": None, "with_owner_by": None, "with_owner_in": None},
-                        tx.now,
-                    )
-                    await self._run_event(
-                        tx,
-                        "run.returned",
-                        "relaybay",
-                        task,
-                        run.id,
-                        reason="its terminal ended with the previous server",
-                    )
-                if run.status != "running":
-                    continue
-                task = await self._run_task(tx.conn, run)
-                reason = "the server stopped while a turn ran"
-                await self._settle_turn_reservations(tx, run, {})
-                await self._set_run_status(tx, run, "lost", reason)
-                await self._run_event(tx, "run.lost", "relaybay", task, run.id, reason=reason)
-                await self._end_run_session(tx, run)
-            await repo.lose_open_turns(tx.conn, tx.now)
-
-    async def _run_hook_session(self, tx: _Tx, hook: HookEvent) -> Session | None:
-        """The run's session row for a SessionStart that carries its id: only while one of its
-        turns runs, and only for its own Claude Code session (none known yet, or this one). A
-        `claude` started inside the turn inherits the variable and gets None."""
-        assert hook.run_id is not None
-        run = await repo.get_run(tx.conn, hook.run_id)
-        if run is None or not run.is_open or run.session_id is None:
-            return None
-        if await repo.active_turn(tx.conn, run.id) is None:
-            return None
-        session = await repo.get_session_by_id(tx.conn, run.session_id)
-        if session is None:
-            return None
-        cc_id = hook.cc_session_id
-        known = {run.claude_session_id, session.cc_session_id} - {None}
-        if known and cc_id not in known:
-            return None
-        return await self._link_hook_session(tx, session, cc_id, from_window=True)
-
-    # --- a card's close: the run ends, its worktrees go, its traces too --------------------
-
-    def _schedule_close(self, task_id: int | None, actor: str) -> None:
-        """After the commit that moved a card to done; one close per card at a time (the
-        periodic sweep finishes what a close left)."""
-        if task_id is None or task_id in self._closings:
-            return
-        closing = asyncio.create_task(self._close_logged(task_id, actor))
-        self._closings[task_id] = closing
-        closing.add_done_callback(lambda _: self._closings.pop(task_id, None))
-
-    async def _close_logged(self, task_id: int, actor: str) -> None:
-        try:
-            await self.close_card(task_id, actor)
-        except Exception:
-            logger.exception(
-                "Closing the runs of card #%d failed; the next sweep tries again", task_id
-            )
-
-    async def settle_closings(self) -> None:
-        """Wait for the closes under way (tests, and the board before it answers)."""
-        while self._closings:
-            await asyncio.gather(*list(self._closings.values()), return_exceptions=True)
-
-    async def close_card(self, task_id: int, actor: str = "relaybay") -> None:
-        """A card in done: its open run ends (a running turn is stopped first), each worktree
-        a run of it created is removed or kept with its reason and a question, and a run that
-        saw a secret or touched a live stand loses its lines and its transcript. Every step is
-        recorded on the card and in the journal; nothing a run did not create is touched."""
-        task = await repo.get_task_by_id(self._r, task_id)
-        if task is None or task.stage != Stage.DONE:
-            return
-        for run in await repo.runs_of_task(self._r, task.id):
-            if run.is_open and self.runs is not None:
-                await self.end_run(run.id, actor=actor, reason="the card went to done")
-            await self._close_worktrees(run.id)
-            await self._delete_traces(run.id)
-
-    async def close_done_cards(self) -> None:
-        """The sweep: cards in done whose close did not finish (the server stopped meanwhile)."""
-        for task_id in await repo.done_cards_to_close(self._r):
-            self._schedule_close(task_id, "relaybay")
-        await self.settle_closings()
-
-    async def _worktree_event(
-        self, tx: _Tx, kind: str, actor: str, run_id: int, w: RunWorktree, **payload: Any
-    ) -> None:
-        run = await self.get_run(run_id, tx.conn)
-        task = await self._run_task(tx.conn, run)
-        await self._run_event(
-            tx,
-            kind,
-            actor,
-            task,
-            run_id,
-            repository=w.repo_name,
-            path=w.path,
-            branch=w.branch,
-            **payload,
-        )
-
-    async def _close_worktrees(self, run_id: int) -> None:
-        """Remove each worktree the run created with `git worktree remove` (no --force: git
-        itself refuses one with changes), after the check for work left in it. One with work
-        left, or one git refuses, is kept with its reason and a question to the owner."""
-        git = worktrees.find_git()
-        for w in await repo.list_run_worktrees(self._r, run_id):
-            if not w.created_by_run or w.removed_at is not None or w.kept_at is not None:
-                continue
-            if w.kept_reason is not None and await self._asked(w):
-                continue
-            if not await asyncio.to_thread(os.path.lexists, w.path):
-                async with self._tx() as tx:
-                    await repo.update_run_worktree(tx.conn, w.id, {"removed_at": tx.now})
-                    await self._worktree_event(
-                        tx, "run.worktree_removed", "relaybay", run_id, w, note="already gone"
-                    )
-                continue
-            if git is None:
-                await self._keep_worktree(run_id, w, "git is not on PATH, so it was not checked")
-                continue
-            try:
-                reason = await asyncio.to_thread(
-                    worktrees.work_left, w.path, w.branch, w.source_path, w.copied, git
-                )
-                if reason is None:
-                    refused = await asyncio.to_thread(
-                        functools.partial(
-                            worktrees.remove_worktree,
-                            w.path,
-                            w.source_path,
-                            w.copied,
-                            git,
-                            force=False,
-                            stash=self._stash(w),
-                        )
-                    )
-                    reason = f"git worktree remove refused: {refused}" if refused else None
-            except ValidationError as exc:  # git did not answer in time
-                reason = str(exc)
-            if reason is not None:
-                await self._keep_worktree(run_id, w, reason)
-                continue
-            async with self._tx() as tx:
-                await repo.update_run_worktree(tx.conn, w.id, {"removed_at": tx.now})
-                await self._worktree_event(tx, "run.worktree_removed", "relaybay", run_id, w)
-
-    def _stash(self, w: RunWorktree) -> Path:
-        """Where the copies of a worktree wait while git removes it: the run's own folder in the
-        data folder (the same disk as the worktrees)."""
-        home = self.runs.config.home if self.runs is not None else self.db_path.parent
-        return home / "runs" / str(w.run_id) / f"copies-{w.id}"
-
-    async def _withdraw_worktree_questions(self, tx: _Tx, task: Task, actor: str) -> None:
-        """A card that leaves done: relaybay's open questions about its kept worktrees go (a
-        "remove" would act on a card that is worked on again); the next close asks anew."""
-        for question_id in await repo.open_worktree_questions(tx.conn, task.id):
-            await repo.update_question(
-                tx.conn,
-                question_id,
-                {"status": "withdrawn", "withdrawn_at": tx.now, "withdrawn_by": "relaybay"},
-            )
-            q = await self.get_question(question_id, tx.conn)
-            await self._question_event(
-                tx, "question.withdrawn", actor, task, q, reason="the card left done"
-            )
-
-    async def _asked(self, w: RunWorktree, conn: aiosqlite.Connection | None = None) -> bool:
-        """The question about a kept worktree waits for the owner. A card that went back and
-        to done again withdrew it: the worktree is looked at again and asked about anew."""
-        if w.question_id is None:
-            return False
-        q = await repo.get_question(conn or self._r, w.question_id)
-        return q is not None and q.is_open
-
-    async def _keep_worktree(self, run_id: int, w: RunWorktree, reason: str) -> None:
-        """Kept with its reason, and a blocking question to the owner on the card: remove or
-        keep (the default)."""
-        async with self._tx() as tx:
-            current = await repo.get_run_worktree(tx.conn, w.id)
-            if current is None or current.removed_at is not None or current.kept_at is not None:
-                return
-            if current.kept_reason is not None and await self._asked(current, tx.conn):
-                return
-            await repo.update_run_worktree(tx.conn, w.id, {"kept_reason": reason})
-            await self._worktree_event(
-                tx, "run.worktree_kept", "relaybay", run_id, w, reason=reason
-            )
-            run = await self.get_run(run_id, tx.conn)
-            task = await self._run_task(tx.conn, run)
-            text = qrules.clean_text(
-                _cut_text(
-                    f"The card is done, but the worktree of {w.repo_name} at {w.path} (branch"
-                    f" {w.branch}) was kept: {reason}. Remove it? {WORKTREE_REMOVE}: relaybay"
-                    " runs git worktree remove --force on it, the branch stays;"
-                    f" {WORKTREE_KEEP}: it stays as it is.",
-                    qrules.TEXT_MAX,
-                )
-            )
-            question_id = await repo.insert_question(
-                tx.conn,
-                {
-                    "task_id": task.id,
-                    "run_id": None,
-                    "session_id": None,
-                    "asked_by": "relaybay",
-                    "kind": "question",
-                    "text": text,
-                    "options": [WORKTREE_REMOVE, WORKTREE_KEEP],
-                    "default_answer": WORKTREE_KEEP,
-                    "blocking": 1,
-                    "look_url": None,
-                    "look_account": None,
-                    "default_after": None,
-                },
-                tx.now,
-            )
-            await repo.update_run_worktree(tx.conn, w.id, {"question_id": question_id})
-            q = await self.get_question(question_id, tx.conn)
-            await self._question_event(
-                tx,
-                "question.asked",
-                "relaybay",
-                task,
-                q,
-                options=q.choices,
-                default=q.default,
-                default_after=None,
-            )
-
-    async def _remove_on_answer(self, worktree_id: int, actor: str) -> None:
-        """The owner answered remove: `git worktree remove --force` (the owner decided, so the
-        work left in it goes); the branch stays. A refusal stays on the card."""
-        w = await repo.get_run_worktree(self._r, worktree_id)
-        if w is None or w.removed_at is not None or not w.created_by_run:
-            return
-        run = await self.get_run(w.run_id)
-        task = await self.get_task(run.task_id)
-        in_use = [
-            key
-            for other, key in await repo.open_worktrees(self._r)
-            if other.id != w.id and worktrees.path_key(other.path) == worktrees.path_key(w.path)
-        ]
-        hold = None  # not removed, and not the owner's keep either: the next close asks again
-        if task.stage != Stage.DONE:
-            hold = f"not removed: {task.key} is no longer done"
-        elif in_use:
-            hold = f"not removed: an open run on {in_use[0]} works in it"
-        if hold is not None:
-            async with self._tx() as tx:
-                await self._worktree_event(tx, "run.worktree_kept", actor, w.run_id, w, reason=hold)
-            return
-        git = worktrees.find_git()
-        refused: str | None = "git is not on PATH"
-        if git is not None:
-            try:
-                refused = await asyncio.to_thread(
-                    functools.partial(
-                        worktrees.remove_worktree,
-                        w.path,
-                        w.source_path,
-                        w.copied,
-                        git,
-                        force=True,
-                        stash=self._stash(w),
-                    )
-                )
-            except ValidationError as exc:
-                refused = str(exc)
-        async with self._tx() as tx:
-            if refused is None:
-                await repo.update_run_worktree(tx.conn, w.id, {"removed_at": tx.now})
-                await self._worktree_event(
-                    tx, "run.worktree_removed", actor, w.run_id, w, forced=True
-                )
-            else:
-                why = f"git worktree remove --force refused: {refused}"
-                await repo.update_run_worktree(
-                    tx.conn, w.id, {"kept_reason": why, "kept_at": tx.now}
-                )
-                await self._worktree_event(tx, "run.worktree_kept", actor, w.run_id, w, reason=why)
-
-    async def _delete_traces(self, run_id: int) -> None:
-        """A run that saw a secret or touched a live stand: its stored lines and what Claude Code
-        keeps of its session (`transcripts.find`: the transcript, the session's folder,
-        `file-history/<id>/`, `session-env/<id>/`, only under Claude Code's data folder) are
-        deleted, with one event naming what went. While a file or folder could not be deleted
-        `deleted_at` stays unset, so the sweep tries again; the event repeats only when what
-        failed changes."""
-        run = await self.get_run(run_id)
-        if run.deleted_at is not None or not (run.secret_seen_at or run.touched_live_at):
-            return
-        why = " and ".join(
-            w
-            for w, on in (
-                ("saw a secret", run.secret_seen_at),
-                ("touched live", run.touched_live_at),
-            )
-            if on
-        )
-        deleted: list[str] = []
-        failed: list[str] = []
-        if run.claude_session_id:
-            session = (
-                await repo.get_session_by_id(self._r, run.session_id) if run.session_id else None
-            )
-            known = [run.transcript_path, session.transcript_path if session else None]
-            found = await asyncio.to_thread(
-                transcripts.find, self._claude_data(), run.claude_session_id, known
-            )
-            deleted, failed = await asyncio.to_thread(transcripts.delete, found)
-        async with self._tx() as tx:
-            lines = await repo.delete_run_events(tx.conn, run.id)
-            if not failed:
-                await repo.update_run(tx.conn, run.id, {"deleted_at": tx.now}, tx.now)
-                self._trace_failures.pop(run.id, None)
-            elif self._trace_failures.get(run.id) == failed and not (lines or deleted):
-                return  # the same files still refuse: the last event says so
-            else:
-                self._trace_failures[run.id] = failed
-            task = await self._run_task(tx.conn, run)
-            await self._run_event(
-                tx,
-                "run.traces_deleted",
-                "relaybay",
-                task,
-                run.id,
-                reason=why,
-                lines=lines,
-                transcripts=deleted,
-                failed=failed,
-            )
-
-    async def retention_pass(self, now: datetime | None = None) -> int:
-        """Each project's runs keep their lines `run_retention` days; "off" keeps none. One
-        event per project that lost lines; returns how many went."""
-        moment = now or datetime.now(UTC)
-        total = 0
-        for project_id, slug, retention in await repo.project_retentions(self._r):
-            before = None
-            if retention != run_rules.RETENTION_OFF:
-                cutoff = moment - timedelta(days=int(retention))
-                before = cutoff.isoformat(timespec="milliseconds")
-            async with self._tx() as tx:
-                lines = await repo.delete_project_events(tx.conn, project_id, before)
-                if lines:
-                    await tx.event(
-                        "run.events_expired",
-                        "relaybay",
-                        project_id=project_id,
-                        project=slug,
-                        lines=lines,
-                        retention=retention,
-                    )
-            total += lines
-        # The coordinator's runs have no project: they keep the default retention.
-        cutoff = moment - timedelta(days=int(run_rules.DEFAULT_RETENTION))
-        async with self._tx() as tx:
-            lines = await repo.delete_projectless_events(
-                tx.conn, cutoff.isoformat(timespec="milliseconds")
-            )
-            if lines:
-                await tx.event(
-                    "run.events_expired",
-                    "relaybay",
-                    run_kind=run_rules.COORDINATOR,
-                    lines=lines,
-                    retention=run_rules.DEFAULT_RETENTION,
-                )
-        return total + lines
-
-    async def run_loop(self, interval: float = RUN_CHECK_SECONDS) -> None:
-        """The server's re-check of runs: queued turns whose memory recovered or whose brake was
-        released, cards in done whose close did not finish, and (hourly) the retention."""
-        while True:
-            try:
-                await self.dispatch_queued()
-                await self.close_done_cards()
-                last = self._retention_at
-                if last is None or time.monotonic() - last >= RETENTION_SECONDS:
-                    self._retention_at = time.monotonic()
-                    await self.retention_pass()
-            except Exception:
-                logger.exception("Checking runs failed; the next pass tries again")
-            await asyncio.sleep(interval)
-
-    # --- the coordinator run: one permanent run without a card (design 0023) ---------------
-
-    async def coordinator_settings(
-        self, conn: aiosqlite.Connection | None = None
-    ) -> crules.CoordinatorSettings:
-        """The owner's choices in Settings -> Agents; the defaults without a row."""
-        conn = conn or self._r
-        found = crules.CoordinatorSettings()
-        for key, name in (
-            (crules.FOLDER_KEY, "folder"),
-            (crules.PROFILE_KEY, "profile"),
-            (crules.MODEL_KEY, "model"),
-            (crules.EFFORT_KEY, "effort"),
-        ):
-            value = await repo.get_app_setting(conn, key)
-            if value:
-                setattr(found, name, value)
-        for key, name in (
-            (crules.GAP_KEY, "wake_gap_seconds"),
-            (crules.COMPACT_KEY, "compact_at_tokens"),
-            (crules.DAILY_KEY, "daily_tokens"),
-        ):
-            value = await repo.get_app_setting(conn, key)
-            if value:
-                setattr(found, name, int(value))
-        action = await repo.get_app_setting(conn, crules.BUDGET_ACTION_KEY)
-        if action:
-            found.budget_action = action
-        return found
-
-    async def _coordinator_profile(self, conn: aiosqlite.Connection, name: str) -> RunProfile:
-        try:
-            profile = await self.get_profile(name, conn)
-        except NotFoundError:
-            raise ValidationError(
-                f"The coordinator's profile {name} does not exist: pick one in Settings -> Agents."
-            ) from None
-        if run_rules.COORDINATOR not in profile.kinds:
-            raise ValidationError(
-                f"Profile {profile.name} is not for the coordinator (it is for"
-                f" {', '.join(profile.kinds)}): pick one in Settings -> Agents."
-            )
-        return profile
-
-    async def coordinator_folder(
-        self, conn: aiosqlite.Connection | None = None
-    ) -> tuple[Path, str | None]:
-        """Where the coordinator works and, for the default, why it moved out of the data
-        folder (that lies inside a git repository)."""
-        chosen = (await self.coordinator_settings(conn)).folder
-        if chosen:
-            return Path(chosen), None
-        home = self._run_manager().config.home
-        return await asyncio.to_thread(coordinator_folder.default_folder, home)
-
-    async def set_coordinator_settings(
-        self, values: dict[str, Any], *, actor: str = "owner"
-    ) -> crules.CoordinatorSettings:
-        """Settings -> Agents (board only): the folder (empty: the default), the profile (one
-        for the coordinator), the model, the effort, the minimum gap between wakes, the context
-        that sends /compact, and its daily tokens with what happens at the limit (its own
-        budget). They apply from its next turn or wake; a folder applies from the next Start."""
-        folder = crules.clean_folder(values.get("folder"))
-        if folder is not None:
-            why = await asyncio.to_thread(coordinator_folder.inside_repository_reason, Path(folder))
-            if why:
-                raise ValidationError(why)
-            crules.edit_rule(folder, windows=sys.platform == "win32")
-        model = run_rules.clean_model(values.get("model") or crules.DEFAULT_MODEL)
-        effort = run_rules.clean_effort(values.get("effort") or crules.DEFAULT_EFFORT)
-        gap = crules.clean_gap(values.get("wake_gap_seconds"))
-        compact_at = crules.clean_compact_at(values.get("compact_at_tokens"))
-        daily = crules.clean_daily_tokens(values.get("daily_tokens"))
-        action = crules.clean_budget_action(values.get("budget_action"))
-        async with self._tx() as tx:
-            name = str(values.get("profile") or crules.DEFAULT_PROFILE)
-            profile = await self._coordinator_profile(tx.conn, name)
-            new = crules.CoordinatorSettings(
-                folder, profile.name, model, effort, gap, compact_at, daily, action
-            )
-            for key, value in (
-                (crules.FOLDER_KEY, folder or ""),
-                (crules.PROFILE_KEY, new.profile),
-                (crules.MODEL_KEY, new.model),
-                (crules.EFFORT_KEY, new.effort),
-                (crules.GAP_KEY, str(gap)),
-                (crules.COMPACT_KEY, str(compact_at)),
-                (crules.DAILY_KEY, str(daily)),
-                (crules.BUDGET_ACTION_KEY, action),
-            ):
-                await repo.set_app_setting(tx.conn, key, value, tx.now, actor)
-            await tx.event(
-                "settings.coordinator",
-                actor,
-                folder=folder,
-                profile=new.profile,
-                model=new.model,
-                effort=new.effort,
-                wake_gap_seconds=gap,
-                compact_at_tokens=compact_at,
-                daily_tokens=daily,
-                budget_action=action,
-            )
-            run = await repo.open_coordinator_run(tx.conn)
-            if run is not None and run.session_id is not None:
-                await self._coordinator_budget(tx, run.session_id, new, actor)
-        self._limits_wake.set()
-        return new
-
-    async def _coordinator_budget(
-        self, tx: _Tx, session_id: int, settings: crules.CoordinatorSettings, actor: str
-    ) -> None:
-        """The coordinator's own budget (design 0023): of its session, per UTC day, warning at
-        80% of the daily tokens of Settings -> Agents; `stop` only when the owner chose it. A
-        new session takes over the budget of the one before (its marks start again), else one
-        is created; a change of the numbers starts the marks again, as on the Usage page."""
-        budget = await repo.session_budget(tx.conn, session_id)
-        moved = None
-        if budget is None:
-            budget = await repo.coordinator_budget(tx.conn)
-            if budget is not None:
-                moved = budget.session_id
-                await repo.move_session_budget(tx.conn, budget.id, session_id, tx.now, actor)
-        wanted = (settings.daily_tokens, settings.budget_action, "day")
-        if budget is None:
-            budget_id = await repo.insert_session_budget(
-                tx.conn,
-                session_id,
-                max_tokens=settings.daily_tokens,
-                action=settings.budget_action,
-                now=tx.now,
-                actor=actor,
-            )
-        elif moved is None and (budget.max_tokens, budget.action, budget.period) == wanted:
-            return
-        else:
-            budget_id = budget.id
-            await repo.save_budget(
-                tx.conn,
-                budget.id,
-                scope=agent_limits.SESSION_SCOPE,
-                project_id=None,
-                task_id=None,
-                period="day",
-                max_tokens=settings.daily_tokens,
-                action=settings.budget_action,
-                now=tx.now,
-                actor=actor,
-            )
-        await repo.clear_budget_marks(tx.conn, budget_id)
-        self._forget_told(budget_id)
-        saved = await repo.get_budget(tx.conn, budget_id)
-        assert saved is not None
-        await tx.event(
-            "budget.set",
-            actor,
-            session_id=session_id,
-            budget_id=budget_id,
-            target=saved.target,
-            period=saved.period,
-            max_tokens=saved.max_tokens,
-            action=saved.action,
-            **({"moved_from_session": moved} if moved is not None else {}),
-        )
-
-    async def _follow_coordinator_settings(self, tx: _Tx, run: Run) -> None:
-        """At the start of each of its turns the coordinator run takes the owner's model,
-        effort and profile; a profile no longer for the coordinator is not taken."""
-        wanted = await self.coordinator_settings(tx.conn)
-        changes: dict[str, Any] = {}
-        if wanted.model != run.model:
-            changes["model"] = wanted.model
-        if wanted.effort != run.effort:
-            changes["effort"] = wanted.effort
-        if wanted.profile != run.profile:
-            profile = await repo.get_profile(tx.conn, wanted.profile)
-            if profile is not None and run_rules.COORDINATOR in profile.kinds:
-                changes["profile"] = profile.name
-        if changes:
-            await repo.update_run(tx.conn, run.id, changes, tx.now)
-            for name, value in changes.items():
-                setattr(run, name, value)
-
-    async def coordinator_run_view(self) -> RunView | None:
-        """The open coordinator run, else the latest one, with its turns."""
-        run = await repo.open_coordinator_run(self._r) or await repo.latest_coordinator_run(self._r)
-        if run is None:
-            return None
-        turns = await repo.list_turns(self._r, run.id)
-        view = RunView(run, turns, run_rules.totals(turns))
-        done = [t for t in turns if t.result_md]
-        if done:
-            view.last_report = _first_line(done[-1].result_md or "")
-        return view
-
-    async def coordinator_page(self, before: int | None = None) -> crules.CoordinatorPage:
-        """The Coordinator page: one page of turns (`PAGE_TURNS`, before the turn `before` when
-        given, else the newest), so a long-lived coordinator's page stays fast."""
-        await self.close_overdue_questions()
-        settings = await self.coordinator_settings()
-        folder: str | None = None
-        note = refusal = None
-        if self.runs is not None:
-            path, note = await self.coordinator_folder()
-            folder = str(path)
-            refusal = await asyncio.to_thread(coordinator_folder.inside_repository_reason, path)
-        every = await repo.coordinator_questions(self._r, limit=50)
-        run = await repo.open_coordinator_run(self._r) or await repo.latest_coordinator_run(self._r)
-        view: RunView | None = None
-        turns: list[RunTurn] = []
-        older: int | None = None
-        wakes: list[crules.CoordinatorWake] = []
-        if run is not None:
-            newest_first = await repo.turns_before(self._r, run.id, before, crules.PAGE_TURNS + 1)
-            if len(newest_first) > crules.PAGE_TURNS:
-                newest_first = newest_first[: crules.PAGE_TURNS]
-                older = newest_first[-1].seq
-            turns = newest_first[::-1]
-            view = RunView(run, turns, await repo.run_turn_totals(self._r, run.id))
-            wakes = await repo.coordinator_wakes(self._r, run.id, [t.id for t in turns])
-        # The turn just after the page: the context a `/compact` at its end came to.
-        after_page = (
-            await repo.turn_after(self._r, run.id, turns[-1].seq)
-            if run is not None and turns and before is not None
-            else None
-        )
-        compacted: dict[int, tuple[int, int | None]] = {}
-        for i, turn in enumerate(turns):
-            if turn.compact_pre_tokens is None:
-                continue
-            # Without the CLI's own number after it: for `/compact` the context of the next
-            # turn, for a turn Claude Code compacted itself the context it ended with.
-            after = turn.compact_post_tokens
-            following = turns[i + 1] if i + 1 < len(turns) else after_page
-            if after is None and not crules.is_compact(turn):
-                after = crules.turn_context(turn)
-            elif after is None and following is not None and following.ended_at:
-                after = crules.turn_context(following)
-            compacted[turn.id] = (turn.compact_pre_tokens, after)
-        state = await self.coordinator_wake_state(run)
-        last = await repo.last_coordinator_context_turn(self._r, run.id) if run else None
-        state.context_tokens = crules.turn_context(last) if last is not None else None
-        return crules.CoordinatorPage(
-            settings=settings,
-            folder=folder,
-            folder_note=note,
-            refusal=refusal,
-            view=view,
-            questions=sorted((q for q in every if q.is_open), key=lambda q: q.id),
-            answered=[q for q in every if not q.is_open][:10],
-            wake=state,
-            wakes={w.turn_id: w for w in wakes if w.turn_id is not None},
-            compacted=compacted,
-            schedules=[
-                s
-                for s in await repo.list_schedules(self._r)
-                if s.kind == srules.COORDINATOR_TURN or s.created_by_kind == "coordinator"
-            ],
-            approvals=await repo.coordinator_run_approvals(self._r),
-            started=await repo.coordinator_started_runs(
-                self._r, crules.local_day_start(datetime.now(UTC))
-            ),
-            older=older,
-            paged=before is not None,
-        )
-
-    async def coordinator_badge(self) -> crules.CoordinatorBadge:
-        """The sidebar's mark: the coordinator's open questions and its budget's level today."""
-        questions = await repo.coordinator_open_questions(self._r)
-        budget = await repo.coordinator_budget(self._r)
-        level = None
-        if budget is not None:
-            today = datetime.now(UTC).date().isoformat()
-            marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
-            levels = marks.get(budget.id, set())
-            level = (
-                agent_limits.EXCEEDED
-                if agent_limits.EXCEEDED in levels
-                else next(iter(levels), None)
-            )
-        return crules.CoordinatorBadge(questions, level)
-
-    async def start_coordinator(self, *, actor: str = "owner", new_session: bool = False) -> Run:
-        """Start (the owner's button only; no MCP tool starts a coordinator): the coordinator
-        run is written idle, with no turn and no tokens spent. Its folder must lie outside any
-        git repository; it is made, with the starter CLAUDE.md when it has none. `new_session`:
-        the open coordinator run ends first, after the checks, and the new one carries its
-        questions. The coordinator's CLAUDE.md and relaybay's memory stay as they are."""
-        runs = self._run_manager()
-        current = await repo.open_coordinator_run(self._r)
-        if current is not None and not new_session:
-            raise ConflictError(
-                f"The coordinator runs already (run {current.id}): one at a time. Use New"
-                " session for a fresh one."
-            )
-        folder, _ = await self.coordinator_folder()
-        why = await asyncio.to_thread(coordinator_folder.inside_repository_reason, folder)
-        if why:
-            raise ValidationError(f"{why} Nothing started.")
-        settings = await self.coordinator_settings()
-        profile = await self._coordinator_profile(self._r, settings.profile)
-        rule = crules.edit_rule(str(folder), windows=sys.platform == "win32")
-        run_id = await repo.next_run_id(self._r)
-        method, layers = await self._run_preflight(runs, run_id)
-        hooks_source = layers.hooks_source if layers is not None else "user"
-        mcp_source = layers.mcp_source if layers is not None else "user"
-        claude = runs.claude()
-        assert claude is not None
-        settings_file, mcp_file = run_files(
-            self._run_folder(run_id), hooks=hooks_source == "run", mcp=mcp_source == "run"
-        )
-        # The batch-shim check of the whole command line, before anything is made or written.
-        build_command(
-            TurnSpec(
-                claude,
-                "",
-                str(folder),
-                settings.model,
-                settings.effort,
-                profile.permission_mode,
-                (*profile.allowed_rules, rule),
-                disallowed=prules.turn_disallowed(profile.disallowed_tools),
-                settings_file=str(settings_file) if settings_file else None,
-                mcp_file=str(mcp_file) if mcp_file else None,
-            )
-        )
-        if current is not None:
-            await self.end_run(current.id, actor=actor, reason=f"new session by {actor}")
-            run_id = await repo.next_run_id(self._r)
-        await asyncio.to_thread(coordinator_folder.prepare, folder)
-        async with self._tx() as tx:
-            if await repo.open_coordinator_run(tx.conn) is not None:
-                raise ConflictError("The coordinator was started at the same moment.")
-            if await repo.next_run_id(tx.conn) != run_id:
-                raise ConflictError("Another run started at the same moment; start again.")
-            await repo.insert_run(
-                tx.conn,
-                {
-                    "id": run_id,
-                    "kind": run_rules.COORDINATOR,
-                    "cwd": str(folder),
-                    "model": settings.model,
-                    "effort": settings.effort,
-                    "permission_mode": profile.permission_mode,
-                    "allowed_tools": profile.allowed_tools,
-                    "disallowed_tools": profile.disallowed_tools,
-                    "profile": profile.name,
-                    "mode_set": 0,
-                    "chrome": 0,
-                    "auth_method": method,
-                    "hooks_source": hooks_source,
-                    "mcp_source": mcp_source,
-                    "status": "idle",
-                    "started_by": actor,
-                    "started_by_kind": "owner",
-                },
-                tx.now,
-            )
-            name = crules.SESSION_NAME.format(run_id=run_id)
-            session_id = await repo.insert_session(tx.conn, name, tx.now, kind="run")
-            await repo.touch_session(tx.conn, session_id, tx.now, {"cwd": str(folder)})
-            await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
-            await tx.event("session.seen", name, session_id=session_id, session=name)
-            if await repo.get_app_setting(tx.conn, crules.CURSOR_KEY) is None:
-                # The first Start: the wakes begin from now, not from the board's history.
-                last = await repo.last_event_id(tx.conn)
-                await repo.set_app_setting(tx.conn, crules.CURSOR_KEY, str(last), tx.now, actor)
-            await self._coordinator_budget(tx, session_id, settings, actor)
-            carried = await repo.carry_coordinator_questions(tx.conn, run_id)
-            await self._run_event(
-                tx,
-                "coordinator.new_session" if current is not None else "coordinator.started",
-                actor,
-                None,
-                run_id,
-                folder=str(folder),
-                profile=profile.name,
-                model=settings.model,
-                effort=settings.effort,
-                questions=carried,
-                **({"ended_run": current.id} if current is not None else {}),
-            )
-        return await self.get_run(run_id)
-
-    async def _open_coordinator(self) -> Run:
-        run = await repo.open_coordinator_run(self._r)
-        if run is None:
-            raise ValidationError("The coordinator is not started: Start it on this page first.")
-        return run
-
-    async def stop_coordinator(self, *, actor: str = "owner") -> Run:
-        """Stop its running turn; the run stays, its session resumable."""
-        run = await self._open_coordinator()
-        stopped = await self.stop_run(run.id, actor=actor)
-        async with self._tx() as tx:
-            await self._run_event(tx, "coordinator.stopped", actor, None, run.id)
-        return stopped
-
-    async def end_coordinator(self, *, actor: str = "owner") -> Run:
-        """No more turns of this coordinator run; its open questions wait for the next Start."""
-        run = await self._open_coordinator()
-        ended = await self.end_run(run.id, actor=actor)
-        async with self._tx() as tx:
-            await self._run_event(tx, "coordinator.ended", actor, None, run.id)
-        return ended
-
-    async def coordinator_say(self, text: str, *, actor: str = "owner") -> RunTurn:
-        """The owner's box: the text as a turn framed as the owner's word, sent by the owner."""
-        run = await self._open_coordinator()
-        body = crules.owner_text(run_rules.clean_prompt(text))
-        return await self.send_to_run(run.id, body, actor=actor)
-
-    # --- its wakes: events since the last one, as one turn (design 0023) ------------------
-
-    async def _wake_held(self, conn: aiosqlite.Connection, run: Run) -> str | None:
-        """Why no wake turn may be queued on the coordinator run now; its events wait, the
-        cursor stays. None: a wake may come."""
-        if not run.is_open:
-            return "the coordinator has ended: Start it again"
-        if run.with_owner or self.terminals.busy(run.id):
-            return f"it is with you {_owner_place(run)}: back to the program first"
-        if run.status == "stopped":
-            return "it is stopped: your next text in the box goes on"
-        if run.status == "lost":
-            return "its last turn was lost: your next text in the box goes on"
-        if run.status == "waiting":
-            return "it waits for your answer to its question"
-        if run.status == "queued":
-            return f"its turn is queued: {run.status_reason or 'a slot, memory or a brake'}"
-        if (
-            run.status == "running"
-            or await repo.active_turn(conn, run.id) is not None
-            or await repo.next_queued_turn(conn, run.id) is not None
-        ):
-            return "a turn runs or waits: new events go into the next wake"
-        brake = await self._run_brake(conn, run)
-        if brake is not None:
-            return f"under the brake ({brake.target})"
-        if run.session_id is not None:
-            budget = await repo.session_budget(conn, run.session_id)
-            if budget is not None and budget.action == "stop":
-                today = datetime.now(UTC).date().isoformat()
-                used = await self._budget_used(conn, budget, today)
-                if used >= budget.max_tokens:
-                    return f"over its stop budget: {used:,} of {budget.max_tokens:,} tokens today"
-        return None
-
-    @staticmethod
-    async def _wake_gap_left(
-        conn: aiosqlite.Connection, settings: crules.CoordinatorSettings, now: datetime
-    ) -> float:
-        """Seconds until the minimum gap since the last wake has passed; 0 when it has."""
-        last = await repo.last_coordinator_wake(conn)
-        if last is None or not settings.wake_gap_seconds:
-            return 0.0
-        since = (now - datetime.fromisoformat(last.created_at)).total_seconds()
-        return max(0.0, settings.wake_gap_seconds - since)
-
-    @staticmethod
-    async def _wake_cursor(conn: aiosqlite.Connection) -> int | None:
-        value = await repo.get_app_setting(conn, crules.CURSOR_KEY)
-        return int(value) if value else None
-
-    async def _check_coordinator_budget(self) -> None:
-        """Its budget's thresholds right after its turns, not only on the usage loop's pass."""
-        budget = await repo.coordinator_budget(self._r)
-        if budget is None:
-            return
-        today = datetime.now(UTC).date().isoformat()
-        used = await self._budget_used(self._r, budget, today)
-        level = agent_limits.level_for(used, budget.max_tokens)
-        marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
-        if level is not None and level not in marks.get(budget.id, set()):
-            await self._cross_threshold(budget.id, today)
-
-    async def coordinator_wake_pass(self, now: datetime | None = None) -> float | None:
-        """One look for the coordinator run. After a turn whose context passed the owner's
-        threshold, the next turn is `/compact` (sent by relaybay), before any wake. Else, once
-        the minimum gap has passed, the events it listens to since the cursor become one wake
-        turn of at most WAKE_LINES lines, a `coordinator_wake` row links them, and the cursor
-        moves to the newest event. Nothing new: no turn. While `_wake_held` holds, nothing
-        moves. Returns the seconds the gap still holds a wake, else None. `now`: a test's
-        clock for the gap."""
-        run = await repo.open_coordinator_run(self._r)
-        if self.runs is None or run is None:
-            return None
-        await self._check_coordinator_budget()
-        moment = now or datetime.now(UTC)
-        # Read first: most passes (an event that is no news) end here, without the write lock.
-        due, left = await self._wake_due(self._r, run, moment)
-        if due is None:
-            return left
-        free = await self._free_memory()
-        launches: list[tuple[int, int]] = []
-        async with self._tx() as tx:
-            run = await repo.open_coordinator_run(tx.conn)
-            if run is None:
-                return None
-            due, left = await self._wake_due(tx.conn, run, moment)
-            if due is None:
-                return left
-            settings = await self.coordinator_settings(tx.conn)
-            last_turn = await repo.last_turn(tx.conn, run.id)
-            if due == "compact" and last_turn is not None:
-                await self._run_event(
-                    tx,
-                    "coordinator.compacting",
-                    "relaybay",
-                    None,
-                    run.id,
-                    context=crules.turn_context(last_turn),
-                    compact_at_tokens=settings.compact_at_tokens,
-                )
-                _, launches = await self._queue_turn(
-                    tx, run, None, crules.COMPACT, "relaybay", free, kind="relaybay", carry=False
-                )
-            elif due == "init":
-                # A coordinator run older than the cursor: its wakes begin from now.
-                top = await repo.last_event_id(tx.conn)
-                await repo.set_app_setting(tx.conn, crules.CURSOR_KEY, str(top), tx.now, "relaybay")
-            else:
-                cursor = await self._wake_cursor(tx.conn) or 0
-                top = await repo.last_event_id(tx.conn)
-                back = await repo.unreturned_wakes(tx.conn)
-                found, total, last = await repo.coordinator_wake_events(
-                    tx.conn, cursor, top, crules.WAKE_LINES, [_wake_span(w) for w in back]
-                )
-                if due == "wake" and back:
-                    await repo.mark_wakes_returned(tx.conn, [w.id for w in back], tx.now)
-                if due == "wake" and total:
-                    text = crules.wake_text(found, total)
-                    turn_id, launches = await self._queue_turn(
-                        tx, run, None, text, "relaybay", free, kind="relaybay"
-                    )
-                    wake_id = await repo.insert_coordinator_wake(
-                        tx.conn, run.id, turn_id, found[0].id, last, total, tx.now
-                    )
-                    await self._run_event(
-                        tx,
-                        "coordinator.woken",
-                        "relaybay",
-                        None,
-                        run.id,
-                        wake_id=wake_id,
-                        events=total,
-                        first_event_id=found[0].id,
-                        last_event_id=last,
-                        **({"returned_wakes": [w.id for w in back]} if back else {}),
-                    )
-                if top > cursor:
-                    await repo.set_app_setting(
-                        tx.conn, crules.CURSOR_KEY, str(top), tx.now, "relaybay"
-                    )
-        await self._spawn_all(launches)
-        return None
-
-    async def _wake_due(
-        self, conn: aiosqlite.Connection, run: Run, moment: datetime
-    ) -> tuple[str | None, float | None]:
-        """What the pass does now: "compact", "wake", "cursor" (only move past events that are
-        no news, once they pile up), or nothing; with nothing, the seconds the gap still holds."""
-        if await self._wake_held(conn, run) is not None:
-            return None, None
-        cursor = await self._wake_cursor(conn)
-        if cursor is None:
-            return "init", None
-        settings = await self.coordinator_settings(conn)
-        last = await repo.last_turn(conn, run.id)
-        threshold = settings.compact_at_tokens
-        if crules.needs_compact(last, threshold) and crules.needs_compact(
-            last, threshold, await repo.turns_since_compact(conn, run.id)
-        ):
-            return "compact", None
-        left = await self._wake_gap_left(conn, settings, moment)
-        if left:
-            return None, left
-        top = await repo.last_event_id(conn)
-        back = [_wake_span(w) for w in await repo.unreturned_wakes(conn)]
-        if top <= cursor and not back:
-            return None, None
-        _, total, _ = await repo.coordinator_wake_events(conn, cursor, top, 0, back)
-        if total:
-            return "wake", None
-        return ("cursor" if top - cursor > crules.CURSOR_LAG else None), None
-
-    async def coordinator_wake_loop(self) -> None:
-        """The server's wakes of the coordinator: a pass after every committed event, at the
-        end of the minimum gap, and every WAKE_CHECK_SECONDS. No process runs between wakes."""
-        while True:
-            wait = crules.WAKE_CHECK_SECONDS
-            try:
-                left = await self.coordinator_wake_pass()
-                if left is not None:
-                    wait = min(wait, left + 0.1)
-            except Exception:
-                logger.exception("Waking the coordinator failed; the next pass tries again")
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._wake_kick.wait(), wait)
-            if self._wake_kick.is_set():
-                await asyncio.sleep(crules.WAKE_SETTLE_SECONDS)  # a burst becomes one pass
-            self._wake_kick.clear()
-
-    async def coordinator_wake_state(self, run: Run | None) -> crules.WakeState:
-        """For the page: the events that wait for a wake and why they wait, its budget and
-        today's tokens."""
-        state = crules.WakeState()
-        cursor = await self._wake_cursor(self._r)
-        if cursor is not None:
-            top = await repo.last_event_id(self._r)
-            back = [_wake_span(w) for w in await repo.unreturned_wakes(self._r)]
-            _, state.waiting, _ = await repo.coordinator_wake_events(self._r, cursor, top, 0, back)
-        if run is None:
-            return state
-        if run.is_open:
-            state.held = await self._wake_held(self._r, run)
-            if state.held is None and state.waiting:
-                settings = await self.coordinator_settings()
-                left = await self._wake_gap_left(self._r, settings, datetime.now(UTC))
-                if left:
-                    state.held = f"the minimum gap between wakes: about {int(left) + 1} s more"
-        if run.session_id is None:
-            return state
-        today = datetime.now(UTC).date().isoformat()
-        state.today_tokens = await repo.session_turn_tokens(self._r, run.session_id, today)
-        budget = await repo.session_budget(self._r, run.session_id)
-        if budget is not None:
-            marks = await repo.budget_marks(self._r, today, agent_limits.TOTAL_KEY)
-            levels = marks.get(budget.id, set())
-            level = (
-                agent_limits.EXCEEDED
-                if agent_limits.EXCEEDED in levels
-                else next(iter(levels), None)
-            )
-            state.budget = agent_limits.BudgetState(budget, state.today_tokens, level)
-        return state
-
-    # --- schedules: coordinator turns, read-only checks, reminders (design 0023) -----------
-
-    def _now(self) -> datetime:
-        return self.clock().astimezone(UTC)
-
-    async def schedules(self, created_by_kind: str | None = None) -> list[srules.Schedule]:
-        return await repo.list_schedules(self._r, created_by_kind)
-
-    async def get_schedule(
-        self, schedule_id: int | str, conn: aiosqlite.Connection | None = None
-    ) -> srules.Schedule:
-        text = str(schedule_id).strip().lstrip("#")
-        found = await repo.get_schedule(conn or self._r, int(text)) if text.isdigit() else None
-        if found is None:
-            raise NotFoundError(f"Schedule {schedule_id} not found.")
-        return found
-
-    async def schedule_runs(
-        self, schedule_ids: list[int] | None = None, limit: int = 50
-    ) -> list[srules.ScheduleRun]:
-        return await repo.schedule_runs(self._r, schedule_ids, limit)
-
-    async def _schedule_values(
-        self, conn: aiosqlite.Connection, values: dict[str, Any], now: datetime
-    ) -> dict[str, Any]:
-        """The columns of a schedule as a form or a tool gives them, checked: its kind, when,
-        target (a check needs a project; a card names its project) and text."""
-        kind = srules.clean_kind(values.get("kind"))
-        repeat = srules.clean_repeat(values.get("repeat"))
-        prompt = srules.clean_prompt(values.get("prompt"))
-        if kind == srules.COORDINATOR_TURN and len(prompt) > srules.TITLE_MAX:
-            raise ValidationError(
-                f"A coordinator turn's text is one wake line: at most {srules.TITLE_MAX}"
-                f" characters; got {len(prompt)}. Put the details in a document and name it."
-            )
-        slug = str(values.get("project") or "").strip()
-        ref = str(values.get("task") or "").strip()
-        project_id = task_id = None
-        if ref and ref != "-":
-            task = await self.get_task(ref, conn)
-            if slug not in ("", "-") and slug.lower() != task.project_slug:
-                raise ValidationError(f"{task.key} is not in the project {slug}.")
-            project_id, task_id = task.project_id, task.id
-        elif slug and slug != "-":
-            project_id = (await self.get_project(slug, conn)).id
-        if kind == srules.CHECK and project_id is None:
-            raise ValidationError("A check needs a project or a card: it reads in their folder.")
-        profile = None
-        if kind == srules.CHECK:
-            name = str(values.get("profile") or "").strip().lower() or srules.CHECK_PROFILE
-            found = await repo.get_profile(conn, name)
-            if found is None or run_rules.CHECK not in found.kinds:
-                raise ValidationError(
-                    f"The profile {name} is not one for checks: pick a profile whose kinds"
-                    " include check (Settings -> Profiles)."
-                )
-            profile = found.name
-        row: dict[str, Any] = {
-            "kind": kind,
-            "repeat": repeat,
-            "at": None,
-            "time_of_day": None,
-            "weekdays_only": 0,
-            "every_minutes": None,
-            "max_times": srules.MAX_TIMES,
-            "project_id": project_id,
-            "task_id": task_id,
-            "profile": profile,
-            "prompt": prompt,
-            "timezone": self.local_time.name(),
-        }
-        if repeat == srules.ONCE:
-            moment = srules.clean_at(values.get("at"), self.local_time)
-            if moment < now - timedelta(minutes=1):
-                shown = srules.local_text(srules.iso(moment), self.local_time)
-                raise ValidationError(f"{shown} has passed: a once schedule needs a later time.")
-            row["at"] = srules.iso(moment)
-        elif repeat == srules.DAILY:
-            row["time_of_day"] = srules.clean_time_of_day(values.get("time_of_day"))
-            row["weekdays_only"] = int(_ticked(values.get("weekdays_only")))
-        else:
-            row["every_minutes"] = srules.clean_every(values.get("every_minutes"))
-            row["max_times"] = srules.clean_max_times(values.get("max_times"))
-        return row
-
-    def _first_due(self, row: dict[str, Any], now: datetime) -> str:
-        return srules.iso(
-            srules.first_due(
-                row["repeat"],
-                now,
-                self.local_time,
-                at=srules.parse(row["at"]) if row["at"] else None,
-                time_of_day=row["time_of_day"],
-                weekdays_only=bool(row["weekdays_only"]),
-                every_minutes=row["every_minutes"],
-            )
-        )
-
-    async def _schedule_event(
-        self, tx: _Tx, kind: str, actor: str, schedule: srules.Schedule, **payload: Any
-    ) -> None:
-        await tx.event(
-            kind,
-            actor,
-            project_id=schedule.project_id,
-            task_id=schedule.task_id,
-            schedule_id=schedule.id,
-            schedule_kind=schedule.kind,
-            title=schedule.title,
-            **({"project": schedule.project_slug} if schedule.project_slug else {}),
-            **({"key": schedule.task_key} if schedule.task_key else {}),
-            **payload,
-        )
-
-    async def create_schedule(
-        self,
-        values: dict[str, Any],
-        *,
-        actor: str = "owner",
-        created_by_kind: str = "owner",
-        coordinator_run: int | None = None,
-    ) -> srules.Schedule:
-        """A new schedule, enabled, due first at its next time. The owner's on the board (any
-        kind); the coordinator's through `schedule_add_mcp` (checks and reminders), held in its
-        write transaction to its caps (`coordinator_run`)."""
-        now = self._now()
-        async with self._tx() as tx:
-            row = await self._schedule_values(tx.conn, values, now)
-            if coordinator_run is not None:
-                await self._check_schedule_caps(tx.conn, coordinator_run, row["kind"])
-            schedule_id = await repo.insert_schedule(
-                tx.conn,
-                {
-                    **row,
-                    "created_by": actor,
-                    "created_by_kind": created_by_kind,
-                    "enabled": 1,
-                    "next_at": self._first_due(row, now),
-                    "updated_by": actor,
-                },
-                tx.now,
-            )
-            made = await self.get_schedule(schedule_id, tx.conn)
-            await self._schedule_event(
-                tx,
-                "schedule.created",
-                actor,
-                made,
-                when=srules.when_text(made, self.local_time),
-                next_at=made.next_at,
-                created_by_kind=created_by_kind,
-            )
-        self._schedule_kick.set()
-        return made
-
-    async def update_schedule(
-        self, schedule_id: int, values: dict[str, Any], *, actor: str = "owner"
-    ) -> srules.Schedule:
-        """The owner's edit (board only): every field again; the count starts anew and the
-        next time is planned from now. A disabled schedule stays disabled."""
-        now = self._now()
-        async with self._tx() as tx:
-            current = await self.get_schedule(schedule_id, tx.conn)
-            row = await self._schedule_values(tx.conn, values, now)
-            next_at = self._first_due(row, now) if current.enabled else None
-            await repo.update_schedule(
-                tx.conn,
-                current.id,
-                {**row, "next_at": next_at, "times_run": 0, "done_at": None, "updated_by": actor},
-                tx.now,
-            )
-            saved = await self.get_schedule(current.id, tx.conn)
-            changed = sorted(
-                k for k in row if k != "timezone" and getattr(current, k) != getattr(saved, k)
-            )
-            await self._schedule_event(
-                tx,
-                "schedule.updated",
-                actor,
-                saved,
-                changes=changed,
-                when=srules.when_text(saved, self.local_time),
-                next_at=saved.next_at,
-            )
-        self._schedule_kick.set()
-        return saved
-
-    async def set_schedule_enabled(
-        self, schedule_id: int, on: bool, *, actor: str = "owner"
-    ) -> srules.Schedule:
-        """Disable: no next time (a running check goes on). Enable: planned again from now; a
-        once whose time has passed needs a new time first."""
-        now = self._now()
-        async with self._tx() as tx:
-            current = await self.get_schedule(schedule_id, tx.conn)
-            if current.enabled == on:
-                return current
-            next_at = None
-            if on:
-                if current.repeat == srules.ONCE and srules.parse(current.at or "") < now:
-                    raise ValidationError(
-                        f"Schedule {current.id} was due once at"
-                        f" {srules.local_text(current.at, self.local_time)}: edit it to a later"
-                        " time instead."
-                    )
-                row = {
-                    "repeat": current.repeat,
-                    "at": current.at,
-                    "time_of_day": current.time_of_day,
-                    "weekdays_only": current.weekdays_only,
-                    "every_minutes": current.every_minutes,
-                }
-                next_at = self._first_due(row, now)
-            changes: dict[str, Any] = {"enabled": int(on), "next_at": next_at, "updated_by": actor}
-            if on:
-                changes.update(times_run=0, done_at=None)
-            await repo.update_schedule(tx.conn, current.id, changes, tx.now)
-            saved = await self.get_schedule(current.id, tx.conn)
-            await self._schedule_event(
-                tx, "schedule.updated", actor, saved, enabled=on, next_at=next_at
-            )
-        self._schedule_kick.set()
-        return saved
-
-    async def delete_schedule(self, schedule_id: int, *, actor: str = "owner") -> None:
-        """Delete it: gone from the lists, its runs kept (they count in the budgets); a
-        check of it that runs is ended first."""
-        current = await self.get_schedule(schedule_id)
-        open_run = await self._open_schedule_run(current.id)
-        if open_run is not None and open_run.run_id is not None:
-            run = await repo.get_run(self._r, open_run.run_id)
-            if run is not None and run.is_open:
-                await self.end_run(run.id, actor=actor, reason=f"schedule deleted by {actor}")
-        async with self._tx() as tx:
-            current = await self.get_schedule(schedule_id, tx.conn)
-            await repo.delete_schedule(tx.conn, current.id, tx.now, actor)
-            await self._schedule_event(tx, "schedule.deleted", actor, current)
-
-    async def _open_schedule_run(self, schedule_id: int) -> srules.ScheduleRun | None:
-        found = [r for r in await repo.open_schedule_runs(self._r) if r.schedule_id == schedule_id]
-        return found[0] if found else None
-
-    async def stop_schedule(self, schedule_id: int, *, actor: str = "owner") -> None:
-        """Stop the check of the schedule that runs or waits in the queue (board only)."""
-        current = await self.get_schedule(schedule_id)
-        open_run = await self._open_schedule_run(current.id)
-        if open_run is None or open_run.run_id is None:
-            raise ValidationError(f"No check of schedule {current.id} runs now.")
-        run = await self.get_run(open_run.run_id)
-        if run.is_open:
-            await self.end_run(run.id, actor=actor, reason=f"stopped by {actor}")
-        async with self._schedule_lock:
-            await self._settle_checks()
-
-    async def mark_schedule_notice_seen(
-        self, schedule_run_id: int, *, actor: str = "owner"
-    ) -> None:
-        async with self._tx() as tx:
-            found = await repo.get_schedule_run(tx.conn, schedule_run_id)
-            if found is None:
-                raise NotFoundError(f"Schedule run {schedule_run_id} not found.")
-            if await repo.mark_schedule_notice_seen(tx.conn, found.id, tx.now):
-                await tx.event(
-                    "schedule.notice_seen",
-                    actor,
-                    schedule_id=found.schedule_id,
-                    schedule_run_id=found.id,
-                )
-
-    async def run_schedule_now(self, schedule_id: int, *, actor: str = "owner") -> None:
-        """Run now (board only): once, at once, outside its times: its next time and its count
-        stay. Refused while a run of it is open."""
-        current = await self.get_schedule(schedule_id)
-        async with self._schedule_lock:
-            await self._handle_due(current.id, self._now(), manual=actor)
-
-    # --- the clock ------------------------------------------------------------------------
-
-    async def schedule_pass(self, now: datetime | None = None) -> float | None:
-        """One look of the clock: checks that ended are written down, then every schedule due
-        by `now` (default: the clock) is handled: run, skipped while a run of it is open, or
-        missed when late by an hour or more (K6), each followed by its next time. Returns the
-        seconds until the next due time, None when nothing is planned."""
-        moment = now or self._now()
-        async with self._schedule_lock:
-            await self._settle_checks()
-            for due in await repo.due_schedules(self._r, srules.iso(moment)):
-                try:
-                    await self._handle_due(due.id, moment)
-                except Exception:
-                    logger.exception("Schedule %d failed; the next pass tries again", due.id)
-        top = await repo.next_schedule_at(self._r)
-        if top is None:
-            return None
-        return max(1.0, (srules.parse(top) - self._now()).total_seconds())
-
-    async def schedule_loop(self) -> None:
-        """The server's clock: a pass at each next due time, after a schedule is saved, and at
-        least every CHECK_SECONDS, so a missed time after a sleep is found soon."""
-        while True:
-            wait = srules.CHECK_SECONDS
-            try:
-                left = await self.schedule_pass()
-                if left is not None:
-                    wait = min(wait, left)
-            except Exception:
-                logger.exception("The schedules' clock failed; the next pass tries again")
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._schedule_kick.wait(), wait)
-            self._schedule_kick.clear()
-
-    async def _handle_due(self, schedule_id: int, moment: datetime, manual: str = "") -> None:
-        """A due time of one schedule (or the owner's Run now, `manual` naming the owner): the
-        `schedule_run` row and the next time in one transaction; a check's run starts after it."""
-        claimed: tuple[srules.Schedule, int] | None = None
-        async with self._tx() as tx:
-            s = await self.get_schedule(schedule_id, tx.conn)
-            if not manual:
-                if not s.enabled or s.next_at is None or srules.parse(s.next_at) > moment:
-                    return
-                due = srules.parse(s.next_at)
-                s.times_run += 1
-                nxt = srules.next_after(s, moment, self.local_time)
-                changes: dict[str, Any] = {
-                    "times_run": s.times_run,
-                    "next_at": srules.iso(nxt) if nxt else None,
-                }
-                if nxt is None:
-                    changes["done_at"] = tx.now
-                await repo.update_schedule(tx.conn, s.id, changes, tx.now)
-            else:
-                due = moment
-            row: dict[str, Any] = {"schedule_id": s.id, "due_at": srules.iso(due)}
-            if s.running:
-                if manual:
-                    raise ConflictError(f"A run of schedule {s.id} is open: one at a time.")
-                await self._schedule_outcome(
-                    tx, s, row, srules.SKIPPED, "its last run still runs: one at a time"
-                )
-                return
-            if not manual and srules.is_missed(due, moment):
-                await self._schedule_outcome(tx, s, row, srules.MISSED, None)
-                return
-            actor = manual or "relaybay"
-            if s.kind == srules.REMINDER:
-                await self._schedule_outcome(
-                    tx, s, row, srules.RAN, None, actor=actor, notice=s.prompt
-                )
-                return
-            if s.kind == srules.COORDINATOR_TURN:
-                if await repo.open_coordinator_run(tx.conn) is None:
-                    await self._schedule_outcome(
-                        tx,
-                        s,
-                        row,
-                        srules.SKIPPED,
-                        "no coordinator run is open: Start it on the Coordinator page",
-                        actor=actor,
-                    )
-                    return
-                await self._schedule_outcome(
-                    tx, s, row, srules.RAN, "a line in the coordinator's next wake", actor=actor
-                )
-                return
-            schedule_run_id = await repo.insert_schedule_run(tx.conn, {**row, "started_at": tx.now})
-            claimed = (s, schedule_run_id)
-        if claimed is not None:
-            await self._start_check(*claimed, actor=manual or "relaybay")
-
-    async def _schedule_outcome(
-        self,
-        tx: _Tx,
-        s: srules.Schedule,
-        row: dict[str, Any],
-        outcome: str,
-        reason: str | None,
-        *,
-        actor: str = "relaybay",
-        notice: str | None = None,
-    ) -> int:
-        """A schedule run that ends as it is written: its row and its event (`schedule.fired`
-        for one that ran, `schedule.missed`, `schedule.skipped`)."""
-        schedule_run_id = await repo.insert_schedule_run(
-            tx.conn,
-            {
-                **row,
-                "started_at": None if outcome == srules.MISSED else tx.now,
-                "ended_at": tx.now,
-                "outcome": outcome,
-                "reason": reason,
-                "notice": notice,
-            },
-        )
-        kind = {srules.RAN: "schedule.fired", srules.MISSED: "schedule.missed"}.get(
-            outcome, "schedule.skipped"
-        )
-        await self._schedule_event(
-            tx,
-            kind,
-            actor,
-            s,
-            schedule_run_id=schedule_run_id,
-            due_at=row["due_at"],
-            outcome=outcome,
-            **({"reason": reason} if reason else {}),
-        )
-        return schedule_run_id
-
-    async def _check_folder(self, s: srules.Schedule) -> tuple[str, str]:
-        """Where a check reads: the worktree of its card's open run when it has one, else the
-        project's folder (the agent defaults' folder, else its first repository). Returns the
-        folder and the words for its head line."""
-        if s.task_id is not None:
-            card_run = await repo.open_run_of_task(self._r, s.task_id)
-            if card_run is not None:
-                folders = [
-                    w.path
-                    for w in await repo.list_run_worktrees(self._r, card_run.id)
-                    if w.removed_at is None
-                ]
-                if folders:
-                    path = card_run.cwd if card_run.cwd in folders else folders[0]
-                    if await asyncio.to_thread(Path(path).is_dir):
-                        return path, f"{s.task_key}, in the worktree of its run {card_run.id}"
-        defaults = await self.run_defaults(s.project_slug)
-        repos = await repo.list_project_repos(self._r, s.project_id or 0)
-        folder = defaults.folder or (repos[0].path if repos else "")
-        if not folder or not await asyncio.to_thread(Path(folder).is_dir):
-            raise ValidationError(
-                f"{s.project_slug} has no folder here for a check: set the project folder in its"
-                " agent defaults, or a repository path."
-            )
-        return folder, s.task_key or s.project_slug
-
-    async def _start_check(self, s: srules.Schedule, schedule_run_id: int, *, actor: str) -> None:
-        """A `check` run for a schedule run claimed in the transaction before: the sign-in and
-        the layers are checked, then one transaction writes the run, its session and its one
-        turn, and the queue starts it when a slot, memory and the brakes allow. Anything that
-        keeps it from being written fails the schedule run with the reason."""
-        try:
-            runs = self._run_manager()
-            cwd, where = await self._check_folder(s)
-            profile = await repo.get_profile(self._r, s.profile or srules.CHECK_PROFILE)
-            if profile is None or run_rules.CHECK not in profile.kinds:
-                raise ValidationError(
-                    f"The profile {s.profile} is gone or no longer for checks: edit the schedule."
-                )
-            if s.created_by_kind == "coordinator":
-                # Every run of a coordinator's check counts in its run_start_per_day.
-                coordinator = await repo.open_coordinator_run(self._r)
-                why = await self._coordinator_cap_reason(
-                    self._r, coordinator.profile if coordinator else None
-                )
-                if why:
-                    raise ValidationError(why)
-            defaults = await self.run_defaults(s.project_slug)
-            guess = await repo.next_run_id(self._r)
-            method, layers = await self._run_preflight(runs)
-            hooks_source = layers.hooks_source if layers is not None else "user"
-            mcp_source = layers.mcp_source if layers is not None else "user"
-            claude = runs.claude()
-            assert claude is not None
-            settings_file, mcp_file = run_files(
-                self._run_folder(guess), hooks=hooks_source == "run", mcp=mcp_source == "run"
-            )
-            prompt = srules.check_prompt(s.id, where, cwd, s.prompt, s.repeat == srules.EVERY)
-            build_command(
-                TurnSpec(
-                    claude,
-                    prompt,
-                    cwd,
-                    defaults.model,
-                    defaults.effort,
-                    profile.permission_mode,
-                    tuple(profile.allowed_rules),
-                    disallowed=_check_disallowed(profile.disallowed_tools),
-                    settings_file=str(settings_file) if settings_file else None,
-                    mcp_file=str(mcp_file) if mcp_file else None,
-                    no_session_persistence=True,
-                    max_turns=srules.CHECK_MAX_TURNS,
-                )
-            )
-        except Exception as exc:
-            # The claim is closed with the real error (a refusal, a missing claude, a folder
-            # that cannot be written), not left for the next pass to call a stopped server.
-            if not isinstance(exc, DomainError):
-                logger.exception("Starting the check of schedule %d failed", s.id)
-            async with self._tx() as tx:
-                await self._finish_schedule_run(
-                    tx, s, schedule_run_id, srules.FAILED, f"the check did not start: {exc}"
-                )
-            return
-        free = await self._free_memory()
-        async with self._tx() as tx:
-            run_id = await repo.insert_run(
-                tx.conn,
-                {
-                    "kind": run_rules.CHECK,
-                    "project_id": s.project_id,
-                    "cwd": cwd,
-                    "model": defaults.model,
-                    "effort": defaults.effort,
-                    "permission_mode": profile.permission_mode,
-                    "allowed_tools": profile.allowed_tools,
-                    "disallowed_tools": profile.disallowed_tools,
-                    "profile": profile.name,
-                    "mode_set": 0,
-                    "chrome": 0,
-                    "auth_method": method,
-                    "hooks_source": hooks_source,
-                    "mcp_source": mcp_source,
-                    "status": "queued",
-                    "started_by": f"schedule {s.id}",
-                    "started_by_kind": s.created_by_kind,
-                },
-                tx.now,
-            )
-            name = f"{s.project_slug} check run {run_id}"
-            session_id = await repo.insert_session(tx.conn, name, tx.now, kind="run")
-            await repo.touch_session(
-                tx.conn, session_id, tx.now, {"project_id": s.project_id, "cwd": cwd}
-            )
-            await repo.update_run(tx.conn, run_id, {"session_id": session_id}, tx.now)
-            await tx.event(
-                "session.seen", name, project_id=s.project_id, session_id=session_id, session=name
-            )
-            await repo.insert_turn(tx.conn, run_id, prompt, f"schedule {s.id}", "relaybay", tx.now)
-            await repo.update_schedule_run(tx.conn, schedule_run_id, {"run_id": run_id})
-            await self._run_event(
-                tx,
-                "run.started",
-                actor,
-                None,
-                run_id,
-                model=defaults.model,
-                mode=profile.permission_mode,
-                profile=profile.name,
-                schedule_id=s.id,
-            )
-            await self._schedule_event(
-                tx,
-                "schedule.fired",
-                actor,
-                s,
-                schedule_run_id=schedule_run_id,
-                run_id=run_id,
-            )
-            launches = await self._dispatch(tx, free, "relaybay")
-        await self._spawn_all(launches)
-
-    async def _finish_schedule_run(
-        self,
-        tx: _Tx,
-        s: srules.Schedule,
-        schedule_run_id: int,
-        outcome: str,
-        reason: str | None,
-        **values: Any,
-    ) -> None:
-        await repo.update_schedule_run(
-            tx.conn,
-            schedule_run_id,
-            {"ended_at": tx.now, "outcome": outcome, "reason": reason, **values},
-        )
-        await self._schedule_event(
-            tx,
-            "schedule.ended",
-            "relaybay",
-            s,
-            schedule_run_id=schedule_run_id,
-            outcome=outcome,
-            **({"reason": reason} if reason else {}),
-            **{k: v for k, v in values.items() if k in ("run_id", "report_id", "tokens") and v},
-        )
-
-    async def _end_check(
-        self,
-        tx: _Tx,
-        run: Run,
-        turn_id: int,
-        outcome: str,
-        result: Result | None,
-        reason: str | None,
-    ) -> None:
-        """A check's one turn ended: its answer becomes a report on the schedule's card (first
-        line `inspected · S · …`, written by relaybay) or, with no card, the turn's result and
-        an Inbox line; its schedule run ends with the outcome and the tokens; a repeating check
-        whose answer starts with `done` stops; the run ends, as a check never keeps a
-        session."""
-        found = await repo.schedule_run_of_run(tx.conn, run.id)
-        s = (
-            await repo.get_schedule(tx.conn, found.schedule_id, deleted=True)
-            if found is not None
-            else None
-        )
-        turn = await repo.get_turn(tx.conn, turn_id)
-        assert turn is not None
-        tokens = (
-            turn.input_tokens
-            + turn.output_tokens
-            + turn.cache_read_tokens
-            + turn.cache_write_tokens
-        )
-        step_limit = result is not None and result.subtype == "error_max_turns"
-        text = result.text if result is not None else ""
-        if outcome == "success":
-            done, why = srules.RAN, srules.gist(text)
-        elif step_limit:
-            done, why = srules.STOPPED, srules.STEP_LIMIT
-        elif outcome == "stopped":
-            done, why = srules.STOPPED, reason or "stopped"
-        else:
-            subtype = result.subtype if result is not None else outcome.replace("_", " ")
-            done, why = srules.FAILED, reason or f"the check ended with an error ({subtype})"
-        report_id = notice = None
-        if result is not None and (outcome == "success" or step_limit) and s is not None:
-            body = srules.check_report(s.id, run.id, text, step_limit)
-            if s.task_id is not None:
-                report_id = await self._check_report(tx, s, run, body)
-            else:
-                await repo.set_turn_result(tx.conn, turn.id, body)
-                notice = body.splitlines()[0]
-        if s is not None and found is not None and found.is_open:
-            await self._finish_schedule_run(
-                tx,
-                s,
-                found.id,
-                done,
-                why,
-                run_id=run.id,
-                turn_id=turn.id,
-                report_id=report_id,
-                tokens=tokens,
-                notice=notice,
-            )
-            if (
-                done == srules.RAN
-                and s.repeat == srules.EVERY
-                and s.next_at is not None
-                and srules.is_done_answer(text)
-            ):
-                await repo.update_schedule(
-                    tx.conn, s.id, {"next_at": None, "done_at": tx.now}, tx.now
-                )
-                await self._schedule_event(
-                    tx, "schedule.updated", "relaybay", s, done="its answer starts with done"
-                )
-        if run.is_open and run.status != "ended":
-            label = f"check of schedule {s.id}" if s is not None else "check"
-            ended = f"{label} {done}: {why}"
-            await self._set_run_status(tx, run, "ended", ended, ended_by="relaybay")
-            await self._run_event(tx, "run.ended", "relaybay", None, run.id, reason=ended)
-            await self._end_run_session(tx, run)
-
-    async def _check_report(self, tx: _Tx, s: srules.Schedule, run: Run, body: str) -> int | None:
-        """The check's answer as a report on its card; like a turn's report, a failure to write
-        it must not keep the turn from ending, so it is undone to a savepoint and logged."""
-        await tx.conn.execute("SAVEPOINT check_report")
-        events = len(tx.events)
-        report_id = None
-        try:
-            task = await self.get_task(s.task_id or 0, tx.conn)
-            report_id = await self._write_report(
-                tx,
-                task,
-                body,
-                {},
-                session_id=run.session_id,
-                actor=run.session_name or f"check run {run.id}",
-                format_problem=None,
-                size_task=False,
-            )
-        except Exception:
-            await tx.conn.execute("ROLLBACK TO check_report")
-            del tx.events[events:]
-            logger.exception("Writing the report of check run %d failed", run.id)
-        await tx.conn.execute("RELEASE check_report")
-        return report_id
-
-    async def _settle_checks(self) -> None:
-        """Schedule runs whose check is over without its end written: the server stopped
-        between the claim and the run, or while the turn ran (the run is lost), or the owner
-        ended the run before its turn started. Each ends with what happened. Read first: a
-        check that runs or waits in the queue needs no write."""
-        for open_run in await repo.open_schedule_runs(self._r):
-            if not await self._check_over(self._r, open_run):
-                continue
-            async with self._tx() as tx:
-                found = await repo.get_schedule_run(tx.conn, open_run.id)
-                s = await repo.get_schedule(tx.conn, open_run.schedule_id, deleted=True)
-                if found is None or not found.is_open or s is None:
-                    continue
-                if not await self._check_over(tx.conn, found):
-                    continue
-                run = await repo.get_run(tx.conn, found.run_id) if found.run_id else None
-                if run is None:
-                    why = (
-                        "the server stopped before its check started"
-                        if found.run_id is None
-                        else "its run is gone"
-                    )
-                    await self._finish_schedule_run(tx, s, found.id, srules.FAILED, why)
-                    continue
-                last = await repo.last_turn(tx.conn, run.id)
-                if not run.is_open:
-                    await self._finish_schedule_run(
-                        tx,
-                        s,
-                        found.id,
-                        srules.STOPPED,
-                        run.status_reason or "its run ended",
-                        run_id=run.id,
-                        turn_id=last.id if last else None,
-                    )
-                    continue
-                if last is None:
-                    continue
-                await self._end_check(
-                    tx, run, last.id, last.outcome or run.status, None, run.status_reason
-                )
-
-    @staticmethod
-    async def _check_over(conn: aiosqlite.Connection, found: srules.ScheduleRun) -> bool:
-        """An open schedule run whose check is over: never started, gone, ended, or open with
-        no turn running or waiting and stopped, lost or idle."""
-        run = await repo.get_run(conn, found.run_id) if found.run_id else None
-        if run is None or not run.is_open:
-            return True
-        if (
-            await repo.active_turn(conn, run.id) is not None
-            or await repo.next_queued_turn(conn, run.id) is not None
-        ):
-            return False
-        return run.status in ("lost", "stopped", "idle")
-
-    # --- schedules over MCP: the coordinator's one-off checks and reminders -------------------
-
-    async def _check_schedule_caps(
-        self, conn: aiosqlite.Connection, run_id: int, kind: str
-    ) -> None:
-        """A coordinator's schedules: at most COORDINATOR_OPEN_MAX that may still run, and each
-        check counts in its profile's run_start_per_day, as a run_start does."""
-        open_now = await repo.open_coordinator_schedules(conn)
-        if open_now >= srules.COORDINATOR_OPEN_MAX:
-            raise ValidationError(
-                f"The coordinator has {open_now} schedules that may still run, at most"
-                f" {srules.COORDINATOR_OPEN_MAX}: cancel one with schedule_cancel first. Nothing"
-                " added."
-            )
-        if kind == srules.CHECK:
-            await self._check_coordinator_cap(conn, run_id)
-
-    async def _schedule_caller(
-        self, session: str | None, hook_session: str | None, tool: str
-    ) -> Run:
-        """The coordinator run under its profile's `schedule_add` right; anyone else is
-        refused: the owner keeps schedules on the board."""
-        run = await self._coordinator_right(self._r, session, hook_session, "schedule_add", tool)
-        if run is None:
-            raise ValidationError(
-                f"{tool} is for the coordinator run only (its profile's schedule_add right);"
-                " schedules are the owner's on the board (Schedules). Nothing changed."
-            )
-        return run
-
-    async def schedule_add_mcp(
-        self,
-        kind: str,
-        prompt: str,
-        *,
-        project: str | None = None,
-        task: str | None = None,
-        at: str | None = None,
-        in_minutes: int | None = None,
-        every_minutes: int | None = None,
-        max_times: int | None = None,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> srules.Schedule:
-        """`schedule_add`: a one-off check or reminder (`at` or `in_minutes`), or a check every
-        N minutes bounded by `max_times`. Never a coordinator turn and never a daily or a
-        repeating reminder: those are the owner's, on the board."""
-        caller = await self._schedule_caller(session, hook_session, "schedule_add")
-        kind = srules.clean_kind(kind)
-        if kind == srules.COORDINATOR_TURN:
-            raise ValidationError(
-                "A coordinator turn on a schedule is the owner's: ask the owner to add it on the"
-                " board (Schedules). Nothing added."
-            )
-        values: dict[str, Any] = {"kind": kind, "prompt": prompt, "project": project, "task": task}
-        if every_minutes is not None:
-            if kind != srules.CHECK:
-                raise ValidationError(
-                    "Only a check repeats over MCP (every_minutes with max_times); a repeating"
-                    " reminder is the owner's, on the board. Nothing added."
-                )
-            if at or in_minutes is not None:
-                raise ValidationError(
-                    "every_minutes starts one interval from now: no at or in_minutes."
-                )
-            values.update(repeat=srules.EVERY, every_minutes=every_minutes, max_times=max_times)
-        else:
-            if max_times is not None:
-                raise ValidationError("max_times goes with every_minutes only.")
-            if (at is None) == (in_minutes is None):
-                raise ValidationError(
-                    "Give the time once: at (YYYY-MM-DD HH:MM, this machine's local time) or"
-                    " in_minutes. Nothing added."
-                )
-            if in_minutes is not None:
-                minutes = int(in_minutes)
-                if not 1 <= minutes <= srules.IN_MINUTES_MAX:
-                    raise ValidationError(
-                        f"in_minutes must be from 1 to {srules.IN_MINUTES_MAX}; got {minutes}."
-                    )
-                at = srules.iso(self._now() + timedelta(minutes=minutes))
-            else:
-                moment = srules.clean_at(at, self.local_time)
-                if moment > self._now() + timedelta(minutes=srules.IN_MINUTES_MAX):
-                    raise ValidationError(
-                        "at must be within a week from now (as in_minutes); a later time is the"
-                        " owner's, on the board. Nothing added."
-                    )
-            values.update(repeat=srules.ONCE, at=at)
-        name = caller.session_name or crules.SESSION_NAME.format(run_id=caller.id)
-        await self._check_schedule_caps(self._r, caller.id, kind)
-        return await self.create_schedule(
-            values, actor=name, created_by_kind="coordinator", coordinator_run=caller.id
-        )
-
-    async def schedule_list_mcp(
-        self, *, session: str | None = None, hook_session: str | None = None
-    ) -> list[srules.Schedule]:
-        """`schedule_list`: the coordinator's schedules and the owner's, to read."""
-        await self._schedule_caller(session, hook_session, "schedule_list")
-        return await self.schedules()
-
-    async def schedule_cancel_mcp(
-        self,
-        schedule_id: int,
-        *,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> srules.Schedule:
-        """`schedule_cancel`: deletes a schedule a coordinator made (any coordinator run of
-        it); the owner's are refused."""
-        caller = await self._schedule_caller(session, hook_session, "schedule_cancel")
-        found = await self.get_schedule(schedule_id)
-        if found.created_by_kind != "coordinator":
-            raise ValidationError(
-                f"Schedule {found.id} is the owner's: only the owner changes it, on the board."
-                " Nothing changed."
-            )
-        name = caller.session_name or crules.SESSION_NAME.format(run_id=caller.id)
-        await self.delete_schedule(found.id, actor=name)
-        return found
-
     # --- questions to the owner -----------------------------------------------
 
     async def get_question(
@@ -14787,7 +8716,7 @@ class Service:
     async def _question_event(
         self, tx: _Tx, kind: str, actor: str, task: Task | None, q: Question, **payload: Any
     ) -> None:
-        card: dict[str, Any] = {"run_kind": run_rules.COORDINATOR}
+        card: dict[str, Any] = {}
         if task is not None:
             card = {
                 "project_id": task.project_id,
@@ -14802,7 +8731,6 @@ class Service:
             session_id=q.session_id,
             **card,
             question_id=q.id,
-            run_id=q.run_id,
             question_kind=q.kind,
             blocking=q.blocking,
             text=q.text,
@@ -14826,7 +8754,7 @@ class Service:
         self, tx: _Tx, task: Task | None, q: Question, actor: str
     ) -> None:
         if task is None:
-            return  # the coordinator's question: no card waits
+            return  # a question of 0.11's coordinator run: no card waits
         await self._set_card(
             tx,
             task,
@@ -14857,48 +8785,6 @@ class Service:
             return
         await self._set_card(tx, task, actor, waiting_on=q.asked_by, next_step=next_step)
 
-    async def _run_waits(
-        self,
-        tx: _Tx,
-        run: Run,
-        task: Task | None,
-        blocking: list[Question],
-        why: str | None,
-        requests: list[Approval] | None = None,
-    ) -> None:
-        """A turn ended while blocking questions or approval requests of the run are open: the
-        run waits for the owner, and so does the card."""
-        requests = requests or []
-        ids = ", ".join(str(q.id) for q in blocking)
-        approval_ids = ", ".join(str(a.id) for a in requests)
-        parts = []
-        if blocking:
-            noun = "question" if len(blocking) == 1 else "questions"
-            parts.append(f"the owner's answer to {noun} {ids}")
-        if requests:
-            noun = "approval" if len(requests) == 1 else "approvals"
-            parts.append(f"the owner's decision on {noun} {approval_ids}")
-        reason = "waiting for " + " and ".join(parts)
-        if why:
-            reason = f"{why}; {reason}"
-        await self._set_run_status(tx, run, "waiting", reason)
-        await self._run_event(
-            tx,
-            "run.waiting",
-            "relaybay",
-            task,
-            run.id,
-            reason=reason,
-            questions=ids,
-            approvals=approval_ids,
-        )
-        if task is None:
-            return
-        if blocking:
-            await self._card_waits_on_owner(tx, task, blocking[0], "relaybay")
-        else:
-            await self._card_waits_for_approval(tx, task, requests[0], "relaybay")
-
     async def _answers_delivered(
         self, tx: _Tx, carried: list[Question], session_name: str | None
     ) -> None:
@@ -14910,24 +8796,6 @@ class Service:
             await self._question_event(
                 tx, "question.delivered", session_name or q.asked_by, task, q, session=session_name
             )
-
-    async def _take_waiting_answers(self, session: Session) -> list[str]:
-        """For a run's running turn: one line per owner's answer or decision queued as its next
-        turn, told once. Only a read when nothing waits, as on every tool call."""
-        if session.kind != "run":
-            return []
-        if not await repo.untold_answers(self._r, session.id) and not await repo.untold_decisions(
-            self._r, session.id
-        ):
-            return []
-        async with self._tx() as tx:
-            waiting = await repo.untold_answers(tx.conn, session.id)
-            for q in waiting:
-                await repo.update_question(tx.conn, q.id, {"told_at": tx.now})
-            decided = await repo.untold_decisions(tx.conn, session.id)
-            for a in decided:
-                await repo.update_approval(tx.conn, a.id, {"told_at": tx.now})
-        return [qrules.waiting_line(q) for q in waiting] + [arules.waiting_line(a) for a in decided]
 
     async def ask_question(
         self,
@@ -14945,10 +8813,8 @@ class Service:
         session_title: str | None = None,
         hook_session: str | None = None,
     ) -> tuple[Question, str]:
-        """`question_ask`: a question for the owner on a card, with its default. A run's session
-        asks for its run; any other session for itself. The coordinator run may ask without a
-        card (`ref` empty): the question is bound to its run and its answer comes as its next
-        turn. Returns the question and what the agent does next."""
+        """`question_ask`: a question for the owner on a card, with its default, asked by the
+        calling session for itself. Returns the question and what the agent does next."""
         if (session or "").strip() in ("", "-"):
             raise ValidationError(
                 "question_ask needs your session: the answer goes back to who asked. Nothing asked."
@@ -14975,47 +8841,31 @@ class Service:
             choices = qrules.clean_options(options)
             stops = bool(blocking)
         card_ref = (ref or "").strip()
+        if card_ref in ("", "-"):
+            raise ValidationError(
+                "question_ask needs the card (task) the question is on. Nothing asked."
+            )
         async with self._tx() as tx:
-            # Asked before the call's own hook_session is linked, or it would prove itself.
-            own = await self._coordinator_run_of(tx.conn, session, hook_session)
-            if card_ref in ("", "-") and own is None:
-                raise ValidationError(
-                    "question_ask needs the card (task) the question is on; only the coordinator"
-                    " run asks without one. Nothing asked."
-                )
-            task = None if card_ref in ("", "-") else await self.get_task(card_ref, tx.conn)
-            if task is not None and task.stage == Stage.DONE:
+            task = await self.get_task(card_ref, tx.conn)
+            if task.stage == Stage.DONE:
                 raise ValidationError(f"{task.key} is done: nothing to ask on it.")
             due = qrules.deadline(default_after, stops, datetime.fromisoformat(tx.now))
-            project = await self.get_project(task.project_slug, tx.conn) if task else None
+            project = await self.get_project(task.project_slug, tx.conn)
             rules = await self._secret_rules(tx.conn, project)
             _scan(rules, text=body, default=fallback, url=link, account=login)
             for option in choices:
                 envs.check_secret("option", option, rules)
-            where = task.key if task is not None else "The coordinator"
-            if await repo.count_open_questions(tx.conn, task.id if task else None) >= (
-                qrules.OPEN_MAX
-            ):
+            if await repo.count_open_questions(tx.conn, task.id) >= qrules.OPEN_MAX:
                 raise ValidationError(
-                    f"{where} already has {qrules.OPEN_MAX} open questions: wait for the owner,"
+                    f"{task.key} already has {qrules.OPEN_MAX} open questions: wait for the owner,"
                     " or withdraw one with question_withdraw. Nothing asked."
                 )
             caller = await self._session(tx, session, session_title, hook_session)
             assert caller is not None
-            run = await repo.run_of_session(tx.conn, caller.id) if caller.kind == "run" else None
-            if run is not None and not run.is_open:
-                run = None
-            if own is not None:
-                run = own  # on a card or not, its answer comes as its next turn
-            elif run is not None and task is not None and run.task_id != task.id:
-                raise ValidationError(
-                    f"Run {run.id} works on {run.task_key}: ask on that card. Nothing asked."
-                )
             question_id = await repo.insert_question(
                 tx.conn,
                 {
-                    "task_id": task.id if task else None,
-                    "run_id": run.id if run else None,
+                    "task_id": task.id,
                     "session_id": caller.id,
                     "asked_by": caller.name,
                     "kind": what,
@@ -15043,10 +8893,9 @@ class Service:
                 url=link,
                 account=login,
             )
-            if stops and run is None:
-                # A desktop session ends its turn itself; a run waits at its turn's result.
+            if stops:
                 await self._card_waits_on_owner(tx, task, q, caller.name)
-        return q, qrules.asked_hint(q, run is not None)
+        return q, qrules.asked_hint(q)
 
     async def list_questions(
         self, ref: str | None = None, status: str | None = None, limit: int = 100
@@ -15112,14 +8961,6 @@ class Service:
             )
             q = await self.get_question(q.id, tx.conn)
             await self._question_event(tx, "question.withdrawn", caller.name, task, q)
-            run = await repo.get_run(tx.conn, q.run_id) if q.run_id else None
-            if (
-                run is not None
-                and run.status == "waiting"
-                and not await repo.open_blocking_questions(tx.conn, run_id=run.id)
-                and not await repo.open_approvals(tx.conn, run_id=run.id)
-            ):
-                await self._set_run_status(tx, run, "idle", f"question {q.id} withdrawn")
             await self._card_after_question(
                 tx, task, q, f"{q.asked_by} goes on: question {q.id} withdrawn", caller.name
             )
@@ -15133,27 +8974,12 @@ class Service:
         text: str | None = None,
         actor: str = "owner",
     ) -> Question:
-        """The owner's answer on the board. A run gets it as its next turn, at once when no turn
-        runs, else when the running one ends (or after Back to the program); a desktop session
-        and an ended run get it as an owner comment through the hooks."""
+        """The owner's answer on the board: it reaches the asking session as an owner comment
+        through the hooks."""
         q = await self.get_question(question_id)
         if not q.answerable:
             raise ValidationError(f"Question {q.id} is {q.status}: it takes no answer.")
         answer = qrules.compose_answer(q, choice, text)
-        runs = self.runs
-        run = await repo.get_run(self._r, q.run_id) if q.run_id else None
-        if (
-            run is not None
-            and run.is_open
-            and runs is not None
-            and not run.with_owner
-            and not runs.is_running(run.id)
-            and run.id not in runs.checked_since_start
-        ):
-            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
-        free = await self._free_memory()
-        launches: list[tuple[int, int]] = []
-        remove: int | None = None  # the worktree the owner's "remove" names
         async with self._tx() as tx:
             q = await self.get_question(question_id, tx.conn)
             if not q.answerable:
@@ -15179,26 +9005,7 @@ class Service:
                 answer=answer,
                 change_of_course=q.defaulted_at is not None,
             )
-            run = await repo.get_run(tx.conn, q.run_id) if q.run_id else None
-            kept = await repo.worktree_of_question(tx.conn, q.id) if q.run_id is None else None
-            # The coordinator's question (without a card, or asked by a coordinator run on one).
-            coordinator = task is None or (run is not None and run.is_coordinator)
-            if coordinator and (run is None or not run.is_open):
-                # Its run ended: the answer waits for the coordinator's open or next run.
-                run = await repo.open_coordinator_run(tx.conn)
-                if run is not None:
-                    await repo.carry_coordinator_questions(tx.conn, run.id)
-            if run is not None and run.is_open:
-                _, launches = await self._queue_turn(
-                    tx, run, await self._run_task(tx.conn, run), None, actor, free
-                )
-            elif kept is not None:
-                # relaybay asked it when the card closed: the answer is for relaybay itself.
-                if (q.answer or "").split(":", 1)[0].strip() == WORKTREE_REMOVE:
-                    remove = kept.id
-                else:
-                    await repo.update_run_worktree(tx.conn, kept.id, {"kept_at": tx.now})
-            elif task is not None and not coordinator:  # else the coordinator's next Start
+            if task is not None:
                 comment = await self._insert_comment(
                     tx,
                     task,
@@ -15209,24 +9016,20 @@ class Service:
                     in_reply_to=None,
                 )
                 await repo.update_question(tx.conn, q.id, {"comment_id": comment.id})
-            if kept is None:
-                await self._card_after_question(
-                    tx,
-                    task,
-                    q,
-                    f"{q.asked_by} goes on with the owner's answer to question {q.id}",
-                    actor,
-                )
-        await self._spawn_all(launches)
-        if remove is not None:
-            await self._remove_on_answer(remove, actor)
+            await self._card_after_question(
+                tx,
+                task,
+                q,
+                f"{q.asked_by} goes on with the owner's answer to question {q.id}",
+                actor,
+            )
         return await self.get_question(question_id)
 
     async def close_overdue_questions(self) -> int:
         """Non-blocking questions past their deadline close with their default, visibly. Asked
         on reads and by the server's loop; the deadline is in the database, so a restart only
         delays it. Every question past its deadline unanswered gets one `question.overdue`
-        (for the coordinator's wakes): a non-blocking one when it closes with its default, a
+        in the audit: a non-blocking one when it closes with its default, a
         blocking one, which has no deadline of its own, once it is open BLOCKING_OVERDUE."""
         now = now_iso()
         asked_before = _iso_before(now, qrules.BLOCKING_OVERDUE)
@@ -15301,7 +9104,6 @@ class Service:
             key=task.key,
             stage=task.stage.value,
             approval_id=a.id,
-            run_id=a.run_id,
             action=a.action,
             target=a.target,
             what=a.what,
@@ -15340,7 +9142,7 @@ class Service:
     async def _close_owner_items(self, tx: _Tx, task: Task, actor: str) -> None:
         """A card that goes to done takes nothing more from the owner: its open questions are
         withdrawn, its open requests and approved, unused approvals expire (each with its
-        event), and a run that waited only for them goes idle."""
+        event)."""
         reason = "the card went to done"
         for q in await repo.list_questions(tx.conn, task_id=task.id, statuses=("open",)):
             await repo.update_question(
@@ -15353,14 +9155,6 @@ class Service:
         for a in await repo.expire_approvals(tx.conn, task.id, reason, tx.now):
             a = await self.get_approval(a.id, tx.conn)
             await self._approval_event(tx, "approval.expired", actor, task, a, reason=reason)
-        run = await repo.open_run_of_task(tx.conn, task.id)
-        if (
-            run is not None
-            and run.status == "waiting"
-            and not await repo.open_blocking_questions(tx.conn, run_id=run.id)
-            and not await repo.open_approvals(tx.conn, run_id=run.id)
-        ):
-            await self._set_run_status(tx, run, "idle", reason)
 
     async def expire_stale_approvals(self) -> int:
         """Approved approvals not used by their `valid_until` expire, visibly. Asked by the
@@ -15391,30 +9185,23 @@ class Service:
         )
 
     async def _decisions_delivered(self, tx: _Tx, decided: list[Approval]) -> None:
-        """The owner's decisions reached the agent: a turn's process started with them, or the
-        hooks handed over the owner comment that carries them."""
+        """The owner's decisions reached the agent: the hooks handed over the owner comment that
+        carries them."""
         for a in decided:
             await repo.update_approval(tx.conn, a.id, {"delivered_at": tx.now})
 
     async def _approval_scope(
-        self, conn: aiosqlite.Connection, session: Session, run: Run | None = None
+        self, conn: aiosqlite.Connection, session: Session
     ) -> _ApprovalScope | None:
-        """What an approval check of the session's calls reads: the run's card, or the cards
-        bound to a desktop session (the most recently bound first); the policy of that card's
-        project, the environments and the repositories of the cards' projects. None for a
-        session that works on no card: there is nothing to ask on."""
-        if run is None and session.kind == "run":
-            run = await repo.run_of_session(conn, session.id)
-            if run is not None and not run.is_open:
-                run = None
-        if run is not None:
-            tasks = [await self.get_task(run.task_id, conn)] if run.task_id is not None else []
-        else:
-            bound = await repo.open_tasks_of_session(conn, session.id)
-            order = {
-                task_id: i for i, task_id in enumerate(await repo.bound_task_ids(conn, session.id))
-            }
-            tasks = sorted(bound, key=lambda t: order.get(t.id, len(order)))
+        """What an approval check of the session's calls reads: the cards bound to the session
+        (the most recently bound first); the policy of that card's project, the environments
+        and the repositories of the cards' projects. None for a session that works on no card:
+        there is nothing to ask on."""
+        bound = await repo.open_tasks_of_session(conn, session.id)
+        order = {
+            task_id: i for i, task_id in enumerate(await repo.bound_task_ids(conn, session.id))
+        }
+        tasks = sorted(bound, key=lambda t: order.get(t.id, len(order)))
         if not tasks:
             return None
         project = await self.get_project(tasks[0].project_slug, conn)
@@ -15423,21 +9210,19 @@ class Service:
         environments = await repo.list_environments(conn, project_ids)
         policies = await self._policies(conn, environments)
         folders: list[tuple[str, str]] = []
-        if run is not None:
-            folders += [(w.repo_name, w.path) for w in await repo.list_run_worktrees(conn, run.id)]
         for project_id in project_ids:
             folders += [(r.name, r.path) for r in await repo.list_project_repos(conn, project_id)]
-        return _ApprovalScope(session, run, tasks, policy, environments, policies, folders)
+        return _ApprovalScope(session, tasks, policy, environments, policies, folders)
 
     @staticmethod
     def _repository_at(folder: str | None, folders: list[tuple[str, str]]) -> str | None:
         """The repository whose folder holds `folder`: the closest one."""
         if not folder:
             return None
-        target = worktrees.path_key(folder)
+        target = gitinfo.path_key(folder)
         best: tuple[int, str] | None = None
         for name, path in folders:
-            root = worktrees.path_key(path).rstrip(os.sep)
+            root = gitinfo.path_key(path).rstrip(os.sep)
             inside = target == root or target.startswith(root + os.sep)
             if inside and (best is None or len(root) > best[0]):
                 best = (len(root), name)
@@ -15449,8 +9234,8 @@ class Service:
         rewrites it). A read is kept only when HEAD held the same bytes before and after git
         ran, so the first read of a folder only learns where its HEAD file is. With `deadline`
         (time.monotonic()) git gets at most GATE_BRANCH_TIMEOUT_SECONDS, and the read with its
-        wait for a thread never goes past the deadline: worktrees.GitTooSlow."""
-        key = worktrees.path_key(folder)
+        wait for a thread never goes past the deadline: gitinfo.GitTooSlow."""
+        key = gitinfo.path_key(folder)
         cached = self._branches.get(key)
         if cached is not None and cached[2] is not None:
             fresh = time.monotonic() - cached[0] < BRANCH_CACHE_SECONDS
@@ -15458,19 +9243,19 @@ class Service:
                 return cached[3]
         known = cached[1] if cached is not None else None
         before = _read_or_none(known) if known is not None else None
-        timeout = worktrees.BRANCH_TIMEOUT_SECONDS
+        timeout = gitinfo.BRANCH_TIMEOUT_SECONDS
         if deadline is not None:
             timeout = min(GATE_BRANCH_TIMEOUT_SECONDS, deadline - time.monotonic())
             if timeout <= 0:
-                raise worktrees.GitTooSlow("no time left to read the branch")
-        read = asyncio.to_thread(worktrees.branch_and_head, git, folder, timeout)
+                raise gitinfo.GitTooSlow("no time left to read the branch")
+        read = asyncio.to_thread(gitinfo.branch_and_head, git, folder, timeout)
         if deadline is None:
             branch, head = await read
         else:
             try:
                 branch, head = await asyncio.wait_for(read, deadline - time.monotonic())
             except TimeoutError as exc:
-                raise worktrees.GitTooSlow("the branch read did not finish in time") from exc
+                raise gitinfo.GitTooSlow("the branch read did not finish in time") from exc
         if head is not None:
             if len(self._branches) > BRANCH_CACHE_MAX:
                 self._branches.clear()
@@ -15490,12 +9275,9 @@ class Service:
         MCP call is one), their targets filled in: stand changes (deploy or SQL on test or live)
         and git actions (push, PR merge, commit), both. The current branch is read with git (no
         transaction is open), never after the call moved elsewhere (`cd`, `--git-dir`); with
-        `deadline`, worktrees.GitTooSlow when git does not answer in time."""
-        strict = scope.run is not None
+        `deadline`, gitinfo.GitTooSlow when git does not answer in time."""
         segments = (
-            [(call.text, [])]
-            if call.is_mcp
-            else arules.segment_needs(call, scope.policy.approvals, strict)
+            [(call.text, [])] if call.is_mcp else arules.segment_needs(call, scope.policy.approvals)
         )
         per: list[list[arules.Need]] = [[] for _ in segments]
         for need in arules.stand_needs(call, scope.environments, lambda e: scope.policies[e.id]):
@@ -15510,7 +9292,7 @@ class Service:
                 if not need.resolved:
                     branch: str | None = None
                     if need.located and folder:
-                        git = git or worktrees.find_git()
+                        git = git or gitinfo.find_git()
                         if git:
                             branch = await self._current_branch(git, folder, deadline)
                     changes["pr" if need.action == "merge" else "branch"] = branch
@@ -15521,7 +9303,6 @@ class Service:
         self,
         tx: _Tx,
         task: Task,
-        scope_run: Run | None,
         session: Session,
         need: arules.Need,
         via: str,
@@ -15539,7 +9320,6 @@ class Service:
             tx.conn,
             {
                 "task_id": task.id,
-                "run_id": scope_run.id if scope_run else None,
                 "session_id": session.id,
                 "requested_by": session.name,
                 "requested_via": via,
@@ -15567,22 +9347,19 @@ class Service:
             summary=summary,
             rollback=rollback,
         )
-        if scope_run is None:
-            # A desktop session ends its turn itself; a run waits at its turn's result.
-            await self._card_waits_for_approval(tx, task, a, session.name)
+        await self._card_waits_for_approval(tx, task, a, session.name)
         return a
 
     async def _approval_gate(self, payload: Any, hook: HookEvent) -> tuple[str, str] | None:
-        """PreToolUse: a call of a run (of a desktop session only when the policy says
-        `approvals.desktop`) that takes an action the policy guards needs an approved, unused
-        approval of its card for each such action. Not covered: denied, and a request opens if
-        none is open. Covered only by an approval held for another call: denied, nothing opens.
-        Covered, and the call is that action alone: each approval is reserved for this call
-        (its tool_use_id) in the same transaction, and the answer is `allow` where Claude Code
-        would otherwise refuse (a run in Manual mode not with the owner), else no decision; the
-        call's PostToolUse marks it used, a call that did not run releases it
-        (`_settle_turn_reservations`, `_release_session_reservations`). Covered but run with
-        other commands: denied, the approvals kept. Only the approval rows count."""
+        """PreToolUse: a call of a session (only when the policy says `approvals.desktop`) that
+        takes an action the policy guards needs an approved, unused approval of its card for
+        each such action. Not covered: denied, and a request opens if none is open. Covered only
+        by an approval held for another call: denied, nothing opens. Covered, and the call is
+        that action alone: each approval is reserved for this call (its tool_use_id) in the
+        same transaction and the gate gives no decision; the call's PostToolUse marks it used,
+        a call without one counts used at the session's Stop or end
+        (`_release_session_reservations`). Covered but run with other commands: denied, the
+        approvals kept. Only the approval rows count."""
         call = guard.tool_call(payload)
         if call is None:
             return None
@@ -15592,12 +9369,12 @@ class Service:
         if session is None:
             return None
         scope = await self._approval_scope(self._r, session)
-        if scope is None or (scope.run is None and not scope.policy.approvals.desktop):
+        if scope is None or not scope.policy.approvals.desktop:
             return None
         await self.expire_stale_approvals()
         try:
             per = await self._call_needs(call, scope, hook.cwd, time.monotonic() + GATE_GIT_SECONDS)
-        except worktrees.GitTooSlow:
+        except gitinfo.GitTooSlow:
             return "deny", arules.SLOW_REASON
         needs = [n for segment in per for n in segment]
         if not needs:
@@ -15606,17 +9383,7 @@ class Service:
         if unknown is not None:
             return "deny", arules.unknown_reason(unknown)
         alone = all(per) and len(per) == 1
-        run = scope.run
-        if run is not None and not self._in_run_folders(hook.cwd, scope):
-            alone = False  # the approved command runs from the run's own folders
-        if run is not None:
-            # Exactly the approved call: a git action in a repository the run knows.
-            alone = alone and all(n.repository for n in needs if n.action not in ("deploy", "sql"))
-        allow = (
-            run is not None and not run.with_owner and run.permission_mode not in _SKIPPING_MODES
-        )
         used = arules.used_by(call.tool, guard_command(call))
-        in_run = run is not None
         tool_use_id = payload.get("tool_use_id") if isinstance(payload, dict) else None
         if not isinstance(tool_use_id, str) or not 0 < len(tool_use_id) <= TOOL_USE_ID_MAX:
             tool_use_id = None
@@ -15652,15 +9419,12 @@ class Service:
                         opened = await self._open_request(
                             tx,
                             scope.tasks[0],
-                            scope.run,
                             session,
                             need,
                             "guard",
                             f"The agent ran: {used}",
                         )
-                        reasons.append(
-                            arules.deny_reason(need, opened.id if opened else None, in_run)
-                        )
+                        reasons.append(arules.deny_reason(need, opened.id if opened else None))
                     return "deny", " ".join(reasons)
                 if held:
                     return "deny", arules.held_reason(held)
@@ -15674,94 +9438,23 @@ class Service:
                         raise _ApprovalTaken
                     if tool_use_id is None:
                         # No PostToolUse could name this call: it is used now.
-                        await self._use_held(tx, a.id, "allow" if allow else "none", session.name)
+                        await self._use_held(tx, a.id, session.name)
         except _ApprovalTaken:
             return "deny", (
                 "relaybay guard: another call holds this approval at the same moment. Wait for"
                 " its result, then run it again if it did not go through."
             )
-        if allow:
-            named = "; ".join(f"approval {a.id} ({a.what})" for a in picked)
-            return "allow", f"relaybay: the owner approved this on the board: {named}."
         return None
-
-    @staticmethod
-    def _in_run_folders(cwd: str | None, scope: _ApprovalScope) -> bool:
-        """The call's folder is the run's working folder or one of its worktrees."""
-        run = scope.run
-        if run is None or not cwd:
-            return False
-        roots = [("run", run.cwd), *scope.folders]
-        return Service._repository_at(cwd, roots) is not None
-
-    async def _approval_check_failed(self, payload: Any, hook: HookEvent) -> tuple[str, str] | None:
-        """The approval check raised: a run's call that may be a guarded action is denied, so a
-        failure never lets a push through; everything else goes on as with the guard. Whose
-        session it is comes from the database; when that read fails too, the hint decides."""
-        call = guard.tool_call(payload)
-        if call is None or not arules.guarded_hint(call):
-            return None
-        try:
-            session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
-            run = await repo.run_of_session(self._r, session.id) if session else None
-            is_run = run is not None and run.is_open
-        except Exception:
-            logger.exception("relaybay could not tell whose call failed the approval check")
-            is_run = True
-        is_run = is_run or run_of_payload(payload) is not None
-        return ("deny", arules.UNAVAILABLE_REASON) if is_run else None
 
     # --- approvals held for a call --------------------------------------------------------------
 
-    async def _use_held(self, tx: _Tx, approval_id: int, decision: str, actor: str) -> None:
+    async def _use_held(self, tx: _Tx, approval_id: int, actor: str) -> None:
         """The call an approval was held for ran: it is used (`approval.used`)."""
         if not await repo.use_reserved(tx.conn, approval_id, tx.now):
             return
         a = await self.get_approval(approval_id, tx.conn)
         task = await self.get_task(a.task_id, tx.conn)
-        await self._approval_event(
-            tx, "approval.used", actor, task, a, used_by=a.used_by, decision=decision
-        )
-
-    @staticmethod
-    async def _held_decision(conn: aiosqlite.Connection, a: Approval) -> str:
-        """What the gate answered the call an approval is held for: `allow` for a run's call
-        outside the owner's terminal in a mode that does not skip Claude Code's checks, else
-        `none`."""
-        if a.reserved_session_id is None:
-            return "none"
-        run = await repo.run_of_session(conn, a.reserved_session_id)
-        if run is None or run.with_owner or run.permission_mode in _SKIPPING_MODES:
-            return "none"
-        return "allow"
-
-    async def _release_held(self, tx: _Tx, a: Approval, reason: str, actor: str) -> str | None:
-        """The call an approval was held for did not run: the approval is free again
-        (`approval.released`, no new request), or, the RELEASES_MAX-th time, expired. The line
-        for the turn's report, or None when it was not held any more."""
-        count = await repo.release_approval(tx.conn, a.id)
-        if count is None:
-            return None
-        task = await self.get_task(a.task_id, tx.conn)
-        if count >= arules.RELEASES_MAX:
-            await repo.expire_approval(tx.conn, a.id, arules.EXHAUSTED_REASON, tx.now)
-            expired = await self.get_approval(a.id, tx.conn)
-            await self._approval_event(
-                tx, "approval.expired", actor, task, expired, reason=arules.EXHAUSTED_REASON
-            )
-            return arules.exhausted_note(expired)
-        released = await self.get_approval(a.id, tx.conn)
-        await self._approval_event(
-            tx,
-            "approval.released",
-            actor,
-            task,
-            released,
-            reason=reason,
-            call=a.reserved_call,
-            releases=count,
-        )
-        return arules.released_note(released)
+        await self._approval_event(tx, "approval.used", actor, task, a, used_by=a.used_by)
 
     async def _use_reservations(self, payload: Any) -> None:
         """PostToolUse: the call ran, so the approvals held for it (by its tool_use_id) are
@@ -15778,140 +9471,20 @@ class Service:
                     if a.reserved_session_id is not None
                     else None
                 )
-                actor = session.name if session else "relaybay"
-                await self._use_held(tx, a.id, await self._held_decision(tx.conn, a), actor)
+                await self._use_held(tx, a.id, session.name if session else "relaybay")
 
     async def _release_session_reservations(self, hook: HookEvent) -> None:
-        """Stop or SessionEnd of a desktop session: a call an approval is still held for got no
+        """Stop or SessionEnd of a session: a call an approval is still held for got no
         PostToolUse in its turn. It may have run with its PostToolUse lost, so the approval
-        counts used (never twice through); a desktop session has no refusals relaybay can read.
-        A run's calls are settled at the turn's end (`_settle_turn_reservations`)."""
+        counts used (never twice through); relaybay reads no refusals of a session."""
         session = await repo.get_session_by_cc(self._r, hook.cc_session_id)
-        if session is None or session.kind == "run":
+        if session is None:
             return
         if not await repo.reserved_by_session(self._r, session.id):
             return
         async with self._tx() as tx:
             for a in await repo.reserved_by_session(tx.conn, session.id):
-                await self._use_held(tx, a.id, await self._held_decision(tx.conn, a), session.name)
-
-    async def _settle_turn_reservations(
-        self, tx: _Tx, run: Run, refused: dict[int, list[Approval]]
-    ) -> dict[int, str]:
-        """A run's turn ended (or was lost): each approval still held for one of its calls is
-        released when Claude Code refused that call (`refused`: by the refusal's index in the
-        turn's permission denials), else used. The report line per refusal."""
-        held = await repo.reserved_by_run(tx.conn, run.id)
-        if not held:
-            return {}
-        actor = run.session_name or "relaybay"
-        notes: dict[int, str] = {}
-        released: set[int] = set()
-        for index, approvals in refused.items():
-            lines = []
-            for a in approvals:
-                if a.id in released:
-                    continue
-                note = await self._release_held(tx, a, "Claude Code refused the call", actor)
-                released.add(a.id)
-                if note is not None:
-                    lines.append(note)
-            if lines:
-                notes[index] = "; ".join(lines)
-        # Not refused: the call may have run without its PostToolUse reaching relaybay (and the
-        # turn's lines may not be stored at all): count it used, so an approval never lets the
-        # same action through twice. Only a refusal Claude Code reported gives it back.
-        for a in held:
-            if a.id not in released:
-                await self._use_held(tx, a.id, await self._held_decision(tx.conn, a), actor)
-        return notes
-
-    async def _denied_needs(
-        self, run: Run, turn: RunTurn, result: Result
-    ) -> tuple[list[tuple[arules.Need, str]], dict[int, list[Approval]]]:
-        """The actions of a turn's permission denials that need an approval, with the call that
-        was denied, and per refusal of a call approvals were held for, those approvals (Claude
-        Code refused the call: they go back, no new request; one call may hold several, `git
-        push origin a b`). The refusal names the call by its tool_use_id; a refusal without
-        one counts only for an approval held without one, by the call it covers. A call the
-        guard's level blocks, one the guard cannot read, or one no approval rule covers (a
-        refusal of Claude Code's own mode) gives none."""
-        session = await repo.get_session_by_id(self._r, run.session_id) if run.session_id else None
-        if session is None:
-            return [], {}
-        held = await repo.reserved_by_run(self._r, run.id)
-        refused: dict[int, list[Approval]] = {}
-        for index, refusal in enumerate(result.refusals):
-            by_id = [
-                a for a in held if refusal.tool_use_id and a.reserved_for == refusal.tool_use_id
-            ]
-            if by_id:
-                refused[index] = by_id
-        taken = {a.id for found in refused.values() for a in found}
-        scope = await self._approval_scope(self._r, session, run=run)
-        if scope is None:
-            return [], refused
-        found = []
-        for index, refusal in enumerate(result.refusals):
-            if index in refused:
-                continue
-            is_mcp = refusal.tool.startswith("mcp__")
-            if refusal.tool != "Bash" and (
-                not is_mcp or refusal.tool.startswith(guard.OWN_TOOL_PREFIX)
-            ):
-                continue
-            call = guard.ToolCall(refusal.tool, refusal.text or refusal.input, is_mcp)
-            no_live = session.no_live_at is not None
-            touches = guard.check(
-                call, scope.environments, lambda env: scope.policies[env.id], no_live
-            )
-            top = guard.strongest(touches)
-            if top is not None and top.decision in ("deny", "ask"):
-                continue
-            try:
-                segments = await self._call_needs(call, scope, run.cwd)
-            except worktrees.GitTooSlow:
-                continue  # the branch is unknown, as for a detached HEAD
-            for segment in segments:
-                for need in segment:
-                    if not need.known:
-                        continue
-                    holder = next(
-                        (
-                            a
-                            for a in held
-                            if refusal.tool_use_id is None
-                            and a.reserved_for is None
-                            and a.id not in taken
-                            and arules.covers(a, need)
-                        ),
-                        None,
-                    )
-                    if holder is not None:
-                        refused.setdefault(index, []).append(holder)
-                        taken.add(holder.id)
-                        continue
-                    found.append((need, arules.used_by(refusal.tool, refusal.input)))
-        return found, refused
-
-    async def _requests_from_denials(
-        self,
-        tx: _Tx,
-        run: Run,
-        task: Task,
-        turn: RunTurn,
-        denied: list[tuple[arules.Need, str]],
-    ) -> None:
-        """A request per denied call that needs an approval and has none open: the agent did
-        not ask for it itself (nor did the guard, which opens one when it denies)."""
-        if not denied or run.session_id is None or task.stage == Stage.DONE:
-            return
-        session = await repo.get_session_by_id(tx.conn, run.session_id)
-        if session is None:
-            return
-        for need, call in denied:
-            summary = f"From a permission denial in turn {turn.seq}: {call}"
-            await self._open_request(tx, task, run, session, need, "denial", summary)
+                await self._use_held(tx, a.id, session.name)
 
     async def request_approval(
         self,
@@ -15947,18 +9520,6 @@ class Service:
             _scan(rules, summary=body, rollback=undo, target=str(target))
             caller = await self._session(tx, session, session_title, hook_session)
             assert caller is not None
-            run = await repo.run_of_session(tx.conn, caller.id) if caller.kind == "run" else None
-            if run is not None and not run.is_open:
-                run = None
-            if run is not None and run.is_coordinator:
-                raise ValidationError(
-                    "The coordinator does not request approvals: runs on cards do the code and"
-                    " ask for theirs. Nothing requested."
-                )
-            if run is not None and run.task_id != task.id:
-                raise ValidationError(
-                    f"Run {run.id} works on {run.task_key}: ask on that card. Nothing requested."
-                )
             env_id: int | None = None
             env_text: str | None = None
             if env_name is not None:
@@ -15972,8 +9533,6 @@ class Service:
                 env_id, env_text = env.id, f"{project.slug}/{env.name}"
             if repository is not None:
                 known = [r.name for r in await repo.list_project_repos(tx.conn, project.id)]
-                if run is not None:
-                    known += [w.repo_name for w in await repo.list_run_worktrees(tx.conn, run.id)]
                 match = next((n for n in known if n.casefold() == repository.casefold()), None)
                 if known and match is None:
                     raise ValidationError(
@@ -16007,7 +9566,6 @@ class Service:
                         "rollback": undo,
                         "requested_by": caller.name,
                         "session_id": caller.id,
-                        "run_id": run.id if run else existing.run_id,
                         "requested_via": "agent",
                     },
                 )
@@ -16024,14 +9582,14 @@ class Service:
                     rollback=undo,
                     updated=True,
                 )
-                return a, arules.requested_hint(a, run is not None), True
-            opened = await self._open_request(tx, task, run, caller, need, "agent", body, undo)
+                return a, arules.requested_hint(a), True
+            opened = await self._open_request(tx, task, caller, need, "agent", body, undo)
             if opened is None:
                 raise ValidationError(
                     f"{task.key} already has {arules.OPEN_MAX} open approval requests: wait for"
                     " the owner. Nothing requested."
                 )
-        return opened, arules.requested_hint(opened, run is not None), False
+        return opened, arules.requested_hint(opened), False
 
     async def list_approval_requests(
         self, ref: str | None = None, status: str | None = None, limit: int = 100
@@ -16075,9 +9633,8 @@ class Service:
         text: str | None = None,
         actor: str = "owner",
     ) -> Approval:
-        """The owner's decision on the board. A run gets it as its next turn, at once when no
-        turn runs, else when the running one ends (or after Back to the program); a desktop
-        session and an ended run get it as an owner comment through the hooks."""
+        """The owner's decision on the board: it reaches the asking session as an owner comment
+        through the hooks."""
         line = arules.clean_decision_text(text)
         a = await self.get_approval(approval_id)
         if not a.is_open:
@@ -16087,19 +9644,6 @@ class Service:
                 f"Approval {a.id} is a deploy without its rollback command: refuse it, or wait"
                 " for the agent to ask again with the rollback."
             )
-        runs = self.runs
-        run = await repo.get_run(self._r, a.run_id) if a.run_id else None
-        if (
-            run is not None
-            and run.is_open
-            and runs is not None
-            and not run.with_owner
-            and not runs.is_running(run.id)
-            and run.id not in runs.checked_since_start
-        ):
-            await self._run_preflight(runs, run.id)  # the first turn after a restart checks again
-        free = await self._free_memory()
-        launches: list[tuple[int, int]] = []
         decision = "approved" if approve else "refused"
         async with self._tx() as tx:
             a = await self.get_approval(approval_id, tx.conn)
@@ -16128,12 +9672,8 @@ class Service:
             await self._approval_event(
                 tx, "approval.decided", actor, task, a, decision=decision, text=line
             )
-            run = await repo.get_run(tx.conn, a.run_id) if a.run_id else None
-            if run is not None and run.is_open:
-                _, launches = await self._queue_turn(tx, run, task, None, actor, free)
-            else:
-                comment = await self._decision_comment(tx, task, a, actor)
-                await repo.update_approval(tx.conn, a.id, {"comment_id": comment.id})
+            comment = await self._decision_comment(tx, task, a, actor)
+            await repo.update_approval(tx.conn, a.id, {"comment_id": comment.id})
             await self._card_after_approval(
                 tx,
                 task,
@@ -16141,5 +9681,4 @@ class Service:
                 f"{a.requested_by} goes on: the owner {decision} {a.what} (approval {a.id})",
                 actor,
             )
-        await self._spawn_all(launches)
         return await self.get_approval(approval_id)

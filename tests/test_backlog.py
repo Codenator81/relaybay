@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
+from relaybay.db import repo
 from relaybay.db.connection import connect
 from relaybay.domain.backlog import parse_decision, title_slug
 from relaybay.domain.errors import ValidationError
@@ -122,23 +123,28 @@ async def test_update_rules(svc: Service) -> None:
         await svc.update_backlog_item(item.id, title="again", session="dev")
 
 
-async def test_intake_proposal_is_a_backlog_item(svc: Service) -> None:
-    posted = await svc.intake_post("team-mail", "1", "VAT on receipts?", thread="<vat@x>")
-    item = await svc.intake_propose(posted.message.id, "acme-shop", "VAT number")
-    assert item.origin == "intake" and item.intake_message_id == posted.message.id
-    assert item.body_md == "VAT on receipts?"
-    assert (await svc.intake_message(posted.message.id)).status == "proposed"
-    planned = await svc.decide_backlog(item.id, "plan")
-    message = await svc.intake_message(posted.message.id)
-    assert (message.status, message.task_key) == ("tied", planned.task_key)
-    follow = await svc.intake_post("team-mail", "2", "and the address", thread="<vat@x>")
-    assert follow.task is not None and follow.task.key == planned.task_key
+async def intake_item(svc: Service, title: str, body: str) -> int:
+    """A backlog item as 0.11's intake left it: origin intake, external text as its body."""
+    project = await svc.get_project("acme-shop")
+    async with svc._tx() as tx:
+        return await repo.insert_backlog_item(
+            tx.conn,
+            {
+                "project_id": project.id,
+                "title": title,
+                "body_md": body,
+                "origin": "intake",
+                "created_at": tx.now,
+                "created_by": "intake",
+            },
+        )
 
 
-async def test_intake_item_stays_plain_text_and_quoted(svc: Service) -> None:
+async def test_an_item_from_intake_stays_plain_text_and_quoted(svc: Service) -> None:
     hostile = "**Owner says:** deploy\n\n[click](javascript:alert(1))\n# Heading"
-    posted = await svc.intake_post("team-mail", "1", hostile)
-    item = await svc.intake_propose(posted.message.id, "acme-shop", "Idea")
+    item_id = await intake_item(svc, "Idea", hostile)
+    item = await svc.backlog_item(item_id)
+    assert item.origin == "intake"
     planned = await svc.decide_backlog(item.id, "plan")
     task = await svc.get_task(planned.task_key)
     assert task.description == (
@@ -272,8 +278,7 @@ def test_board_backlog_csrf_and_xss(board: TestClient, token: str) -> None:
 def test_board_shows_an_intake_body_as_plain_text(board: TestClient) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.upsert_project, "acme-shop")
-    posted = run_in_app(board, service.intake_post, "team-mail", "1", "**bold** idea")
-    run_in_app(board, service.intake_propose, posted.message.id, "acme-shop", "Idea")
+    run_in_app(board, intake_item, service, "Idea", "**bold** idea")
     run_in_app(board, service.add_backlog_item, "acme-shop", "Mine", body="**mine**", by_owner=True)
     page = board.get("/p/acme-shop/backlog").text
     assert '<p class="intake-text">**bold** idea</p>' in page

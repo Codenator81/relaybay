@@ -14,8 +14,9 @@ the work: **projects → tasks → stages → reports**, and which session is do
   program's, both opt-out) and, when the user clicks Update in the program, the download of that
   release's installer ([SPEC §13](SPEC.md#spec-updates)).
 - It contains no LLM client, no Agent SDK and handles no credentials. Agents are always the ordinary
-  `claude` CLI or desktop app under the user's own login. Starting agents is a later step
-  ([runner design](design/0012-runner-and-embedded-terminal.md)) and will only start that same CLI.
+  `claude` CLI or desktop app under the user's own login, and relaybay starts none: a card is worked
+  by a desktop session bound to it. Runs inside the program (0.9 to 0.11) were removed in 0.12
+  ([design 0025](design/0025-board-with-the-desktop.md)).
 - Single user, local machine. No accounts, no cloud hosting, no issue-tracker sync.
 
 ## Processes
@@ -65,7 +66,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, `record_hook`, …): validation, rules checks, transaction, event append, publish |
 | `events.py` | `EventBus`: one bounded `asyncio.Queue` (256) per subscriber, optional project filter; a full queue drops the subscriber, which then resyncs |
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
-| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), the brake and token budgets (`limits.py`: thresholds and the texts sessions read), questions to the owner (`questions.py`: the rules of asking, the answer's text), approvals (`approvals.py`: what a tool call does as an action and its target, which approval covers it, the decision's text), errors |
+| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), questions to the owner (`questions.py`: the rules of asking, the answer's text), approvals (`approvals.py`: what a tool call does as an action and its target, which approval covers it, the decision's text), quoting of external text kept from intake (`intake.py`), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
 | `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `api.py` (`GET /api/notifications` for the tray), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
@@ -78,7 +79,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `install.py` | How this copy was installed (`install_kind()`), its executable and whether its location is stable; used by upgrade hints, the updater, `doctor` and the hook command |
 | `updates.py` | The update check of the latest GitHub release and the installer download, checked against `SHA256SUMS.txt` |
 | `backup.py` | `last_version` and the backup of the database and settings files before a new version migrates, with rotation (`backup_keep`) |
-| `runner/` | Runs on cards, processes only (no database): `claude_cli.py` (find `claude`, a turn's argv and environment, the batch-shim check), `auth.py` (`claude auth status`, the sign-in method only), `layers.py` (relaybay's hooks and MCP server in the user settings, read like `setup --check`, else a run's own `--settings` / `--mcp-config` files), `worktrees.py` (a run's folders: `git worktree add` with rollback, the untracked Claude Code files copied in; at a card's close the check for work left and `git worktree remove`), `memory.py` (free memory by platform code: `GlobalMemoryStatusEx`, `/proc/meminfo`, `vm_stat`), `transcripts.py` (what Claude Code keeps of a run's session: its transcript and session folders, found and deleted only by its session id at their exact places, no links followed), `proctree.py` (a Windows job object, a POSIX process group), `stream.py` (`system/init` and `result` lines), `manager.py` (`RunManager`: one turn per run, stdout and stderr read in threads, the service as the sink). Statuses and cleaners in `domain/runs.py`; the queue (slots, memory, brake), Start anyway, a card's close and the retention in the service, re-checked by its `run_loop` every 15 s |
+| `gitinfo.py` | Reads of git for the approval check: which branch a folder has checked out, under a time limit; never a write |
 | `desktop/` | The desktop program: GUI loop and window (pywebview), tray (pystray), embedded server thread, `desktop.toml` settings and Settings window, start at login, single instance, window state, tray notifications |
 
 <a id="data-model"></a>
@@ -87,9 +88,9 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 ```
 project       id, slug UNIQUE, name, repo_path, description, task_seq, created_at, updated_at,
-              archived_at, pulse, pulse_at, pulse_by, autonomy (0|1), run_retention (days|off)
+              archived_at, pulse, pulse_at, pulse_by, autonomy (0|1, unread since 0.12), run_retention (unread since 0.12)
               -- repo_path: always the path of the first project_repo (kept for older readers)
-project_repo  id, project_id, name (UNIQUE per project), path (as written; a run's cwd),
+project_repo  id, project_id, name (UNIQUE per project), path (as written),
               kind (app|web|api|lib|other, optional), position, created_at, updated_at
 task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), added_at
               -- UNIQUE (task_id, project_repo_id)
@@ -102,7 +103,7 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
               next_step_at, stage_changed_at, created_at, updated_at, closed_at, size (S|M|L),
               plan_status (draft|accepted), plan_accepted_at, plan_accepted_by,
-              autonomy (project|on|off), answer_received_at, answer_message_id,
+              autonomy, answer_received_at, answer_message_id (intake, unread since 0.12),
               archived_at, archived_by, unarchived_at (the hand archive of a done task),
               rank   -- the owner's order within the stage column, lower first; INDEX (project_id, stage, rank)
               area_id -- project_area, ON DELETE SET NULL
@@ -127,78 +128,35 @@ search_index  FTS5 (kind, ref, project_id, title, body, stems), created at start
               FTS5; rebuilt from the tables when its row count is off
 session       id, external_id UNIQUE (local_<uuid>), name (unique among rows without external_id),
               project_id, cwd, kind, desktop_link, status (working|idle|waiting|ended), activity,
-              cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, transcript_path,
+              cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, transcript_path (unread since 0.12),
               no_live_at, no_live_by, last_seen_at, created_at
-usage_file    id, path UNIQUE, session_id, parent_id (a subagent's file), read_offset, skipping, unknown_lines, error, created_at,
-              read_at
-usage_day     file_id, day (UTC), session_id, model, input, output, cache_read, cache_write,
-              messages   -- PK (file_id, day, model)
-usage_message message_id PK, file_id   -- ids already counted: resumed transcripts repeat lines
-usage_task_day file_id, task_id, day (UTC), model, input, output, cache_read, cache_write,
-              messages   -- PK (file_id, task_id, day, model); per task bound when the line was written
-token_budget  id, scope (all|project|task), project_id, task_id, period (day|total), max_tokens,
-              action (warn|stop), updated_at, updated_by   -- one row per target
-budget_mark   budget_id, period_key (UTC day or total), level (warned|exceeded), at   -- PK all but at
-brake         id, scope (all|project|session|task), project_id, session_id, task_id, reason,
-              source (owner|coordinator|budget), budget_id, created_at, created_by, released_at,
-              released_by   -- a released row stays as history
-project_run_defaults project_id PK, folder, model, effort, permission_mode, allowed_tools,
-              chrome (0|1), updated_at, updated_by   -- no row: the defaults
-app_setting   key PK, value, updated_at, updated_by   -- run_login_any, run_max_running_turns,
-              run_min_free_memory_mb, terminal_enabled
-run           id, task_id, project_id, session_id (kind 'run'), cwd, cwd_repo_id, model, effort,
-              permission_mode, allowed_tools, chrome, claude_session_id (UNIQUE),
-              status (queued|running|waiting|idle|stopped|ended|lost), status_reason,
-              auth_method (the method only), hooks_source, mcp_source (user|run), started_by,
-              started_by_kind (owner|coordinator), created_at, updated_at, ended_at, ended_by,
-              with_owner_at, with_owner_by, with_owner_in (with the owner in the Claude
-              desktop app, or 'terminal' in the board's Terminal tab: no turn starts),
-              desktop_opened_at, secret_seen_at, touched_live_at, transcript_path,
-              deleted_at (its lines and transcript deleted when the card closed)
-              -- one open run per task (UNIQUE index WHERE ended_at IS NULL)
-run_turn      id, run_id, seq (UNIQUE per run), prompt, sent_by, sent_by_kind, queued_at,
-              started_at, ended_at, pid, outcome, result_subtype, exit_code, num_turns,
-              duration_ms, input/output/cache_read/cache_write_tokens, denials, denied_tools,
-              report_id (the report its result became)
-              -- one running turn per run (UNIQUE index)
-run_event     id, turn_id, seq (UNIQUE per turn), type, subtype, parent_tool_use_id (nests a
-              subagent's lines), ts, size, truncated (0|1), data (zlib of the masked line)
-run_worktree  id, run_id, project_repo_id, repo_name, source_path, path, path_key, branch,
-              created_by_run (0|1), copied (JSON names), created_at, removed_at, kept_reason,
-              question_id (the owner's question whether to remove it), kept_at
-              -- one open run per path_key, checked by the service
-schedule      id, kind (coordinator|check|reminder), repeat (once|daily|every), at,
-              time_of_day, weekdays_only, every_minutes (>= 5), max_times (1..24), timezone,
-              project_id, task_id, profile, prompt, created_by, created_by_kind
-              (owner|coordinator), enabled, next_at, times_run, done_at, created_at,
-              updated_at, updated_by   -- times in UTC; daily follows the local time
-schedule_run  id, schedule_id, due_at, started_at, ended_at, outcome
-              (ran|missed|skipped|failed|stopped), reason, tokens, run_id (a check run),
-              turn_id, report_id, notice, seen_at (an Inbox line until seen)
-              -- one open run per schedule (UNIQUE index WHERE ended_at IS NULL)
-question      id, task_id, run_id, session_id (who asked), asked_by, kind (question|look), text,
+app_setting   key PK, value, updated_at, updated_by
+run, run_turn, run_event, run_worktree, run_profile, project_run_defaults, coordinator_wake,
+schedule, schedule_run, usage_file, usage_day, usage_message, usage_task_day, token_budget,
+budget_mark, brake, session_message, intake_source, intake_message, intake_thread
+              -- runs, the coordinator run, profiles, schedules, usage, budgets, the brake,
+              -- session messages and intake of 0.4 to 0.11: kept in the file since 0.12
+              -- (migration 0049 ended what was open), unread
+question      id, task_id, run_id (unread since 0.12), session_id (who asked), asked_by, kind (question|look), text,
               options (JSON), default_answer, blocking (0|1), look_url, look_account,
               default_after, asked_at, status (open|answered|defaulted|withdrawn), answer,
               answered_by (owner|default), answered_at, defaulted_at, withdrawn_at, withdrawn_by,
-              turn_id (the run turn carrying the answer), comment_id (the owner comment carrying
+              turn_id (unread since 0.12), comment_id (the owner comment carrying
               it), told_at, delivered_at
               -- a look question blocks and has its URL; a blocking one has no default_after
-approval      id, task_id, run_id, session_id (who asked), requested_by, requested_via
+approval      id, task_id, run_id (unread since 0.12), session_id (who asked), requested_by, requested_via
               (agent|guard|denial), action (commit|push|merge|deploy|sql),
               mode (plain|force|delete), repository, branch, pr,
               environment_id, environment, summary, rollback, requested_at,
               status (open|approved|refused|used|expired), decision, decided_by, decided_at,
               decision_text, valid_until, used_at, used_by (the call: tool and masked input), used_session,
               expired_at, expired_reason,
-              turn_id (the run turn carrying the decision), comment_id (the owner comment carrying
+              turn_id (unread since 0.12), comment_id (the owner comment carrying
               it), told_at, delivered_at
               reserved_at, reserved_for (the call's tool_use_id), reserved_call,
               reserved_session_id, released_count
-              -- one approval allows one call: reserved with the guard's allow, in one tx; used at
-              -- that call's PostToolUse; released when the call did not run (3 times: expired)
-session_message id, sender_session_id, sender_name, sender_verified, recipient_session_id,
-              recipient_name, task_id, body_md, in_reply_to, depth, created_at, delivered_at,
-              read_at, stop_blocks, loop_stopped_at, loop_seen_at
+              -- one approval allows one call: reserved by the guard's check, in one tx; used at
+              -- that call's PostToolUse
 comment       id, task_id, author_kind (owner|agent|external), author, session_id, body_md, in_reply_to,
               created_at, delivered_at, delivered_to_session_id, read_at, step_id, attachment_id
 review_step   id, task_id, position (UNIQUE per task), title, details_md,
@@ -250,12 +208,6 @@ saved_filter  id, project_id, name, stage, area, waiting_on, session, q, created
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
 import_item   kind (document|task|task_note|decision|note|backlog), item, source_path, target_id,
               content_hash, target_hash, imported_at
-intake_source id, slug UNIQUE, kind (telegram|email|chat|other), name, may_wake, created_at,
-              last_message_at
-intake_message id, source_id, external_id (UNIQUE per source), thread, author, text (NULL when
-              refused), received_at, status (new|tied|proposed|dismissed|refused), refused_reason,
-              task_id, outcome (notified|forwarded|woke), created_at
-intake_thread source_id, thread, task_id, updated_at   -- PRIMARY KEY (source_id, thread)
 backlog_item  id, project_id, title, body_md, area, origin (session|review|intake|owner),
               origin_task_id, origin_session_id, intake_message_id, status
               (new|later|planned|done|declined), decline_reason, link, priority, assignee,
@@ -374,13 +326,13 @@ CODE_OF_CONDUCT.md  SECURITY.md  GOVERNANCE.md
 pyproject.toml  uv.lock  .github/workflows/{ci.yml, desktop.yml, docs.yml, release.yml}
 .github/ISSUE_TEMPLATE/
 scripts/        gen_reference.py (docs/reference/*.md) check_dist.py changelog_notes.py
-                hook_timing.py probe_claude.py probe_layers.py record_gif.md
+                hook_timing.py record_gif.md
 src/relaybay/   cli.py config.py app.py security.py service.py events.py machine_setup.py
                 doctor.py demo.py markdown_import.py markdown_export.py hook_client.py logs.py
-                install.py updates.py backup.py
-                db/  desktop/  domain/  mcp_server/  policy/  runner/  web/
+                install.py updates.py backup.py gitinfo.py
+                db/  desktop/  domain/  mcp_server/  policy/  web/
 packaging/      relaybay.spec  launchers/  icons/  windows/  macos/  linux/
-examples/       intake/ (watchers)  compose.yaml (Docker server for the desktop client)
+examples/       compose.yaml (Docker server for the desktop client)
 tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/,
                 e2e/ (scenarios against a real server with a fake `claude`)
 docs/           index.md SPEC.md ROADMAP.md architecture.md mcp-tools.md connect-claude-code.md

@@ -10,25 +10,15 @@ Hooks come from the user layer `$CLAUDE_CONFIG_DIR/settings.json` (when `user` i
 text); a command handler defined in several of them runs once, as Claude Code does. Memory: the
 user `$CLAUDE_CONFIG_DIR/CLAUDE.md`, the cwd's `CLAUDE.md` and `CLAUDE.local.md`, and those of each
 `--add-dir` folder only with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`.
-A tool a `--disallowedTools` rule matches is left out of `system/init` and its calls are denied.
-`--no-session-persistence` writes no transcript; `--max-turns N` ends the turn at its N+1st
-assistant message with a `result` of subtype `error_max_turns` (`is_error` true), as probe 20 saw.
 
 Scenario keys, all optional:
   session_id, model, usage (per message), tools (names besides the MCP ones)
   configured_servers  [{name, status}]: servers listed in system/init without an --mcp-config
   turn                steps of the turn
-  turns               [[steps], [steps], ...]: the steps of each turn of a session, by how many
-                      turns that session had before (counted in $CLAUDE_CONFIG_DIR/fake-turns);
-                      the last list serves every later turn. Used instead of `turn`.
   on_stop_block       steps run when a Stop hook blocks; a later block continues with nothing
   auto_classifier     true: under --permission-mode auto a classifier approves every call a hook
                       did not deny, except a step marked "classifier": "deny" (refused as
                       Claude Code's own auto mode does). Without it auto acts like Manual.
-  end_wait_file       after the result, wait for this file before the SessionEnd hooks (slow
-                      hooks while the process ends); traced as {"kind": "result"} first
-  compact_pre_tokens  what a `/compact` turn's compact_boundary names as the context before
-                      (default 50000); `compact_post_tokens` adds the context after
 A step is one of:
   {"text": "..."}                                 an assistant message
   {"tool": "Bash", "input": {...}, "result": "..."}  a tool call; its command never runs.
@@ -38,30 +28,16 @@ A step is one of:
   {"mcp": "task_create", "arguments": {...}, "capture": {"key": "regex"}}
       a real MCP call; a failed one ends the run with exit code 1 so that no test passes over it.
   {"wait_file": "path", "timeout": 30}            wait until a test creates that file
-  {"spawn_child": "pidfile"}                      start a sleeping child that writes its pid there
-  {"exit": n}                                     exit with code n at once: no result, no hooks
 Strings may use ${session_id}, ${cwd} and captured names.
 
-The prompt is the positional argument, or stdin when it is missing (a `claude.cmd` shim gets it
-there). `claude auth status` prints the answer of `FAKE_CLAUDE_AUTH` (a JSON file
-`{"exit": n, "answer": {...}}`); without it, a subscription sign-in that also carries an e-mail
-and an organization, so a test can check relaybay keeps neither.
+The prompt is the positional argument.
 
 What the session received goes as JSON lines to `FAKE_CLAUDE_TRACE`: `{"kind": "context", "event",
 "text"}`, `{"kind": "stop_block", "reason"}`, `{"kind": "stopped", "event", "reason"}`; each run
-also writes `{"kind": "argv", "argv", "prompt", "run_id", "started"}` first and
+also writes `{"kind": "argv", "argv", "prompt", "started"}` first and
 `{"kind": "turn_end", "session_id", "started", "ended"}` when it ends normally. Every hook command
 run is `{"kind": "hook", "event", "command"}`; the memory loaded at the start is
 `{"kind": "memory", "files", "lines"}` (the files' paths and their non-empty lines).
-
-The prompt `/compact` with `--resume` compacts the session as the real CLI does headless (probe 18
-of design 0023): no turn steps and no UserPromptSubmit or Stop hooks, the PreCompact hooks, a
-`system/compact_boundary` line (`trigger` manual), then an empty `result` with zero usage under
-the same session id; it takes no entry of `turns`.
-
-`claude --desktop --resume <id>` (no -p) hands the session to the desktop app: it writes
-`{"kind": "desktop", "argv", "cwd", "tty"}` and, like the real CLI, exits 1 with its message when
-stdout is not a terminal, else 0 printing nothing.
 """
 
 import argparse
@@ -104,24 +80,7 @@ PERMISSION_MODES = (
     "dontAsk",
     "bypassPermissions",
 )
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
-DEFAULT_AUTH = {
-    "exit": 0,
-    "answer": {
-        "loggedIn": True,
-        "authMethod": "claude.ai",
-        "apiProvider": "firstParty",
-        "subscriptionType": "max",
-        "email": "owner@example.invalid",
-        "orgName": "Acme Org",
-        "orgId": "org-123",
-    },
-}
 TOOL_EVENTS = ("PreToolUse", "PostToolUse")
-DESKTOP_REFUSAL = (
-    "--desktop opens the Claude Desktop app and can't run non-interactively (`--print`,"
-    " `--sdk-url`, `--init-only`, or redirected output)"
-)
 
 
 class Terminated(BaseException):
@@ -130,10 +89,6 @@ class Terminated(BaseException):
 
 class ScenarioFailed(Exception):
     pass
-
-
-class MaxTurns(Exception):
-    """The turn reached `--max-turns`: the CLI ends it with `error_max_turns`."""
 
 
 class _Parser(argparse.ArgumentParser):
@@ -154,32 +109,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--allowedTools", "--allowed-tools", nargs="+", action="extend", default=[], dest="allowed"
     )
-    parser.add_argument(
-        "--disallowedTools",
-        "--disallowed-tools",
-        nargs="+",
-        action="extend",
-        default=[],
-        dest="disallowed",
-    )
-    parser.add_argument("--model")
-    parser.add_argument("--effort", choices=EFFORTS)
-    parser.add_argument("--chrome", action="store_true")
     parser.add_argument("--settings", action="append", default=[])
     parser.add_argument("--setting-sources", default="user,project,local", dest="setting_sources")
     parser.add_argument("--add-dir", nargs="+", action="extend", default=[], dest="add_dirs")
     parser.add_argument("--bare", action="store_true")
     parser.add_argument("--version", action="store_true")
-    parser.add_argument("--desktop", action="store_true")
-    parser.add_argument(
-        "--no-session-persistence", action="store_true", dest="no_session_persistence"
-    )
-    parser.add_argument("--max-turns", type=int, dest="max_turns")
     args = parser.parse_args(argv)
-    if args.version or args.desktop:
+    if args.version:
         return args
     if args.bare:
-        # relaybay's runner must never pass it: bare mode skips hooks and the subscription login.
+        # Bare mode skips hooks and the subscription login: nothing relaybay could test.
         parser.error("--bare is refused here: it skips hooks and the subscription login")
     if not args.print_mode:
         parser.error("this stand-in only runs with -p")
@@ -280,8 +219,6 @@ class Run:
                 out.write(json.dumps(entry) + "\n")
 
     def write_transcript(self, entry: dict[str, Any]) -> None:
-        if self.args.no_session_persistence:
-            return  # nothing on disk: a later --resume of this id finds no conversation
         stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         line = {**entry, "timestamp": stamp, "sessionId": self.session_id}
         with self.transcript.open("a", encoding="utf-8") as out:
@@ -297,8 +234,6 @@ class Run:
             "stop_reason": None,
             "usage": self.usage,
         }
-        if self.args.max_turns is not None and self.turns >= self.args.max_turns:
-            raise MaxTurns
         self.turns += 1
         for key in self.total:
             self.total[key] += self.usage.get(key, 0)
@@ -425,11 +360,6 @@ class Run:
 
     # --- permissions --------------------------------------------------------------------------
 
-    def taken_away(self, tool: str, tool_input: dict[str, Any] | None = None) -> bool:
-        """A --disallowedTools rule matches: the tool is gone from the turn's context."""
-        rules = [r.strip() for value in self.args.disallowed for r in value.split(",") if r.strip()]
-        return any(allowed_by_rule(rule, tool, tool_input or {}) for rule in rules)
-
     def needs_approval(self, tool: str, tool_input: dict[str, Any]) -> bool:
         mode = self.args.permission_mode
         if mode == "bypassPermissions" or tool in NO_APPROVAL_TOOLS:
@@ -468,9 +398,6 @@ class Run:
         classifier_denies: bool = False,
     ) -> bool:
         """True when the call may go on; a denial has then been reported."""
-        if self.taken_away(tool, tool_input):
-            self.deny(tool, tool_use_id, tool_input, "rule", f"No such tool available: {tool}")
-            return False
         approved = False
         answers = self.run_hooks(
             "PreToolUse", tool_name=tool, tool_input=tool_input, tool_use_id=tool_use_id
@@ -579,11 +506,6 @@ class Run:
             self.call_mcp(step)
         elif "wait_file" in step:
             self.wait_file(Path(self.fill(step["wait_file"])), step.get("timeout", 30))
-        elif "spawn_child" in step:
-            self.spawn_child(Path(self.fill(step["spawn_child"])))
-        elif "exit" in step:
-            sys.stdout.flush()
-            os._exit(int(step["exit"]))
         else:
             raise ScenarioFailed(f"unknown step: {step}")
 
@@ -593,34 +515,6 @@ class Run:
             if time.monotonic() > deadline:
                 raise ScenarioFailed(f"{path} did not appear within {timeout} s")
             time.sleep(0.02)  # short: on Windows a long sleep is not cut by every signal
-
-    def spawn_child(self, pidfile: Path) -> None:
-        """A grandchild of the runner: a build or a server the agent started. It inherits no
-        pipe, so only the process tree ties it to the turn."""
-        code = (
-            "import os, sys, time; from pathlib import Path;"
-            " Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(600)"
-        )
-        no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.Popen(
-            [sys.executable, "-c", code, str(pidfile)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=no_window,
-        )
-        self.wait_file(pidfile, 30)
-
-    def turn_steps(self, config_dir: Path) -> list[dict[str, Any]]:
-        """`turns` by the number of earlier turns of this session, else `turn`."""
-        turns = self.scenario.get("turns")
-        if not turns:
-            return self.scenario.get("turn", [])
-        counter = config_dir / "fake-turns" / self.session_id
-        counter.parent.mkdir(parents=True, exist_ok=True)
-        done = int(counter.read_text("utf-8")) if counter.exists() else 0
-        counter.write_text(str(done + 1), encoding="utf-8")
-        return turns[min(done, len(turns) - 1)]
 
     def call_tool(self, step: dict[str, Any]) -> None:
         tool = step["tool"]
@@ -720,11 +614,7 @@ class Run:
             "apiKeySource": "none",
             "claude_code_version": VERSION.split()[0],
             "cwd": self.cwd,
-            "tools": [
-                t
-                for t in [*self.scenario.get("tools", ["Bash", "Read"]), *mcp_tools]
-                if not self.taken_away(t)
-            ],
+            "tools": [*self.scenario.get("tools", ["Bash", "Read"]), *mcp_tools],
             "mcp_servers": [*self.scenario.get("configured_servers", []), *servers],
             "model": self.model,
             "permissionMode": self.args.permission_mode,
@@ -736,45 +626,10 @@ class Run:
         if errors:
             init["mcp_server_errors"] = errors
         self.emit(init)
-        if self.compacting:
-            self.compact()
-            return
-        try:
-            self.turn()
-        except MaxTurns:
-            self.result("error_max_turns", is_error=True)
-            return
+        self.turn()
         self.result()
 
-    @property
-    def compacting(self) -> bool:
-        return self.resuming and (self.args.prompt or "").strip() == "/compact"
-
-    def compact(self) -> None:
-        self.run_hooks("PreCompact", trigger="manual", custom_instructions="")
-        meta: dict[str, Any] = {
-            "trigger": "manual",
-            "pre_tokens": self.scenario.get("compact_pre_tokens", 50000),
-        }
-        if "compact_post_tokens" in self.scenario:
-            meta["post_tokens"] = self.scenario["compact_post_tokens"]
-        self.write_transcript({"type": "system", "subtype": "compact_boundary"})
-        self.emit(
-            {
-                "type": "system",
-                "subtype": "compact_boundary",
-                "uuid": str(uuid.uuid4()),
-                "session_id": self.session_id,
-                "compact_metadata": meta,
-            }
-        )
-        self.result()  # no assistant message: the usage stays zero
-
     def end(self) -> None:
-        wait = self.scenario.get("end_wait_file")
-        if wait:
-            self.trace(kind="result")
-            self.wait_file(Path(self.fill(wait)), 60)
         self.run_hooks("SessionEnd", reason="other")
 
 
@@ -782,46 +637,13 @@ def _terminate(signum: int, frame: Any) -> None:
     raise Terminated
 
 
-def auth_status() -> int:
-    """`claude auth status`: the JSON answer and exit code of FAKE_CLAUDE_AUTH, or a
-    subscription sign-in."""
-    path = os.environ.get("FAKE_CLAUDE_AUTH")
-    auth = json.loads(Path(path).read_text("utf-8")) if path else DEFAULT_AUTH
-    answer = auth.get("answer")
-    if isinstance(answer, str):
-        sys.stdout.write(answer)
-    else:
-        sys.stdout.write(json.dumps(answer, indent=2) + "\n")
-    return int(auth.get("exit", 0))
-
-
-def desktop(words: list[str]) -> int:
-    trace = os.environ.get("FAKE_CLAUDE_TRACE")
-    tty = sys.stdout is not None and sys.stdout.isatty()
-    if trace:
-        entry = {"kind": "desktop", "argv": words, "cwd": str(Path.cwd()), "tty": tty}
-        with Path(trace).open("a", encoding="utf-8") as out:
-            out.write(json.dumps(entry) + "\n")
-    if not tty:
-        sys.stderr.write(DESKTOP_REFUSAL + "\n")
-        return 1
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     words = sys.argv[1:] if argv is None else argv
-    if words[:2] == ["auth", "status"]:
-        return auth_status()
     started = time.time()
     args = parse_args(words)
     if args.version:
         print(VERSION)
         return 0
-    if args.desktop:
-        return desktop(words)
-    if args.prompt is None and sys.stdin is not None and not sys.stdin.isatty():
-        sys.stdin.reconfigure(encoding="utf-8")  # as the real CLI reads it, not the locale's
-        args.prompt = sys.stdin.read()
     # Never the real settings and transcripts of whoever runs the tests.
     config = os.environ.get("CLAUDE_CONFIG_DIR")
     scenario_file = os.environ.get("FAKE_CLAUDE_SCENARIO")
@@ -834,10 +656,9 @@ def main(argv: list[str] | None = None) -> int:
         kind="argv",
         argv=words,
         prompt=args.prompt,
-        run_id=os.environ.get("RELAYBAY_RUN_ID"),
         started=started,
     )
-    run.steps = [] if run.compacting else run.turn_steps(Path(config))
+    run.steps = run.scenario.get("turn", [])
     signal.signal(signal.SIGTERM, _terminate)
     if sys.platform == "win32":
         # Windows has no SIGTERM between processes; a console break is the nearest thing.

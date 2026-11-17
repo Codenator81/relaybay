@@ -144,12 +144,7 @@ class SecurityMiddleware:
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                # A page that set its own policy (the Terminal tab) keeps it: browsers enforce
-                # every CSP header they get, so adding ours would undo its one exception.
-                own_csp = any(name.lower() == b"content-security-policy" for name, _ in headers)
-                extra = [h for h in SECURITY_HEADERS if not (own_csp and h[0] == CSP_HEADER)]
-                message["headers"] = [*headers, *extra]
+                message["headers"] = [*message.get("headers", []), *SECURITY_HEADERS]
             await send(message)
 
         rejection = self.check(scope)
