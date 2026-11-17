@@ -59,6 +59,7 @@ nav:
       - Install with your coding agent: getting-started/agent-install.md
       - Connect Claude Code: connect-claude-code.md
   - How-to guides:
+      - Work a card with a session: how-to/work-a-card.md
       - Coordinate many projects: how-to/coordinator.md
       - Import and export markdown: how-to/markdown-import-export.md
       - Phone and LAN access: how-to/lan-access.md
@@ -109,4 +110,3 @@ nav:
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
           - Desktop shell: adr/0002-desktop-shell.md
-      - Former plan: PLAN.md

@@ -110,7 +110,8 @@ program as its client:
   button: a desktop session opens in the desktop app, an ended terminal session resumes in a new
   terminal window on this machine, a live terminal session is not opened. Then come the last
   report and the comment thread. A card without a session gives **Copy the brief**: the text to
-  paste into a new session, which then binds itself to the card.
+  paste into a new session, which then binds itself to the card. The everyday loop:
+  [Work a card with a session](https://codenator81.github.io/relaybay/how-to/work-a-card/).
 - **Areas** — a card can name the part of its project it belongs to ("web shop", "api"), from a
   list per project that grows from use; the area shows as a coloured chip and filters the board.
 - **Repositories and "Open in VS Code"** — a project lists its repositories (Stands & access, or

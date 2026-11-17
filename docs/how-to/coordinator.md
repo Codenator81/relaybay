@@ -1,12 +1,26 @@
 # Coordinate many projects
 
-!!! note
-    A full guide is planned. In short: one session acts as the coordinator. It creates
-    projects and tasks with `project_upsert` and `task_create`, binds project sessions with
-    `task_bind_session`, catches up with `events_since`, and reads each project through
-    `project_snapshot`. Project sessions follow the working contract in the MCP instructions
-    ([SPEC §3](../SPEC.md#spec-mcp-instructions)). Already keeping this in markdown files?
-    [Import them](markdown-import-export.md).
+The coordinator is a role, not a part of the program: an ordinary Claude Code session that you
+open yourself, in the Claude desktop app or in a terminal, next to the project sessions. relaybay
+starts no coordinator and wakes none; the coordinator works when you talk to it.
+
+What it does with the same MCP tools as any session:
+
+- Catches up with `portfolio_digest` and `events_since`, reads a project with `project_digest` or
+  `project_snapshot` and a task with `task_context`.
+- Creates projects and cards with `project_upsert` and `task_create`, and binds a project session to
+  a card with `task_bind_session` (or gives you the card to start with
+  [Copy the brief](work-a-card.md)).
+- Reads the chats and e-mails you share with it and updates the cards itself; relaybay takes in no
+  messages of its own, and sessions talk to each other in the desktop app, not through relaybay.
+- Sorts the backlog (`backlog_list`, `backlog_update`).
+
+Name it in `coordinators` in `config.toml` ([configuration](../reference/configuration.md)) to let it
+use the tools kept for coordinators: `rules_update`, `plan_accept`, `task_archive`,
+`task_unarchive` and backlog triage ([SPEC: Coordinator](../SPEC.md#spec-coordinator)). Project
+sessions follow the working contract in the MCP instructions
+([SPEC §3](../SPEC.md#spec-mcp-instructions)). Already keeping this in markdown files?
+[Import them](markdown-import-export.md).
 
 ## Move a markdown coordinator over
 

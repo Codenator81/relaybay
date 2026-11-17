@@ -66,7 +66,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 | `service.py` | Use cases (`create_task`, `set_stage`, `add_report`, `record_hook`, …): validation, rules checks, transaction, event append, publish |
 | `events.py` | `EventBus`: one bounded `asyncio.Queue` (256) per subscriber, optional project filter; a full queue drops the subscriber, which then resyncs |
 | `db/` | `connection.py` (aiosqlite, WAL, `foreign_keys`, busy timeout, numbered migrations by `user_version`), `repo.py` (SQL), `migrations/*.sql` |
-| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), questions to the owner (`questions.py`: the rules of asking, the answer's text), approvals (`approvals.py`: what a tool call does as an action and its target, which approval covers it, the decision's text), quoting of external text kept from intake (`intake.py`), errors |
+| `domain/` | Models, stages, report parsing, task field list, rules (validate, merge, hash, check), sessions, hooks parsing, environments (access fields, secret checks, levels, proposals), the PreToolUse guard (identifier matching, mutating heuristics, decisions), the card's state line and its Open (`card.py`), digests (`digest.py`: gathered data to sections to budgeted text, no I/O), questions to the owner (`questions.py`: the rules of asking, the answer's text), approvals (`approvals.py`: what a tool call does as an action and its target, which approval covers it, the decision's text), quoting of external text kept from intake (`intake.py`), errors |
 | `mcp_server/` | `server.py`: `MCPServer` with the instructions, tools and resources, mounted at exactly `/mcp`; `format.py`: markdown output |
 | `web/` | `routes.py` (pages with the sidebar, Inbox, Sessions, Activity with the live journal, Stands & access, fragments, forms, comments, `/events`, Integrations), `sse.py`, `hooks.py` (`POST /hooks/claude-code` and the wake-up long poll `…/wait`), `api.py` (`GET /api/notifications` for the tray), `markdown.py`, templates, vendored static assets |
 | `machine_setup.py` | `relaybay setup`: detect, plan, marked JSON merge with backup, plan hash, remove, check (server and Claude Code file checks, shared with `doctor`) |
@@ -336,5 +336,5 @@ examples/       compose.yaml (Docker server for the desktop client)
 tests/          one module per area (service, mcp, board, sse, hooks, setup, rules, …), fixtures/,
                 e2e/ (scenarios against a real server with a fake `claude`)
 docs/           index.md SPEC.md ROADMAP.md architecture.md mcp-tools.md connect-claude-code.md
-                design/ adr/ reference/ getting-started/ how-to/ llms.txt PLAN.md (pointer)
+                design/ adr/ reference/ getting-started/ how-to/ llms.txt
 ```
