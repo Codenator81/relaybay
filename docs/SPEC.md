@@ -84,7 +84,10 @@ Over MCP a new name adds a line to the answer: `Area '<name>' was new: added to 
 areas on the project's Stands & access page ([§2](#spec-board-areas)); renaming an area to another
 area's name merges the two (its tasks move, it is deleted); deleting one clears it from its tasks,
 each with a `task.updated` event `changes: {"area": null}` and its version raised, so its history
-keeps what it was.
+keeps what it was. A rename and a merge also raise the version of the area's tasks (each a
+`task.updated` with `changes.area`, the new name), so a form opened before them is refused as a
+conflict instead of bringing the old name back; a colour change does not. Saved filters keep an area
+by name: they follow a rename or a merge and lose the area with a delete.
 
 <a id="spec-task"></a>
 
@@ -3425,8 +3428,9 @@ stage column ([§2](#spec-board-order)): a whole number from -1000000000 to 1000
 row; an empty cell or a registry without the column keeps the board's order, and the rank then
 counts neither for "changed on the board" nor for a file that says the same. An optional `area`
 column carries the task's area by name ([§1](#spec-areas)): matched without regard to case, a new one
-added to the project; an empty cell or no column keeps the board's area, over 32 characters is an
-`error` row, and an area counts for "changed on the board" only on a task that has one. Export writes
+added to the project; an empty cell or no column keeps the board's area. A text over 32 characters,
+or a new name past the project's limit of 24 (counting the areas the same import adds before it),
+leaves the task without it and adds a warning: the dry run says what the apply does. An area counts for "changed on the board" only on a task that has one. Export writes
 the column only when a task has an area, so a board without areas exports the file it did before
 them. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
 `## Task` section, else the first paragraph), its `## Decisions` bullets as task decisions, the whole

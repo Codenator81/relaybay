@@ -2810,6 +2810,12 @@ async def insert_saved_filter(
     return cur.lastrowid
 
 
+async def set_saved_filter_area(
+    conn: aiosqlite.Connection, filter_id: int, area: str | None
+) -> None:
+    await conn.execute("UPDATE saved_filter SET area = ? WHERE id = ?", (area, filter_id))
+
+
 async def delete_saved_filter(conn: aiosqlite.Connection, filter_id: int) -> None:
     await conn.execute("DELETE FROM saved_filter WHERE id = ?", (filter_id,))
 

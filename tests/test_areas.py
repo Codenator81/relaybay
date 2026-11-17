@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from relaybay.db.connection import connect
 from relaybay.domain.areas import AREA_COLORS, AREAS_MAX
-from relaybay.domain.errors import ValidationError
+from relaybay.domain.errors import ConflictError, ValidationError
 from relaybay.domain.markdown_layout import render_registry
 from relaybay.domain.models import Task
 from relaybay.domain.stages import Stage
@@ -125,6 +125,39 @@ async def test_rename_recolour_reorder_merge_and_delete(service: Service) -> Non
         and e.payload["changes"] == {"area": None}
     ]
     assert cleared, "the card's history keeps that its area was cleared"
+
+
+async def test_a_rename_refuses_a_form_opened_before_it(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", area="web")
+    _, (web,) = await service.project_areas("acme-shop")
+    await service.save_area("acme-shop", web.id, name="web", color="rose")
+    assert (await service.get_task(task.key)).version == task.version  # a colour only
+    await service.save_area("acme-shop", web.id, name="Web shop", color="rose")
+    renamed = await service.get_task(task.key)
+    assert renamed.version == task.version + 1 and renamed.area == "Web shop"
+    with pytest.raises(ConflictError):
+        await service.update_task(task.key, {"area": "web"}, expected_version=task.version)
+    assert [a.name for a in (await service.project_areas("acme-shop"))[1]] == ["Web shop"]
+
+
+async def test_saved_filters_follow_rename_merge_and_delete(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    await service.create_task("acme-shop", "Checkout", area="web")
+    await service.create_task("acme-shop", "Orders", area="api")
+    _, (web, api) = await service.project_areas("acme-shop")
+    await service.save_filter("acme-shop", "Web", area="WEB", stage="dev")
+    await service.save_filter("acme-shop", "Api", area="api")
+
+    async def areas() -> dict[str, str | None]:
+        return {f.name: f.area for f in await service.saved_filters("acme-shop")}
+
+    await service.save_area("acme-shop", web.id, name="Web shop", color="blue")
+    assert await areas() == {"Web": "Web shop", "Api": "api"}
+    await service.save_area("acme-shop", api.id, name="web SHOP", color="blue")  # a merge
+    assert await areas() == {"Web": "Web shop", "Api": "Web shop"}
+    await service.delete_area("acme-shop", web.id)
+    assert await areas() == {"Web": None, "Api": None}
 
 
 async def test_list_filter_by_area(service: Service) -> None:
@@ -397,7 +430,38 @@ async def test_export_and_import_carry_the_area_by_name(tmp_path: Path) -> None:
             registry.replace("| Web shop |", f"| {long_name} |"), encoding="utf-8"
         )
         too_long = await make_plan(target, folder)
-        assert any("area is longer than 32" in i.detail for i in too_long.items)
+        assert not too_long.failed
+        assert any("area is longer than 32 characters" in w for w in too_long.warnings)
+        await apply_plan(target, too_long)
+        kept = {t.title: t for t in await target.list_tasks(project="acme-shop")}
+        assert kept["Checkout"].area == "web shop"  # the long text leaves the area as it was
+    finally:
+        await target.close()
+
+
+async def test_import_counts_new_areas_against_the_limit(tmp_path: Path) -> None:
+    folder = tmp_path / "in"
+    folder.mkdir()
+    rows = [f"| acme-shop | Task {n} | area {n:02d} | plan |" for n in range(AREAS_MAX + 2)]
+    long = "| acme-shop | Long | " + "y" * 40 + " | plan |"
+    text = "| project | task | area | stage |\n|---|---|---|---|\n" + "\n".join([*rows, long])
+    (folder / "TASKS.md").write_text(text + "\n", encoding="utf-8")
+    target = Service(tmp_path / "b.sqlite")
+    await target.start()
+    try:
+        await target.upsert_project("acme-shop")
+        plan = await make_plan(target, folder)
+        assert not plan.failed
+        assert sum("more than 24 areas" in w for w in plan.warnings) == 2
+        assert sum("longer than 32" in w for w in plan.warnings) == 1
+        assert sum(1 for i in plan.items if i.kind == "task" and i.action == "add") == 27
+        await apply_plan(target, plan)
+        tasks = {t.title: t for t in await target.list_tasks(project="acme-shop")}
+        assert len(tasks) == 27
+        assert tasks["Task 23"].area == "area 23"
+        assert tasks["Task 24"].area is None and tasks["Task 25"].area is None
+        assert tasks["Long"].area is None
+        assert len((await target.project_areas("acme-shop"))[1]) == AREAS_MAX
     finally:
         await target.close()
 

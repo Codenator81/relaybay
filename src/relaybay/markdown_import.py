@@ -20,7 +20,7 @@ from typing import Any
 from relaybay.backup import backup_before_upgrade, record_version
 from relaybay.config import Settings
 from relaybay.domain import backlog
-from relaybay.domain.areas import AREA_NAME_MAX, area_key
+from relaybay.domain.areas import AREA_NAME_MAX, AREAS_MAX, area_key
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.environments import DEFAULT_SECRET_RULES, SecretRules, find_secrets
 from relaybay.domain.errors import DomainError, NotFoundError
@@ -326,6 +326,7 @@ class _Planner:
         self.decisions: dict[str, list[Decision]] = {}
         self.rules: dict[str, SecretRules] = {}
         self.task_items: dict[str, Item] = {}
+        self.area_keys: dict[str, set[str]] = {}  # per project: its areas and the planned ones
         self.title_claims: Counter[tuple[str, str | None]] = Counter()
         self.notes: list[MemoryNote] = []  # current ones
         self.tracked_notes: dict[int, MemoryNote] = {}  # by id, superseded ones too
@@ -635,10 +636,13 @@ class _Planner:
             values["doc_path"] = document
         if row.area is not None:
             if len(row.area) > AREA_NAME_MAX:
-                detail = f"area is longer than {AREA_NAME_MAX} characters"
-                self.add("task", source, REGISTRY, "error", detail)
-                return None
-            values["area"] = row.area
+                # A free-text column of a hand-written registry: the row still comes in.
+                self.warnings.append(
+                    f"{source}: the area is longer than {AREA_NAME_MAX} characters; the task"
+                    " comes in without it"
+                )
+            else:
+                values["area"] = row.area
         if row.rank is not None:
             try:
                 rank = int(row.rank)
@@ -661,6 +665,28 @@ class _Planner:
         explicit = bool(slugify(row.ref or ""))
         return _Row(row.project, identity, REGISTRY, row.line, values, folder, warning, explicit)
 
+    async def _plan_area(self, row: _Row) -> None:
+        """Count a row's new area against the project's limit, as the apply adds them in order:
+        past it the task comes in without the area, so the plan says what the apply does."""
+        if "area" not in row.values:
+            return
+        keys = self.area_keys.get(row.project)
+        if keys is None:
+            project = self.projects.get(row.project)
+            found = (await self.service.project_areas(project.slug))[1] if project else []
+            keys = self.area_keys[row.project] = {area_key(a.name) for a in found}
+        key = area_key(row.values["area"])
+        if key in keys:
+            return
+        if len(keys) >= AREAS_MAX:
+            del row.values["area"]
+            self.warnings.append(
+                f"{row.source}:{row.line}: {row.project} would have more than {AREAS_MAX} areas;"
+                " the task comes in without its area"
+            )
+            return
+        keys.add(key)
+
     async def _task(self, row: _Row) -> None:
         name = f"{row.project}/{row.identity}"
         too_long = next((k for k, v in row.values.items() if len(v) > TEXT_MAX), None)
@@ -681,6 +707,7 @@ class _Planner:
                 return
         if row.warning:
             self.warnings.append(row.warning)
+        await self._plan_area(row)
         task = self._existing_task(row)
         tracked = self.tracked.get(("task", name))
         changes = {k: v for k, v in row.values.items() if task is None or not _same(task, k, v)}

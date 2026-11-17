@@ -4269,6 +4269,10 @@ class Service:
             if not changes:
                 return area
             await repo.update_area(tx.conn, area.id, changes)
+            if "name" in changes:
+                # An open form still holds the old name: its version must no longer pass.
+                await repo.move_area_tasks(tx.conn, area.id, area.id, tx.now)
+                await self._refilter_area(tx, project.id, area.name, clean)
             label = f"{area.name} -> {clean}" if "name" in changes else area.name
             await tx.event(
                 "project.updated",
@@ -4283,6 +4287,13 @@ class Service:
                 await self._area_card_event(tx, task, actor, renamed)
             area.name, area.color = clean, clean_color
             return area
+
+    async def _refilter_area(self, tx: _Tx, project_id: int, old: str, new: str | None) -> None:
+        """Saved filters keep an area by name: they follow its rename or merge, and lose it
+        with the area."""
+        for item in await repo.list_saved_filters(tx.conn, project_id):
+            if item.area and area_rules.area_key(item.area) == area_rules.area_key(old):
+                await repo.set_saved_filter_area(tx.conn, item.id, new)
 
     async def _area_card_event(
         self, tx: _Tx, task: Task, actor: str, changes: dict[str, Any]
@@ -4308,9 +4319,11 @@ class Service:
         actor: str,
         into: ProjectArea | None = None,
     ) -> None:
-        """Take `area` off its cards (onto `into`, when merging) and delete it."""
+        """Take `area` off its cards and saved filters (onto `into`, when merging) and delete
+        it."""
         tasks = await repo.list_tasks(tx.conn, project_id=project.id, area_ids=[area.id])
         await repo.move_area_tasks(tx.conn, area.id, into.id if into else None, tx.now)
+        await self._refilter_area(tx, project.id, area.name, into.name if into else None)
         await repo.delete_area(tx.conn, area.id)
         for task in tasks:
             await self._area_card_event(tx, task, actor, {"area": into.name if into else None})
