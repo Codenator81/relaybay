@@ -82,15 +82,6 @@ def test_only_an_agents_comment_is_a_reply() -> None:
         assert classify(event("comment.added", author_kind=author_kind), OWNERS) is None
 
 
-def test_an_answer_names_its_source() -> None:
-    notice = classify(event("intake.answer_received", source="client-chat"), OWNERS, {7: "Login"})
-    assert notice is not None
-    assert notice.kind == "answer" and notice.title == "Answer received: SHOP-1"
-    assert notice.text == "From client-chat: Login"
-    bare = classify(event("intake.answer_received", source="mail"), OWNERS)
-    assert bare is not None and bare.text == "From mail"
-
-
 def test_a_session_that_starts_waiting() -> None:
     waiting = {"session": "agent-1", "status": "waiting", "activity": "needs permission"}
     notice = classify(event("session.status_changed", previous="working", **waiting), OWNERS)
@@ -463,7 +454,9 @@ def test_a_state_file_that_cannot_be_written_is_only_logged(
 def test_summary_counts_in_the_order_of_the_kinds() -> None:
     items = [item("reply", "A"), item("review", "B"), item("review", "C")]
     assert summary(items) == "3 need you: 2 reviews, 1 reply"
-    assert summary([item("waiting", "A"), item("answer", "B")]) == "2 need you: 1 waiting, 1 answer"
+    assert summary([item("waiting", "A"), item("question", "B")]) == (
+        "2 need you: 1 waiting, 1 question"
+    )
 
 
 def test_fit_stays_inside_the_balloon_in_utf16_units() -> None:

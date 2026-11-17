@@ -27,9 +27,6 @@
     "session.message", "session.launched",
     "document.updated", "memory.added", "memory.updated", "block.updated",
     "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied",
-    "intake.received", "intake.tied", "intake.answer_received", "intake.answer_cleared",
-    "intake.wake", "intake.forwarded", "intake.proposed", "intake.dismissed",
-    "intake.source_trusted", "intake.source_untrusted",
     "backlog.added", "backlog.updated", "backlog.planned",
     "concurrency.over",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
@@ -49,8 +46,6 @@
     "rules.proposal_rejected",
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected",
-    "intake.received", "intake.tied", "intake.answer_received", "intake.answer_cleared",
-    "intake.proposed", "intake.dismissed", "intake.source_trusted", "intake.source_untrusted",
     "backlog.added", "backlog.updated", "backlog.planned",
     "concurrency.over",
     "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
@@ -269,7 +264,6 @@
     if (data.kind === "plan.accepted" && window.relaybayBoard) {
       window.relaybayBoard.planAccepted(data.key);
     }
-    if (data.kind === "intake.answer_received") notifyAnswer(data);
     // The backlog page: only its list is live; the add form stays as the user left it.
     var backlogList = document.getElementById("backlog");
     if (backlogList) {
@@ -416,8 +410,6 @@
         queue(changed(data.key, data.stage));
         break;
       case "report.added":
-      case "intake.answer_received":
-      case "intake.answer_cleared":
         queue(card(data.key) || column(data.stage));
         break;
       case "session.status_changed":
@@ -1051,24 +1043,6 @@
         window.focus();
         window.location.href = "/p/" + encodeURIComponent(data.project) + "?task=" +
           encodeURIComponent(data.key) + "&tab=review";
-      };
-    } catch (e) {
-      // Some browsers allow notifications only from a service worker; then none is shown.
-    }
-  }
-
-  // "Answer received: <task>": a message from a chat or a mailbox for a task waiting on someone.
-  function notifyAnswer(data) {
-    if (!("Notification" in window) || Notification.permission !== "granted") return;
-    try {
-      var note = new Notification("Answer received: " + data.key, {
-        body: data.key + " · " + (data.source || "intake"),
-        tag: "answer-" + data.key
-      });
-      note.onclick = function () {
-        window.focus();
-        window.location.href = "/p/" + encodeURIComponent(data.project) + "?task=" +
-          encodeURIComponent(data.key);
       };
     } catch (e) {
       // Some browsers allow notifications only from a service worker; then none is shown.

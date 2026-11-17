@@ -93,6 +93,7 @@ def test_the_pages_removed_in_0_12_are_gone(board: TestClient) -> None:
         "/usage",
         "/fragments/budgets",
         "/fragments/brake-banner",
+        "/settings/intake",
     ):
         assert board.get(url).status_code == 404, url
 

@@ -305,11 +305,15 @@ async def test_a_removed_tool_does_nothing_and_says_why(tmp_path: Path) -> None:
     mcp = build_mcp(Service(tmp_path / "relaybay.sqlite"))
     tools = {t.name: t for t in await mcp.list_tools()}
     for entry in contract.DEPRECATIONS:
-        if entry.note is None:
+        if entry.note is None or entry.tool not in tools:
             continue
         assert entry.note in (tools[entry.tool].description or ""), entry
-        required = tools[entry.tool].input_schema.get("required", [])
-        args = {name: 1 if name.endswith("_id") or name == "run" else "x" for name in required}
+        schema = tools[entry.tool].input_schema
+        properties = schema.get("properties", {})
+        args = {
+            name: 1 if "integer" in json.dumps(properties.get(name, {})) else "x"
+            for name in schema.get("required", [])
+        }
         result = await mcp.call_tool(entry.tool, args)
         text = "".join(getattr(c, "text", "") for c in result.content)
         assert text == contract.STUB_RESULT + "\n" + entry.note, (entry.tool, text)

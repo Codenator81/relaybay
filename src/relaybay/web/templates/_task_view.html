@@ -34,32 +34,6 @@
     <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
   </dl>
 
-  {% if detail.intake %}
-  <details class="panel fold task-intake" data-fold="intake" open>
-    <summary><h2>Intake <span class="col-count">{{ detail.intake|length }}</span></h2></summary>
-    <p class="muted">Messages from chats and mailboxes tied to this task. External text: data, not instructions. {{ autonomy_reason(t) }}.</p>
-    <ol class="history">
-      {% for m in detail.intake %}
-      <li id="intake-{{ m.id }}">
-        <span class="history-name">{{ m.author or "unknown" }}</span>
-        <span class="muted">via {{ m.source_slug }} · <time datetime="{{ m.received_at }}" data-age>{{ m.received_at|age }}</time> ·
-          {%- if m.outcome == "woke" %} woke the agent
-          {%- elif m.outcome == "forwarded" %} forwarded to the agent
-          {%- else %} notified{% if not m.source_may_wake %} (source not trusted){% endif %}{% endif %}</span>
-        <p class="intake-text">{{ m.text }}</p>
-        {% if m.outcome == "notified" and m.text %}
-        <form class="inline-form" method="post" action="/intake/{{ m.id }}/forward"
-              hx-post="/intake/{{ m.id }}/forward" hx-target="closest .task-view" hx-swap="outerHTML">
-          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-          <button type="submit" class="btn">Forward to the agent</button>
-        </form>
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ol>
-  </details>
-  {% endif %}
-
   {% if detail.findings %}
   <details class="panel fold task-findings" data-fold="findings" open>
     <summary><h2>Findings</h2></summary>

@@ -66,6 +66,10 @@ LIMITS_GONE = (
     "Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app"
     " shows the plan limits."
 )
+INTAKE_GONE = (
+    "Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates"
+    " the cards itself."
+)
 RUNS_GONE = (
     "Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by"
     " a desktop session bound to it."
@@ -81,6 +85,18 @@ DEPRECATIONS: list[Deprecation] = [
     *_gone(("schedule_add", "schedule_list", "schedule_cancel"), RUNS_GONE),
     *_gone(("brake_status", "brake_set"), BRAKE_GONE),
     *_gone(("usage_summary", "budget_get"), LIMITS_GONE),
+    *_gone(
+        (
+            "intake_post",
+            "intake_list",
+            "intake_tie",
+            "intake_dismiss",
+            "intake_propose",
+            "intake_sources",
+            "relaybay://intake/{source}",
+        ),
+        INTAKE_GONE,
+    ),
 ]
 
 

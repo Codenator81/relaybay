@@ -619,19 +619,11 @@ async def seed_rules_and_filters(service: Service) -> None:
     await service.save_filter("acme-shop", "Waiting on me", waiting_on="owner", actor="owner")
 
 
-async def seed_intake_and_backlog(service: Service) -> None:
-    """Two intake sources (support-chat trusted, team-mail not), acme-shop with autonomy on, an
-    answer that woke the agent of the bound checkout task, one that only notified, a message
-    waiting in the Inbox, and the backlog: a session finding, an intake proposal, a declined item
-    and a planned one."""
+async def seed_backlog(service: Service) -> None:
+    """The backlog: a session finding, a declined item and a planned one."""
     checkout = next(
         t for t in await service.list_tasks(project="acme-shop") if t.title == "One-page checkout"
     )
-    gift = next(
-        t for t in await service.list_tasks(project="acme-shop") if t.title.startswith("Gift")
-    )
-    await service.set_project_autonomy("acme-shop", True, actor="demo")
-    # The checkout agent links its hook session itself: only an exact link can be woken.
     await service.add_backlog_item(
         "acme-shop",
         "Cart badge does not update after a removal",
@@ -644,43 +636,6 @@ async def seed_intake_and_backlog(service: Service) -> None:
         hook_session=DEMO_HOOK_SESSION,
     )
     await service.update_task(checkout.key, {"waiting_on": "client"}, actor="demo")
-    hello = await service.intake_post(
-        "support-chat", "demo-1", "Hello, Dana from the client here.", author="Dana", kind="chat"
-    )
-    await service.intake_dismiss(hello.message.id, actor="owner")
-    await service.set_source_trust("support-chat", True, actor="owner")
-    await service.intake_post(
-        "support-chat",
-        "demo-2",
-        f"About {checkout.key}: yes, keep the order summary sticky on phones too.",
-        author="Dana",
-        thread="chat-7",
-    )
-    await service.intake_post(
-        "team-mail",
-        "demo-mail-1",
-        f"Re {gift.key}: refunds go back to the gift card first.",
-        author="Sam Lee",
-        thread="<refunds@example.com>",
-        kind="email",
-    )
-    proposal = await service.intake_post(
-        "team-mail",
-        "demo-mail-2",
-        "Could the receipts PDF show the shop's VAT number?",
-        author="Sam Lee",
-        thread="<vat@example.com>",
-    )
-    await service.intake_post(
-        "team-mail",
-        "demo-mail-3",
-        "Is the holiday banner coming back next year?",
-        author="Alex Kim",
-        thread="<banner@example.com>",
-    )
-    await service.intake_propose(
-        proposal.message.id, "acme-shop", "VAT number on receipts", actor="demo"
-    )
     declined = await service.add_backlog_item(
         "demo-api", "XML responses", body="One client asked for XML.", area="api", by_owner=True
     )
@@ -715,7 +670,7 @@ async def _seed_new(db_path: Path) -> tuple[int, int]:
     try:
         await seed(service)
         await seed_rules_and_filters(service)
-        await seed_intake_and_backlog(service)
+        await seed_backlog(service)
         await seed_messages(service)
         # "To plan" in the backlog creates a task too: count what the board holds.
         tasks = len(await service.list_tasks(include_done=True))

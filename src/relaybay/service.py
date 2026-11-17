@@ -91,7 +91,6 @@ from relaybay.domain.hooks import (
     parse_message_recipient,
     session_start_context,
 )
-from relaybay.domain.intake import IntakeMessage
 from relaybay.domain.messages import SessionMessage
 from relaybay.domain.models import (
     Binding,
@@ -460,7 +459,6 @@ class TaskDetail:
     # Board targets of the document links in the description, progress, reports and comments.
     doc_refs: dict[str, mem.DocRef] = field(default_factory=dict)
     document: "TaskDocument | None" = None  # when the document field is a relaybay://doc link
-    intake: list[IntakeMessage] = field(default_factory=list)  # messages tied to the task
     from_backlog: BacklogItem | None = None  # the item "To plan" created this task from
     findings: list[BacklogItem] = field(default_factory=list)  # items this task is the origin of
     messages: list[SessionMessage] = field(default_factory=list)  # newest first
@@ -503,10 +501,7 @@ class Inbox:
     review: list[Task] = field(default_factory=list)  # tasks in review/test with a checklist
     rule_proposals: list[RuleProposal] = field(default_factory=list)
     rule_notices: list[RuleVersion] = field(default_factory=list)  # direct rules_update, unread
-    intake: list[IntakeMessage] = field(default_factory=list)  # new messages, not tied yet
-    answers: list[Task] = field(default_factory=list)  # tasks with "answer received"
     backlog_new: int = 0  # one Inbox line, however many items
-    tie_choices: list[Task] = field(default_factory=list)  # "Tie to a task": waiting ones first
     # A newer relaybay release: one line on the Inbox page, not counted (badge, digests).
     update: updates.UpdateNotice | None = None
     running_over: int | None = None  # sessions running while above the concurrency cap
@@ -521,8 +516,6 @@ class Inbox:
         return (
             len(self.questions)
             + len(self.approvals)
-            + len(self.intake)
-            + len(self.answers)
             + (1 if self.backlog_new else 0)
             # A card waiting on the owner for its open question or request counts once, as that.
             + len({t.id for t in self.waiting} - asked)
@@ -1023,56 +1016,11 @@ def _first_words(text: str, limit: int = 80) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
-def _clean_source_slug(value: Any) -> str:
-    slug = str(value or "").strip().lower()
-    if not intake.SOURCE_SLUG_RE.match(slug):
-        raise ValidationError(
-            f"Invalid source {value!r}: use lowercase letters, digits and dashes (up to 40),"
-            " e.g. 'support-chat'."
-        )
-    return slug
-
-
 def _clean_id(value: Any, name: str) -> int:
     text = str(value if value is not None else "").strip().lstrip("#")
     if not text.isdigit() or len(text) > 18:
         raise ValidationError(f"{name} must be a number such as 12, got {value!r}.")
     return int(text)
-
-
-def _clean_moment(value: Any, name: str) -> str | None:
-    """An ISO 8601 time from a watcher, stored in UTC; None when not given."""
-    text = _clean_text(value, name, 40)
-    if not text:
-        return None
-    try:
-        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValidationError(f"{name} must be an ISO time like 2026-11-05T10:00:00Z.") from None
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).isoformat(timespec="milliseconds")
-
-
-def _rate_limited(message: IntakeMessage) -> bool:
-    return message.status == "refused" and (message.refused_reason or "").startswith("rate limit")
-
-
-TIE_CHOICES_MAX = 40
-
-
-def _tie_choices(tasks: list[Task]) -> list[Task]:
-    """Open tasks for the Inbox's task picker: those waiting on someone first."""
-    open_tasks = [t for t in tasks if t.stage != Stage.DONE]
-    return sorted(open_tasks, key=lambda t: not t.waiting_on)[:TIE_CHOICES_MAX]
-
-
-@dataclass(slots=True)
-class PostTie:
-    message: IntakeMessage
-    task: Task
-    woke: bool
-    reason: str
 
 
 def _clean_slug(value: str) -> str:
@@ -2342,10 +2290,7 @@ class Service:
             review=await repo.review_queue(self._r),
             rule_proposals=await repo.list_rule_proposals(self._r),
             rule_notices=await repo.list_rule_notices(self._r),
-            intake=await repo.list_messages(self._r, status="new", limit=intake.LIST_MAX),
-            answers=[t for t in tasks if t.answer_received_at and t.stage != Stage.DONE],
             backlog_new=sum((await repo.backlog_new_counts(self._r)).values()),
-            tie_choices=_tie_choices(tasks),
             update=self.update_notice(),
             running_over=await self._concurrency_over(now),
             running_cap=self.max_concurrent_sessions,
@@ -2634,7 +2579,6 @@ class Service:
             plan=await self._load_plan(self._r, task),
             todo=await self._task_todo(self._r, task),
             plan_history=await self._plan_history(task),
-            intake=await repo.list_messages(self._r, task_id=task.id, limit=50),
             from_backlog=next(iter(await repo.list_backlog(self._r, task_id=task.id)), None),
             findings=await repo.list_backlog(self._r, origin_task_id=task.id, limit=50),
             messages=await repo.list_session_messages(self._r, task_id=task.id, limit=50),
@@ -5886,357 +5830,6 @@ class Service:
 
     # --- intake: messages from chats and mailboxes -----------------------------------------
 
-    async def _intake_match(
-        self, conn: aiosqlite.Connection, source_id: int, thread: str | None, text: str, ref: Any
-    ) -> tuple[Task | None, str | None]:
-        """The task a new message belongs to and the route that found it: the watcher's `task`,
-        a thread tied before, or the one task key of a known project the text names."""
-        if ref:
-            return await self.get_task(ref, conn), "watcher"
-        if thread:
-            task_id = await repo.thread_task(conn, source_id, thread)
-            if task_id is not None:
-                return await self.get_task(task_id, conn), "thread"
-        slugs = [p.slug for p in await repo.list_projects(conn)]
-        found = []
-        for key in intake.named_keys(text, slugs):
-            task = await repo.get_task_by_key(conn, key)
-            if task is not None:
-                found.append(task)
-        if len(found) == 1:
-            return found[0], "task key"
-        return None, None
-
-    async def _forward(self, tx: _Tx, message: IntakeMessage, task: Task) -> Comment:
-        """The message as an `external` comment: the comment channel delivers it to the exactly
-        linked bound session only, like an owner comment."""
-        body = intake.frame(message.source_slug, message.author, message.text or "", task.next_step)
-        return await self._insert_comment(
-            tx,
-            task,
-            author_kind="external",
-            author=message.source_slug,
-            session_id=None,
-            body=body,
-            in_reply_to=None,
-        )
-
-    async def _tie(
-        self, tx: _Tx, message: IntakeMessage, task: Task, actor: str, route: str
-    ) -> tuple[bool, str]:
-        """Tie `message` to `task`: the thread is remembered, a task waiting on someone gets the
-        "answer received" mark, and the bound agent is woken when the one rule allows it. The
-        stage never changes. Returns whether the agent was woken and why (or why not)."""
-        await repo.update_message(tx.conn, message.id, {"status": "tied", "task_id": task.id})
-        if message.thread:
-            await repo.set_thread(tx.conn, message.source_id, message.thread, task.id, tx.now)
-        ids = {"project_id": task.project_id, "task_id": task.id}
-        about = {
-            "project": task.project_slug,
-            "key": task.key,
-            "stage": task.stage.value,
-            "message_id": message.id,
-            "source": message.source_slug,
-        }
-        await tx.event("intake.tied", actor, **ids, **about, route=route)
-        if task.waiting_on and task.stage != Stage.DONE:
-            await repo.set_answer_mark(tx.conn, task.id, tx.now, message.id)
-            await tx.event(
-                "intake.answer_received", actor, **ids, **about, waiting_on=task.waiting_on
-            )
-        bound = await repo.get_session_by_id(tx.conn, task.session_id) if task.session_id else None
-        if task.stage == Stage.DONE:
-            reason = "Notification only: the task is done"
-        elif not intake.wake_allowed(task, message.source_may_wake):
-            reason = intake.autonomy_reason(task, message.source_may_wake)
-        elif bound is None:
-            reason = "Notification only: no session is bound to the task"
-        elif not bound.cc_exact:
-            # A comment written for it could never be delivered: say so instead of "woke".
-            reason = "Notification only: the bound session is not linked exactly"
-        else:
-            comment = await self._forward(tx, message, task)
-            reason = intake.autonomy_reason(task, True)
-            await repo.update_message(tx.conn, message.id, {"outcome": "woke"})
-            await tx.event(
-                "intake.wake", actor, **ids, **about, comment_id=comment.id, reason=reason
-            )
-            return True, reason
-        if message.outcome not in ("woke", "forwarded"):
-            # A message that already reached an agent keeps saying so after a re-tie.
-            await repo.update_message(tx.conn, message.id, {"outcome": "notified"})
-        return False, reason
-
-    async def intake_post(
-        self,
-        source: str,
-        external_id: str,
-        text: str,
-        *,
-        author: str | None = None,
-        thread: str | None = None,
-        received_at: str | None = None,
-        task: str | None = None,
-        kind: str | None = None,
-        actor: str = "mcp",
-    ) -> intake.PostResult:
-        """Store one message from a watcher. The source is created on its first message,
-        untrusted. Idempotent on (source, external_id): a repeat returns the stored message and
-        writes nothing. A secret value or a source over its hourly limit is stored as `refused`
-        without text. Then it is matched to a task (see `_intake_match`) and tied."""
-        slug = _clean_source_slug(source)
-        ext = _clean_text(external_id, "external_id", intake.EXTERNAL_ID_MAX)
-        if not ext:
-            raise ValidationError("external_id must not be empty.")
-        body = str(text or "").replace("\r\n", "\n").strip()
-        if not body:
-            raise ValidationError("text must not be empty.")
-        if len(body) > intake.TEXT_MAX:
-            body = body[: intake.TEXT_MAX - 1].rstrip() + "…"
-        # One line each: a name or thread printed in a frame can never start a line of its own.
-        thread_id = intake.one_line(_clean_text(thread, "thread", intake.THREAD_MAX)) or None
-        who = intake.one_line(_clean_text(author, "author", intake.AUTHOR_MAX)) or None
-        source_kind = (kind or "other").strip().lower()
-        if source_kind not in intake.SOURCE_KINDS:
-            raise ValidationError(f"kind must be one of {', '.join(intake.SOURCE_KINDS)}.")
-        received = _clean_moment(received_at, "received_at")
-        # Idempotency first: a repeated post writes nothing, not even the source. Only a message
-        # refused for the rate limit may come again, once the window has room.
-        known = await repo.get_source(self._r, slug)
-        if known is not None:
-            repeat = await repo.find_message(self._r, known.id, ext)
-            if repeat is not None and not _rate_limited(repeat):
-                found = await self.get_task(repeat.task_id) if repeat.task_id else None
-                return intake.PostResult(repeat, False, found, repeat.outcome == "woke")
-        rules = await self._secret_rules(self._r, None)
-        secrets_found = [
-            name
-            for value in (body, who, thread_id)
-            if value
-            for _, name in envs.find_secrets(value, rules)
-        ]
-        async with self._tx() as tx:
-            src = await repo.get_source(tx.conn, slug)
-            retry = None
-            if src is None:
-                await repo.insert_source(tx.conn, slug, source_kind, slug, tx.now)
-                src = await repo.get_source(tx.conn, slug)
-                assert src is not None
-            elif (repeat := await repo.find_message(tx.conn, src.id, ext)) is not None:
-                if not _rate_limited(repeat):
-                    return intake.PostResult(repeat, False, None, repeat.outcome == "woke")
-                retry = repeat
-            since = (datetime.now(UTC) - timedelta(seconds=intake.RATE_WINDOW_SECONDS)).isoformat(
-                timespec="milliseconds"
-            )
-            refused = None
-            if await repo.count_messages_since(tx.conn, src.id, since) >= intake.RATE_LIMIT:
-                if retry is not None:
-                    return intake.PostResult(retry, False)  # still no room: nothing changes
-                refused = intake.RATE_REASON.format(limit=intake.RATE_LIMIT)
-            elif secrets_found:
-                refused = f"looks like it contains a secret value ({secrets_found[0]})"
-            # A secret may sit in any field: a refused message keeps no text, author or thread.
-            secret = bool(refused and secrets_found)
-            values = {
-                "thread": None if secret else thread_id,
-                "author": None if secret else who,
-                "text": None if refused else body,
-                "received_at": received or tx.now,
-                "status": "refused" if refused else "new",
-                "refused_reason": refused,
-            }
-            if retry is not None:
-                message_id = retry.id
-                await repo.update_message(tx.conn, message_id, {**values, "created_at": tx.now})
-            else:
-                message_id = await repo.insert_message(
-                    tx.conn, source_id=src.id, external_id=ext, now=tx.now, **values
-                )
-            await repo.touch_source(tx.conn, src.id, tx.now)
-            await tx.event(
-                "intake.received",
-                actor,
-                message_id=message_id,
-                source=slug,
-                status="refused" if refused else "new",
-                **({"reason": refused} if refused else {}),
-            )
-            message = await repo.get_message(tx.conn, message_id)
-            assert message is not None
-            if refused:
-                return intake.PostResult(message, True)
-            found, route = await self._intake_match(tx.conn, src.id, thread_id, body, task)
-            if found is None or route is None:
-                return intake.PostResult(message, True)
-            woke, reason = await self._tie(tx, message, found, actor, route)
-            fresh = await repo.get_message(tx.conn, message_id)
-            assert fresh is not None
-            return intake.PostResult(fresh, True, found, woke, reason)
-
-    async def _message(self, conn: aiosqlite.Connection, ref: Any) -> IntakeMessage:
-        number = _clean_id(ref, "message")
-        found = await repo.get_message(conn, number)
-        if found is None:
-            raise NotFoundError(f"Intake message #{number} not found.")
-        return found
-
-    async def intake_message(self, ref: Any) -> IntakeMessage:
-        return await self._message(self._r, ref)
-
-    async def intake_tie(self, ref: Any, task: str | int, *, actor: str = "owner") -> PostTie:
-        """Tie a message (new, or tied to another task) to a task; the owner's tie on the board
-        teaches the thread. Refused and dismissed messages stay where they are."""
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.status in ("refused", "dismissed"):
-                raise ValidationError(
-                    f"Message #{message.id} is {message.status}; nothing changed."
-                )
-            target = await self.get_task(task, tx.conn)
-            woke, reason = await self._tie(tx, message, target, actor, "tie")
-            fresh = await repo.get_message(tx.conn, message.id)
-            assert fresh is not None
-            return PostTie(fresh, target, woke, reason)
-
-    async def intake_dismiss(self, ref: Any, *, actor: str = "owner") -> IntakeMessage:
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.status != "new":
-                raise ValidationError(
-                    f"Message #{message.id} is {message.status}; only a new one is dismissed."
-                )
-            await repo.update_message(tx.conn, message.id, {"status": "dismissed"})
-            await tx.event(
-                "intake.dismissed", actor, message_id=message.id, source=message.source_slug
-            )
-            fresh = await repo.get_message(tx.conn, message.id)
-            assert fresh is not None
-            return fresh
-
-    async def intake_forward(self, ref: Any, *, actor: str = "owner") -> Comment:
-        """ "Forward to the agent": the owner sends a tied message to the bound session, framed
-        the same way. The owner's own act, so no `intake.wake`."""
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.task_id is None or not message.text:
-                raise ValidationError(f"Message #{message.id} is not tied to a task.")
-            if message.outcome in ("forwarded", "woke"):
-                raise ValidationError(f"Message #{message.id} already reached the agent.")
-            task = await self.get_task(message.task_id, tx.conn)
-            comment = await self._forward(tx, message, task)
-            await repo.update_message(tx.conn, message.id, {"outcome": "forwarded"})
-            await tx.event(
-                "intake.forwarded",
-                actor,
-                project_id=task.project_id,
-                task_id=task.id,
-                project=task.project_slug,
-                key=task.key,
-                stage=task.stage.value,
-                message_id=message.id,
-                source=message.source_slug,
-                comment_id=comment.id,
-            )
-            return comment
-
-    async def intake_list(
-        self,
-        *,
-        source: str | None = None,
-        status: str | None = None,
-        task: str | int | None = None,
-        limit: int = 20,
-    ) -> list[IntakeMessage]:
-        source_id = None
-        if source:
-            found = await repo.get_source(self._r, _clean_source_slug(source))
-            if found is None:
-                raise NotFoundError(f"Intake source {source!r} not found.")
-            source_id = found.id
-        if status and status not in intake.STATUSES:
-            raise ValidationError(f"status must be one of {', '.join(intake.STATUSES)}.")
-        task_id = (await self.get_task(task)).id if task else None
-        return await repo.list_messages(
-            self._r,
-            source_id=source_id,
-            status=status or None,
-            task_id=task_id,
-            limit=max(1, min(int(limit), intake.LIST_MAX)),
-        )
-
-    async def intake_sources(self) -> list[intake.IntakeSource]:
-        return await repo.list_sources(self._r)
-
-    async def set_source_trust(
-        self, slug: str, may_wake: bool, *, actor: str = "owner"
-    ) -> intake.IntakeSource:
-        """Board only: whether messages from this source may wake agents."""
-        async with self._tx() as tx:
-            src = await repo.get_source(tx.conn, _clean_source_slug(slug))
-            if src is None:
-                raise NotFoundError(f"Intake source {slug!r} not found.")
-            if src.may_wake != may_wake:
-                await repo.set_source_may_wake(tx.conn, src.id, may_wake)
-                kind = "intake.source_trusted" if may_wake else "intake.source_untrusted"
-                await tx.event(kind, actor, source=src.slug)
-            fresh = await repo.get_source(tx.conn, src.slug)
-            assert fresh is not None
-            return fresh
-
-    async def set_task_autonomy(self, ref: str | int, value: str, *, actor: str = "owner") -> Task:
-        """Board only: the task's autonomy switch (project, on, off)."""
-        choice = str(value or "").strip().lower()
-        if choice not in intake.AUTONOMY_VALUES:
-            raise ValidationError(f"autonomy must be one of {', '.join(intake.AUTONOMY_VALUES)}.")
-        async with self._tx() as tx:
-            task = await self.get_task(ref, tx.conn)
-            if task.autonomy != choice:
-                await repo.update_task(tx.conn, task.id, {"autonomy": choice}, tx.now)
-                await tx.event(
-                    "task.updated",
-                    actor,
-                    project_id=task.project_id,
-                    task_id=task.id,
-                    project=task.project_slug,
-                    key=task.key,
-                    stage=task.stage.value,
-                    changes={"autonomy": choice},
-                )
-            return await self.get_task(task.id, tx.conn)
-
-    async def set_project_autonomy(self, slug: str, on: bool, *, actor: str = "owner") -> Project:
-        """Board only: whether the project's agents may continue after a trusted message."""
-        async with self._tx() as tx:
-            project = await self.get_project(slug, tx.conn)
-            if project.autonomy != on:
-                await repo.update_project(tx.conn, project.id, {"autonomy": int(on)}, tx.now)
-                await tx.event(
-                    "project.updated",
-                    actor,
-                    project_id=project.id,
-                    project=project.slug,
-                    changes={"autonomy": on},
-                )
-            return await self.get_project(project.slug, tx.conn)
-
-    async def clear_answer(self, ref: str | int, *, actor: str = "owner") -> Task:
-        """The owner clears the "answer received" mark on the card."""
-        async with self._tx() as tx:
-            task = await self.get_task(ref, tx.conn)
-            if task.answer_received_at:
-                await repo.set_answer_mark(tx.conn, task.id, None, None)
-                await tx.event(
-                    "intake.answer_cleared",
-                    actor,
-                    project_id=task.project_id,
-                    task_id=task.id,
-                    project=task.project_slug,
-                    key=task.key,
-                    stage=task.stage.value,
-                )
-            return await self.get_task(task.id, tx.conn)
-
     async def set_archived(self, ref: str | int, archived: bool, *, actor: str = "owner") -> Task:
         """The board's "Archive" / "Back from the archive" on a done card."""
         async with self._tx() as tx:
@@ -6294,46 +5887,6 @@ class Service:
             **payload,
             archived_by=task.archived_by,  # None: the done window had archived it
         )
-
-    async def intake_propose(
-        self,
-        ref: Any,
-        project: str,
-        title: str,
-        description: str | None = None,
-        *,
-        actor: str = "mcp",
-    ) -> BacklogItem:
-        """A backlog item from a message (origin `intake`); "To plan" on the board is the
-        confirmation that creates the task. A watcher or agent never creates tasks directly."""
-        async with self._tx() as tx:
-            message = await self._message(tx.conn, ref)
-            if message.status in ("refused", "dismissed", "proposed"):
-                raise ValidationError(
-                    f"Message #{message.id} is {message.status}; nothing changed."
-                )
-            proj = await self.get_project(project, tx.conn)
-            item = await self._add_backlog(
-                tx,
-                proj,
-                title,
-                description if description is not None else message.text,
-                None,
-                origin="intake",
-                created_by=actor,
-                intake_message_id=message.id,
-            )
-            await repo.update_message(tx.conn, message.id, {"status": "proposed"})
-            await tx.event(
-                "intake.proposed",
-                actor,
-                project_id=proj.id,
-                project=proj.slug,
-                message_id=message.id,
-                source=message.source_slug,
-                backlog_id=item.id,
-            )
-            return item
 
     # --- backlog -----------------------------------------------------------------------------
 
@@ -6837,16 +6390,6 @@ class Service:
             item.id,
             {"status": "planned", "task_id": task_id, "decided_at": tx.now, "decided_by": actor},
         )
-        if item.intake_message_id is not None:
-            message = await repo.get_message(tx.conn, item.intake_message_id)
-            if message is not None:
-                await repo.update_message(
-                    tx.conn, message.id, {"status": "tied", "task_id": task_id}
-                )
-                if message.thread:
-                    await repo.set_thread(
-                        tx.conn, message.source_id, message.thread, task_id, tx.now
-                    )
         await tx.event(
             "backlog.planned",
             actor,

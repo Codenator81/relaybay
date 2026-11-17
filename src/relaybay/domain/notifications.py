@@ -12,7 +12,6 @@ LABELS = {
     "waiting": ("waiting", "waiting"),
     "review": ("review", "reviews"),
     "reply": ("reply", "replies"),
-    "answer": ("answer", "answers"),
     "question": ("question", "questions"),
     "approval": ("approval request", "approval requests"),
     "permission": ("permission request", "permission requests"),
@@ -23,19 +22,17 @@ DEFAULT_KINDS = (
     "waiting",
     "review",
     "reply",
-    "answer",
     "question",
     "approval",
     "server",
 )
 # Kinds of removed features: a saved list that still names them loads without them.
-RETIRED_KINDS = ("reminder", "brake", "budget")
+RETIRED_KINDS = ("reminder", "brake", "budget", "answer")
 # The events `classify` may answer for: the API reads only these.
 EVENT_KINDS = (
     "task.updated",
     "task.stage_changed",
     "comment.added",
-    "intake.answer_received",
     "question.asked",
     "approval.requested",
     "session.status_changed",
@@ -134,14 +131,6 @@ def classify(
             f"Approval on {key} from {p.get('requested_by') or event.actor}",
             str(p.get("what") or title),
             "/inbox#inbox-approvals",
-            key,
-        )
-    if event.kind == "intake.answer_received":
-        return Notice(
-            "answer",
-            f"Answer received: {key}",
-            f"From {p.get('source') or 'intake'}: {title}".removesuffix(": "),
-            _task_url(project, key),
             key,
         )
     return None

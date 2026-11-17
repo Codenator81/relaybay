@@ -96,9 +96,8 @@ class DesktopSettings:
         default=DEFAULT_KINDS,
         metadata=_doc(
             "What to notify about, any of: `waiting` (a task now waits on you), `review` (a task"
-            " moved to review or test), `reply` (an agent's comment), `answer` (an external"
-            " message for a task that waits on someone), `question` (an agent's blocking"
-            " question or look-at-this request), `approval` (an agent waits for your"
+            " moved to review or test), `reply` (an agent's comment), `question` (an agent's"
+            " blocking question or look-at-this request), `approval` (an agent waits for your"
             " approval of a push, a merge or a stand change), `permission` (a session waiting for"
             " you, off by default), `server` (an"
             " external server stopped answering).",

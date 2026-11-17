@@ -44,7 +44,6 @@ from relaybay.domain.errors import (
     NotFoundError,
     ValidationError,
 )
-from relaybay.domain.intake import autonomy_reason
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
 from relaybay.domain.rules import rules_markdown
@@ -345,7 +344,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["event_subject"] = event_subject
     env.filters["change_summary"] = env_domain.change_summary
     env.globals["fields_text"] = env_domain.fields_text
-    env.globals["autonomy_reason"] = autonomy_reason
     env.filters["tojson_compact"] = lambda value: json.dumps(value, ensure_ascii=False)
 
     def render(request: Request, name: str, status: int = 200, **context: Any) -> HTMLResponse:
@@ -743,7 +741,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "inbox.html",
             "inbox",
             inbox=await inbox(),
-            inbox_projects=await project_rows(),
             message=flash.get("message"),
             error=flash.get("error"),
             last_event_id=last_event_id,
@@ -752,9 +749,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/fragments/inbox", response_class=HTMLResponse)
     async def inbox_fragment(request: Request):
-        return render(
-            request, "_inbox.html", inbox=await inbox(), inbox_projects=await project_rows()
-        )
+        return render(request, "_inbox.html", inbox=await inbox())
 
     @router.get("/fragments/inbox-badge", response_class=HTMLResponse)
     async def inbox_badge(request: Request):
@@ -819,7 +814,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 return f"Live is off for {saved.name}: any touch of a live stand is denied."
             return f"Live is back for {saved.name}: its level on each stand applies again."
 
-        return await intake_write(request, csrf, write, back_to(back, "/sessions"))
+        return await board_write(request, csrf, write, back_to(back, "/sessions"))
 
     async def audit_context(
         project: str,
@@ -963,7 +958,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             await service.dismiss_message_loop(message_id, actor="owner")
             return f"Message #{message_id}: the stopped loop is marked as seen."
 
-        return await intake_write(request, csrf, write)
+        return await board_write(request, csrf, write)
 
     async def activity_context(
         project: str, kind: str, before: int | None, after: int | None
@@ -1157,17 +1152,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if changes.get("next_step", "") == task.next_step:
             # The form always resends the next step; only an edited one confirms it as current.
             del changes["next_step"]
-        autonomy = form.get("autonomy")
-        if isinstance(autonomy, str) and autonomy != task.autonomy:
-            # Autonomy lets an agent go on by itself: a browser session only, never a Bearer client.
-            board_only(request, csrf)
         try:
             result = await service.update_task_checked(
                 task.key, changes, expected_version=version, actor="board"
             )
-            if isinstance(autonomy, str) and autonomy != result.task.autonomy:
-                saved = await service.set_task_autonomy(task.key, autonomy, actor="owner")
-                result = result._replace(task=saved)
         except ConflictError:
             fresh = await find_task(slug, key)
             return await edit_form(
@@ -1457,7 +1445,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 request,
                 "_inbox.html",
                 inbox=await inbox(),
-                inbox_projects=await project_rows(),
                 error=error,
                 message=None if error else f"Question {question_id} answered.",
             )
@@ -1522,7 +1509,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 request,
                 "_inbox.html",
                 inbox=await inbox(),
-                inbox_projects=await project_rows(),
                 error=error,
                 message=None if error else done,
             )
@@ -2734,14 +2720,14 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await rules_write(request, csrf, proposal.scope, write)
 
-    # --- Intake: Inbox actions, Settings → Intake, the task's answer mark --------------------
+    # --- Board writes that answer with a flash; the done card's archive ----------------------
 
     def back_to(value: str, default: str) -> str:
         """Only a local path (`safe_next`): a form field must not send the browser elsewhere."""
         safe = safe_next(value)
         return safe if value and safe == value else default
 
-    async def intake_write(
+    async def board_write(
         request: Request, csrf: str, write: Callable[[], Awaitable[str]], back: str = "/inbox"
     ) -> Response:
         board_only(request, csrf)
@@ -2752,89 +2738,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         except DomainError as exc:
             return flash_redirect(request, back, error=str(exc))
         return flash_redirect(request, back, message=message)
-
-    @router.post("/intake/{message_id}/tie")
-    async def intake_tie(
-        request: Request,
-        message_id: int,
-        task: Annotated[str, Form()] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            tied = await service.intake_tie(message_id, task, actor="owner")
-            done = "the agent was woken" if tied.woke else "notification only"
-            return f"Message #{message_id} tied to {tied.task.key}: {done}."
-
-        return await intake_write(request, csrf, write)
-
-    @router.post("/intake/{message_id}/dismiss")
-    async def intake_dismiss(
-        request: Request, message_id: int, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ) -> Response:
-        async def write() -> str:
-            await service.intake_dismiss(message_id, actor="owner")
-            return f"Message #{message_id} dismissed."
-
-        return await intake_write(request, csrf, write)
-
-    @router.post("/intake/{message_id}/propose")
-    async def intake_propose(
-        request: Request,
-        message_id: int,
-        project: Annotated[str, Form()] = "",
-        title: Annotated[str, Form()] = "",
-        description: Annotated[str, Form()] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            item = await service.intake_propose(
-                message_id, project, title, description, actor="owner"
-            )
-            return (
-                f"Backlog item #{item.id} added to {item.project_slug}: plan it from the backlog."
-            )
-
-        return await intake_write(request, csrf, write)
-
-    @router.post("/intake/{message_id}/forward", response_class=HTMLResponse)
-    async def intake_forward(
-        request: Request, message_id: int, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        board_only(request, csrf)
-        message = await service.intake_message(message_id)
-        if message.task_key is None:
-            raise ValidationError(f"Message #{message_id} is not tied to a task.")
-        error = None
-        try:
-            await service.intake_forward(message_id, actor="owner")
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            error = str(exc)
-        if "hx-request" not in request.headers:
-            return RedirectResponse(f"/t/{message.task_key}", status_code=303)
-        detail = await service.task_detail(message.task_key, reports=TASK_PAGE_REPORTS)
-        return render(request, "_task_view.html", detail=detail, error=error)
-
-    @router.post("/p/{slug}/t/{key}/answer/clear", response_class=HTMLResponse)
-    async def clear_answer(
-        request: Request,
-        slug: str,
-        key: str,
-        target: Annotated[str, Form()] = "view",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        board_only(request, csrf)
-        task = await service.clear_answer((await find_task(slug, key)).key, actor="owner")
-        if target == "inbox":
-            return RedirectResponse("/inbox#inbox-answers", status_code=303)
-        if "hx-request" not in request.headers:
-            return RedirectResponse(f"/p/{slug}?task={task.key}", status_code=303)
-        if target == "card":
-            code = {task.id: await service.task_code(task)}
-            return render(request, "_card.html", t=task, slug=slug, code=code)
-        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
-        return render(request, "_task_view.html", detail=detail)
 
     async def archive_answer(
         request: Request, slug: str, key: str, archived: bool, target: str, csrf: str
@@ -2877,51 +2780,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ) -> Response:
         return await archive_answer(request, slug, key, False, target, csrf)
-
-    @router.get("/settings/intake", response_class=HTMLResponse)
-    async def intake_settings(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        response = await page(
-            request,
-            "intake.html",
-            "settings",
-            sources=await service.intake_sources(),
-            projects=await project_rows(),
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    @router.post("/settings/intake/sources/{source}/trust")
-    async def trust_source(
-        request: Request,
-        source: str,
-        may_wake: Annotated[str, Form()] = "0",
-        back: Annotated[str, Form()] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            saved = await service.set_source_trust(source, may_wake == "1", actor="owner")
-            state = "may wake agents" if saved.may_wake else "notification only"
-            return f"{saved.slug}: {state}."
-
-        return await intake_write(request, csrf, write, back_to(back, "/settings/intake"))
-
-    @router.post("/settings/intake/projects/{slug}")
-    async def project_autonomy(
-        request: Request,
-        slug: str,
-        autonomy: Annotated[str, Form()] = "0",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            saved = await service.set_project_autonomy(slug, autonomy == "1", actor="owner")
-            state = "on" if saved.autonomy else "off"
-            return f"Autonomy for {saved.slug}: {state}."
-
-        return await intake_write(request, csrf, write, "/settings/intake")
 
     # --- Backlog -------------------------------------------------------------------------
 
@@ -3030,7 +2888,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             )
             return f"Backlog item #{item.id} added."
 
-        return await intake_write(request, csrf, write, backlog_url(project, back))
+        return await board_write(request, csrf, write, backlog_url(project, back))
 
     # Before the decision route, which would take `queue` as a decision.
     @router.post("/backlog/{item_id}/queue")
@@ -3046,7 +2904,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             item = await service.set_backlog_queue(item_id, priority, assignee, actor="owner")
             return f"Backlog item #{item.id} saved."
 
-        return await intake_write(request, csrf, write, back_to(back, "/backlog"))
+        return await board_write(request, csrf, write, back_to(back, "/backlog"))
 
     @router.post("/backlog/{item_id}/{decision}")
     async def backlog_decide(
@@ -3069,7 +2927,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 return f"Backlog item #{item.id} planned as {item.task_key}."
             return f"Backlog item #{item.id}: {item.status}."
 
-        return await intake_write(request, csrf, write, back_to(back, "/backlog"))
+        return await board_write(request, csrf, write, back_to(back, "/backlog"))
 
     @router.get("/favicon.ico")
     async def favicon() -> Response:

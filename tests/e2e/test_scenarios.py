@@ -284,5 +284,3 @@ def test_events_of_a_session_are_spooled_while_the_server_is_away(stand: Stand) 
     # Replayed in order: the spooled start, stop and end of the resumed session.
     replayed = stand.events().split("ended → working", 1)[1]
     assert "working → idle" in replayed and "idle → ended" in replayed
-
-
