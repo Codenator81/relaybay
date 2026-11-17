@@ -1,8 +1,10 @@
 # relaybay
 
-A live board and MCP server for people who run many Claude Code sessions across many repositories.
-Sessions report their work through MCP tools and Claude Code hooks; you watch
-**projects → tasks → stages → reports** update in the browser, on the desktop or on your phone.
+A live board and MCP server for people who run many Claude Code sessions across many
+repositories. The sessions work in the Claude desktop app or a terminal and report through MCP
+tools and Claude Code hooks; you see **projects → tasks → stages → reports**, who waits for whom
+and what is left to accept, in the browser, on the desktop or on your phone. relaybay starts no
+agent: one click takes you from a card to its session.
 
 Local and private: one process, SQLite, bound to `127.0.0.1`, token-protected, no telemetry. The
 only outbound calls are a daily check of the latest release on GitHub (`update_check = false` in

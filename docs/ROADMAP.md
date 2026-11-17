@@ -66,7 +66,7 @@ Ships when a coordinator runs its daily work from relaybay.
 | Item | Status | Design |
 |---|---|---|
 | Intake from chats and e-mail: sources, matching to the waiting task, "answer received", autonomy switch per project and task, example Telegram and e-mail watchers | done; removed in 0.12 | [0015](design/0015-intake-and-autonomy.md) |
-| Backlog: findings of sessions and reviews, intake proposals, "To plan" creates the task, `backlog.md` import and export || done; intake proposals removed in 0.12 | [0015](design/0015-intake-and-autonomy.md#backlog) |
+| Backlog: findings of sessions and reviews, intake proposals, "To plan" creates the task, `backlog.md` import and export | done; intake proposals removed in 0.12 | [0015](design/0015-intake-and-autonomy.md#backlog) |
 
 ## 0.6.0 — desktop program (released 2026-11-05)
 
@@ -190,15 +190,15 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 
 | Item | Status | Design |
 |---|---|---|
-| PR 1: areas (one per card from a project list that grows from use, a chip on the card, a board filter, MCP), a home icon for the product name in the top bar | next | [0024](design/0024-card-modes-thread-and-areas.md#areas) |
+| PR 1: areas (one per card from a project list that grows from use, a chip on the card, a board filter, MCP), a home icon for the product name in the top bar | done | [0024](design/0024-card-modes-thread-and-areas.md#areas) |
 | The rest of design 0024 (card modes, the run as a thread, the Coordinator page) | superseded by [0025](design/0025-board-with-the-desktop.md) |  |
-| Agents inside removed, the board with the desktop: runs, the terminal, the coordinator run, profiles, schedules (reminders included), the brake, budgets, the Usage page, intake and messages between sessions removed; the session card, Copy the brief, questions and approvals for desktop sessions | next | [0025](design/0025-board-with-the-desktop.md) |
+| Agents inside removed: runs, the terminal, the coordinator run, profiles, schedules (reminders included), the brake, budgets, the Usage page, intake and messages between sessions; questions and approvals stay for desktop and terminal sessions | done | [0025](design/0025-board-with-the-desktop.md) |
+| The session card: the state line, one Open that follows where the session runs, Copy the brief, one order of the task view, why a comment is not delivered yet | done | [0025](design/0025-board-with-the-desktop.md) |
 
 ## After 0.12
 
 | Item | Status | Design |
 |---|---|---|
-| An agents view: who started whom, who writes to whom | later | [0010](design/0010-map-and-usage.md) |
 | Opening a new desktop session with the brief already in it (a probe of the desktop app's link first) | later | [0025](design/0025-board-with-the-desktop.md#what-gets-stronger) |
 
 Not planned: project managers and a Managers page (the owner, 2026-11-16).

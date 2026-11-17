@@ -1,7 +1,7 @@
 [project]
 name = "relaybay"
 version = "0.11.0"
-description = "A live board and MCP server for coordinating many Claude Code sessions across projects."
+description = "A live board and MCP server that coordinates many Claude Code sessions next to the Claude desktop app: projects, tasks, stages, reports, questions and review by eye."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

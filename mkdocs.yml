@@ -1,5 +1,5 @@
 site_name: relaybay
-site_description: A live board and MCP server for coordinating many Claude Code sessions across projects.
+site_description: A live board and MCP server that coordinates many Claude Code sessions next to the Claude desktop app.
 site_url: https://codenator81.github.io/relaybay/
 repo_url: https://github.com/Codenator81/relaybay
 repo_name: Codenator81/relaybay

@@ -4,6 +4,11 @@ How relaybay behaves **now**: the concepts and every shipped feature. This page 
 plans; upcoming work lives in the [roadmap](ROADMAP.md) and the [design documents](design/index.md).
 When a feature ships, its final behaviour moves here in the same pull request.
 
+relaybay is a coordination board next to the Claude desktop app and terminal sessions: the
+sessions report through MCP tools and Claude Code hooks, the owner reads, answers, approves and
+accepts on the board, and relaybay starts no agent ([design
+0025](design/0025-board-with-the-desktop.md)).
+
 Version covered: `0.11.0`. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
