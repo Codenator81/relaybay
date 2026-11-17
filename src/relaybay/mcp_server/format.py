@@ -21,7 +21,6 @@ from relaybay.domain.environments import (
 from relaybay.domain.intake import IntakeMessage, IntakeSource, one_line, quoted
 from relaybay.domain.intake import PostResult as IntakePost
 from relaybay.domain.intake import quoted as intake_quoted
-from relaybay.domain.limits import Brake, BudgetState, period_text
 from relaybay.domain.memory import (
     STRONG_MATCH,
     Document,
@@ -55,7 +54,6 @@ from relaybay.domain.rules import (
 )
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, LINK_FIELDS, LINK_NAMES, TASK_FIELDS
-from relaybay.domain.usage import UsageReport, UsageTotal
 from relaybay.policy import EffectivePolicy
 from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
 
@@ -1225,78 +1223,6 @@ def event_detail(e: Event) -> str:
     return ""
 
 
-USAGE_LINES_MAX = 30
-
-
-def _usage_line(label: str, total: UsageTotal) -> str:
-    return (
-        f"- {label}: {total.tokens:,} tokens (input {total.input:,}, output {total.output:,},"
-        f" cache read {total.cache_read:,}, cache write {total.cache_write:,},"
-        f" {total.messages:,} messages)"
-    )
-
-
-def usage_summary(report: UsageReport, enabled: bool) -> str:
-    lines = [
-        f"Usage, last {report.days} day(s). Tokens only: no prices or quotas are known. Subagents"
-        " count to their session."
-    ]
-    if not enabled:
-        lines.append("Reading is off (usage_enabled = false): this is what was read before.")
-    if report.unknown_lines:
-        lines.append(f"{report.unknown_lines} transcript line(s) not understood, not counted.")
-    if report.capped_files:
-        lines.append(f"{report.capped_files} subagent transcript(s) over the limit, not counted.")
-    if report.unread_files:
-        lines.append(f"{report.unread_files} transcript file(s) could not be read.")
-    if not report.rows:
-        lines.append("No usage recorded for this filter.")
-        return "\n".join(lines)
-    lines.append(_usage_line("Total", report.total))
-    for title, items in (
-        ("By day", [item for item in reversed(report.periods) if item[1].messages]),
-        ("By project", report.by_project),
-        ("By session", report.by_session),
-        ("By model", report.by_model),
-    ):
-        lines.append(f"\n{title}:")
-        lines += [_usage_line(label, total) for label, total in items[:USAGE_LINES_MAX]]
-        if len(items) > USAGE_LINES_MAX:
-            lines.append(f"... {len(items) - USAGE_LINES_MAX} more")
-    return "\n".join(lines)
-
-
-def budgets(states: list[BudgetState], enabled: bool) -> str:
-    lines = []
-    if not enabled:
-        lines.append("Reading is off (usage_enabled = false): budgets count nothing new.")
-    if not states:
-        lines.append("No token budgets.")
-    for state in states:
-        budget = state.budget
-        mark = f" [{state.level}]" if state.level else ""
-        lines.append(
-            f"- {budget.target}: {state.used:,} of {budget.max_tokens:,} tokens"
-            f" {period_text(budget.period)} ({state.percent}%), action {budget.action}{mark}"
-        )
-    return "\n".join(lines)
-
-
-def _brake_line(brake: Brake) -> str:
-    return (
-        f"- #{brake.id} {brake.target}: {brake.reason} (set by {brake.created_by},"
-        f" {brake.created_at[:19]}Z)"
-    )
-
-
-def brakes(items: list[Brake]) -> str:
-    if not items:
-        return "No brake is on."
-    return "\n".join(
-        ["Brake on; only the owner releases it on the board:"] + [_brake_line(b) for b in items]
-    )
-
-
 def schedule_detail(p: dict[str, Any]) -> str:
     """`schedule 3 (check) <its text>: ran, <reason>, run 12`."""
     head = f"schedule {p.get('schedule_id')} ({p.get('schedule_kind')}) {p.get('title') or ''}"
@@ -1306,20 +1232,6 @@ def schedule_detail(p: dict[str, Any]) -> str:
     if p.get("run_id"):
         extra.append(f"run {p['run_id']}")
     return head.rstrip() + (": " + ", ".join(extra) if extra else "")
-
-
-def brake_saved(brake: Brake) -> str:
-    return (
-        f"Brake #{brake.id} on for {brake.target}: agents stop at their next tool call. A running"
-        " command or a background process goes on. Only the owner releases it, on the board."
-    )
-
-
-RUN_TURNS_SHOWN = 5
-
-
-RUN_REPORT_LINE_MAX = 300
-RUN_EVENTS_OUTPUT_MAX = 20_000
 
 
 def events(items: list[Event], since_id: int) -> str:

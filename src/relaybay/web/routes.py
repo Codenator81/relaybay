@@ -50,7 +50,6 @@ from relaybay.domain.review import MB
 from relaybay.domain.rules import rules_markdown
 from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage, parse_stage
 from relaybay.domain.tasks import is_archived
-from relaybay.domain.usage import UsageReport
 from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
@@ -283,43 +282,6 @@ QUIET_KINDS = ("session.status_changed",)
 BACKLOG_ROWS = 500
 BACKLOG_STATUSES = ("new", "later", "planned", "done", "declined")
 USAGE_ROWS = 500
-USAGE_DAYS = (7, 30, 90, 365, 0)
-CHART_WIDTH = 720
-CHART_HEIGHT = 120
-CHART_GAP = 2
-
-
-def usage_chart(report: UsageReport) -> dict[str, Any] | None:
-    """Bars for the Usage page as numbers for an inline SVG; drawn from presentation attributes,
-    which the CSP allows, so the page needs no chart library."""
-    if not report.periods:
-        return None
-    top = max(total.tokens for _, total in report.periods) or 1
-    width = CHART_WIDTH / len(report.periods)
-    bars = []
-    for index, (period, total) in enumerate(report.periods):
-        height = round(total.tokens / top * (CHART_HEIGHT - 2), 1)
-        if total.tokens:
-            height = max(height, 2)
-        bars.append(
-            {
-                "x": round(index * width + CHART_GAP / 2, 2),
-                "y": round(CHART_HEIGHT - height, 1),
-                "width": round(max(width - CHART_GAP, 1), 2),
-                "height": height,
-                "hit_x": round(index * width, 2),
-                "hit_width": round(width, 2),
-                "title": f"{period}: {total.tokens:,} tokens",
-            }
-        )
-    return {
-        "width": CHART_WIDTH,
-        "height": CHART_HEIGHT,
-        "bars": bars,
-        "top": top,
-        "first": report.periods[0][0],
-        "last": report.periods[-1][0],
-    }
 
 
 def static_versions(folder: Path = STATIC_DIR) -> dict[str, str]:
@@ -446,7 +408,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `usage`, `activity`, `audit`, `messages`, `settings`, `sessions`;
+        `boards`, `activity`, `audit`, `messages`, `settings`, `sessions`;
         `board`,
         `sessions`,
         `environments` or
@@ -459,7 +421,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "saved_filters": await saved_filters_by_project(),
             "backlog_counts": await service.backlog_counts(),
             "filter_active": bool(context.get("filter_query")),
-            "brakes": await service.open_brakes(),
             "path": request.url.path,
         }
         return render(request, name, nav=nav, **context)
@@ -798,128 +759,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/fragments/inbox-badge", response_class=HTMLResponse)
     async def inbox_badge(request: Request):
         return render(request, "_inbox_badge.html", count=(await inbox()).count)
-
-    @router.get("/usage", response_class=HTMLResponse)
-    async def usage_page(
-        request: Request,
-        project: str = "",
-        session: str = "",
-        model: str = "",
-        days: int = 30,
-        group: str = "day",
-    ):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        project = project.strip().lower()
-        if session and not (session.isascii() and session.isdigit() and len(session) <= 18):
-            raise ValidationError("session must be a session's number.")
-        session_id = int(session) if session else None
-        report = await service.usage_report(
-            project=project or None,
-            session_ids=[session_id] if session_id is not None else None,
-            model=model or None,
-            days=days,
-            group=group,
-        )
-        sessions, models = await service.usage_filters()
-        response = await page(
-            request,
-            "usage.html",
-            "usage",
-            budgets=await service.budget_states(),
-            message=flash.get("message"),
-            error=flash.get("error"),
-            report=report,
-            shown_rows=report.rows[:USAGE_ROWS],
-            chart=usage_chart(report),
-            project_filter=project,
-            session_filter=session_id,
-            last_event_id=last_event_id,
-            model_filter=model,
-            sessions=sessions,
-            models=models,
-            days_choices=USAGE_DAYS,
-            usage_enabled=settings.usage_enabled,
-        )
-        return shown_once(request, response)
-
-    @router.get("/fragments/budgets", response_class=HTMLResponse)
-    async def budgets_fragment(request: Request):
-        return render(request, "_budgets.html", budgets=await service.budget_states())
-
-    @router.post("/usage/budgets")
-    async def set_budget(
-        request: Request,
-        scope: Annotated[str, Form()] = "",
-        project: Annotated[str, Form()] = "",
-        task: Annotated[str, Form()] = "",
-        period: Annotated[str, Form()] = "day",
-        max_tokens: Annotated[str, Form()] = "",
-        action: Annotated[str, Form()] = "warn",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        try:
-            budget = await service.set_budget(
-                scope,
-                project=project or None,
-                task=task or None,
-                period=period,
-                max_tokens=max_tokens,
-                action=action,
-            )
-        except DomainError as exc:
-            return flash_redirect(request, "/usage#budgets", error=str(exc))
-        return flash_redirect(
-            request, "/usage#budgets", message=f"Saved the budget of {budget.target}."
-        )
-
-    @router.post("/usage/budgets/{budget_id}/delete")
-    async def remove_budget(
-        request: Request,
-        budget_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        await service.remove_budget(budget_id)
-        return flash_redirect(request, "/usage#budgets", message="Budget removed.")
-
-    @router.get("/fragments/brake-banner", response_class=HTMLResponse)
-    async def brake_banner(request: Request, next: str = "/sessions"):
-        return render(
-            request,
-            "_brake_banner.html",
-            brakes=await service.open_brakes(),
-            back=back_to(next, "/sessions"),
-        )
-
-    @router.post("/brake")
-    async def set_brake(
-        request: Request,
-        scope: Annotated[str, Form()] = "all",
-        project: Annotated[str, Form()] = "",
-        reason: Annotated[str, Form()] = "",
-        next_path: Annotated[str, Form(alias="next")] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        back = back_to(next_path, "/sessions")
-        try:
-            await service.set_board_brake(scope, project=project or None, reason=reason)
-        except DomainError as exc:
-            return flash_redirect(request, back, error=str(exc))
-        return RedirectResponse(back, status_code=303)
-
-    @router.post("/brake/{brake_id}/release")
-    async def release_brake(
-        request: Request,
-        brake_id: int,
-        next_path: Annotated[str, Form(alias="next")] = "",
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        board_only(request, csrf)
-        await service.release_brake(brake_id, actor="owner")
-        return RedirectResponse(back_to(next_path, "/sessions"), status_code=303)
 
     @router.get("/sessions", response_class=HTMLResponse)
     async def all_sessions_page(request: Request):

@@ -31,8 +31,7 @@
     "intake.wake", "intake.forwarded", "intake.proposed", "intake.dismissed",
     "intake.source_trusted", "intake.source_untrusted",
     "backlog.added", "backlog.updated", "backlog.planned",
-    "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
-    "budget.exceeded", "concurrency.over",
+    "concurrency.over",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn", "question.overdue",
     "approval.requested", "approval.decided", "approval.used", "approval.expired"
@@ -53,8 +52,7 @@
     "intake.received", "intake.tied", "intake.answer_received", "intake.answer_cleared",
     "intake.proposed", "intake.dismissed", "intake.source_trusted", "intake.source_untrusted",
     "backlog.added", "backlog.updated", "backlog.planned",
-    "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
-    "budget.exceeded", "concurrency.over",
+    "concurrency.over",
     "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
     "approval.requested", "approval.decided", "approval.expired"
   ];
@@ -266,10 +264,6 @@
           queueThrottled(document.getElementById("inbox"));
         });
       }
-    }
-    if (data.kind.indexOf("brake.") === 0) queue(document.getElementById("brake-banner"));
-    if (data.kind.indexOf("budget.") === 0 || data.kind.indexOf("brake.") === 0) {
-      queue(document.getElementById("budgets"));
     }
     if (data.kind === "task.stage_changed") notifyAcceptance(data);
     if (data.kind === "plan.accepted" && window.relaybayBoard) {

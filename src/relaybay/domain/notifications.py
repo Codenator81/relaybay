@@ -16,8 +16,6 @@ LABELS = {
     "question": ("question", "questions"),
     "approval": ("approval request", "approval requests"),
     "permission": ("permission request", "permission requests"),
-    "brake": ("brake", "brakes"),
-    "budget": ("budget notice", "budget notices"),
     "server": ("server notice", "server notices"),
 }
 KINDS = tuple(LABELS)
@@ -28,12 +26,10 @@ DEFAULT_KINDS = (
     "answer",
     "question",
     "approval",
-    "brake",
-    "budget",
     "server",
 )
 # Kinds of removed features: a saved list that still names them loads without them.
-RETIRED_KINDS = ("reminder",)
+RETIRED_KINDS = ("reminder", "brake", "budget")
 # The events `classify` may answer for: the API reads only these.
 EVENT_KINDS = (
     "task.updated",
@@ -43,13 +39,9 @@ EVENT_KINDS = (
     "question.asked",
     "approval.requested",
     "session.status_changed",
-    "brake.set",
-    "budget.warned",
-    "budget.exceeded",
 )
 BOARD_ACTORS = ("board", "owner")  # who writes for the signed-in owner on the board
 SESSIONS_URL = "/sessions"
-USAGE_URL = "/usage"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,26 +73,6 @@ def classify(
             return None
         return Notice(
             "permission", f"{session} is waiting", p.get("activity") or "", SESSIONS_URL, session
-        )
-    if event.kind == "brake.set":
-        # A budget's own brake is told by its `budget.exceeded`, one thing is one notice.
-        if p.get("source") == "budget":
-            return None
-        target = p.get("target") or "everything"
-        return Notice(
-            "brake", f"Brake on {target}", p.get("reason") or "", SESSIONS_URL, f"brake:{target}"
-        )
-    if event.kind in ("budget.warned", "budget.exceeded"):
-        target = p.get("target") or "everything"
-        used, limit = p.get("used"), p.get("max_tokens")
-        if event.kind == "budget.warned":
-            title = f"Budget nearly spent: {target}"
-        elif p.get("action") == "stop":
-            title = f"Budget spent, agents stopped: {target}"
-        else:
-            title = f"Budget spent: {target}"
-        return Notice(
-            "budget", title, f"{used} of {limit} tokens", USAGE_URL, f"budget:{target}:{event.kind}"
         )
     if event.kind == "question.asked" and p.get("run_kind") == "coordinator":
         if not p.get("blocking"):

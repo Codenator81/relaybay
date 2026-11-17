@@ -38,7 +38,6 @@ from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, valid
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import STAGES
 from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
-from relaybay.domain.usage import DEFAULT_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS
 from relaybay.policy import PolicyFile
 from relaybay.updates import HOURS_MAX
 
@@ -297,25 +296,6 @@ class Settings:
             env="RELAYBAY_SESSION_CONTEXT_PROJECT_CHARS",
         ),
     )
-    usage_enabled: bool = field(
-        default=True,
-        metadata=_doc(
-            "Read token usage from the Claude Code transcripts the hooks report (only `usage`"
-            " numbers and the model name are kept; no network call). `false` stops the reading"
-            " and the keeping of transcript paths; the Usage page shows what was read before.",
-            key="usage_enabled",
-            env="RELAYBAY_USAGE_ENABLED",
-        ),
-    )
-    usage_interval_seconds: int = field(
-        default=DEFAULT_INTERVAL_SECONDS,
-        metadata=_doc(
-            f"Seconds between passes of the background usage reader (whole number >="
-            f" {MIN_INTERVAL_SECONDS}).",
-            key="usage_interval_seconds",
-            env="RELAYBAY_USAGE_INTERVAL_SECONDS",
-        ),
-    )
     max_concurrent_sessions: int = field(
         default=0,
         metadata=_doc(
@@ -436,8 +416,14 @@ class Settings:
 
 
 # Settings read from `RELAYBAY_<NAME>`; RELAYBAY_HOME is read first, before config.toml.
-# The keys of runs inside the program, removed in 0.12 (design 0025).
-IGNORED_KEYS = ("max_running_turns", "min_free_memory_mb", "claude_path")
+# Keys of features removed in 0.12 (design 0025): runs inside the program and the usage reader.
+IGNORED_KEYS = (
+    "max_running_turns",
+    "min_free_memory_mb",
+    "claude_path",
+    "usage_enabled",
+    "usage_interval_seconds",
+)
 ENV_KEYS = tuple(f.name for f in fields(Settings) if f.metadata.get("env") and f.name != "home")
 
 
@@ -505,7 +491,6 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         ("task_stale_days", 1, None),
         ("digest_budget_chars", BUDGET_MIN, BUDGET_MAX),
         ("session_context_project_chars", BUDGET_MIN, BUDGET_MAX),
-        ("usage_interval_seconds", MIN_INTERVAL_SECONDS, None),
         ("update_check_hours", 1, HOURS_MAX),
         ("backup_keep", 0, None),
         ("max_concurrent_sessions", 0, None),
@@ -537,7 +522,7 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         if not isinstance(roots, list) or not all(isinstance(r, str) and r.strip() for r in roots):
             raise ValueError(f"{source}: attachment_roots must be a list of folders, got {value!r}")
         settings.attachment_roots = [Path(r.strip()).expanduser() for r in roots]
-    for key in ("require_tracker_log", "usage_enabled", "update_check"):
+    for key in ("require_tracker_log", "update_check"):
         if key in data:
             value = data[key]
             if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:

@@ -61,6 +61,11 @@ class Deprecation:
 REMOVED_SINCE = "0.12"
 REMOVED_NOT_BEFORE = date(2026, 12, 17)
 STUB_RESULT = "Nothing done: this tool does nothing since 0.12."
+BRAKE_GONE = "Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app."
+LIMITS_GONE = (
+    "Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app"
+    " shows the plan limits."
+)
 RUNS_GONE = (
     "Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by"
     " a desktop session bound to it."
@@ -74,6 +79,8 @@ def _gone(tools: tuple[str, ...], note: str) -> list[Deprecation]:
 DEPRECATIONS: list[Deprecation] = [
     *_gone(("run_start", "run_status", "run_events", "run_settings"), RUNS_GONE),
     *_gone(("schedule_add", "schedule_list", "schedule_cancel"), RUNS_GONE),
+    *_gone(("brake_status", "brake_set"), BRAKE_GONE),
+    *_gone(("usage_summary", "budget_get"), LIMITS_GONE),
 ]
 
 

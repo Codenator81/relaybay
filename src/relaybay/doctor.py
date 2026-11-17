@@ -218,8 +218,8 @@ def _ignored_keys_check(settings: Settings) -> list[Check]:
         Check(
             True,
             "ignored settings",
-            f"{names} in config.toml: removed in 0.12 with runs inside the program, ignored;"
-            " delete them when convenient",
+            f"{names} in config.toml: removed in 0.12 (runs inside the program, the usage"
+            " reader), ignored; delete them when convenient",
         )
     ]
 
@@ -253,13 +253,6 @@ def doctor_checks(
         _desktop_start_check(environ),
         _hook_spool_check(environ),
         *_ignored_keys_check(settings),
-        Check(
-            True,
-            "token budgets",
-            "counting (checked after each usage read)"
-            if settings.usage_enabled
-            else "blind: usage_enabled = false, so no new tokens are counted against them",
-        ),
     ]
     token_item, token = _token_check(settings)
     checks.append(token_item)

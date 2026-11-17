@@ -47,7 +47,6 @@ def create_app(settings: Settings) -> FastAPI:
         digest_budget_chars=settings.digest_budget_chars,
         session_context=settings.session_context,
         session_context_project_chars=settings.session_context_project_chars,
-        usage_enabled=settings.usage_enabled,
         coordinators=settings.coordinators,
         max_concurrent_sessions=settings.max_concurrent_sessions,
     )
@@ -62,7 +61,7 @@ def create_app(settings: Settings) -> FastAPI:
         await service.start()
         record_version(settings.home)
         loops = [
-            asyncio.create_task(service.usage_loop(settings.usage_interval_seconds)),
+            asyncio.create_task(service.concurrency_loop()),
             asyncio.create_task(service.question_loop()),
         ]
         if settings.update_check:

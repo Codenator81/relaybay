@@ -47,7 +47,7 @@ async def test_audit_filters(service: Service) -> None:
     assert [e.id for e in await service.audit(decision="allow")] == [everything[1].id]
     assert await service.audit(environment="test") == []
     assert len(await service.audit(environment="live", project="acme-shop")) == 2
-    ids = await service.usage_session_ids(DESKTOP_A)
+    ids = await service.named_session_ids(DESKTOP_A)
     assert len(await service.audit(session_ids=ids)) == 2
     assert await service.audit(session_ids=[ids[0] + 1000]) == []
     assert [e.id for e in await service.audit(before_id=everything[0].id)] == [everything[1].id]

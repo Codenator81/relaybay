@@ -24,6 +24,10 @@ Deprecations:
 | `schedule_add` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
 | `schedule_list` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
 | `schedule_cancel` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
+| `brake_status` | — | 0.12 | 2026-12-17 | the brake was removed in 0.12; stop a session in the Claude desktop app. |
+| `brake_set` | — | 0.12 | 2026-12-17 | the brake was removed in 0.12; stop a session in the Claude desktop app. |
+| `usage_summary` | — | 0.12 | 2026-12-17 | token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits. |
+| `budget_get` | — | 0.12 | 2026-12-17 | token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits. |
 
 ## Tools
 
@@ -319,25 +323,25 @@ Bring a done task back from the archive, for coordinator sessions only: it shows
 
 ### `task_bind_session`
 
-Mark that this session works on the task now; the board shows it with a link that opens the Claude desktop app session. Call it when you pick up an existing task. Pass your own desktop session id (local_…) if you know it. If you don't know your local_ id, don't rebind — the coordinator binds you; pass your session name only as `session` on writes. A plain name never replaces a desktop session bound to the task: it is recorded as that session's alias. Binding a session ends the previous session's binding; the history is kept. It never links a hook session (the caller may bind someone else): your own `hook_session` goes on your other writes. Refused while a brake holds the task or its project, except for a coordinator.
+Mark that this session works on the task now; the board shows it with a link that opens the Claude desktop app session. Call it when you pick up an existing task. Pass your own desktop session id (local_…) if you know it. If you don't know your local_ id, don't rebind — the coordinator binds you; pass your session name only as `session` on writes. A plain name never replaces a desktop session bound to the task: it is recorded as that session's alias. Binding a session ends the previous session's binding; the history is kept. It never links a hook session (the caller may bind someone else): your own `hook_session` goes on your other writes.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `session` | string | yes | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Not linked here: pass your hook_session on your own writes instead. With `caller`, it shows a coordinator is calling under a brake. |
-| `caller` | string or null | no | You, when `session` is someone else. While a brake holds the task or its project only a coordinator rebinds. Optional. |
+| `hook_session` | string or null | no | Not linked here: pass your hook_session on your own writes instead. |
+| `caller` | string or null | no | You, when `session` is someone else. Optional. |
 
 ### `task_unbind_session`
 
-Remove the bound session from a task, e.g. when a session stops working on it without a successor. The binding history is kept. To hand the task to another session, call task_bind_session instead. Refused while a brake holds the task or its project, except for a coordinator.
+Remove the bound session from a task, e.g. when a session stops working on it without a successor. The binding history is kept. To hand the task to another session, call task_bind_session instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `session` | string or null | no | The session you expect to be bound (desktop session id or name); if another session is bound, nothing changes and an error says who. Optional. |
-| `caller` | string or null | no | You, when `session` is someone else. While a brake holds the task or its project only a coordinator unbinds. Optional. |
+| `caller` | string or null | no | You, when `session` is someone else. Optional. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `report_add`
@@ -424,7 +428,7 @@ Change a memory note. If someone changed it after you read it, nothing is saved 
 
 ### `usage_summary`
 
-Tokens used per day, project, session and model, read from Claude Code transcripts; subagents count to their session. Tokens only: relaybay knows neither prices nor quotas. "unknown" means the data does not say.
+Removed in 0.12 with the usage reader: shows nothing. Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -447,7 +451,7 @@ Agents' tool calls that touched a live stand, newest first: who, where, the reda
 
 ### `budget_get`
 
-Token budgets with what their period used so far. Read-only: the owner sets them on the board. They lag the transcripts by up to a minute plus the reader's own delay. A session on several tasks counts in full on each.
+Removed in 0.12 with token budgets: shows nothing. Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -456,7 +460,7 @@ Token budgets with what their period used so far. Read-only: the owner sets them
 
 ### `brake_status`
 
-Open brakes: who stopped which agents and why. While one covers a session, its tool calls other than relaybay's are refused.
+Removed in 0.12 with the brake: shows nothing. Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -464,7 +468,7 @@ Open brakes: who stopped which agents and why. While one covers a session, its t
 
 ### `brake_set`
 
-Stop agents at their next tool call, for coordinator sessions only. It cannot interrupt a running command or a background process, and it fails open when the server cannot answer. There is no release tool: only the owner releases, on the board.
+Removed in 0.12 with the brake: stops nothing. Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
