@@ -26,7 +26,9 @@
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
       </button>
       {% endif %}
-      <a class="brand" href="/">relaybay</a>
+      {#- With the sidebar the window title names the product: the crumbs start with a home icon. #}
+      {% if nav %}<a class="brand brand-home" href="/" aria-label="Home" title="Home: all boards"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.5 8 3l5.5 4.5M4 6.5V13h3V9.5h2V13h3V6.5"/></svg></a>
+      {% else %}<a class="brand" href="/">relaybay</a>{% endif %}
       {% block crumbs %}{% endblock %}
       {% if nav %}
       <button type="button" class="switcher-open" aria-haspopup="dialog" aria-controls="switcher" title="Quick switcher: tasks, projects, sessions (Ctrl+K)">

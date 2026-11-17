@@ -604,6 +604,7 @@
       return;
     }
     queue(dialog.querySelector(".task-view"));
+    queue(dialog.querySelector(".dialog-area"));
     queue(dialog.querySelector(".comment-thread"));
     queueReview(dialog.dataset.key);
     var form = editForm();

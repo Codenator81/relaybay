@@ -6,6 +6,7 @@
 <div class="dialog-frame" data-key="{{ t.key }}">
   <header class="dialog-head">
     <a class="card-key" href="/t/{{ t.key }}" title="Task page">{{ t.key }}</a>
+    {% include "_dialog_area.html" %}
     <div class="dialog-tabs" role="tablist" aria-label="Task">
       <button type="button" role="tab" class="dialog-tab" id="tab-overview-{{ t.key }}" aria-controls="panel-overview-{{ t.key }}" aria-selected="{{ 'false' if on_review or on_plan else 'true' }}" data-tab="overview">Overview</button>
       <button type="button" role="tab" class="dialog-tab" id="tab-plan-{{ t.key }}" aria-controls="panel-plan-{{ t.key }}" aria-selected="{{ 'true' if on_plan else 'false' }}" data-tab="plan">Plan{% if t.plan_total %} <span class="col-count">{{ t.plan_done }}/{{ t.plan_total }}</span>{% endif %}</button>

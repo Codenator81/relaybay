@@ -120,6 +120,11 @@ StageArg = Annotated[str, Field(description="One of: plan, dev, review, test, li
 DESCRIPTION_HELP = "What to do and why, 1-5 sentences of markdown."
 CLEARS = " '-' or '' clears it."
 EMPTY = " '-' or '' leaves it empty."
+AREA_HELP = (
+    "What part of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot"
+    " lists the project's areas; case does not matter). A new name is added to the project's"
+    " areas and the answer says so."
+)
 TRACKER_REF_HELP = "Issue key or number in the external tracker, e.g. 'ENG-12'."
 TRACKER_NAME_HELP = "Name of the external tracker, e.g. 'Linear'."
 TRACKER_URL_HELP = "Link to the issue (http:// or https:// only)."
@@ -413,15 +418,19 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str | None, Field(description="Bound session: desktop session id or name.")
         ] = None,
         include_done: Annotated[bool, Field(description="Include done tasks.")] = False,
+        area: Annotated[
+            str | None, Field(description="Area name filter (case does not matter).")
+        ] = None,
     ) -> str:
-        """List tasks, filtered by project, stage, who they wait on or the bound session. Done
-        tasks are left out unless a stage or include_done is given."""
+        """List tasks, filtered by project, stage, who they wait on, the bound session or the
+        area. Done tasks are left out unless a stage or include_done is given."""
         tasks = await run(
             service.list_tasks(
                 project=project,
                 stage=stage,
                 waiting_on=waiting_on,
                 session=session,
+                area=area,
                 include_done=include_done,
             )
         )
@@ -456,6 +465,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         tracker_name: Annotated[str | None, Field(description=TRACKER_NAME_HELP + EMPTY)] = None,
         tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + EMPTY)] = None,
         tracker_logged: Annotated[bool, Field(description=TRACKER_LOGGED_HELP)] = False,
+        area: Annotated[str | None, Field(description=AREA_HELP + EMPTY)] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -478,6 +488,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 tracker_name=cleared(tracker_name),
                 tracker_url=cleared(tracker_url),
                 tracker_logged=tracker_logged,
+                area=cleared(area),
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
@@ -509,6 +520,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + CLEARS)] = None,
         tracker_logged: Annotated[bool | None, Field(description=TRACKER_LOGGED_HELP)] = None,
         size: Annotated[str | None, Field(description=SIZE_HELP + CLEARS)] = None,
+        area: Annotated[str | None, Field(description=AREA_HELP + CLEARS)] = None,
         repos: Annotated[list[str] | None, Field(description=REPOS_HELP)] = None,
         prs: Annotated[list[str] | None, Field(description=PRS_HELP)] = None,
         expected_version: Annotated[
@@ -519,12 +531,12 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Change task fields (waiting on, next step, branch, description, progress, the tracker
-        issue and its work-log mark, the repositories it touches and its pull requests, ...).
-        Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress`
-        current with every report. To move a task between stages use task_set_stage. Also
-        update next_step (what happens next) and waiting_on (who acts next) whenever the stage
-        changes or you report."""
+        """Change task fields (waiting on, next step, branch, description, progress, the area,
+        the tracker issue and its work-log mark, the repositories it touches and its pull
+        requests, ...). Omitted fields stay as they are; '-' or an empty string clears a field.
+        Keep `progress` current with every report. To move a task between stages use
+        task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next)
+        whenever the stage changes or you report."""
         given = {
             "title": title,
             "waiting_on": waiting_on,
@@ -538,6 +550,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             "tracker_name": tracker_name,
             "tracker_url": tracker_url,
             "size": size,
+            "area": area,
         }
         changes: dict[str, object] = {
             k: (cleared(v) or None) for k, v in given.items() if v is not None

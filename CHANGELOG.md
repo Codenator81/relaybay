@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Areas: what part of a project a card belongs to ("web shop", "mobile app", "api"), one per card or none, from a list per project that grows from use (design 0024). Names match without regard to case and outer spaces; a new name is added to the project's list (at most 24 areas, 32 characters a name) with a colour from a palette of eight by its place, readable in light and dark themes. The card shows a coloured chip after its key, as do the task dialog's head, the task page, Inbox and review queue rows and the quick switcher (which also searches areas). The task form has an Area field with the project's areas as suggestions, and the board an "Any area" filter next to the stage filter, kept in saved filters. The Stands & access page lists the areas with their card counts: rename, recolour, reorder, delete (cleared from its cards, each card's history keeps it) and add; renaming one into another's name merges the two. Events `project.updated` (`changes.areas`) and `task.updated` (`changes.area`).
+- MCP (additive, contract v1): `area` in `task_create`, `task_update`, `task_patch` and `relaybay://schema/task`; `task_list(area=...)`; the area in `task_get`, `task_context`, `task_list` and the digests; `project_snapshot` lists the project's areas with how many tasks carry each. A name an agent sends that is new is added, and the answer says so and lists the project's areas.
+- The backlog's free-text area field suggests the project's areas first, and "To plan" gives the new card the item's area (added to the project's list when new; a text over 32 characters is not carried). Backlog rows are not migrated.
+- Markdown export and import carry a task's area by name in an `area` column of `TASKS.md`, written only when a task has an area.
+- Migration 0048: `project_area`, `task.area_id` and `saved_filter.area`, additive only.
+
+### Changed
+
+- The "answer received" mark of an external message is no longer on the card or in the task dialog: the Inbox lists it under Answers with a Seen button; the message stays in the dialog's Intake block.
+- `relaybay import` now reads an `area` column of `TASKS.md` (also in a hand-written registry): a text over 32 characters, or a new name past the project's 24 areas, leaves the task without its area and adds a warning.
+- On pages with the sidebar, the top bar's product name is a small home icon linking to the start page (labelled "Home"); the sign-in page keeps the word.
+
 ## [0.11.0] - 2026-11-16
 
 ### Added

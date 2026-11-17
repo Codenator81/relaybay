@@ -4,6 +4,7 @@
 {%- macro task_row(t) -%}
 <a class="inbox-link" href="/p/{{ t.project_slug }}?task={{ t.key }}">
   <span class="card-key">{{ t.key }}</span>
+  {% include "_area_chip.html" %}
   <span class="inbox-title">{{ t.title }}</span>
 </a>
 <span class="inbox-meta muted"><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span> {{ t.project_slug }} · updated <time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time></span>
@@ -120,7 +121,12 @@
       {% for t in inbox.answers %}
       <li class="inbox-row">
         {{ task_row(t) }}
-        <p class="inbox-note"><span class="chip answer-mark">answer received</span> <span class="muted">waiting on {{ t.waiting_on }} · <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time></span></p>
+        <p class="inbox-note"><span class="chip answer-mark">answer received</span> <span class="muted">waiting on {{ t.waiting_on }} · <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time></span>
+          <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/answer/clear">
+            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+            <input type="hidden" name="target" value="inbox">
+            <button type="submit" class="action">Seen</button>
+          </form></p>
       </li>
       {% endfor %}
     </ul>
@@ -202,6 +208,7 @@
       <li class="inbox-row">
         <a class="inbox-link" href="/p/{{ t.project_slug }}?task={{ t.key }}&amp;tab=review">
           <span class="card-key">{{ t.key }}</span>
+          {% include "_area_chip.html" %}
           <span class="inbox-title">{{ t.title }}</span>
         </a>
         <span class="inbox-meta muted"><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span> {{ t.project_slug }} · {{ t.review_accepted }}/{{ t.review_total }} accepted{% if t.review_rejected %} · {{ t.review_rejected }} rejected{% endif %} · since <time datetime="{{ t.stage_changed_at or t.updated_at }}" data-age>{{ (t.stage_changed_at or t.updated_at)|age }}</time></span>

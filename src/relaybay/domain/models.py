@@ -97,6 +97,9 @@ class Task:
     archived_at: str | None = None  # sent to the archive by hand (done only)
     archived_by: str | None = None
     unarchived_at: str | None = None  # the last "Back from the archive"
+    area_id: int | None = None
+    area: str | None = None  # the area's name
+    area_color: str | None = None  # its palette key
 
     @property
     def autonomy_on(self) -> bool:
@@ -256,12 +259,14 @@ class SavedFilter:
     session: str | None
     q: str | None
     created_at: str
+    area: str | None = None
 
     @property
     def query(self) -> dict[str, str]:
         """The board's query parameters; the filter's URL is built from them."""
         given = {
             "stage": self.stage,
+            "area": self.area,
             "waiting_on": self.waiting_on,
             "session": self.session,
             "q": self.q,

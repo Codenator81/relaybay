@@ -50,6 +50,8 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     assert any(t.tracker_ref and t.tracker_logged for t in tasks)
     assert any(t.next_step_stale for t in tasks)
     assert any(t.description for t in tasks) and any(t.progress for t in tasks)
+    shop = {t.area for t in tasks if t.project_slug == "acme-shop"}
+    assert {"web shop", "mobile app", "api"} <= shop and None in shop
     assert sum(len(d.reports) for d in board["details"]) >= 4
     bound = [t for t in tasks if t.session_external_id == DEMO_DESKTOP_SESSION]
     assert len(bound) == 1

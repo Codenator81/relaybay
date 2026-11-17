@@ -25,7 +25,17 @@ _RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul", "memory", *(f"{d}{n}" for d in ("com", "lpt") for n in range(10))}
 )
 
-COLUMNS = ("project", "ref", "task", "stage", "waiting_on", "next_step", "document", "rank")
+COLUMNS = (
+    "project",
+    "ref",
+    "task",
+    "area",
+    "stage",
+    "waiting_on",
+    "next_step",
+    "document",
+    "rank",
+)
 COLUMN_ALIASES = {
     "project": "project",
     "ref": "ref",
@@ -34,6 +44,7 @@ COLUMN_ALIASES = {
     "task": "task",
     "title": "task",
     "name": "task",
+    "area": "area",
     "stage": "stage",
     "status": "stage",
     "state": "stage",
@@ -264,6 +275,7 @@ class RegistryRow:
     unknown_stage: bool = False
     # The card's order within its stage column; None (no column, or an empty cell) keeps it.
     rank: str | None = None
+    area: str | None = None  # None (no column, or an empty cell) keeps the task's area
 
 
 def _split_row(line: str) -> list[str]:
@@ -372,6 +384,7 @@ def parse_registry(text: str, aliases: Aliases) -> tuple[list[RegistryRow], list
                     ref=values.get("ref") or None,
                     unknown_stage=not known,
                     rank=values.get("rank", "").strip() or None,
+                    area=" ".join(values.get("area", "").split()) or None,
                 )
             )
     return rows, warnings
@@ -402,18 +415,23 @@ def render_stage(task: Task) -> str:
 
 
 def render_registry(rows: list[tuple[str, str, Task]]) -> str:
-    """(project slug, ref, task) rows as the task registry."""
+    """(project slug, ref, task) rows as the task registry. The area column is there only when a
+    task has an area, so a board without areas exports the file it did before them."""
+    areas = any(task.area for _, _, task in rows)
+    names = ["project", "ref", "task", *(["area"] if areas else []), "stage", "waiting on"]
+    names += ["next step", "document", "rank"]
     lines = [
         "# Tasks",
         "",
-        "| project | ref | task | stage | waiting on | next step | document | rank |",
-        "|---|---|---|---|---|---|---|---|",
+        "| " + " | ".join(names) + " |",
+        "|" + "---|" * len(names),
     ]
     for project, ref, task in rows:
         cells = (
             project,
             ref,
             task.title,
+            *([task.area] if areas else []),
             render_stage(task),
             task.waiting_on,
             task.next_step,
@@ -637,6 +655,7 @@ def registry_meaning(
             r.next_step,
             r.document if folders is None else row_doc_path(r, folders),
             r.rank if ranks else None,
+            r.area.casefold() if r.area else None,
         )
         for r in rows
     }

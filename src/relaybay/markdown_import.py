@@ -20,6 +20,7 @@ from typing import Any
 from relaybay.backup import backup_before_upgrade, record_version
 from relaybay.config import Settings
 from relaybay.domain import backlog
+from relaybay.domain.areas import AREA_NAME_MAX, AREAS_MAX, area_key
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.environments import DEFAULT_SECRET_RULES, SecretRules, find_secrets
 from relaybay.domain.errors import DomainError, NotFoundError
@@ -64,7 +65,16 @@ from relaybay.service import SLUG_RE, Service
 
 ACTOR = "import"
 HIDDEN_NAME = "(hidden name)"
-ROW_CELLS = ("project", "ref", "title", "stage_note", "waiting_on", "next_step", "document")
+ROW_CELLS = (
+    "project",
+    "ref",
+    "title",
+    "area",
+    "stage_note",
+    "waiting_on",
+    "next_step",
+    "document",
+)
 REASON = "import"
 FILE_MAX_BYTES = 2_000_000
 DIFF_ITEM_LINES = 40
@@ -254,13 +264,22 @@ def _decide(
 
 
 def task_hash(task: Task, ranked: bool = False) -> str:
-    """The rank counts only for a registry that gives one, so older imports keep their hashes."""
+    """The rank counts only for a registry that gives one, and the area only for a task that has
+    one, so older imports keep their hashes."""
     rank = (str(task.rank),) if ranked else ()
-    return text_hash(*(str(getattr(task, name) or "") for name in TASK_FIELDS), *rank)
+    area = (area_key(task.area),) if task.area else ()
+    return text_hash(*(str(getattr(task, name) or "") for name in TASK_FIELDS), *rank, *area)
 
 
 def _field_text(task: Task, name: str) -> str:
     return str(task.rank) if name == "rank" else str(getattr(task, name) or "")
+
+
+def _same(task: Task, name: str, value: str) -> bool:
+    """A registry cell says what the task holds; areas match without regard to case."""
+    if name == "area":
+        return area_key(task.area or "") == area_key(value)
+    return _field_text(task, name) == value
 
 
 def note_hash(note: MemoryNote) -> str:
@@ -307,6 +326,7 @@ class _Planner:
         self.decisions: dict[str, list[Decision]] = {}
         self.rules: dict[str, SecretRules] = {}
         self.task_items: dict[str, Item] = {}
+        self.area_keys: dict[str, set[str]] = {}  # per project: its areas and the planned ones
         self.title_claims: Counter[tuple[str, str | None]] = Counter()
         self.notes: list[MemoryNote] = []  # current ones
         self.tracked_notes: dict[int, MemoryNote] = {}  # by id, superseded ones too
@@ -614,6 +634,15 @@ class _Planner:
                 values[name] = value
         if document:
             values["doc_path"] = document
+        if row.area is not None:
+            if len(row.area) > AREA_NAME_MAX:
+                # A free-text column of a hand-written registry: the row still comes in.
+                self.warnings.append(
+                    f"{source}: the area is longer than {AREA_NAME_MAX} characters; the task"
+                    " comes in without it"
+                )
+            else:
+                values["area"] = row.area
         if row.rank is not None:
             try:
                 rank = int(row.rank)
@@ -636,6 +665,28 @@ class _Planner:
         explicit = bool(slugify(row.ref or ""))
         return _Row(row.project, identity, REGISTRY, row.line, values, folder, warning, explicit)
 
+    async def _plan_area(self, row: _Row) -> None:
+        """Count a row's new area against the project's limit, as the apply adds them in order:
+        past it the task comes in without the area, so the plan says what the apply does."""
+        if "area" not in row.values:
+            return
+        keys = self.area_keys.get(row.project)
+        if keys is None:
+            project = self.projects.get(row.project)
+            found = (await self.service.project_areas(project.slug))[1] if project else []
+            keys = self.area_keys[row.project] = {area_key(a.name) for a in found}
+        key = area_key(row.values["area"])
+        if key in keys:
+            return
+        if len(keys) >= AREAS_MAX:
+            del row.values["area"]
+            self.warnings.append(
+                f"{row.source}:{row.line}: {row.project} would have more than {AREAS_MAX} areas;"
+                " the task comes in without its area"
+            )
+            return
+        keys.add(key)
+
     async def _task(self, row: _Row) -> None:
         name = f"{row.project}/{row.identity}"
         too_long = next((k for k, v in row.values.items() if len(v) > TEXT_MAX), None)
@@ -656,9 +707,10 @@ class _Planner:
                 return
         if row.warning:
             self.warnings.append(row.warning)
+        await self._plan_area(row)
         task = self._existing_task(row)
         tracked = self.tracked.get(("task", name))
-        changes = {k: v for k, v in row.values.items() if task is None or _field_text(task, k) != v}
+        changes = {k: v for k, v in row.values.items() if task is None or not _same(task, k, v)}
         ranked = "rank" in row.values
         content_hash = text_hash(row.values)
         target_hash = task_hash(task, ranked) if task else ""
