@@ -328,6 +328,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         pulse_stale=service.pulse_stale,
         pulse_stale_days=settings.pulse_stale_days,
         plan_draft_hours=service.plan_draft_hours,
+        card_state=service.card_state,
     )
     versions = static_versions()
 
@@ -1211,6 +1212,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             comments=comments,
             error=error,
             doc_refs=doc_refs,
+            wait_reason=await service.comment_wait_reason(task),
         )
         if saved:
             response.headers["X-Relaybay-Comment"] = "saved"  # app.js clears the form

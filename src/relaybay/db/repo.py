@@ -1400,6 +1400,19 @@ async def mark_comments_read(conn: aiosqlite.Connection, comment_ids: list[int],
     await conn.execute(f"UPDATE comment SET read_at = ? WHERE id IN ({marks})", (now, *comment_ids))
 
 
+async def waiting_owner_comments(
+    conn: aiosqlite.Connection, before: str, limit: int = 200
+) -> list[Comment]:
+    """Comments for the agent written before `before` and still not delivered, oldest first."""
+    rows = await _all(
+        conn,
+        _COMMENT_SELECT + " WHERE c.author_kind != 'agent' AND c.delivered_at IS NULL"
+        " AND c.read_at IS NULL AND c.created_at < ? ORDER BY c.id LIMIT ?",
+        (before, limit),
+    )
+    return [_comment(r) for r in rows]
+
+
 async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> list[Comment]:
     """Agent replies the owner has not marked read, oldest first."""
     rows = await _all(

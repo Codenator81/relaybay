@@ -1,77 +1,14 @@
-{#- Read-only task details, shared by the board's task dialog and the task page. Expects: detail,
-    optional error. Refetched on live events, so it holds no form state of its own. -#}
+{#- The session card, shared by the board's task dialog and the task page (design 0025): the state
+    line, the last report, the comment thread, then folds (the session and its history, task
+    details). Expects: detail, optional error. Refetched on live events, so it holds no form state
+    of its own: the comment box lives outside it (_comment_form.html). -#}
 {%- set t = detail.task -%}
 <div class="task-view" id="view-{{ t.key }}" data-key="{{ t.key }}"
      hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/view" hx-trigger="rb:refresh" hx-swap="outerHTML">
   <h1 class="task-title" id="task-title">{{ t.title }}</h1>
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
 
-  <dl class="fields">
-    {% if t.area %}<dt>Area</dt><dd>{% include "_area_chip.html" %}</dd>{% endif %}
-    <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
-    {%- set is_done = t.stage.value == "done" %}
-    {% if t.waiting_on %}<dt>Waiting on</dt><dd>{% if is_done %}<span class="muted">{{ t.waiting_on }}</span>{% else %}<span class="chip waiting">{{ t.waiting_on }}</span>{% endif %}</dd>{% endif %}
-    {%- set stale = t.next_step_stale and not is_done %}
-    {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
-    {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
-    {% if detail.code.shown %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}
-    {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (require_tracker_log and is_done) %}
-    <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}
-      {%- if t.tracker_url and not t.tracker_ref %}{% set href = t.tracker_url|http_url %}{% if href %} <a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ t.tracker_name or href }}</a>{% endif %}{% endif %}
-      {%- if t.tracker_ref and not t.tracker_logged and not is_done %} <span class="muted">work log not entered yet</span>{% endif %}</dd>
-    {% endif %}
-    {%- set d = detail.document %}
-    {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
-    {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
-    {% if is_done %}{% set in_archive = task_archived(t) %}<dt>Archive</dt><dd>{% if t.archived_at %}archived <time datetime="{{ t.archived_at }}" data-age>{{ t.archived_at|age }}</time> by {{ t.archived_by }}{% elif in_archive %}archived: closed more than {{ done_window_days }} days ago{% else %}<span class="muted">in the done column</span>{% endif %}
-      <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}"
-            hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}" hx-target="closest .task-view" hx-swap="outerHTML">
-        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-        <input type="hidden" name="target" value="view">
-        <button type="submit" class="action">{{ "Back from the archive" if in_archive else "Archive" }}</button>
-      </form></dd>{% endif %}
-    {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
-    <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
-  </dl>
-
-  {% if detail.findings %}
-  <details class="panel fold task-findings" data-fold="findings" open>
-    <summary><h2>Findings</h2></summary>
-    <ul class="history">
-      {% for b in detail.findings %}<li><a href="/p/{{ b.project_slug }}/backlog#backlog-{{ b.id }}">#{{ b.id }} {{ b.title }}</a> <span class="muted">· {{ b.status }}</span></li>{% endfor %}
-    </ul>
-  </details>
-  {% endif %}
-
-  {% if d and d.doc %}
-  <details class="panel fold task-doc" data-fold="document">
-    <summary><h2>Document: {{ d.doc.title }}{% if d.link.anchor and not d.ref.broken %} · #{{ d.link.anchor }}{% endif %}</h2></summary>
-    <p class="muted doc-meta"><code>{{ d.doc.slug }}</code> · {{ d.doc.kind }} · version {{ d.doc.version }} · <a href="/p/{{ d.doc.project_slug }}/docs/{{ d.doc.slug }}#history">history</a>{% if d.doc.source_url and d.doc.source_url|http_url %} · lives in the repository: <a href="{{ d.doc.source_url|http_url }}" target="_blank" rel="noopener noreferrer">{{ d.doc.source_url }}</a>{% endif %}</p>
-    {% if d.ref.broken %}<p class="muted">No section <code>#{{ d.link.anchor }}</code>; the whole document follows.</p>{% endif %}
-    {% if d.text %}<div class="markdown doc-body">{{ d.text|document }}</div>{% else %}<p class="muted">No text here.</p>{% endif %}
-  </details>
-  {% endif %}
-
-  {% if detail.tracker_history %}
-  <details class="panel fold" data-fold="tracker-history" open>
-    <summary><h2>Tracker history</h2></summary>
-    <ol class="history tracker-history">
-      {% for e in detail.tracker_history %}
-      {%- set href = e.tracker_url|http_url %}
-      {%- set text = (e.tracker_name ~ " " if e.tracker_name else "") ~ e.tracker_ref %}
-      <li>
-        {% if href %}<a class="history-name" href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ text }}</a>{% else %}<span class="history-name">{{ text }}</span>{% endif %}
-        <span class="muted">—
-          {%- if e.logged_at %} logged <time datetime="{{ e.logged_at }}">{{ e.logged_at[:10] }}</time>{% endif %}
-          {%- if e.logged_at and e.unlogged_at %} ·{% endif %}
-          {%- if e.unlogged_at %} unlogged <time datetime="{{ e.unlogged_at }}">{{ e.unlogged_at[:10] }}</time>{% endif %}
-          {%- if not e.logged_at and not e.unlogged_at %} not logged{% endif %}
-        </span>
-      </li>
-      {% endfor %}
-    </ol>
-  </details>
-  {% endif %}
+  {% include "_state_line.html" %}
 
   <details class="panel fold" data-fold="questions" open>
     <summary><h2>Questions</h2></summary>
@@ -83,8 +20,43 @@
     <div class="approvals" id="approvals-{{ t.key }}" hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/approvals" hx-trigger="load, rb:refresh" hx-swap="outerHTML"><p class="muted">Loading…</p></div>
   </details>
 
+  <section class="panel task-report" aria-labelledby="report-title-{{ t.key }}">
+    <h2 id="report-title-{{ t.key }}">Last report</h2>
+    {% for r in detail.reports %}
+    {% if loop.first %}
+    <article class="report">
+      <header class="report-head">
+        {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
+        <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
+      </header>
+      <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
+      {% with checks = detail.checks.get(r.id, []), warning = detail.marks_warning(r) %}{% include "_report_checks.html" %}{% endwith %}
+    </article>
+    {% else %}
+    {% if loop.index == 2 %}<h3>Earlier reports</h3>{% endif %}
+    {#- app.js reopens these by report id after a live refresh of this fragment. #}
+    <details class="report report-older" data-report="{{ r.id }}">
+      <summary class="report-head">
+        {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
+        <span class="report-gist">{{ r.summary }}</span>
+        <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
+      </summary>
+      <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
+      {% with checks = detail.checks.get(r.id, []), warning = detail.marks_warning(r) %}{% include "_report_checks.html" %}{% endwith %}
+    </details>
+    {% endif %}
+    {% else %}
+    <p class="muted">No reports yet.</p>
+    {% endfor %}
+  </section>
+
+  <section class="panel comments" aria-labelledby="comments-title-{{ t.key }}">
+    <h2 id="comments-title-{{ t.key }}">Comments</h2>
+    {% with comments = detail.comments, doc_refs = detail.doc_refs, wait_reason = detail.undelivered %}{% include "_comment_thread.html" %}{% endwith %}
+  </section>
+
   <details class="panel fold" data-fold="session" open>
-    <summary><h2>Session</h2></summary>
+    <summary><h2>Session and its history</h2></summary>
     {% if t.session_name %}
     <div class="card-session">
       {% with name = t.session_name, status = t.session_status, link = t.session_link %}{% include "_session.html" %}{% endwith %}
@@ -144,6 +116,37 @@
     {% endif %}
   </details>
 
+  <details class="panel fold" data-fold="details" open>
+    <summary><h2>Task details</h2></summary>
+    <dl class="fields">
+      {% if t.area %}<dt>Area</dt><dd>{% include "_area_chip.html" %}</dd>{% endif %}
+      <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
+      {%- set is_done = t.stage.value == "done" %}
+      {% if t.waiting_on %}<dt>Waiting on</dt><dd>{% if is_done %}<span class="muted">{{ t.waiting_on }}</span>{% else %}<span class="chip waiting">{{ t.waiting_on }}</span>{% endif %}</dd>{% endif %}
+      {%- set stale = t.next_step_stale and not is_done %}
+      {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
+      {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
+      {% if detail.code.shown %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}
+      {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (require_tracker_log and is_done) %}
+      <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}
+        {%- if t.tracker_url and not t.tracker_ref %}{% set href = t.tracker_url|http_url %}{% if href %} <a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ t.tracker_name or href }}</a>{% endif %}{% endif %}
+        {%- if t.tracker_ref and not t.tracker_logged and not is_done %} <span class="muted">work log not entered yet</span>{% endif %}</dd>
+      {% endif %}
+      {%- set d = detail.document %}
+      {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
+      {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
+      {% if is_done %}{% set in_archive = task_archived(t) %}<dt>Archive</dt><dd>{% if t.archived_at %}archived <time datetime="{{ t.archived_at }}" data-age>{{ t.archived_at|age }}</time> by {{ t.archived_by }}{% elif in_archive %}archived: closed more than {{ done_window_days }} days ago{% else %}<span class="muted">in the done column</span>{% endif %}
+        <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}"
+              hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}" hx-target="closest .task-view" hx-swap="outerHTML">
+          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+          <input type="hidden" name="target" value="view">
+          <button type="submit" class="action">{{ "Back from the archive" if in_archive else "Archive" }}</button>
+        </form></dd>{% endif %}
+      {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
+      <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
+    </dl>
+  </details>
+
   <details class="panel fold" data-fold="description" open>
     <summary><h2>Description</h2></summary>
     {% if t.description %}<div class="markdown task-description">{{ t.description|markdown(detail.doc_refs) }}</div>
@@ -156,45 +159,6 @@
     {% else %}<p class="muted">No progress summary yet.</p>{% endif %}
   </details>
 
-  <details class="panel fold" data-fold="reports" open>
-    <summary><h2>Last report</h2></summary>
-    {% for r in detail.reports %}
-    {% if loop.first %}
-    <article class="report">
-      <header class="report-head">
-        {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
-        <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
-      </header>
-      <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
-      {% with checks = detail.checks.get(r.id, []), warning = detail.marks_warning(r) %}{% include "_report_checks.html" %}{% endwith %}
-    </article>
-    {% else %}
-    {% if loop.index == 2 %}<h3>Earlier reports</h3>{% endif %}
-    {#- app.js reopens these by report id after a live refresh of this fragment. #}
-    <details class="report report-older" data-report="{{ r.id }}">
-      <summary class="report-head">
-        {% with state = r.state, size = r.size %}{% include "_report_badges.html" %}{% endwith %}
-        <span class="report-gist">{{ r.summary }}</span>
-        <span class="muted">{{ r.author }} · <time datetime="{{ r.created_at }}" data-age>{{ r.created_at|age }}</time></span>
-      </summary>
-      <div class="markdown">{{ r.body_md|markdown(detail.doc_refs) }}</div>
-      {% with checks = detail.checks.get(r.id, []), warning = detail.marks_warning(r) %}{% include "_report_checks.html" %}{% endwith %}
-    </details>
-    {% endif %}
-    {% else %}
-    <p class="muted">No reports yet.</p>
-    {% endfor %}
-  </details>
-
-  {% if detail.live_actions %}
-  <details class="panel fold" data-fold="live-actions" open>
-    <summary><h2>Actions on live</h2></summary>
-    <ol class="journal-list">
-      {% for e in detail.live_actions %}{% include "_live_action.html" %}{% endfor %}
-    </ol>
-  </details>
-  {% endif %}
-
   {% if detail.decisions %}
   <details class="panel fold" data-fold="decisions" open>
     <summary><h2>Decisions</h2></summary>
@@ -205,4 +169,53 @@
     </ul>
   </details>
   {% endif %}
+
+  {% if detail.findings %}
+  <details class="panel fold task-findings" data-fold="findings" open>
+    <summary><h2>Findings</h2></summary>
+    <ul class="history">
+      {% for b in detail.findings %}<li><a href="/p/{{ b.project_slug }}/backlog#backlog-{{ b.id }}">#{{ b.id }} {{ b.title }}</a> <span class="muted">· {{ b.status }}</span></li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+  {% if d and d.doc %}
+  <details class="panel fold task-doc" data-fold="document">
+    <summary><h2>Document: {{ d.doc.title }}{% if d.link.anchor and not d.ref.broken %} · #{{ d.link.anchor }}{% endif %}</h2></summary>
+    <p class="muted doc-meta"><code>{{ d.doc.slug }}</code> · {{ d.doc.kind }} · version {{ d.doc.version }} · <a href="/p/{{ d.doc.project_slug }}/docs/{{ d.doc.slug }}#history">history</a>{% if d.doc.source_url and d.doc.source_url|http_url %} · lives in the repository: <a href="{{ d.doc.source_url|http_url }}" target="_blank" rel="noopener noreferrer">{{ d.doc.source_url }}</a>{% endif %}</p>
+    {% if d.ref.broken %}<p class="muted">No section <code>#{{ d.link.anchor }}</code>; the whole document follows.</p>{% endif %}
+    {% if d.text %}<div class="markdown doc-body">{{ d.text|document }}</div>{% else %}<p class="muted">No text here.</p>{% endif %}
+  </details>
+  {% endif %}
+
+  {% if detail.tracker_history %}
+  <details class="panel fold" data-fold="tracker-history" open>
+    <summary><h2>Tracker history</h2></summary>
+    <ol class="history tracker-history">
+      {% for e in detail.tracker_history %}
+      {%- set href = e.tracker_url|http_url %}
+      {%- set text = (e.tracker_name ~ " " if e.tracker_name else "") ~ e.tracker_ref %}
+      <li>
+        {% if href %}<a class="history-name" href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ text }}</a>{% else %}<span class="history-name">{{ text }}</span>{% endif %}
+        <span class="muted">—
+          {%- if e.logged_at %} logged <time datetime="{{ e.logged_at }}">{{ e.logged_at[:10] }}</time>{% endif %}
+          {%- if e.logged_at and e.unlogged_at %} ·{% endif %}
+          {%- if e.unlogged_at %} unlogged <time datetime="{{ e.unlogged_at }}">{{ e.unlogged_at[:10] }}</time>{% endif %}
+          {%- if not e.logged_at and not e.unlogged_at %} not logged{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+
+  {% if detail.live_actions %}
+  <details class="panel fold" data-fold="live-actions" open>
+    <summary><h2>Actions on live</h2></summary>
+    <ol class="journal-list">
+      {% for e in detail.live_actions %}{% include "_live_action.html" %}{% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+
 </div>

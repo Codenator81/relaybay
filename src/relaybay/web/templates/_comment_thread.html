@@ -1,5 +1,7 @@
 {#- A task's comment thread, refetched on live events. Expects: t (the task), comments, optional
-    error and doc_refs (board targets of document links). The form that adds a comment lives outside it (_comments.html), so a draft survives. -#}
+    error, doc_refs (board targets of document links) and wait_reason (why undelivered comments
+    wait). The form that adds a comment lives outside it (_comment_form.html), so a draft
+    survives. -#}
 {%- macro stamp(ts) -%}<time datetime="{{ ts }}" title="{{ ts[:19]|replace('T', ' ') }} UTC" data-age>{{ ts|age }}</time>{%- endmacro -%}
 <div class="comment-thread" id="comments-{{ t.key }}"
      hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/comments" hx-trigger="rb:refresh" hx-swap="outerHTML">
@@ -20,7 +22,7 @@
         {%- if c.to_agent %}
         <span class="mark mark-sent">sent {{ stamp(c.created_at) }}</span>
         {%- if c.delivered_at %} · <span class="mark mark-delivered">delivered {{ stamp(c.delivered_at) }}{% if c.delivered_to_name %} to {{ c.delivered_to_name }}{% endif %}</span>
-        {%- else %} · <span class="mark mark-pending">not delivered yet</span>{% endif %}
+        {%- else %} · <span class="mark mark-pending">not delivered yet{% if wait_reason %}: {{ wait_reason }}{% endif %}</span>{% endif %}
         {%- if c.read_at %} · <span class="mark mark-read">read {{ stamp(c.read_at) }}</span>{% endif %}
         {%- else %}
         <span class="mark">reply {{ stamp(c.created_at) }}</span>
@@ -40,5 +42,5 @@
   {% else %}
   <p class="muted">No comments yet.</p>
   {% endif %}
-  <p class="muted comment-hint">{% if t.session_name %}A new comment reaches {{ t.session_name }} through its hooks on its next prompt or tool call.{% else %}No session is bound to this task: a comment waits until one is.{% endif %}</p>
+  <p class="muted comment-hint">{% if wait_reason %}A new comment waits: {{ wait_reason }}.{% else %}A new comment reaches {{ t.session_name }} through its hooks on its next prompt or tool call.{% endif %}</p>
 </div>

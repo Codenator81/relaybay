@@ -1788,3 +1788,38 @@ a.chip:hover, a.review-chip:hover, a.plan-chip:hover {
 .saved-filter-delete:hover { color: var(--bad); background: var(--surface-2); }
 summary { cursor: pointer; }
 .card summary:hover, .code-row summary:hover { color: var(--accent); }
+
+/* The session card (design 0025): the state line on top of the task dialog and page, the same
+   word on the board card next to the session's dot. */
+.status-dot.inline { position: static; display: inline-block; flex: none; border: 0; }
+.card-state {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.card-state .status-dot.inline { width: 8px; height: 8px; }
+.card-state.state-working { color: var(--ok); }
+.card-state.state-waits { color: var(--warn); font-weight: 600; }
+.state-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.state-line .state-word { margin: 0; font-size: 22px; }
+.state-line .status-dot.inline { width: 12px; height: 12px; }
+.state-line.state-working .state-word { color: var(--ok); }
+.state-line.state-waits .state-word { color: var(--warn); }
+.state-line.state-ended .state-word, .state-line.state-none .state-word { color: var(--muted); }
+.state-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.state-actions form { margin: 0; }
+.state-actions .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+a.btn.open-desktop { text-decoration: none; }
+.state-line p { margin: 6px 0 0; }
+.state-reasons { font-weight: 600; }
+.state-result.is-error { color: var(--bad); }
+.brief-fold { margin-top: 10px; }
+.brief-fold > summary { color: var(--muted); font-size: 13px; }
+.brief-fold > summary:hover { color: var(--accent); }
+.brief-text { width: 100%; box-sizing: border-box; margin-top: 6px; font-size: 12px; }

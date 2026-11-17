@@ -1271,6 +1271,8 @@ async def test_a_stale_hash_does_not_migrate(
         conn.execute("DROP TABLE usage_message")
         conn.execute("DROP TABLE usage_day")
         conn.execute("DROP TABLE usage_file")
+        conn.execute("ALTER TABLE session DROP COLUMN surface")
+        conn.execute("ALTER TABLE session DROP COLUMN entrypoint")
         conn.execute("ALTER TABLE session DROP COLUMN transcript_path")
         conn.execute("DROP TABLE session_message")
         conn.execute("ALTER TABLE session DROP COLUMN no_live_at")

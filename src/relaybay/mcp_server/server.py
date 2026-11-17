@@ -589,7 +589,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         """Change any task fields given as one JSON object, with the same rules as task_update
         and task_set_stage (a `stage` value moves the task). Use it for a field your client's
         task_update does not offer yet: its parameter list may be older than the server. Call
-        task_get or read relaybay://schema/task for the allowed fields."""
+        task_get or read relaybay://schema/task for the allowed fields. `session_surface`
+        ("desktop" or "terminal", with your hook_session) is not a task field: it tells relaybay
+        where you run, when your session start asks for it."""
         changes = {k: cleared(v) if isinstance(v, str) else v for k, v in fields.items()}
         if not changes:
             raise ToolError("Nothing to update: pass at least one field in `fields`.")

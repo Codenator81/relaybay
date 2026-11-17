@@ -42,7 +42,15 @@ from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import BacklogItem
-from relaybay.domain.card import session_surface
+from relaybay.domain.card import (
+    NO_SESSION,
+    CardState,
+    OpenAction,
+    card_state,
+    open_action,
+    session_surface,
+    undelivered_reason,
+)
 from relaybay.domain.code import (
     REPO_KINDS,
     REPO_NAME_MAX,
@@ -242,6 +250,16 @@ LIVE_ACTION = "live.action"
 NO_LIVE_ON = "session.no_live_on"
 NO_LIVE_OFF = "session.no_live_off"
 TERMINAL_OPENED = "session.terminal_opened"
+COMMENT_WAIT_HOURS = 1  # an owner comment undelivered for longer is listed in the Inbox
+BRIEF_BIND_LINE = (
+    'First bind yourself to this card: task_bind_session("{key}", session=<your desktop session'
+    " id local_… if you know it, else a name>). On every relaybay write pass the same session and"
+    " the hook session your session start gave you as hook_session."
+)
+BRIEF_REPORT_LINE = (
+    "At the end of each stage add a report with report_add on this card; its first line is"
+    " `state · size · gist`."
+)
 # Kinds of features removed in 0.12 (design 0025): never written again, still shown for the
 # rows already in the journal.
 HISTORIC_AUDIT_KINDS = (
@@ -478,6 +496,14 @@ class TaskDetail:
     code: TaskCode = field(default_factory=lambda: TaskCode([], [], []))
     checks: dict[int, list[ReportCheck]] = field(default_factory=dict)  # `verified:` marks
     marks_from: int = 0  # reports with a smaller id were written before marks existed
+    # The session card (design 0025): its state line, the session it is about (the bound one,
+    # or the ended one of the latest binding), what Open does, the brief for a new session
+    # (only while no session works on the card) and why owner comments wait.
+    state: CardState = field(default_factory=lambda: CardState(NO_SESSION))
+    card_session: Session | None = None
+    open: OpenAction = field(default_factory=OpenAction)
+    brief: str | None = None
+    undelivered: str | None = None
 
     def marks_warning(self, report: Report) -> str | None:
         """The rules warning of an M or L report without `verified:` marks."""
@@ -523,6 +549,8 @@ class Inbox:
     running_cap: int = 0
     questions: list[Question] = field(default_factory=list)  # open, of all cards
     approvals: list[Approval] = field(default_factory=list)  # open requests, of all cards
+    # Owner comments not delivered for over COMMENT_WAIT_HOURS: per task, with why they wait.
+    undelivered: list[tuple[Task, list[Comment], str | None]] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -537,6 +565,7 @@ class Inbox:
             + len(self.not_logged)
             + len(self.unlinked)
             + len(self.replies)
+            + len(self.undelivered)
             + len(self.proposals)
             + len(self.policy_proposals)
             + len(self.rule_proposals)
@@ -1976,7 +2005,7 @@ class Service:
                 return _context("SessionStart", context)
             row = session or await repo.get_session_by_cc(self._r, hook.cc_session_id)
             if row is not None and session_surface(row) is None:
-                context += "\n" + surface_question(hook.cc_session_id)
+                context += " " + surface_question(hook.cc_session_id)
             unread = await repo.unread_owner_count(self._r, session.id) if session else 0
             if unread:
                 context += " " + comment_text.unread_line(unread)
@@ -2257,6 +2286,13 @@ class Service:
         replies: dict[int, list[Comment]] = {}
         for reply in await repo.unread_agent_replies(self._r):
             replies.setdefault(reply.task_id, []).append(reply)
+        waiting_since = (now - timedelta(hours=COMMENT_WAIT_HOURS)).isoformat(
+            timespec="milliseconds"
+        )
+        undelivered: dict[int, list[Comment]] = {}
+        for comment in await repo.waiting_owner_comments(self._r, waiting_since):
+            if comment.task_id in by_id and by_id[comment.task_id].stage != Stage.DONE:
+                undelivered.setdefault(comment.task_id, []).append(comment)
         return Inbox(
             waiting=waiting,
             rule_warnings=warned,
@@ -2264,6 +2300,10 @@ class Service:
             unlinked=await self.unlinked_hook_sessions(),
             replies=[
                 (by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id
+            ],
+            undelivered=[
+                (by_id[task_id], items, await self.comment_wait_reason(by_id[task_id]))
+                for task_id, items in undelivered.items()
             ],
             proposals=await repo.list_proposals(self._r),
             policy_proposals=await repo.list_policy_proposals(self._r),
@@ -2574,13 +2614,62 @@ class Service:
             by_rank=by_rank,
         )
 
+    def card_state(self, task: Task) -> CardState:
+        return card_state(task, {name.strip().casefold() for name in self.owner_names})
+
+    async def card_session(self, task: Task) -> Session | None:
+        """The session the card is about: the bound one, else the session of the latest binding
+        when it has ended (a terminal session's end unbinds it)."""
+        if task.session_id is not None:
+            return await repo.get_session_by_id(self._r, task.session_id)
+        if task.last_session_status != "ended":
+            return None
+        latest = await repo.list_bindings(self._r, task.id, limit=1)
+        return await repo.get_session_by_id(self._r, latest[0].session_id) if latest else None
+
+    async def comment_wait_reason(self, task: Task, session: Session | None = None) -> str | None:
+        """Why the task's undelivered owner comments wait (None: they go with the next hook)."""
+        if session is None and task.session_id is not None:
+            session = await repo.get_session_by_id(self._r, task.session_id)
+        bound = session if task.session_id is not None else None
+        return undelivered_reason(task, bound, bound is not None and bound.id in self._waiters)
+
+    async def task_brief(self, task: Task) -> str:
+        """What a new session needs to take the card over: the task's digest (the text a run's
+        first turn had before 0.12), the whole description, attachments by path, how to bind
+        itself and how to report."""
+        text, _ = await self._task_context(task, None, None, self.digest_budget_chars)
+        parts = [
+            f"relaybay card {task.key} ({task.project_slug}): {task.title}",
+            BRIEF_BIND_LINE.format(key=task.key),
+            "",
+            text,
+        ]
+        if task.description and len(task.description) > digests.ABOUT_MAX:
+            parts += ["", "## Description", task.description]
+        attachments = await repo.list_attachments(self._r, task.id)
+        if attachments:
+            parts += ["", "## Attachments"]
+            parts += [
+                f"- {a.original_name or a.stored_name}: {self._file_path(a)}" for a in attachments
+            ]
+        parts += ["", BRIEF_REPORT_LINE]
+        return "\n".join(parts)
+
     async def task_detail(self, ref: str | int, reports: int = 5) -> TaskDetail:
         task = await self.get_task(ref)
         shown_reports = await repo.list_reports(self._r, task.id, reports)
         comments = await repo.list_comments(self._r, task.id)
         texts = [r.body_md for r in shown_reports] + [c.body_md for c in comments]
         cache: dict[tuple[str, str], tuple[mem.Document, str] | None] = {}
+        state = self.card_state(task)
+        session = await self.card_session(task)
         return TaskDetail(
+            state=state,
+            card_session=session,
+            open=open_action(session),
+            brief=None if state.live else await self.task_brief(task),
+            undelivered=await self.comment_wait_reason(task, session),
             task=task,
             reports=shown_reports,
             checks=await repo.report_checks(self._r, [r.id for r in shown_reports]),

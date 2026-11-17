@@ -39,6 +39,7 @@ CHANGES_KEY = "changes"
 PLAN_KEY = "plan"
 OTHERS_KEY = "others"
 FIRST_SECTION_LINE_MAX = 1_600
+ABOUT_MAX = 600  # the description in a task's head line; the brief adds the rest
 PLAN_LINE_MAX = 500
 DOC_PREVIEW_LINES = 3
 
@@ -612,7 +613,7 @@ def _task_head(task: Task) -> list[str]:
         ("Note", task.stage_note),
         ("Branch", task.branch),
         ("Doc", task.doc_path),
-        ("About", _clip(task.description, 600) or None),
+        ("About", _clip(task.description, ABOUT_MAX) or None),
         ("Done so far", _clip(task.progress, 1_500) or None),
     ):
         if value:

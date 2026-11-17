@@ -1,0 +1,37 @@
+{#- The card's state line (design 0025), derived and never set by hand: the state word, why it
+    waits for you, the session's last activity, one Open that follows where the session runs, and
+    Copy the brief while no session works on the card. Expects: detail. -#}
+{%- set st = detail.state %}
+{%- set s = detail.card_session %}
+{%- set o = detail.open %}
+<section class="panel state-line state-{{ st.key }}" aria-labelledby="state-{{ t.key }}">
+  <div class="state-head">
+    <span class="status-dot{% if s and s.status %} dot-{{ s.status }}{% endif %}" aria-hidden="true"></span>
+    <h2 class="state-word" id="state-{{ t.key }}">{{ st.label }}</h2>
+    <span class="state-actions">
+      {% if o.kind == "link" %}
+      <a class="btn primary open-desktop" href="{{ o.href }}" title="Opens the session in the Claude desktop app. If nothing opens, copy its link under Session.">Open</a>
+      {% elif o.kind == "terminal" %}
+      <form class="open-terminal" method="post" action="/sessions/{{ s.id }}/open-terminal">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        <button type="submit" class="btn primary"{% if o.disabled %} disabled title="{{ o.note }}"{% endif %}>Open</button>
+      </form>
+      {% endif %}
+      {% if detail.brief %}<button type="button" class="btn copy-brief">Copy the brief</button>{% endif %}
+    </span>
+  </div>
+  {% if s %}
+  <p class="state-session muted">{{ s.name }}
+    {%- if s.activity_at %} · {{ s.activity or "—" }} · <time datetime="{{ s.activity_at }}" data-age>{{ s.activity_at|age }}</time>{% endif %}</p>
+  {% endif %}
+  {% if st.reasons %}<p class="state-reasons">{{ st.reasons|join(" · ") }}</p>{% endif %}
+  {% if o.note %}<p class="state-note muted">{{ o.note }}</p>{% endif %}
+  <p class="state-result" role="status" hidden></p>
+  {% if detail.brief %}
+  <details class="brief-fold">
+    <summary>The brief for a new session</summary>
+    <p class="muted">Paste it into a new session in the Claude desktop app or a terminal; the session binds itself to {{ t.key }}. relaybay starts nothing.</p>
+    <textarea class="brief-text mono" readonly rows="12" aria-label="The brief for {{ t.key }}">{{ detail.brief }}</textarea>
+  </details>
+  {% endif %}
+</section>
