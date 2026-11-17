@@ -742,7 +742,7 @@ a.badge.tracker:hover { text-decoration: underline; }
   white-space: nowrap;
   vertical-align: middle;
 }
-.card-area { margin: -2px 0 2px; line-height: 1; }
+.card-area { margin-bottom: 2px; }
 .card-area .area-chip { max-width: 100%; }
 .area-blue { --area-text: #1c4fb8; --area-bg: #e3ecff; }
 .area-green { --area-text: #1f7a33; --area-bg: #e3f6e7; }
