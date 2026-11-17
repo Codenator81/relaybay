@@ -1851,3 +1851,16 @@ body:has(.task-dialog[open]) { overflow: hidden; }
   .coordinator-exchange { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .coordinator-say .btn { width: 100%; }
 }
+
+/* Hover: everything that takes a click shows it under the pointer. */
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.1); }
+.btn.danger:hover:not(:disabled) { border-color: var(--bad); }
+a.chip:hover, a.review-chip:hover, a.plan-chip:hover {
+  text-decoration: none;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.saved-filter-delete { border-radius: 999px; }
+.saved-filter-delete:hover { color: var(--bad); background: var(--surface-2); }
+summary { cursor: pointer; }
+.card summary:hover, .code-row summary:hover { color: var(--accent); }
