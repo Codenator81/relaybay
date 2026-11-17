@@ -186,7 +186,15 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | PR 4: schedules: coordinator turns, read-only `-p` checks, reminders | done | [0023](design/0023-coordinator-and-schedules.md#schedules) |
 | PR 5: the Coordinator page complete: what waits, what came in and what it decided, runs it started today, its schedules, live, paged, the sidebar's mark | done | [0023](design/0023-coordinator-and-schedules.md#the-coordinator-page) |
 
-## After 0.11
+## 0.12 — card modes, the run as a thread, areas
+
+| Item | Status | Design |
+|---|---|---|
+| PR 1: areas (one per card from a project list that grows from use, a chip on the card, a board filter, MCP), a home icon for the product name in the top bar | next | [0024](design/0024-card-modes-thread-and-areas.md#areas) |
+| PR 2: card modes (agent, session) derived from the card's run and session; one channel to the agent in each mode; the run's state over MCP; the session card's order | next | [0024](design/0024-card-modes-thread-and-areas.md#card-modes) |
+| PR 3: the agent card: a large state line, the run as a thread, one text field that live updates do not clear, a live tail of the running turn, run details folded, the run's state on the board card | next | [0024](design/0024-card-modes-thread-and-areas.md#the-agent-card) |
+
+## After 0.12
 
 | Item | Status | Design |
 |---|---|---|
