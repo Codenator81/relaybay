@@ -106,6 +106,7 @@ nav:
           - Questions and approvals: design/0022-questions-and-approvals.md
           - Coordinator and schedules: design/0023-coordinator-and-schedules.md
           - Card modes, the run as a thread, areas: design/0024-card-modes-thread-and-areas.md
+          - The board with the desktop: design/0025-board-with-the-desktop.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
           - Desktop shell: adr/0002-desktop-shell.md

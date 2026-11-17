@@ -1,5 +1,6 @@
 # 0023 — Coordinator, schedules and profiles
 
+- **Superseded by [0025](0025-board-with-the-desktop.md) in 0.12: the coordinator run, profiles and turn schedules were removed; reminders stay.**
 - Status: **Accepted**, 2026-11-16, for 0.11 (draft 1: 2026-11-10; draft 2 accepted by the
   coordinator with the defaults of the [decided points](#decided-points)). Part of
   [0021](0021-agents-inside.md); builds on the runner of [0012](0012-runner-and-embedded-terminal.md),
