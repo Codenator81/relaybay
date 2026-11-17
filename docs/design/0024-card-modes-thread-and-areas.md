@@ -225,7 +225,7 @@ The chip is an **area**: what part of the project a card belongs to ("web shop",
   Rename, recolour, reorder and delete are on the project's settings page; deleting an area clears
   it from its cards (the event log keeps what was).
 - **Where it shows:** on the board card's top line after the key; in the task dialog's head and on
-  the task page; in Inbox and review queue rows, the quick switcher and All boards; a board filter
+  the task page; in Inbox and review queue rows, and the quick switcher; a board filter
   "Any area" next to the stage filter, kept in saved filters.
 - **MCP** (additive, contract v1): `task_create(area=…)`, `task_update(area=…)`, `area` in
   `task_patch` and in `relaybay://schema/task`; `task_list(area=…)`; one line in `task_get`,
