@@ -876,6 +876,10 @@ a.badge.tracker:hover { text-decoration: underline; }
 
 /* Links and buttons on a card sit above the title button's full-card overlay. */
 .card a, .card-session { position: relative; z-index: 1; }
+/* Everything else on a card that takes a click sits above the whole-card link (.card-open::after);
+   a summary only as wide as its text, so the rest of its row still opens the task. */
+.card :is(summary, button, form) { position: relative; z-index: 1; }
+.card summary { width: fit-content; }
 a.card-key { color: var(--muted); }
 a.card-key:hover { color: var(--accent); }
 
