@@ -1275,9 +1275,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         found = await run(service.get_task(changed.task_id))
         return fmt.run_settings_saved(found, changed)
 
-    # --- schedules: the coordinator's one-off checks and reminders ---------------------------
+    # --- removed in 0.12: schedules ---------------------------------------------------------
 
-    @write
+    @mcp.tool(annotations=WRITE, structured_output=False)
+    @contract.deprecated()
     async def schedule_add(
         kind: Annotated[
             str,
@@ -1325,54 +1326,28 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """The coordinator run only (its profile's schedule_add right): a one-off check or
-        reminder, or a check every N minutes bounded by max_times. Coordinator turns, daily
-        schedules and repeating reminders are the owner's, on the board."""
-        made = await run(
-            service.schedule_add_mcp(
-                kind,
-                text,
-                project=project or None,
-                task=task or None,
-                at=at or None,
-                in_minutes=in_minutes,
-                every_minutes=every_minutes,
-                max_times=max_times,
-                session=session,
-                session_title=session_title,
-                hook_session=hook_session,
-            )
-        )
-        return fmt.schedule_added(made, service.local_time)
+        """Removed in 0.12 with every kind of schedule: adds nothing."""
+        return contract.STUB_RESULT
 
     @mcp.tool(annotations=READ, structured_output=False)
+    @contract.deprecated()
     async def schedule_list(
         session: Session = None,
         hook_session: HookSession = None,
     ) -> str:
-        """The coordinator run only: every schedule, its own and the owner's, with its next time
-        and last outcome (times in this machine's local time)."""
-        found = await run(service.schedule_list_mcp(session=session, hook_session=hook_session))
-        return fmt.schedules(found, service.local_time)
+        """Removed in 0.12 with every kind of schedule: lists nothing."""
+        return contract.STUB_RESULT
 
-    @write
+    @mcp.tool(annotations=WRITE, structured_output=False)
+    @contract.deprecated()
     async def schedule_cancel(
         schedule_id: Annotated[int, Field(description="The schedule's number from schedule_list.")],
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """The coordinator run only: remove a schedule a coordinator made; a check of it that
-        runs ends. The owner's schedules are refused."""
-        found = await run(
-            service.schedule_cancel_mcp(
-                schedule_id,
-                session=session,
-                session_title=session_title,
-                hook_session=hook_session,
-            )
-        )
-        return fmt.schedule_cancelled(found)
+        """Removed in 0.12 with every kind of schedule: cancels nothing."""
+        return contract.STUB_RESULT
 
     # --- questions to the owner ---------------------------------------------------------
 

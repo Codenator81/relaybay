@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 import platformdirs
 
-from relaybay.domain.notifications import DEFAULT_KINDS, KINDS
+from relaybay.domain.notifications import DEFAULT_KINDS, KINDS, RETIRED_KINDS
 from relaybay.security import _write_private
 from relaybay.updates import HOURS_MAX
 
@@ -101,7 +101,7 @@ class DesktopSettings:
             " question or look-at-this request), `approval` (an agent waits for your"
             " approval of a push, a merge or a stand change), `permission` (a session waiting for"
             " you, off by default), `brake` (an agent or a rule pulled the brake), `budget` (a"
-            " token budget nearly or fully spent), `reminder` (a schedule's reminder), `server` (an"
+            " token budget nearly or fully spent), `server` (an"
             " external server stopped answering).",
             default="all but `permission`",
         ),
@@ -221,6 +221,7 @@ def load_desktop_settings(folder: Path, ignore_unknown: bool = False) -> Desktop
 def _notify_kinds(path: Path, value: Any, ignore_unknown: bool) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(kind, str) for kind in value):
         raise ValueError(f"{path}: notify_kinds must be a list of names, got {value!r}")
+    value = [kind for kind in value if kind not in RETIRED_KINDS]
     unknown = sorted(set(value) - set(KINDS))
     if unknown and not ignore_unknown:
         raise ValueError(

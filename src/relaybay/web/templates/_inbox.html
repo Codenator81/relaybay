@@ -54,29 +54,6 @@
   </section>
   {% endif %}
 
-  {% if inbox.schedules %}
-  <section class="panel inbox-group" id="inbox-schedules">
-    <h2>Schedules <span class="col-count">{{ inbox.schedules|length }}</span></h2>
-    <p class="muted inbox-hint">Reminders that came due and the answers of checks without a card. Seen takes a line away.</p>
-    <ul class="inbox-list">
-      {% for n in inbox.schedules %}
-      <li class="inbox-row" data-schedule-run="{{ n.id }}">
-        <a class="inbox-link" href="/schedules#run-{{ n.id }}">
-          <span class="card-key">{{ "Reminder" if n.schedule_kind == "reminder" else "Check" }} {{ n.schedule_id }}</span>
-          <span class="inbox-title">{{ n.notice }}</span>
-        </a>
-        <p class="inbox-note muted">{% if n.project_slug %}{{ n.project_slug }} · {% endif %}due <time datetime="{{ n.due_at }}" data-age>{{ n.due_at|age }}</time></p>
-        <form class="inline-form" method="post" action="/schedules/notices/{{ n.id }}/seen">
-          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-          <input type="hidden" name="from" value="inbox">
-          <button type="submit" class="btn">Seen</button>
-        </form>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
   {% if inbox.queued %}
   <section class="panel inbox-group" id="inbox-queued">
     <h2>Queued turns <span class="col-count">{{ inbox.queued|length }}</span></h2>

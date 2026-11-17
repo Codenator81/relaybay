@@ -1,4 +1,4 @@
-{#- Left navigation. Expects: nav (active, project, projects, inbox_count, coordinator_badge,
+{#- Left navigation. Expects: nav (active, project, projects, inbox_count,
     saved_filters per project slug, filter_active: the board shows one of them). Items whose
     feature does not exist yet are not shown. -#}
 {%- macro item(href, text, is_active) -%}
@@ -9,8 +9,6 @@
   <ul class="nav-list">
     <li>{% call item("/inbox", "Inbox", nav.active == "inbox") %}{% with count = nav.inbox_count %}{% include "_inbox_badge.html" %}{% endwith %}{% endcall %}</li>
     <li>{{ item("/", "All boards", nav.active == "boards") }}</li>
-    <li>{% call item("/coordinator", "Coordinator", nav.active == "coordinator") %}{% with badge = nav.coordinator_badge %}{% include "_coordinator_badge.html" %}{% endwith %}{% endcall %}</li>
-    <li>{{ item("/schedules", "Schedules", nav.active == "schedules") }}</li>
     <li>{{ item("/backlog", "All backlog", nav.active == "backlog" and not nav.project) }}</li>
     <li>{{ item("/usage", "Usage", nav.active == "usage") }}</li>
     <li>{{ item("/activity", "Activity", nav.active == "activity") }}</li>

@@ -13,7 +13,13 @@ Contract version 1.
 
 Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_patch` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
 
-Deprecations: none.
+Deprecations:
+
+| Item | Parameter | Since | Removed not before | Use instead |
+|---|---|---|---|---|
+| `schedule_add` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
+| `schedule_list` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
+| `schedule_cancel` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
 
 ## Tools
 
@@ -519,7 +525,7 @@ Change the permission mode, model or effort of the card's open run from its next
 
 ### `schedule_add`
 
-The coordinator run only (its profile's schedule_add right): a one-off check or reminder, or a check every N minutes bounded by max_times. Coordinator turns, daily schedules and repeating reminders are the owner's, on the board.
+Removed in 0.12 with every kind of schedule: adds nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -537,7 +543,7 @@ The coordinator run only (its profile's schedule_add right): a one-off check or 
 
 ### `schedule_list`
 
-The coordinator run only: every schedule, its own and the owner's, with its next time and last outcome (times in this machine's local time).
+Removed in 0.12 with every kind of schedule: lists nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -546,7 +552,7 @@ The coordinator run only: every schedule, its own and the owner's, with its next
 
 ### `schedule_cancel`
 
-The coordinator run only: remove a schedule a coordinator made; a check of it that runs ends. The owner's schedules are refused.
+Removed in 0.12 with every kind of schedule: cancels nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

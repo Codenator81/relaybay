@@ -58,45 +58,6 @@
       <button type="submit" class="btn primary">Save</button>
     </form>
   </section>
-  <section class="panel" id="coordinator">
-    <h2>Coordinator</h2>
-    <p class="muted">The <a href="/coordinator">coordinator</a> runs in a folder of its own, never inside a git repository (it would load that repository's CLAUDE.md and auto memory). Start refuses one inside a repository. Its profile, model and effort apply from its next turn; the folder from the next Start. It is woken by events on the board: the events of a burst wait for the minimum gap and come as one turn. After a turn whose context passes "Compact at", relaybay sends <code>/compact</code> before the next wake. Its daily tokens are its own budget (of its session, per UTC day): a warning at 80%; at the limit it only warns unless you choose to stop its wakes.</p>
-    <form method="post" action="/settings/agents/coordinator">
-      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-      <label class="field"><span>Folder (empty: the default{% if coordinator_default %}, <code>{{ coordinator_default[0] }}</code>{% endif %})</span>
-        <input type="text" name="folder" maxlength="500" value="{{ coordinator.folder or '' }}">
-      </label>
-      {% if coordinator_default and coordinator_default[1] %}<p class="muted">{{ coordinator_default[1] }}</p>{% endif %}
-      <div class="field-row">
-        <label class="field"><span>Profile</span>
-          <select name="profile">{% for p in coordinator_profiles %}<option value="{{ p.name }}"{% if p.name == coordinator.profile %} selected{% endif %}>{{ p.name }}</option>{% endfor %}</select>
-        </label>
-        <label class="field"><span>Model</span>
-          <select name="model">{% for m in choices.models %}<option{% if m == coordinator.model %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
-        </label>
-        <label class="field"><span>Effort</span>
-          <select name="effort">{% for e in choices.efforts %}<option{% if e == coordinator.effort %} selected{% endif %}>{{ e }}</option>{% endfor %}</select>
-        </label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Minimum gap between wakes (seconds, 0 to 3600)</span>
-          <input type="number" name="wake_gap_seconds" min="0" max="3600" value="{{ coordinator.wake_gap_seconds }}" required>
-        </label>
-        <label class="field"><span>Compact at (context tokens)</span>
-          <input type="number" name="compact_at_tokens" min="1000" max="1000000" value="{{ coordinator.compact_at_tokens }}" required>
-        </label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Daily tokens (its budget)</span>
-          <input type="number" name="daily_tokens" min="10000" value="{{ coordinator.daily_tokens }}" required>
-        </label>
-        <label class="field"><span>At the daily limit</span>
-          <select name="budget_action"><option value="warn"{% if coordinator.budget_action == "warn" %} selected{% endif %}>Warn only</option><option value="stop"{% if coordinator.budget_action == "stop" %} selected{% endif %}>Stop its wakes</option></select>
-        </label>
-      </div>
-      <button type="submit" class="btn primary">Save</button>
-    </form>
-  </section>
   <section class="panel" id="terminal">
     <h2>Terminal tab</h2>
     <p class="muted">A Terminal button on a run opens its Claude Code session (<code>claude --resume</code>) in a terminal on this board, in the run's folder. While it is open the run is with you: relaybay starts no turn of it and texts sent wait until the terminal closes. Only from this machine (loopback), only signed in here.</p>

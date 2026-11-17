@@ -18,7 +18,6 @@ LABELS = {
     "permission": ("permission request", "permission requests"),
     "brake": ("brake", "brakes"),
     "budget": ("budget notice", "budget notices"),
-    "reminder": ("reminder", "reminders"),
     "server": ("server notice", "server notices"),
 }
 KINDS = tuple(LABELS)
@@ -31,9 +30,10 @@ DEFAULT_KINDS = (
     "approval",
     "brake",
     "budget",
-    "reminder",
     "server",
 )
+# Kinds of removed features: a saved list that still names them loads without them.
+RETIRED_KINDS = ("reminder",)
 # The events `classify` may answer for: the API reads only these.
 EVENT_KINDS = (
     "task.updated",
@@ -46,12 +46,10 @@ EVENT_KINDS = (
     "brake.set",
     "budget.warned",
     "budget.exceeded",
-    "schedule.fired",
 )
 BOARD_ACTORS = ("board", "owner")  # who writes for the signed-in owner on the board
 SESSIONS_URL = "/sessions"
 USAGE_URL = "/usage"
-SCHEDULES_INBOX_URL = "/inbox#inbox-schedules"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,17 +101,6 @@ def classify(
             title = f"Budget spent: {target}"
         return Notice(
             "budget", title, f"{used} of {limit} tokens", USAGE_URL, f"budget:{target}:{event.kind}"
-        )
-    if event.kind == "schedule.fired":
-        # A reminder is the server's alone; the other kinds tell the owner nothing new.
-        if p.get("schedule_kind") != "reminder":
-            return None
-        return Notice(
-            "reminder",
-            "Reminder",
-            str(p.get("title") or ""),
-            SCHEDULES_INBOX_URL,
-            f"reminder:{p.get('schedule_id')}",
         )
     if event.kind == "question.asked" and p.get("run_kind") == "coordinator":
         if not p.get("blocking"):

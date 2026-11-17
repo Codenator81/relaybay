@@ -75,8 +75,6 @@ def create_app(settings: Settings) -> FastAPI:
             asyncio.create_task(service.usage_loop(settings.usage_interval_seconds)),
             asyncio.create_task(service.question_loop()),
             asyncio.create_task(service.run_loop()),
-            asyncio.create_task(service.coordinator_wake_loop()),
-            asyncio.create_task(service.schedule_loop()),
         ]
         if settings.update_check:
             loops.append(asyncio.create_task(service.update_loop(settings.update_check_hours)))

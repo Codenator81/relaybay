@@ -5,7 +5,6 @@ from typing import Any
 
 from relaybay.domain import approvals as arules
 from relaybay.domain import questions as qrules
-from relaybay.domain import schedules as srules
 from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import BacklogItem
@@ -1295,45 +1294,6 @@ def schedule_detail(p: dict[str, Any]) -> str:
     if p.get("run_id"):
         extra.append(f"run {p['run_id']}")
     return head.rstrip() + (": " + ", ".join(extra) if extra else "")
-
-
-def schedule_line(s: srules.Schedule, local: srules.LocalTime) -> str:
-    """One schedule for the coordinator: id, kind, when, target, next time, last outcome."""
-    target = f" on {s.target}" if s.target else ""
-    if s.next_at and s.enabled:
-        upcoming = f"next {srules.local_text(s.next_at, local)}"
-    else:
-        upcoming = "disabled" if not s.enabled else "finished"
-    last = ""
-    if s.last is not None:
-        last = f" · last {s.last.outcome or 'running'}"
-        if s.last.reason:
-            last += f": {srules.flat(s.last.reason, 120)}"
-    return (
-        f"- #{s.id} {s.kind}{target}, {srules.when_text(s, local)} · {upcoming}{last} · by"
-        f" {s.created_by_kind} · {srules.flat(s.prompt, 160)}"
-    )
-
-
-def schedule_added(s: srules.Schedule, local: srules.LocalTime) -> str:
-    return (
-        f"Schedule #{s.id} added: {s.kind}, {srules.when_text(s, local)}, first at"
-        f" {srules.local_text(s.next_at, local)} (this machine's local time, {s.timezone})."
-        " schedule_list shows it; schedule_cancel removes it."
-    )
-
-
-def schedules(items: list[srules.Schedule], local: srules.LocalTime) -> str:
-    if not items:
-        return "No schedules."
-    return "\n".join(
-        [f"# Schedules ({len(items)}; times are this machine's local time)"]
-        + [schedule_line(s, local) for s in items]
-    )
-
-
-def schedule_cancelled(s: srules.Schedule) -> str:
-    return f"Schedule #{s.id} cancelled: it runs no more."
 
 
 def brake_saved(brake: Brake) -> str:
