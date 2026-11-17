@@ -328,10 +328,24 @@ token is the only authorisation.
 value is kept in `session.entrypoint`; an older hook client or an http hook sends nothing. A
 session with a desktop id (`local_<uuid>`) is a desktop one whatever these say. When the surface
 is unknown, the `SessionStart` answer asks the session to say it once with `task_patch(task,
-fields={"session_surface": "desktop" | "terminal"}, hook_session=…)`: the field is stored on the
-calling session (the one of `hook_session`, else the one named by `session`; neither is a
-validation error), not on the task, and writes `session.surface_set` when it changes; `-`, `''`
-or null clears it.
+fields={"session_surface": "desktop" | "terminal"}, session=…, hook_session=…)`: the field is
+stored on the calling session, not on the task: the one named by `session` (its `hook_session`
+linked to it with the guard of any write, so an id another live session linked stays there), else
+the session of `hook_session` while no agent has linked that id to itself (otherwise the write is
+refused: pass `session` too); neither is a validation error. It writes `session.surface_set` when
+it changes; `-`, `''` or null clears it. When an agent links its hook session to a session it
+names, the surface, the entrypoint and the start folder the hooks recorded go along unless that
+session already has them.
+
+**Start folder** (`session.start_cwd`): the folder of a Claude Code session's first
+`SessionStart`, where `claude --resume` finds the conversation again; a `resume` or `compact`
+start keeps it, any other start sets it. `session.cwd` follows every hook for display.
+
+**Resume binds again.** A terminal session's `SessionEnd` unbinds its tasks and marks those
+bindings as ended by the session's end (`task_session.unbound_reason = 'session_end'`). A later
+`SessionStart` with `source: resume` of the same Claude Code session binds again every open task
+whose latest binding is that one (`task.session_bound`, actor the session); a task unbound by hand
+or bound to another session since stays as it is.
 
 <a id="spec-run"></a>
 <a id="spec-run-limits"></a>
@@ -896,8 +910,8 @@ word with the session's dot:
 
 - **Waits for you** when the card has an open question or approval request, is in `review` or
   `test` with a checklist, has `waiting_on` naming the owner (`owner_names`; not on a done card) or
-  its bound session asks for its user (hook status `waiting`, with the notification's text); each
-  reason is listed under the word;
+  its bound session asks for its user (hook status `waiting`, with the notification's text,
+  [§4](#spec-hooks-events)); each reason is listed under the word;
 - else **Working** or **Idle** by the bound session's hook status (a bound session without one
   counts as idle), **Ended** when the session of the latest binding has ended (a terminal
   session's end unbinds it; a desktop session stays bound), **No session** otherwise.
@@ -907,20 +921,30 @@ card's events and on `session.status_changed` of its session (not while an answe
 One **Open** follows where the session runs ([§1](#spec-session-surface)): a desktop session opens
 its `desktop_link_template` link; an ended terminal session posts to
 `/sessions/<id>/open-terminal`, which opens a new terminal window on this machine running `claude
---resume <its Claude Code id>` in its folder; a live terminal session gets the button disabled with
+--resume <its Claude Code id>` in its start folder; a live terminal session gets the button disabled with
 "running in a terminal" (the board cannot find that window, and a second process on a live session
 is unsafe); an unknown surface gets no button, only the reason. Every disabled or missing Open says
 why in one line, and a refusal of the terminal endpoint (409) is shown in the state line.
 
 The terminal endpoint takes only the session's internal id, from a signed-in browser (cookie and
-CSRF; refused with a Bearer token) on the machine itself (a client address that is not loopback,
-such as the board on a phone, gets 409); the command is fixed, the id must be a lowercase UUID read
-from the database, the folder must exist, and every command is an argument list: Windows Terminal
-(`wt -d <folder> claude --resume <id>`, unless the folder holds a `;`), else `claude` in a console
-window of its own; on macOS `osascript` tells Terminal to run the quoted line; elsewhere the first
-of `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xterm` on the PATH. No terminal or no
-`claude` on the PATH: 409 with that reason. Each opening writes `session.terminal_opened` (session,
-folder, program; on the Audit page with "Changes"). relaybay never starts a session otherwise.
+CSRF; refused with a Bearer token) on the machine itself: the client address and the request's
+`Host` must both be loopback (`localhost`, `127.0.0.1`, `[::1]`), else 409. So the board on a
+phone, and a board published through a reverse proxy (whose clients come from 127.0.0.1 but ask
+for the published name), never open a terminal. The command is fixed, the id must be a lowercase
+UUID read from the database, the start folder must exist, and every command is an argument list:
+Windows Terminal (`wt -d <folder> claude --resume <id>`, unless the folder holds a `;`), else
+`claude` in a console window of its own; on macOS `osascript` runs a fixed script that gets the
+folder, `claude` and the id as arguments and quotes them for Terminal's login shell (a folder or a
+`claude` path with a backslash or a single quote is refused, since a non-POSIX shell such as fish
+reads them otherwise); elsewhere the first of `x-terminal-emulator`, `gnome-terminal`, `konsole`,
+`xterm` on the PATH. The terminal's environment is the server's without `CLAUDECODE` and the
+`CLAUDE_CODE_*` variables. No terminal or no `claude` on the PATH: 409 with that reason.
+
+One Open at a time per session: after an Open, another one is refused (409, "has not started
+yet") until that session's next `SessionStart` arrives or 60 s pass, and the check and the start
+run under one lock; meanwhile the button stays disabled with "a terminal is opening". Each opening
+writes `session.terminal_opened` (session, folder, program, the keys of its cards; the card
+refreshes on it; on the Audit page with "Changes"). relaybay never starts a session otherwise.
 
 While no session works on the card (No session, Ended, or Waits for you without a live bound
 session) the line has **Copy the brief**: the text a new session needs (the card's key, project
@@ -1008,8 +1032,9 @@ both on, a review is told twice.
 **Comments** (task dialog and task page): the thread oldest first, then a comment box (markdown, up
 to 4000 characters, CSRF-protected form). Each owner comment shows `sent <age>`, then
 `delivered <age> to <session>` or `not delivered yet` with its reason (no session bound; the session
-ended; the session has not linked its hooks yet, i.e. passed no `hook_session`; the session is idle
-and the wake-up hook is off, [§4](#spec-hooks-wake)), and `read <age>` once acknowledged (exact UTC
+ended; the session has not linked its hooks yet, i.e. passed no `hook_session`; the session waits
+for its user, so the comment arrives with its next tool call; the session is idle and the wake-up
+hook is not waiting, [§4](#spec-hooks-wake)), and `read <age>` once acknowledged (exact UTC
 times on hover); agent replies show their author, age and `unread` until marked read. **Mark replies
 read** marks the task's unread replies read; sending a comment does the same. A note under the
 thread says which session a new comment goes to, or why it would wait. The thread
@@ -1348,7 +1373,7 @@ waiting on anything else.
 | `SessionStart` | working | `started (<source>)`; the answer adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the agent's context (`hookSpecificOutput.additionalContext`), a line asking where it runs when relaybay cannot tell ([below](#spec-hooks-surface)), then the task context or a short project digest ([§8](#spec-digest-session-start)) |
 | `UserPromptSubmit` | working | `prompt` (the prompt text is never stored) |
 | `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is never stored; `PreToolUse` is also checked by the guard, and a call that touches live leaves a redacted summary in the journal, [§7](#spec-guard)) |
-| `Notification` | waiting | the notification message |
+| `Notification` | waiting when it asks for its user (`notification_type` `permission_prompt` or `elicitation_dialog`, or an unknown or missing type); idle for `idle_prompt` (about a minute after a turn ended) | the notification message |
 | `Stop` | idle | `turn finished` |
 | `SessionEnd` | ended | the session is unbound from every task it is bound to (history kept, `task.session_unbound` with `reason: "session_end"`), except after `/clear` or `/resume` (end reason `clear` or `resume`) and for desktop sessions, whose `local_…` id outlives the Claude Code process: the next `SessionStart` links the new Claude Code id to them ([below](#spec-hooks-linking)) |
 
@@ -1416,10 +1441,10 @@ started whom); for now only [Activity](#spec-board-activity) shows it, one line 
 `SessionStart` as `relaybay_entrypoint` (up to 60 characters are kept); the server records the
 session's surface from it ([§1](#spec-session-surface)). An older hook client or an http hook
 sends nothing and keeps working. A started session (not one a desktop session's tool started)
-whose surface is still unknown gets one more line in the answer: "relaybay could not tell whether
-you run in the Claude desktop app or in a terminal. Tell it once, with your next relaybay write on
-your task: task_patch(task, fields={"session_surface": "desktop"} or {"session_surface":
-"terminal"}, hook_session="<id>")."
+whose surface is still unknown gets one more sentence at the end of the session line: "relaybay
+could not tell whether you run in the Claude desktop app or in a terminal. Tell it once, with your
+next relaybay write on your task: task_patch(task, fields={"session_surface": "desktop"} or
+{"session_surface": "terminal"}, session="<its name>", hook_session="<id>")."
 
 <a id="spec-hooks-repos"></a>
 
@@ -2614,9 +2639,11 @@ of this leaves the machine.
     `GET /files/<id>/annotated` answers the same way with `image/png`; its upload and the viewer's
     other writes need the board cookie and the CSRF header ([Annotations](#spec-annotations)).
 11. **Opening a terminal** ([§2](#spec-board-state)): the only place the board starts a program.
-    A board write (cookie, CSRF, no Bearer) from a loopback client only; it takes a session's
+    A board write (cookie, CSRF, no Bearer) from a loopback client asking for a loopback `Host`
+    only (a board published through a proxy does not open terminals); it takes a session's
     internal id and nothing else, runs the fixed `claude --resume <uuid from the database>` in the
-    session's folder (which must exist) as an argument list, never through a shell string, and
+    session's start folder (which must exist) as an argument list, never through a shell string,
+    without Claude Code's own environment variables, at most once until the session starts, and
     records `session.terminal_opened`.
 12. **Backups and updates:** a backup before a new version copies the database, `config.toml`,
     `policy.json` and the `token` into `backups/` of the data folder (created 0700 on POSIX), so
@@ -2754,7 +2781,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0048_project_area` | `project_area` (project, name, colour key, position, created at; unique on the project and the lowered name), `task.area_id` (`ON DELETE SET NULL`, indexed where set), `saved_filter.area` ([§1](#spec-areas)). Additive only: no table rebuilt, every task keeps its row with no area |
 | `0046_coordinator_wake` | `coordinator_wake` (`run_id`, `turn_id`, `first_event_id`, `last_event_id`, `count`, `created_at`): each wake of the coordinator and the events it carried. `question.overdue_at` (the `question.overdue` event written). `coordinator_wake.returned_at` (a wake given back). `run_turn.compact_pre_tokens`, `compact_post_tokens` (a turn's `compact_boundary`), `context_tokens` (its last assistant message's context). `token_budget` rebuilt with foreign keys off: scope `session` and `session_id` (a CHECK ties them; one budget per session); every budget keeps its id, marks and brakes |
 | `0049_remove_runs` | Data only, no table dropped: lists the worktrees runs created and did not remove for the Inbox (`app_setting` `removed_runs_worktrees`); cancels the waiting turns of runs and marks the running ones lost; ends every open run (status reason "runs inside the program were removed in 0.12", ended by `relaybay`); withdraws the open questions that have a run (the coordinator's questions without a card among them) and relaybay's own open questions about a kept worktree, with that reason; expires the open and the approved, unused approvals that have a run; stops the open schedule runs ("schedules were removed in 0.12") and disables every schedule not deleted or done; clears every task's "answer received" mark. Questions and approvals of desktop sessions stay open ([§1](#spec-run)) |
-| `0050_session_surface` | Additive: `session.surface` (`desktop`, `terminal` or NULL) and `session.entrypoint` (the raw `CLAUDE_CODE_ENTRYPOINT`), [§1](#spec-session-surface) |
+| `0050_session_surface` | Additive: `session.surface` (`desktop`, `terminal` or NULL), `session.entrypoint` (the raw `CLAUDE_CODE_ENTRYPOINT`), `session.start_cwd` (the resume folder) and `task_session.unbound_reason` (`session_end` or NULL), [§1](#spec-session-surface) |
 
 The tables and columns of runs, the coordinator run, profiles and schedules (`run`, `run_turn`,
 `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`,
