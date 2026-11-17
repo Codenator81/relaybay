@@ -1,5 +1,6 @@
 # 0022 — Questions and approvals as objects
 
+- **Narrowed by [0025](0025-board-with-the-desktop.md) in 0.12 to desktop sessions.**
 - Status: **Proposed**, 2026-11-10, for 0.9. Part of [0021](0021-agents-inside.md); runs on the
   runner of [0012](0012-runner-and-embedded-terminal.md). Reuses comments delivery
   ([0005](0005-comments-to-agents.md)), the guard and access map ([0006](0006-environments-and-access.md)),

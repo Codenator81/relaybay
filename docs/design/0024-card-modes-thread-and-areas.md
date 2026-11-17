@@ -1,5 +1,6 @@
 # 0024 — Card modes, the run as a thread, areas
 
+- **Superseded by [0025](0025-board-with-the-desktop.md) on 2026-11-17; only areas and the top bar were implemented, in 0.12.**
 - Status: **Accepted**, 2026-11-17, for 0.12 (accepted by the coordinator with the defaults of the
   [decided points](#decided-points)). Builds on the run of
   [0021](0021-agents-inside.md), questions and approvals of

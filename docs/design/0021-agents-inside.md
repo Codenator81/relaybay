@@ -1,5 +1,6 @@
 # 0021 — Agents inside the program
 
+- **Superseded by [0025](0025-board-with-the-desktop.md) in 0.12: agents inside the program were removed.**
 - Status: **Accepted**, 2026-11-10; 0.9 shipped 2026-11-13 (PR 69-83); the 0.10 Terminal tab is
   built (not released). The overall design of agents started and steered by relaybay,
   releases 0.9 to 0.11 (the owner, 2026-11-16: no 0.12 in its earlier form, no managers). Details live in [0012](0012-runner-and-embedded-terminal.md) (runner,
