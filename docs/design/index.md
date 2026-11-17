@@ -29,6 +29,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0021 | [Agents inside the program](0021-agents-inside.md) | Accepted | 0.9–0.11 |
 | 0022 | [Questions and approvals as objects](0022-questions-and-approvals.md) | Proposed | 0.9 |
 | 0023 | [Coordinator, schedules and profiles](0023-coordinator-and-schedules.md) | Accepted | 0.11 |
+| 0024 | [Card modes, the run as a thread, areas](0024-card-modes-thread-and-areas.md) | Accepted | 0.12 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md),
 [ADR-0002 Desktop shell](../adr/0002-desktop-shell.md).
