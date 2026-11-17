@@ -42,6 +42,7 @@ from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import BacklogItem
+from relaybay.domain.card import session_surface
 from relaybay.domain.code import (
     REPO_KINDS,
     REPO_NAME_MAX,
@@ -89,6 +90,7 @@ from relaybay.domain.hooks import (
     parse_launched_session,
     parse_message_recipient,
     session_start_context,
+    surface_question,
 )
 from relaybay.domain.models import (
     Binding,
@@ -179,7 +181,12 @@ from relaybay.domain.rules import (
     verified_marks_problem,
     warning_text,
 )
-from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
+from relaybay.domain.sessions import (
+    DEFAULT_DESKTOP_LINK_TEMPLATE,
+    SURFACES,
+    parse_session_id,
+    surface_of_entrypoint,
+)
 from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.switcher import (
     EMPTY_QUERY_TASKS,
@@ -196,6 +203,8 @@ from relaybay.domain.task_fields import (
     LINK_NAMES,
     MARKDOWN_MAX,
     NAME_MAX,
+    SESSION_FIELD_NAMES,
+    SESSION_SURFACE,
     TEXT_MAX,
     TITLE_MAX,
 )
@@ -643,6 +652,16 @@ def _link_entries(value: Any, name: str) -> list[str]:
     if len(entries) > REPOS_MAX:
         raise ValidationError(f"{name}: at most {REPOS_MAX} entries in one write.")
     return entries
+
+
+def _clean_surface(value: Any) -> str | None:
+    """`session_surface`: desktop or terminal; None (or '') clears it."""
+    if value is not None and not isinstance(value, str):
+        raise ValidationError(f"{SESSION_SURFACE} must be a string.")
+    surface = (value or "").strip().lower()
+    if surface and surface not in SURFACES:
+        raise ValidationError(f"{SESSION_SURFACE} must be one of {', '.join(SURFACES)}.")
+    return surface or None
 
 
 def _clean_field(name: str, value: Any) -> Any:
@@ -1787,6 +1806,13 @@ class Service:
             changes: dict[str, Any] = {"status": hook.status, "activity": hook.activity}
             if hook.cwd and hook.cwd != session.cwd:
                 changes["cwd"] = hook.cwd
+            if hook.entrypoint:
+                # An entrypoint that tells nothing keeps what the session itself may have said.
+                surface = surface_of_entrypoint(hook.entrypoint)
+                if hook.entrypoint != session.entrypoint:
+                    changes["entrypoint"] = hook.entrypoint
+                if surface is not None and surface != session.surface:
+                    changes["surface"] = surface
             if changes["status"] != session.status or changes["activity"] != session.activity:
                 # A replay keeps its own time, so the spooled events after it stay in order.
                 changes["activity_at"] = hook.spooled_at or tx.now
@@ -1942,6 +1968,9 @@ class Service:
             context = session_start_context(hook.cc_session_id)
             if hook.nested:
                 return _context("SessionStart", context)
+            row = session or await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            if row is not None and session_surface(row) is None:
+                context += "\n" + surface_question(hook.cc_session_id)
             unread = await repo.unread_owner_count(self._r, session.id) if session else 0
             if unread:
                 context += " " + comment_text.unread_line(unread)
@@ -3251,11 +3280,18 @@ class Service:
         actor: str = "mcp",
     ) -> Saved:
         """`update_task` that also returns the rule warnings of a stage move. `repos` and `prs`
-        in `changes` add or remove the task's code links in the same transaction."""
+        in `changes` add or remove the task's code links in the same transaction;
+        `session_surface` says where the calling session runs."""
         links = {k: _link_entries(changes[k], k) for k in LINK_NAMES if k in changes}
-        changes = {k: v for k, v in changes.items() if k not in LINK_NAMES}
+        surface = changes.get(SESSION_SURFACE)
+        told = SESSION_SURFACE in changes
+        if told:
+            surface = _clean_surface(surface)
+        changes = {
+            k: v for k, v in changes.items() if k not in LINK_NAMES and k not in SESSION_FIELD_NAMES
+        }
         async with self._tx() as tx:
-            return await self._update_task_tx(
+            saved = await self._update_task_tx(
                 tx,
                 ref,
                 changes,
@@ -3266,6 +3302,47 @@ class Service:
                 hook_session=hook_session,
                 actor=actor,
             )
+            if told:
+                await self._set_session_surface(
+                    tx, saved.task, surface, session, session_title, hook_session
+                )
+            return saved
+
+    async def _set_session_surface(
+        self,
+        tx: _Tx,
+        task: Task,
+        surface: str | None,
+        session: str | None,
+        session_title: str | None,
+        hook_session: str | None,
+    ) -> None:
+        """Store where the calling session runs: the session of `hook_session` (the id its
+        SessionStart gave it), else the one named by `session`."""
+        cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
+        found = await repo.get_session_by_cc(tx.conn, cc_id) if cc_id else None
+        if found is None:
+            found = await self._session(tx, session, session_title, hook_session)
+        if found is None:
+            raise ValidationError(
+                f"{SESSION_SURFACE} is stored on your session: pass hook_session (the id your"
+                " session start gave you) or session."
+            )
+        if found.surface == surface:
+            return
+        await repo.touch_session(tx.conn, found.id, tx.now, {"surface": surface})
+        await tx.event(
+            "session.surface_set",
+            found.name,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=found.id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            session=found.name,
+            surface=surface,
+        )
 
     async def _update_task_tx(
         self,
@@ -3285,7 +3362,7 @@ class Service:
         if unknown:
             raise ValidationError(
                 f"Unknown task field(s): {', '.join(sorted(unknown))}."
-                f" Allowed: {', '.join((*FIELD_NAMES, *LINK_NAMES))}."
+                f" Allowed: {', '.join((*FIELD_NAMES, *LINK_NAMES, *SESSION_FIELD_NAMES))}."
             )
         clean = {name: _clean_field(name, value) for name, value in changes.items()}
         default_actor = actor

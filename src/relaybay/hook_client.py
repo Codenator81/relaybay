@@ -31,6 +31,8 @@ from urllib.request import ProxyHandler, Request, build_opener
 from relaybay.domain.hooks import (
     ATTENDED_ENV,
     ATTENDED_FIELD,
+    ENTRYPOINT_ENV,
+    ENTRYPOINT_FIELD,
     HOST_SESSION_ENV,
     HOST_SESSION_FIELD,
     LAUNCH_TOOLS,
@@ -102,16 +104,21 @@ def post(url: str, token: str, body: bytes, timeout: float) -> bytes:
 
 
 def with_host_session(body: bytes) -> bytes:
-    """SessionStart gets the desktop session id from the environment Claude Code runs hooks
-    in. Any other body is forwarded as it is (it is not even parsed)."""
+    """SessionStart gets the desktop session id and Claude Code's entrypoint (where it was
+    started from) from the environment Claude Code runs hooks in. Any other body is forwarded as
+    it is (it is not even parsed)."""
     host = os.environ.get(HOST_SESSION_ENV)
-    if not host or b'"SessionStart"' not in body:
+    entrypoint = os.environ.get(ENTRYPOINT_ENV)
+    if not (host or entrypoint) or b'"SessionStart"' not in body:
         return body
     payload = json.loads(body)
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
         return body
-    payload[HOST_SESSION_FIELD] = host
-    payload[ATTENDED_FIELD] = os.environ.get(ATTENDED_ENV, "")
+    if host:
+        payload[HOST_SESSION_FIELD] = host
+        payload[ATTENDED_FIELD] = os.environ.get(ATTENDED_ENV, "")
+    if entrypoint:
+        payload[ENTRYPOINT_FIELD] = entrypoint
     return json.dumps(payload).encode("utf-8")
 
 

@@ -48,7 +48,14 @@ from relaybay.domain.rules import (
     rules_markdown,
 )
 from relaybay.domain.stages import STAGES, Stage
-from relaybay.domain.task_fields import FIELD_NAMES, LINK_FIELDS, LINK_NAMES, TASK_FIELDS
+from relaybay.domain.task_fields import (
+    FIELD_NAMES,
+    LINK_FIELDS,
+    LINK_NAMES,
+    SESSION_FIELD_NAMES,
+    SESSION_FIELDS,
+    TASK_FIELDS,
+)
 from relaybay.policy import EffectivePolicy
 from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
 
@@ -893,7 +900,9 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
     if detail.decisions:
         lines.append("\n## Decisions")
         lines.extend(decision_line(d) for d in detail.decisions)
-    lines.append(f"\nEditable fields: {', '.join((*FIELD_NAMES, *LINK_NAMES))}")
+    lines.append(
+        f"\nEditable fields: {', '.join((*FIELD_NAMES, *LINK_NAMES, *SESSION_FIELD_NAMES))}"
+    )
     return "\n".join(lines)
 
 
@@ -906,7 +915,7 @@ def task_schema() -> str:
         "| field | type | description | clearing |",
         "|---|---|---|---|",
     ]
-    for f in (*TASK_FIELDS, *LINK_FIELDS):
+    for f in (*TASK_FIELDS, *LINK_FIELDS, *SESSION_FIELDS):
         limit = f" Up to {f.max_length} characters." if f.max_length else ""
         lines.append(f"| `{f.name}` | {f.type} | {f.description}{limit} | {f.clear} |")
     return "\n".join(lines)
@@ -1085,6 +1094,10 @@ def event_detail(e: Event) -> str:
         return f"{p.get('session')} → {p.get('to')}"
     if e.kind == "session.launched":
         return f"{p.get('session')} started {p.get('child')}"
+    if e.kind == "session.surface_set":
+        return f"{p.get('session')} runs in: {p.get('surface') or 'not known'}"
+    if e.kind == "session.terminal_opened":
+        return f"{p.get('session')} resumed in a terminal in {p.get('cwd')}"
     if e.kind == "live.action":
         return f"{p.get('environment')} · {p.get('decision')} · {p.get('command') or ''}".rstrip()
     if e.kind in ("environment.created", "environment.deleted"):

@@ -6,7 +6,7 @@ from pathlib import PureWindowsPath
 from typing import Any
 
 from relaybay.domain.errors import ValidationError
-from relaybay.domain.sessions import parse_session_id
+from relaybay.domain.sessions import ENTRYPOINT_MAX, parse_session_id
 
 HOOK_PATH = "/hooks/claude-code"
 # Opt-in wake-up hook (`relaybay setup --wake`): an `asyncRewake` command hook started at Stop
@@ -41,6 +41,10 @@ HOST_SESSION_HEADER = "X-Relaybay-Host-Session"
 ATTENDED_ENV = "CLAUDE_CODE_SESSION_ATTENDED"
 ATTENDED_FIELD = "relaybay_host_attended"
 ATTENDED_HEADER = "X-Relaybay-Host-Attended"
+# Where Claude Code was started from (`claude-desktop…` in the desktop app, `cli` in a terminal).
+# The forwarder adds it to SessionStart as ENTRYPOINT_FIELD; http hooks cannot read it.
+ENTRYPOINT_ENV = "CLAUDE_CODE_ENTRYPOINT"
+ENTRYPOINT_FIELD = "relaybay_entrypoint"
 # SessionEnd reasons after which the same window goes on with a new Claude Code id.
 CONTINUED_END_REASONS = ("clear", "resume")
 # The forwarder's spool: an event the server did not take is sent again later with the time it
@@ -77,6 +81,7 @@ class HookEvent:
     # None when the field is empty or missing (older desktop apps may not send it).
     attended: bool | None = None
     transcript_path: str | None = None  # the session's transcript file (`*.jsonl`)
+    entrypoint: str | None = None  # SessionStart: CLAUDE_CODE_ENTRYPOINT as the forwarder sent it
     spooled_at: str | None = None  # a replay from the forwarder's spool: when it happened (UTC)
 
     @property
@@ -207,6 +212,8 @@ def parse_hook(payload: Any) -> HookEvent | None:
         activity = "turn finished"
     else:
         activity = "session ended"
+    starting = event == "SessionStart"
+    entrypoint = _text(payload.get(ENTRYPOINT_FIELD), ENTRYPOINT_MAX) if starting else None
     return HookEvent(
         cc_session_id=cc_id,
         event=event,
@@ -221,6 +228,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
         ),
         attended=_attended(payload.get(ATTENDED_FIELD)) if event == "SessionStart" else None,
         transcript_path=_transcript_path(payload.get("transcript_path")),
+        entrypoint=entrypoint,
         spooled_at=_spooled_at(payload.get(SPOOLED_FIELD)),
     )
 
@@ -237,4 +245,14 @@ def session_start_context(cc_session_id: str) -> str:
     return (
         f"Your relaybay hook session: {cc_session_id}. Pass it as `hook_session` in relaybay"
         " writes."
+    )
+
+
+def surface_question(cc_session_id: str) -> str:
+    """The line SessionStart adds when the hook could not tell where the session runs."""
+    return (
+        "relaybay could not tell whether you run in the Claude desktop app or in a terminal."
+        " Tell it once, with your next relaybay write on your task: task_patch(task, fields="
+        '{"session_surface": "desktop"} or {"session_surface": "terminal"},'
+        f' hook_session="{cc_session_id}").'
     )

@@ -22,7 +22,7 @@
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
     "plan.set", "plan.step_added", "plan.step_updated", "plan.accepted", "session.todo_updated",
-    "session.message", "session.launched",
+    "session.message", "session.launched", "session.surface_set", "session.terminal_opened",
     "document.updated", "memory.added", "memory.updated", "block.updated",
     "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied",
     "backlog.added", "backlog.updated", "backlog.planned",

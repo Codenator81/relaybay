@@ -169,6 +169,8 @@ EVENT_KINDS = (
     "session.todo_updated",
     "session.message",
     "session.launched",
+    "session.surface_set",
+    "session.terminal_opened",
     "session.no_live_on",
     "session.no_live_off",
     "attachment.added",

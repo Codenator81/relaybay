@@ -30,6 +30,18 @@ def desktop_config_dir(
     return folder
 
 
+@pytest.fixture(autouse=True)
+def outside_claude_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests run alike in CI and inside a Claude Code session, whose hook variables the forwarder
+    would otherwise pick up."""
+    for name in (
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_HOST_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 class _NoNetwork:
     def open(self, request: object, timeout: float) -> None:
         raise AssertionError(f"a test reached the network: {getattr(request, 'full_url', '')}")
