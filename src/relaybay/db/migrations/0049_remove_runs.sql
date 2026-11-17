@@ -31,6 +31,28 @@ SET status = 'ended',
     updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
 WHERE ended_at IS NULL;
 
+-- The session of a run gets no hook any more: it stays in its card's history as ended.
+UPDATE session
+SET status = 'ended', activity = NULL, activity_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+WHERE kind = 'run' AND (status IS NULL OR status <> 'ended');
+
+-- A card that waited on the owner for a question or an approval closed below waits no more.
+UPDATE task
+SET next_step = 'Runs inside the program were removed in 0.12: bind a session to go on',
+    waiting_on = NULL,
+    version = version + 1,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+WHERE EXISTS (SELECT 1 FROM question q
+              WHERE q.task_id = task.id AND q.status = 'open'
+                AND (q.run_id IS NOT NULL
+                     OR q.id IN (SELECT question_id FROM run_worktree
+                                 WHERE question_id IS NOT NULL))
+                AND task.next_step LIKE 'Answer question ' || q.id || ' on the board:%')
+   OR EXISTS (SELECT 1 FROM approval a
+              WHERE a.task_id = task.id AND a.status IN ('open', 'approved')
+                AND a.run_id IS NOT NULL
+                AND task.next_step LIKE 'Decide approval ' || a.id || ' on the board:%');
+
 -- Questions and approvals a run asked (their asker is gone), and relaybay's own questions about
 -- a worktree a card's close kept, are withdrawn with the same reason.
 UPDATE question

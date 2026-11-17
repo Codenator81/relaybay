@@ -2023,7 +2023,7 @@ class Service:
             out["permissionDecision"] = touch.decision
             out["permissionDecisionReason"] = touch.reason
         elif gate is not None:
-            # "allow" only for a call the owner approved on the board, one approval per call.
+            # The gate asks or denies; it never answers "allow".
             out["permissionDecision"], out["permissionDecisionReason"] = gate
         if contexts:
             out["additionalContext"] = "\n".join(contexts)
@@ -9029,7 +9029,7 @@ class Service:
         """Non-blocking questions past their deadline close with their default, visibly. Asked
         on reads and by the server's loop; the deadline is in the database, so a restart only
         delays it. Every question past its deadline unanswered gets one `question.overdue`
-        (for the coordinator's wakes): a non-blocking one when it closes with its default, a
+        in the audit: a non-blocking one when it closes with its default, a
         blocking one, which has no deadline of its own, once it is open BLOCKING_OVERDUE."""
         now = now_iso()
         asked_before = _iso_before(now, qrules.BLOCKING_OVERDUE)

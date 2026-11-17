@@ -38,6 +38,11 @@ INSERT INTO task (id, project_id, key, title, stage, created_at, updated_at, ans
 INSERT INTO session (id, name, kind, last_seen_at, created_at)
     VALUES (1, 'run-1', 'run', '{NOW}', '{NOW}'),
            (2, 'checkout-dev', 'hook', '{NOW}', '{NOW}');
+UPDATE session SET status = 'waiting', activity = 'Bash: git push' WHERE id = 1;
+UPDATE task SET waiting_on = 'owner',
+    next_step = 'Answer question 1 on the board: "Which provider?"' WHERE id = 1;
+UPDATE task SET waiting_on = 'owner',
+    next_step = 'Answer question 2 on the board: "Rename?"' WHERE id = 2;
 INSERT INTO run (id, kind, task_id, project_id, session_id, cwd, model, effort, permission_mode,
                  allowed_tools, status, hooks_source, mcp_source, started_by, started_by_kind,
                  created_at, updated_at)
@@ -130,7 +135,14 @@ async def test_0049_closes_what_runs_left_open_and_keeps_every_row(tmp_path: Pat
         ]
         assert [q.id for q in inbox.questions] == [2]  # the desktop session's stays open
         assert [a.id for a in inbox.approvals] == [3]
-        assert (await svc.get_task("acme-shop-1")).waiting_on is None  # nothing else changed
+        closed = await svc.get_task("acme-shop-1")  # its question went with the run
+        assert closed.waiting_on is None
+        assert closed.next_step.startswith("Runs inside the program were removed in 0.12")
+        kept = await svc.get_task("acme-shop-2")  # the desktop session's question stays
+        assert kept.waiting_on == "owner"
+        assert kept.next_step.startswith("Answer question 2")
+        sessions = {r.session.name: r.session.status for r in await svc.list_sessions()}
+        assert sessions["run-1"] == "ended"
         await svc.dismiss_leftover_worktrees()
         assert (await svc.inbox(["owner"])).leftover_worktrees == []
         assert [e.kind for e in await svc.activity(kind="inbox.worktrees_seen")] == [
