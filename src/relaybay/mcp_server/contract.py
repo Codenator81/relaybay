@@ -70,6 +70,10 @@ INTAKE_GONE = (
     "Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates"
     " the cards itself."
 )
+MESSAGES_GONE = (
+    "Deprecated: messages between sessions were removed in 0.12; sessions message each other"
+    " through the Claude desktop app."
+)
 RUNS_GONE = (
     "Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by"
     " a desktop session bound to it."
@@ -97,6 +101,7 @@ DEPRECATIONS: list[Deprecation] = [
         ),
         INTAKE_GONE,
     ),
+    *_gone(("message_send", "messages_list", "message_ack"), MESSAGES_GONE),
 ]
 
 

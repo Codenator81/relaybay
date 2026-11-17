@@ -406,7 +406,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         **context: Any,
     ) -> HTMLResponse:
         """A full page with the sidebar: `active` names the highlighted item (`inbox`,
-        `boards`, `activity`, `audit`, `messages`, `settings`, `sessions`;
+        `boards`, `activity`, `audit`, `settings`, `sessions`;
         `board`,
         `sessions`,
         `environments` or
@@ -910,55 +910,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             project.strip().lower(), environment, session, decision, days, changes, before, after
         )
         return render(request, "_audit_rows.html", **context)
-
-    async def messages_context(session: str, before: int | None) -> dict[str, Any]:
-        if session and not (session.isascii() and session.isdigit() and len(session) <= 18):
-            raise ValidationError("session must be a session's number.")
-        if before is not None:
-            before = max(-EVENT_ID_MAX, min(before, EVENT_ID_MAX))
-        items = await service.session_messages_page(
-            session_id=int(session) if session else None,
-            before_id=before,
-            limit=MESSAGES_PAGE + 1,
-        )
-        more = len(items) > MESSAGES_PAGE
-        items = items[:MESSAGES_PAGE]
-        kept = {"session": session} if session else {}
-        return {
-            "messages": items,
-            "more_qs": urlencode({**kept, "before": items[-1].id}) if more else "",
-            "filters_qs": urlencode(kept),
-            "live_rows": before is None,
-        }
-
-    @router.get("/messages", response_class=HTMLResponse)
-    async def messages_page(request: Request, session: str = "", before: int | None = None):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        return await page(
-            request,
-            "messages.html",
-            "messages",
-            **await messages_context(session, before),
-            session_filter=session,
-            session_rows=await service.list_sessions(),
-            last_event_id=last_event_id,
-        )
-
-    @router.get("/fragments/messages", response_class=HTMLResponse)
-    async def messages_fragment(request: Request, session: str = ""):
-        return render(request, "_messages.html", **await messages_context(session, None))
-
-    @router.post("/messages/{message_id}/loop-seen")
-    async def message_loop_seen(
-        request: Request,
-        message_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        async def write() -> str:
-            await service.dismiss_message_loop(message_id, actor="owner")
-            return f"Message #{message_id}: the stopped loop is marked as seen."
-
-        return await board_write(request, csrf, write)
 
     async def activity_context(
         project: str, kind: str, before: int | None, after: int | None

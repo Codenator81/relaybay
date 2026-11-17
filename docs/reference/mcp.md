@@ -35,6 +35,9 @@ Deprecations:
 | `intake_propose` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
 | `intake_sources` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
 | `relaybay://intake/{source}` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
+| `message_send` | — | 0.12 | 2026-12-17 | messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app. |
+| `messages_list` | — | 0.12 | 2026-12-17 | messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app. |
+| `message_ack` | — | 0.12 | 2026-12-17 | messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app. |
 
 ## Tools
 
@@ -770,7 +773,7 @@ Reply to the owner on a task's comment thread (shown on the board and in the own
 
 ### `message_send`
 
-Send a message to another session. Its hooks hand it over at its next prompt or tool call, framed as coming from a session and not from the owner. Name yourself: `session` or `hook_session` is required, and a session with a live hook link must pass that link's id, so a message cannot go out in its name. The answer says when it can arrive; a recipient with no hook link is said to be so. At most 10 sends per minute per sender.
+Removed in 0.12 with messages between sessions: sends nothing. Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -784,7 +787,7 @@ Send a message to another session. Its hooks hand it over at its next prompt or 
 
 ### `messages_list`
 
-A session's messages, newest first, with sent / delivered / read marks. It delivers and acknowledges nothing. An unknown or ambiguous session is an error, and a session no hook can deliver to is told so.
+Removed in 0.12 with messages between sessions: lists nothing. Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -796,7 +799,7 @@ A session's messages, newest first, with sent / delivered / read marks. It deliv
 
 ### `message_ack`
 
-Acknowledge session messages addressed to you once you have looked at them: the board shows them as read and the Stop hook does not bring them up again.
+Removed in 0.12 with messages between sessions: acknowledges nothing. Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

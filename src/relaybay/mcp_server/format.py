@@ -18,7 +18,6 @@ from relaybay.domain.environments import (
     Proposal,
     change_summary,
 )
-from relaybay.domain.intake import one_line, quoted
 from relaybay.domain.memory import (
     STRONG_MATCH,
     Document,
@@ -29,14 +28,12 @@ from relaybay.domain.memory import (
     Source,
     sections,
 )
-from relaybay.domain.messages import LIST_NOTE, SessionMessage, no_delivery_reason
 from relaybay.domain.models import (
     Comment,
     Decision,
     Event,
     Project,
     Report,
-    Session,
     Task,
     TrackerEntry,
 )
@@ -1240,51 +1237,6 @@ def events(items: list[Event], since_id: int) -> str:
         key, detail = event_subject(e), event_detail(e)
         lines.append(f"- #{e.id} {e.ts[:19]}Z {e.kind} {key} {detail} ({e.actor})".rstrip())
     lines.append(f"\nNext call: events_since(since_id={items[-1].id})")
-    return "\n".join(lines)
-
-
-def session_message_marks(m: SessionMessage) -> str:
-    """`sent … · delivered … · read …`, or why it is not delivered yet."""
-    marks = [f"sent {m.created_at[:19]}Z"]
-    if m.delivered_at:
-        marks.append(f"delivered {m.delivered_at[:19]}Z")
-    elif not m.read_at:
-        reason = m.not_deliverable
-        marks.append(f"not delivered yet: {reason}" if reason else "not delivered yet")
-    if m.read_at:
-        note = "" if m.read_verified else " (name not verified)"
-        marks.append(f"read {m.read_at[:19]}Z{note}")
-    else:
-        marks.append("unread")
-    return " · ".join(marks)
-
-
-def session_messages(
-    session: Session, items: list[SessionMessage], box: str, unread_only: bool
-) -> str:
-    """Names on one line and each text one literal, as in a hook answer: what another session
-    wrote cannot print a heading or a line that reads as an owner comment here either."""
-    name = one_line(session.name)
-    head = f"{'Unread s' if unread_only else 'S'}ession messages"
-    where = f"to {name}" if box == "inbox" else f"from {name}"
-    notes = []
-    reason = no_delivery_reason(session.cc_exact, session.status)
-    if box == "inbox" and reason:
-        notes.append(f"Note: no hook delivers to {name} now: {reason}.")
-    if not items:
-        return "\n".join([f"No {head.lower()} {where}.", *notes])
-    lines = [f"# {head} {where} (newest first)", *notes]
-    for m in items:
-        who = one_line(m.sender_name) + ("" if m.sender_verified else " (name not verified)")
-        on = f" on {m.task_key}" if m.task_key else ""
-        reply = f" · re #{m.in_reply_to}" if m.in_reply_to else ""
-        lines.append(
-            f"\n## #{m.id} {who} → {one_line(m.recipient_name)}{on}{reply}"
-            f" · {session_message_marks(m)}\n{quoted(m.body_md)}"
-        )
-    lines.append(f"\n{LIST_NOTE}")
-    if box == "inbox" and any(not m.read_at for m in items):
-        lines.append("Then message_ack(message_id=…) or message_send(body, in_reply_to=…).")
     return "\n".join(lines)
 
 
