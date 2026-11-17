@@ -53,13 +53,10 @@ from relaybay.domain.rules import (
     rules_line,
     rules_markdown,
 )
-from relaybay.domain.run_events import EventItem
-from relaybay.domain.runs import Run, RunTurn, RunView
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import FIELD_NAMES, LINK_FIELDS, LINK_NAMES, TASK_FIELDS
 from relaybay.domain.usage import UsageReport, UsageTotal
 from relaybay.policy import EffectivePolicy
-from relaybay.runner.worktrees import summary
 from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
 
 
@@ -981,6 +978,21 @@ def event_subject(e: Event) -> str:
     return str(p.get("key") or p.get("project") or "")
 
 
+def profile_change(p: dict[str, Any]) -> str:
+    """A profile's Audit line: its name and version, then each field before and after."""
+    name = f"{p.get('profile')}"
+    if p.get("version") is not None:
+        name += f" v{p.get('version')}"
+    before, after = p.get("before") or {}, p.get("after") or {}
+    if not before or not after:
+        return name
+    moves = []
+    for field_name in after:
+        if before.get(field_name) != after.get(field_name):
+            moves.append(f"{field_name} {before.get(field_name)} to {after.get(field_name)}")
+    return f"{name}: {'; '.join(moves)}" if moves else name
+
+
 def event_detail(e: Event) -> str:
     """What changed, in a few words: `dev → test`, a report's summary, the changed fields."""
     p = e.payload
@@ -1306,161 +1318,8 @@ def brake_saved(brake: Brake) -> str:
 RUN_TURNS_SHOWN = 5
 
 
-def run_profile_note(view: RunView) -> str:
-    """`, profile agent v3`: the run's profile and the version its last turn started with."""
-    if view.run.profile is None:
-        return ""
-    versions = [t.profile_version for t in view.turns if t.profile_version is not None]
-    version = f" v{versions[-1]}" if versions else ""
-    return f", profile {view.run.profile}{version}"
-
-
-def profile_change(p: dict[str, Any]) -> str:
-    """A profile's Audit line: its name and version, then each field before and after."""
-    name = f"{p.get('profile')}"
-    if p.get("version") is not None:
-        name += f" v{p.get('version')}"
-    before, after = p.get("before") or {}, p.get("after") or {}
-    if not before or not after:
-        return name
-    moves = []
-    for field_name in after:
-        if before.get(field_name) != after.get(field_name):
-            moves.append(f"{field_name} {before.get(field_name)} to {after.get(field_name)}")
-    return f"{name}: {'; '.join(moves)}" if moves else name
-
-
-def run_status(task: Task | None, view: RunView | None) -> str:
-    """A card's run, or the coordinator's (`task` None): status, folders, Claude session id,
-    tokens and the latest turns. Never a prompt's text: the card's digest has the work."""
-    if view is None:
-        if task is None:
-            return "The coordinator has no run. The owner starts it on the Coordinator page."
-        return (
-            f"{task.key} has no run. The owner starts one on the card, a coordinator with"
-            " run_start."
-        )
-    r = view.run
-    reason = f" ({r.status_reason})" if r.status_reason else ""
-    where = f"on {task.key}" if task is not None else "of the coordinator (no card)"
-    lines = [
-        f"Run {r.id} {where}: {r.status}{reason}. {r.model}, effort {r.effort},"
-        f" {r.permission_mode}{run_profile_note(view)}; started by {r.started_by}"
-        f" ({r.started_by_kind})"
-        f" {r.created_at[:19]}Z.",
-        f"Folder: {r.cwd}",
-    ]
-    if r.is_open and r.in_terminal and r.with_owner_at:
-        lines.append(
-            f"With the owner in the board's Terminal tab since {r.with_owner_at[:19]}Z: no turn"
-            " starts; texts sent wait until the terminal closes."
-        )
-    elif r.is_open and r.with_owner and r.with_owner_at:
-        lines.append(
-            f"With the owner in the Claude desktop app since {r.with_owner_at[:19]}Z: no turn"
-            " starts; texts sent wait until the owner hands the run back on the card."
-        )
-    for w in view.worktrees:
-        if w.created_by_run:
-            copied = summary(w.copied)
-            state = (
-                f"; removed {w.removed_at[:19]}Z"
-                if w.removed_at
-                else f"; kept: {w.kept_reason}"
-                if w.kept_reason
-                else ""
-            )
-            lines.append(
-                f"- {w.repo_name}: {w.path} (new worktree, branch {w.branch}; copied:"
-                f" {copied}{state})"
-            )
-        else:
-            lines.append(f"- {w.repo_name}: {w.path} (the repository itself)")
-    lines.append(
-        f"Claude session: {r.claude_session_id or 'not known yet'};"
-        f" session {r.session_name or '-'}; hooks from {r.hooks_source},"
-        f" MCP from {r.mcp_source}."
-    )
-    if r.desktop_link and r.desktop_opened_at:
-        lines.append(
-            f"Opened in the Claude desktop app {r.desktop_opened_at[:19]}Z: {r.desktop_link}"
-        )
-    t = view.totals
-    lines.append(
-        f"Tokens: {t.tokens:,} (input {t.input_tokens:,}, output {t.output_tokens:,}, cache read"
-        f" {t.cache_read_tokens:,}, cache write {t.cache_write_tokens:,}); denials {t.denials}."
-    )
-    if view.turns:
-        lines.append(f"Turns ({len(view.turns)}, the latest {RUN_TURNS_SHOWN} shown):")
-        for turn in view.turns[-RUN_TURNS_SHOWN:]:
-            report = f", report #{turn.report_id}" if turn.report_id else ""
-            lines.append(
-                f"- #{turn.seq} {turn.state} by {turn.sent_by}, queued {turn.queued_at[:19]}Z,"
-                f" {turn.tokens:,} tokens, {turn.events:,} lines{report}"
-            )
-    if view.last_report is not None:
-        lines.append(f"Last turn's report: {_cut(view.last_report, RUN_REPORT_LINE_MAX)}")
-    counts = view.last_counts
-    if counts.get("all"):
-        kinds = ", ".join(
-            f"{k} {n:,}" for k, n in sorted(counts.items()) if k not in ("all", "subagent")
-        )
-        lines.append(
-            f"Lines of the latest turn: {counts['all']:,} ({kinds}; {counts['subagent']:,} from"
-            " subagents). Read them with run_events."
-        )
-    return "\n".join(lines)
-
-
 RUN_REPORT_LINE_MAX = 300
 RUN_EVENTS_OUTPUT_MAX = 20_000
-
-
-def _cut(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def run_events(run: Run, turn: RunTurn, items: list[EventItem]) -> str:
-    """A turn's lines, one short line per item, already masked; subagent items indented. Cut
-    at RUN_EVENTS_OUTPUT_MAX characters."""
-    shown = f", {len(items)} item(s) of them shown." if items else "; none shown."
-    out = [f"Run {run.id} turn {turn.seq} ({turn.state}): {turn.events:,} lines stored{shown}"]
-    size = len(out[0])
-    for item in items:
-        indent = "  " if item.parent else ""
-        name = f" {item.name}" if item.name else ""
-        text = f": {item.text}" if item.text else ""
-        result = ""
-        if item.kind == "tool" and item.result is not None:
-            result = " -> error" if item.is_error else " -> ok"
-            if item.result:
-                result += f" {_cut(item.result, 80)}"
-        line = f"{indent}#{item.seq} {item.kind}{name}{text}{result}"
-        if size + len(line) + 1 > RUN_EVENTS_OUTPUT_MAX:
-            out.append(f"(cut at {RUN_EVENTS_OUTPUT_MAX:,} characters; pass from_seq={item.seq})")
-            break
-        out.append(line)
-        size += len(line) + 1
-    return "\n".join(out)
-
-
-def run_settings_saved(task: Task, run: Run) -> str:
-    return (
-        f"Run {run.id} on {task.key} from its next turn on: {run.permission_mode}, {run.model},"
-        f" effort {run.effort}."
-    )
-
-
-def run_started(task: Task, run: Run) -> str:
-    waits = (
-        f" Its first turn waits in the queue: {run.status_reason}; it starts by itself."
-        if run.status == "queued"
-        else ""
-    )
-    return (
-        f"Run {run.id} started on {task.key} ({run.status}); its session is"
-        f" {run.session_name}.{waits} Follow it with run_status; the owner steers it on the card."
-    )
 
 
 def events(items: list[Event], since_id: int) -> str:
@@ -1645,7 +1504,7 @@ def backlog_saved(item: BacklogItem, verb: str) -> str:
 def _question_state(q: Question) -> str:
     if q.status == "open":
         if q.blocking:
-            return "open, blocks the run" if q.run_id else "open, blocking"
+            return "open, blocking"
         return f"open, goes on with the default at {(q.default_after or '')[:16]}Z"
     if q.status == "withdrawn":
         return f"withdrawn by {q.withdrawn_by} {(q.withdrawn_at or '')[:16]}Z"
@@ -1657,9 +1516,8 @@ def _question_state(q: Question) -> str:
 
 def question_line(q: Question) -> str:
     """One question as question_list shows it; the answer verbatim when there is one."""
-    where = f"run {q.run_id}" if q.run_id else "desktop session"
     head = (
-        f"- #{q.id} {q.origin} ({q.kind}, {where}, asked by {q.asked_by}"
+        f"- #{q.id} {q.origin} ({q.kind}, asked by {q.asked_by}"
         f" {q.asked_at[:16]}Z): {_question_state(q)}"
     )
     lines = [head, f"  {qrules.quoted(q.text)}"]
@@ -1710,9 +1568,8 @@ def _approval_state(a: Approval) -> str:
 
 def approval_line(a: Approval) -> str:
     """One approval as approval_list shows it; the owner's line verbatim when there is one."""
-    where = f"run {a.run_id}" if a.run_id else "desktop session"
     head = (
-        f"- #{a.id} {a.task_key}: {a.what} ({where}, requested by {a.requested_by} via"
+        f"- #{a.id} {a.task_key}: {a.what} (requested by {a.requested_by} via"
         f" {a.requested_via} {a.requested_at[:16]}Z): {_approval_state(a)}"
     )
     lines = [head, f"  Summary: {arules.quoted(a.summary, 300)}"]

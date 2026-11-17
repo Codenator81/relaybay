@@ -408,18 +408,8 @@ async def test_upgrade_from_0029_adds_the_run_tables(tmp_path: Path) -> None:
         await conn.close()
 
     svc = Service(db)
-    await svc.start()
-    try:
-        defaults = await svc.run_defaults("acme-shop")
-        assert (defaults.model, defaults.effort, defaults.permission_mode) == (
-            "opus",
-            "medium",
-            "auto",
-        )
-        assert defaults.allowed_tools == "mcp__relaybay" and not defaults.chrome
-        assert await svc.run_login_any() is False  # no row: off
-    finally:
-        await svc.close()
+    await svc.start()  # migrates; the run tables stay in the file, unread since 0.12
+    await svc.close()
 
     conn = await connect(db)
     try:

@@ -15,7 +15,6 @@ from relaybay.config import Settings, load_settings
 from relaybay.domain.errors import DomainError, NotFoundError
 from relaybay.domain.review import MB
 from relaybay.mcp_server.server import build_mcp, mcp_routes
-from relaybay.runner.manager import RunnerConfig
 from relaybay.security import SecurityMiddleware, load_or_create_token
 from relaybay.service import Service
 from relaybay.web.api import build_api_router
@@ -51,15 +50,6 @@ def create_app(settings: Settings) -> FastAPI:
         usage_enabled=settings.usage_enabled,
         coordinators=settings.coordinators,
         max_concurrent_sessions=settings.max_concurrent_sessions,
-        max_running_turns=settings.max_running_turns,
-        min_free_memory_mb=settings.min_free_memory_mb,
-        runner=RunnerConfig(
-            home=settings.home,
-            base_url=settings.base_url,
-            token_path=settings.token_path,
-            claude_path=settings.claude_path,
-            claude_home=settings.claude_home,
-        ),
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 
@@ -74,7 +64,6 @@ def create_app(settings: Settings) -> FastAPI:
         loops = [
             asyncio.create_task(service.usage_loop(settings.usage_interval_seconds)),
             asyncio.create_task(service.question_loop()),
-            asyncio.create_task(service.run_loop()),
         ]
         if settings.update_check:
             loops.append(asyncio.create_task(service.update_loop(settings.update_check_hours)))

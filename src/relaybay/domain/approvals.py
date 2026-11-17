@@ -19,8 +19,6 @@ VIAS = ("agent", "guard", "denial")
 PUSH_MODES = ("plain", "force", "delete")
 VALID_MINUTES = 120  # an approval not used within this expires (policy approvals.valid_minutes)
 OPEN_MAX = 10  # open requests per card: the guard stops opening more and only denies
-# A reservation for a call that did not run goes back; this many times, and the approval expires.
-RELEASES_MAX = 3
 SUMMARY_MAX = 2000
 ROLLBACK_MAX = 1000
 TARGET_MAX = 300
@@ -37,18 +35,13 @@ DEFAULT_REQUIRED = {
     "live": True,
     "desktop": False,
 }
-# A line that reads like the owner's decision: only a decision from the board carries one.
-_DECISION_LINE_RE = re.compile(r"^\s*the owner (approved|refused)\b", re.I | re.M)
 # A word the guard cannot read as a plain name: shell expansion, a glob, a substitution.
 _UNSAFE_RE = re.compile(r"[$`*?(){}\[\]<>|;&!~\\]")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/@+-][A-Za-z0-9._/@+#-]{0,199}$")
 _PR_URL_RE = re.compile(r"/pull/(\d{1,9})(?:[/?#]|$)")
 _NUMBER_RE = re.compile(r"^#?(\d{1,9})$")
-# A run's call that looks like a push or a merge the guard could not read (a wrapper, a
-# subshell, a script): denied as "could not tell". Only where code can hide: a segment whose
-# command is a shell, an interpreter or a wrapper, a subshell, or `gh api`.
-_PUSH_HINT_RE = re.compile(r"\bgit(\.exe)?\b.*\bpush\b", re.I | re.S)
-_MERGE_HINT_RE = re.compile(r"\bgh(\.exe)?\b.*\b(merge|pulls/\d+/merge)\b", re.I | re.S)
+# The commands that run code the guard does not read as commands: shells, interpreters,
+# wrappers. A heredoc fed to one of them is code, not data.
 _HIDES = frozenset(
     {
         "bash",
@@ -81,7 +74,6 @@ _HIDES = frozenset(
         "runas",
     }
 )
-_SUBSHELL_RE = re.compile(r"\$\(|`|^\s*[({]")
 _FIRST_WORD_RE = re.compile(r"""^\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:"([^"]+)"|'([^']+)'|(\S+))""")
 _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
 _COMMAND_START_RE = re.compile(r"\$\(|[|;&(]")
@@ -93,28 +85,6 @@ _REDIRECT_AMP_RE = re.compile(r"\d*>&\d+|&>>?")
 _REDIRECT_WORD_RE = re.compile(r"^\d*(>>?|<)(.*)$")
 # git's options before the subcommand that take a value as the next word.
 _GIT_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"})
-# git subcommands the hint above must not catch: "push" in a message or a path.
-_GIT_READ = frozenset(
-    {
-        "add",
-        "blame",
-        "branch",
-        "checkout",
-        "commit",
-        "diff",
-        "fetch",
-        "grep",
-        "log",
-        "ls-files",
-        "pull",
-        "remote",
-        "rev-parse",
-        "show",
-        "stash",
-        "status",
-        "switch",
-    }
-)
 # git push / gh pr merge options that take a value as the next word.
 _PUSH_VALUE = frozenset({"-o", "--push-option", "--repo", "--receive-pack", "--exec"})
 _PUSH_SPECIAL = ("--all", "--branches", "--mirror", "--tags", "--follow-tags")
@@ -208,7 +178,6 @@ class Need:
 class Approval:
     id: int
     task_id: int
-    run_id: int | None
     session_id: int | None
     requested_by: str
     requested_via: str
@@ -233,9 +202,7 @@ class Approval:
     used_session: str | None
     expired_at: str | None
     expired_reason: str | None
-    turn_id: int | None
     comment_id: int | None
-    told_at: str | None
     delivered_at: str | None
     reserved_at: str | None = None
     reserved_for: str | None = None  # the tool_use_id of the call it is held for
@@ -245,8 +212,6 @@ class Approval:
     task_key: str = ""
     task_title: str = ""
     project_slug: str = ""
-    turn_seq: int | None = None
-    turn_outcome: str | None = None
 
     @property
     def is_open(self) -> bool:
@@ -501,11 +466,6 @@ def _first_program(text: str) -> str:
     return program(next((g for g in found.groups() if g), "")) if found else ""
 
 
-def _may_hide(segment: str) -> bool:
-    """A segment whose command can run code the guard does not read as commands."""
-    return bool(_SUBSHELL_RE.search(segment)) or _first_program(segment) in _HIDES
-
-
 def _without_heredocs(text: str) -> str:
     """Here-document bodies are data (a commit message, a file), not commands: dropped, except
     when the command they feed is a shell or an interpreter, whose line then carries them."""
@@ -540,13 +500,10 @@ def segments(call: guard.ToolCall) -> list[tuple[str, list[str]]]:
     return guard.commands(_REDIRECT_AMP_RE.sub(" ", _without_heredocs(call.text)))
 
 
-def segment_needs(
-    call: guard.ToolCall, rules: ApprovalRules, strict: bool = False
-) -> list[tuple[str, list[Need]]]:
+def segment_needs(call: guard.ToolCall, rules: ApprovalRules) -> list[tuple[str, list[Need]]]:
     """Each command segment of a Bash call with the git actions it takes (push, PR merge,
     commit), needed or not by the policy, one need per thing pushed. A segment that matches an
-    ignore pattern is skipped. `strict` (a run): a segment that looks like a push or a merge the
-    guard cannot read gives a need it cannot tell (denied)."""
+    ignore pattern is skipped."""
     if call.is_mcp:
         return []
     out: list[tuple[str, list[Need]]] = []
@@ -558,17 +515,12 @@ def segment_needs(
             out.append((segment, found))
             continue
         here = not moved and not _LOCATION_RE.search(segment)
-        read = False
-        hides = _may_hide(segment)
         git = _git(words)
         gh = _gh(words)
         if git is not None:
             sub, args, folders, elsewhere = git
             located = here and not elsewhere
-            read = sub in _GIT_READ
-            hides = hides or (sub not in ("push", "commit") and not read and "alias." in segment)
             if sub == "push":
-                read = True
                 for branch, mode in _push_targets(args) or []:
                     if "git-push" not in rules.disabled:
                         found.append(
@@ -594,7 +546,6 @@ def segment_needs(
                     )
                 )
         elif gh is not None and gh[:2] == ["pr", "merge"]:
-            read = True
             if "gh-pr-merge" not in rules.disabled:
                 target, repository = _merge_target(gh[2:])
                 found.append(
@@ -607,25 +558,16 @@ def segment_needs(
                         segment=index,
                     )
                 )
-        elif gh is not None:
-            read = True
-            hides = hides or gh[:1] == ["api"]
         elif words and program(words[0]) in _MOVES:
             moved = True
         found = [n for n in found if rules.needs(n.action)]
-        if strict and not found and hides:
-            if _PUSH_HINT_RE.search(segment) and "git-push" not in rules.disabled:
-                found.append(Need("push", rule="git push", segment=index))
-            elif _MERGE_HINT_RE.search(segment) and "gh-pr-merge" not in rules.disabled:
-                found.append(Need("merge", rule="gh pr merge", segment=index))
-            found = [n for n in found if rules.needs(n.action)]
         out.append((segment, found))
     return out
 
 
-def call_needs(call: guard.ToolCall, rules: ApprovalRules, strict: bool = False) -> list[Need]:
+def call_needs(call: guard.ToolCall, rules: ApprovalRules) -> list[Need]:
     """The git needs of every segment of a Bash call, in order."""
-    return [n for _, needs in segment_needs(call, rules, strict) for n in needs]
+    return [n for _, needs in segment_needs(call, rules) for n in needs]
 
 
 def stand_needs(
@@ -823,24 +765,15 @@ def decision_line(a: Approval) -> str:
     until = f" until {a.valid_until[:16].replace('T', ' ')} UTC" if a.valid_until else ""
     line = (
         f"The owner approved {a.what} (approval {a.id}): one matching call may go through"
-        f"{until}; run it alone, as its own command, from your run's folder."
+        f"{until}; run it alone, as its own command."
     )
     if a.decision_text:
         line += f" The owner's note: {a.decision_text}"
     return line
 
 
-def waiting_line(a: Approval) -> str:
-    """The hook line for a turn that runs while the owner's decision waits for it to end."""
-    return (
-        f"The owner's decision on approval {a.id} ({a.what}) is waiting: it comes as your next"
-        " turn when this one ends."
-    )
-
-
-def deny_reason(need: Need, approval_id: int | None, in_run: bool) -> str:
+def deny_reason(need: Need, approval_id: int | None) -> str:
     """The guard's reason when a call needs an approval it does not have."""
-    then = "your next turn" if in_run else "an owner comment through your hooks"
     if approval_id is None:
         return (
             f"relaybay guard: {need.what()} needs the owner's approval, and the card already has"
@@ -850,7 +783,7 @@ def deny_reason(need: Need, approval_id: int | None, in_run: bool) -> str:
     return (
         f"relaybay guard: {need.what()} needs the owner's approval: waiting for the owner's"
         f" approval on the board (approval {approval_id}). End your turn; the decision comes as"
-        f" {then}."
+        " an owner comment through your hooks."
     )
 
 
@@ -859,8 +792,8 @@ def alone_reason(approvals: list[Approval]) -> str:
     named = ", ".join(f"approval {a.id} ({a.what})" for a in approvals)
     return (
         f"relaybay guard: the owner approved {named}, for that action only: run the approved"
-        " action alone, as its own command, from your run's folder or worktree (no other"
-        " commands, no cd before it). The approval is kept."
+        " action alone, as its own command (no other commands, no cd before it). The"
+        " approval is kept."
     )
 
 
@@ -871,31 +804,12 @@ def done_reason(key: str) -> str:
     )
 
 
-def released_note(a: Approval) -> str:
-    """A refusal of a call an approval was held for: Claude Code refused it (a classifier, its
-    mode, or relaybay's answer came too late), so the approval goes back for one more try."""
-    return (
-        f"approved call refused by Claude Code (approval {a.id}, {a.what}): the approval stays"
-        " for one more try; run the same command again, alone"
-    )
-
-
-def exhausted_note(a: Approval) -> str:
-    return (
-        f"approved call refused by Claude Code (approval {a.id}, {a.what}): released"
-        f" {RELEASES_MAX} times, approval exhausted, a new request is needed"
-    )
-
-
-EXHAUSTED_REASON = f"released {RELEASES_MAX} times"
-
-
 def held_reason(approvals: list[Approval]) -> str:
     """The call needs an approval that is held for another call still running."""
     named = ", ".join(f"approval {a.id} ({a.what})" for a in approvals)
     return (
         f"relaybay guard: {named} is held for a call that has not finished yet. Wait for its"
-        " result; if Claude Code refused that call, the approval comes back when the turn ends."
+        " result."
     )
 
 
@@ -915,35 +829,11 @@ def unknown_reason(need: Need) -> str:
     )
 
 
-UNAVAILABLE_REASON = (
-    "relaybay guard: approval check unavailable (an internal error): a push, a merge or a change"
-    " on a stand is denied until it works again. Tell the owner."
-)
-
-
-def guarded_hint(call: guard.ToolCall) -> bool:
-    """A call that may be a guarded action, read without the database (the check failed)."""
-    if _PUSH_HINT_RE.search(call.text) or _MERGE_HINT_RE.search(call.text):
-        return True
-    return bool(guard.mutating_rules(call))
-
-
-def requested_hint(a: Approval, in_run: bool) -> str:
-    then = "it comes as your next turn" if in_run else "it comes as an owner comment"
+def requested_hint(a: Approval) -> str:
     return (
-        f"End your turn now; the owner decides on the board and {then}. An approval allows one"
-        " matching call, run alone."
+        "End your turn now; the owner decides on the board and it comes as an owner comment. An"
+        " approval allows one matching call, run alone."
     )
-
-
-def check_no_decision_line(text: str, what: str) -> None:
-    """Refuse a text not from the owner that holds a line the agent would read as the owner's
-    decision on an approval."""
-    if _DECISION_LINE_RE.search(text):
-        raise ValidationError(
-            f'{what} holds a line starting "The owner approved" or "The owner refused": only the'
-            " owner's decision on the board starts a turn with one. Nothing started."
-        )
 
 
 def used_by(tool: str, text: str) -> str:

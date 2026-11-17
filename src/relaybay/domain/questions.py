@@ -30,16 +30,13 @@ DEFAULT_AFTER_MAX = timedelta(days=30)
 BLOCKING_OVERDUE = DEFAULT_AFTER
 QUOTE_MAX = 300  # the question as quoted in the answer's line
 CHECK_SECONDS = 15.0  # how often the server closes questions past their deadline
-# A line that reads like the owner's answer: only an answer from the board may carry one.
-_ANSWER_LINE_RE = re.compile(r"^\s*owner['\u2019]?s answer to question\b", re.I | re.M)
 _DURATION_RE = re.compile(r"^(\d{1,6})\s*(m|min|minutes?|h|hours?|d|days?)$", re.IGNORECASE)
 
 
 @dataclass(slots=True)
 class Question:
     id: int
-    task_id: int | None  # None: the coordinator's question, bound to its run
-    run_id: int | None
+    task_id: int | None  # None: a question of 0.11's coordinator run, without a card
     session_id: int | None
     asked_by: str
     kind: str
@@ -58,15 +55,11 @@ class Question:
     defaulted_at: str | None
     withdrawn_at: str | None
     withdrawn_by: str | None
-    turn_id: int | None
     comment_id: int | None
-    told_at: str | None
     delivered_at: str | None
     task_key: str = ""
     task_title: str = ""
     project_slug: str = ""
-    turn_seq: int | None = None
-    turn_outcome: str | None = None
 
     @property
     def is_open(self) -> bool:
@@ -253,35 +246,15 @@ def answer_line(question: Question) -> str:
     return line
 
 
-def waiting_line(question: Question) -> str:
-    """The hook line for a turn that runs while the owner's answer waits for it to end."""
-    return (
-        f'Owner\'s answer to question {question.id} ("{quoted(question.text)}") is waiting: it'
-        " comes as your next turn when this one ends."
-    )
-
-
-def asked_hint(question: Question, in_run: bool) -> str:
+def asked_hint(question: Question) -> str:
     """What the asking agent does next, in question_ask's answer."""
     if question.blocking:
-        then = (
-            "it comes as your next turn"
-            if in_run
-            else "it comes as an owner comment through your hooks"
+        return (
+            "Blocking: end your turn now; the owner answers on the board and it comes as an"
+            " owner comment through your hooks."
         )
-        return f"Blocking: end your turn now; the owner answers on the board and {then}."
     at = (question.default_after or "")[:16].replace("T", " ")
     return (
         f'Go on with the default ("{quoted(question.default)}"); at {at} UTC the question closes'
         " with it. A later answer from the owner comes as a change of course."
     )
-
-
-def check_no_answer_line(text: str, what: str) -> None:
-    """Refuse a text not from the owner that holds a line the agent would read as the owner's
-    answer to a question."""
-    if _ANSWER_LINE_RE.search(text):
-        raise ValidationError(
-            f"{what} holds a line starting \"Owner's answer to question\": only the owner's"
-            " answer on the board starts a turn with one. Nothing started."
-        )

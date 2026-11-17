@@ -81,7 +81,16 @@ def test_the_removed_map_page_is_gone(board: TestClient) -> None:
 
 
 def test_the_pages_removed_in_0_12_are_gone(board: TestClient) -> None:
-    for url in ("/schedules", "/coordinator", "/fragments/coordinator-badge"):
+    for url in (
+        "/schedules",
+        "/coordinator",
+        "/fragments/coordinator-badge",
+        "/settings/agents",
+        "/settings/profiles",
+        "/coordinator/terminal",
+        "/static/terminal.js",
+        "/static/vendor/xterm/xterm.js",
+    ):
         assert board.get(url).status_code == 404, url
 
 

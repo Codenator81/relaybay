@@ -1131,7 +1131,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return fmt.brake_saved(brake)
 
-    @write
+    @mcp.tool(annotations=WRITE, structured_output=False)
+    @contract.deprecated()
     async def run_start(
         task: TaskRef,
         repos: Annotated[
@@ -1173,27 +1174,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Start the user's own claude on a card, for coordinator sessions only: cards in plan or
-        dev with no brake on them or on you, each repository in a new worktree, the project's
-        permission profile. Anyone else is refused; a side task goes to backlog_add."""
-        started = await run(
-            service.start_run_mcp(
-                task,
-                repos=repos or None,
-                cwd=cwd or None,
-                model=model or None,
-                effort=effort or None,
-                brief=brief or None,
-                permission_mode=permission_mode or None,
-                session=session,
-                session_title=session_title,
-                hook_session=hook_session,
-            )
-        )
-        found = await run(service.get_task(started.task_id))
-        return fmt.run_started(found, started)
+        """Removed in 0.12 with runs inside the program: starts nothing."""
+        return contract.STUB_RESULT
 
     @mcp.tool(annotations=READ, structured_output=False)
+    @contract.deprecated()
     async def run_status(
         task: Annotated[
             str,
@@ -1203,13 +1188,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             ),
         ],
     ) -> str:
-        """The card's run (the open one, else the latest): status, folders, Claude session id,
-        tokens and the latest turns; task 'coordinator': the coordinator run, which has no
-        card. Open to every session."""
-        found, view = await run(service.run_status(task))
-        return fmt.run_status(found, view)
+        """Removed in 0.12 with runs inside the program: shows nothing."""
+        return contract.STUB_RESULT
 
     @mcp.tool(annotations=READ, structured_output=False)
+    @contract.deprecated()
     async def run_events(
         run: Annotated[int, Field(description="The run's number, as run_status shows it.")],
         turn: Annotated[
@@ -1228,15 +1211,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             Field(ge=1, description="Lines from this number on. Default: the last `limit`."),
         ] = None,
     ) -> str:
-        """A turn's stream-json lines as short, masked items: tool calls with how they ended,
-        texts, refusals, subagent lines indented under their call, the result. Open to every
-        session; it changes nothing."""
-        found, shown, items = await _run(
-            service.run_events(run, turn, limit=limit, from_seq=from_seq)
-        )
-        return fmt.run_events(found, shown, items)
+        """Removed in 0.12 with runs inside the program: shows nothing."""
+        return contract.STUB_RESULT
 
-    @write
+    @mcp.tool(annotations=WRITE, structured_output=False)
+    @contract.deprecated()
     async def run_settings(
         task: TaskRef,
         permission_mode: Annotated[
@@ -1258,22 +1237,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Change the permission mode, model or effort of the card's open run from its next
-        turn on, for coordinator sessions only, never while a turn runs and never under a brake.
-        The mode may only stay or go down; the owner raises it on the card."""
-        changed = await run(
-            service.run_settings_mcp(
-                task,
-                permission_mode=permission_mode or None,
-                model=model or None,
-                effort=effort or None,
-                session=session,
-                session_title=session_title,
-                hook_session=hook_session,
-            )
-        )
-        found = await run(service.get_task(changed.task_id))
-        return fmt.run_settings_saved(found, changed)
+        """Removed in 0.12 with runs inside the program: changes nothing."""
+        return contract.STUB_RESULT
 
     # --- removed in 0.12: schedules ---------------------------------------------------------
 
@@ -1371,8 +1336,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str | None,
             Field(
                 description="Task key such as 'acme-shop-12', or its numeric id: the card the"
-                " question is on. Required, except for the coordinator run, which may ask"
-                " without a card."
+                " question is on. Required."
             ),
         ] = None,
         options: Annotated[
@@ -1418,10 +1382,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     ) -> str:
         """Ask the owner a question on a card; it shows in the owner's Inbox and on the card, and
         only the owner answers it, on the board. Every question carries a default; at most 5 are
-        open per card. A blocking one: end your turn, the answer comes as your next turn (a run)
-        or as an owner comment (a desktop session). kind look: bring up the screen first, pass
-        its url and the test account's name. The coordinator run may leave task out: the
-        question is its own, on the Coordinator page."""
+        open per card. A blocking one: end your turn, the answer comes as an owner comment
+        through your hooks. kind look: bring up the screen first, pass its url and the test
+        account's name."""
         asked, hint = await run(
             service.ask_question(
                 task,
@@ -1465,7 +1428,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         hook_session: HookSession = None,
     ) -> str:
         """Withdraw an open question you asked (a coordinator may withdraw any): it leaves the
-        Inbox, and a run waiting only for it goes idle."""
+        Inbox."""
         gone = await run(
             service.withdraw_question(
                 question,
@@ -1513,8 +1476,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         the card, and only the owner decides, on the board. The guard denies a call that needs
         an approval until one is given; one approval allows exactly one matching call, run alone
         as its own command (a push approval names its branch; a force push or a delete needs one
-        that says so). End your turn after asking: the decision comes as your next
-        turn (a run) or as an owner comment (a desktop session). An open request for the same
+        that says so). End your turn after asking: the decision comes as an owner
+        comment through your hooks. An open request for the same
         action and target is updated instead of a second one."""
         asked, hint, updated = await run(
             service.request_approval(

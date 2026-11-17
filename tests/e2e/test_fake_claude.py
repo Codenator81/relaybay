@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from tests.e2e.conftest import FAKE, FakeRun, poll, write_shim
-from tests.e2e.stream_contract import check_compact, check_stream
+from tests.e2e.stream_contract import check_stream
 
 REPO = Path(__file__).parents[2]
 # Answers per event from a JSON file; every call is logged as `event tool stop_hook_active`.
@@ -184,21 +184,6 @@ def test_stream_transcript_and_hook_order(local: Local) -> None:
     assert assistant[0]["message"]["model"] == "demo-model-small"
 
 
-def test_compact_keeps_the_session_and_answers_like_the_real_cli(local: Local) -> None:
-    """Probe 18 of design 0023: `/compact` on a resumed session is a compact_boundary and an
-    empty result with zero usage under the same id; it takes no turn of the scenario."""
-    scenario = {"turns": [[{"text": "first"}], [{"text": "second"}]], "compact_pre_tokens": 51514}
-    first = local.start(scenario).finish()
-    session = first.init["session_id"]
-    compact = local.start(scenario, prompt="/compact", flags=("--resume", session)).finish()
-    check_compact(compact.messages)
-    [bound] = compact.of("system", "compact_boundary")
-    assert bound["compact_metadata"] == {"trigger": "manual", "pre_tokens": 51514}
-    assert compact.result["session_id"] == session and compact.result["result"] == ""
-    after = local.start(scenario, prompt="go on", flags=("--resume", session)).finish()
-    assert after.result["result"] == "second" and after.init["session_id"] == session
-
-
 def test_deny_context_and_ask_from_the_hook(local: Local) -> None:
     answers = {
         "SessionStart": [{"hookSpecificOutput": {"additionalContext": "start line"}}],
@@ -307,48 +292,3 @@ def test_termination_runs_session_end_and_exits_143(local: Local) -> None:
     assert not run.of("result")  # the turn stays unfinished
     assert [c["event"] for c in local.calls()][-1] == "SessionEnd"
     assert local.calls()[-1]["reason"] == "other"
-
-
-def test_probe_reads_the_servers_of_both_runs(local: Local) -> None:
-    """scripts/probe_claude.py against the fake; only the session runs it against the real one."""
-    scenario: dict[str, Any] = {
-        "configured_servers": [{"name": "claude.ai Demo", "status": "connected"}],
-        "turn": [{"text": "ok"}],
-    }
-    (local.root / "scenario.json").write_text(json.dumps(scenario), encoding="utf-8")
-    (local.root / "answers.json").write_text("{}", encoding="utf-8")
-    env = {k: v for k, v in local.env.items() if k != "CI"}
-    done = subprocess.run(
-        [sys.executable, str(REPO / "scripts" / "probe_claude.py")],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr
-    assert "claude.ai Demo: connected" in done.stdout
-    # The fake takes --chrome and connects no browser server for it.
-    assert "--- only with --chrome: \n" in done.stdout
-    refused = subprocess.run(
-        [sys.executable, str(REPO / "scripts" / "probe_claude.py")],
-        env={**env, "CI": "true"},
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert refused.returncode == 2 and "never in CI" in refused.stderr
-
-
-def test_desktop_refuses_redirected_output_like_the_real_cli(local: Local) -> None:
-    session = "11111111-2222-3333-4444-555555555555"
-    refused = local.cli("--desktop", "--resume", session)
-    assert refused.returncode == 1
-    assert "can't run non-interactively" in refused.stderr and refused.stdout == ""
-    [entry] = [
-        json.loads(x)
-        for x in (local.root / "trace.jsonl").read_text("utf-8").splitlines()
-        if json.loads(x)["kind"] == "desktop"
-    ]
-    assert entry["argv"] == ["--desktop", "--resume", session] and entry["tty"] is False

@@ -1,6 +1,5 @@
-"""The stream-json shape relaybay's runner will rely on, checked on the fake in every test run and
-on the real CLI when opted in (`test_real_claude.py`). Extra fields are ignored on purpose: the
-real CLI adds new ones between versions."""
+"""The stream-json shape the scenarios read the fake's work from, checked in every test run.
+Extra fields are ignored on purpose, as the real CLI adds new ones between versions."""
 
 from typing import Any
 
@@ -38,17 +37,3 @@ def check_stream(messages: list[dict[str, Any]]) -> None:
     result = messages[-1]
     _has(result, "subtype", "is_error", "session_id", "num_turns", "usage", "permission_denials")
     assert result["session_id"] == session
-
-
-def check_compact(messages: list[dict[str, Any]]) -> None:
-    """A headless `/compact` turn (probe 18 of design 0023): a stream as above with one
-    `compact_boundary` of trigger `manual`, no assistant message, and a result with zero usage."""
-    check_stream(messages)
-    bounds = [
-        m for m in messages if m["type"] == "system" and m.get("subtype") == "compact_boundary"
-    ]
-    assert len(bounds) == 1, messages
-    assert bounds[0]["compact_metadata"]["trigger"] == "manual"
-    assert not [m for m in messages if m["type"] == "assistant"]
-    usage = messages[-1]["usage"]
-    assert not any(usage.get(key) for key in ("input_tokens", "output_tokens")), usage

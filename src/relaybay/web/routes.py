@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import binascii
-import contextlib
 import hashlib
 import json
 import logging
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Header, HTTPException, Query, Request, WebSocket
+from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -26,16 +25,12 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 from starlette.responses import StreamingResponse
-from starlette.websockets import WebSocketDisconnect
 
 from relaybay import __version__, machine_setup
-from relaybay.config import LOCAL_HOSTS, Settings
+from relaybay.config import Settings
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
-from relaybay.domain import profiles as profile_rules
-from relaybay.domain import run_events as run_lines
-from relaybay.domain import runs as run_rules
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
 from relaybay.domain.areas import AREA_COLORS
@@ -52,22 +47,17 @@ from relaybay.domain.errors import (
 from relaybay.domain.intake import autonomy_reason
 from relaybay.domain.models import Task
 from relaybay.domain.review import MB
-from relaybay.domain.rules import rules_markdown, verified_marks_problem
+from relaybay.domain.rules import rules_markdown
 from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage, parse_stage
 from relaybay.domain.tasks import is_archived
 from relaybay.domain.usage import UsageReport
 from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
-from relaybay.runner import auth as run_auth
-from relaybay.runner.terminal import clean_size
-from relaybay.runner.worktrees import summary as worktree_summary
 from relaybay.security import (
     COOKIE_NAME,
-    CSP,
     CSRF_FIELD,
     csrf_token,
-    host_name,
     login_url,
     port_cookie,
     safe_next,
@@ -76,7 +66,7 @@ from relaybay.security import (
     session_cookie_value,
     token_id,
 )
-from relaybay.service import HTTP_URL_RE, TERMINAL_BACK, Inbox, Service, has_hidden_chars
+from relaybay.service import HTTP_URL_RE, Inbox, Service, has_hidden_chars
 from relaybay.web.markdown import render_document, render_markdown
 from relaybay.web.sse import event_stream
 
@@ -276,16 +266,6 @@ EVENT_KINDS = (
     "schedule.ended",
 )
 CSRF_HEADER = "x-relaybay-csrf"
-# The Terminal tab: the board's policy plus inline styles, which xterm.js writes.
-TERMINAL_CSP = CSP + "; style-src 'self' 'unsafe-inline'"
-LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")
-TERMINAL_NOT_LOOPBACK = (
-    "The server listens on {host}, not on loopback only: the Terminal tab works only on a server"
-    " bound to 127.0.0.1 (not in Docker or on a LAN address)."
-)
-TERMINAL_EXITED = "claude exited"
-TERMINAL_REFUSED = 4000  # a close code of the application's range: the terminal did not open
-TERMINAL_HELD = 4001  # claude exited, but the run stays with the owner (the reason went before)
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
 BOARD_ONLY = (
     "Environments, permission levels and the policy change only from the board in a browser;"
@@ -295,11 +275,6 @@ ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "lev
 JOURNAL_LIMIT = 20
 DOCS_DECISIONS = 200
 DOC_NEW_FIELDS = ("doc", "title", "kind", "source_url", "body", "reason")
-RUN_CHOICES = {
-    "models": run_rules.MODELS,
-    "efforts": run_rules.EFFORTS,
-    "modes": run_rules.PERMISSION_MODES,
-}
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
@@ -407,7 +382,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["event_detail"] = event_detail
     env.filters["event_subject"] = event_subject
     env.filters["change_summary"] = env_domain.change_summary
-    env.filters["copy_summary"] = worktree_summary
     env.globals["fields_text"] = env_domain.fields_text
     env.globals["autonomy_reason"] = autonomy_reason
     env.filters["tojson_compact"] = lambda value: json.dumps(value, ensure_ascii=False)
@@ -1589,310 +1563,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return RedirectResponse(f"/p/{slug}?task={task.key}&tab=plan", status_code=303)
         return await plan_panel(request, task)
 
-    # --- Agent: a run of the user's own claude on the card ---------------------------------
-
-    async def run_panel(request: Request, task: Task, error: str | None = None) -> HTMLResponse:
-        fresh = await service.get_task(task.key)
-        view = await service.run_view(fresh)
-        form = await service.run_form(fresh) if view is None or not view.run.is_open else None
-        runs = service.runs
-        running = view is not None and runs is not None and runs.is_running(view.run.id)
-        return render(
-            request,
-            "_run.html",
-            t=fresh,
-            view=view,
-            form=form,
-            running=running,
-            error=error,
-            choices=RUN_CHOICES,
-            owner_modes=run_rules.PERMISSION_MODES + run_rules.OWNER_ONLY_MODES,
-            desktop_ok=runs is not None and runs.desktop_launcher is not None,
-            launching=view is not None and view.run.id in service.desktop_launching,
-            terminal_on=terminal_here() and await service.terminal_enabled(),
-            terminal_open=view is not None and service.terminals.busy(view.run.id),
-        )
-
-    def terminal_here() -> bool:
-        """The Terminal tab can work on this server: a PTY, and a loopback-only listener."""
-        return service.terminal_available() and settings.host in LOOPBACK_BINDS
-
-    @router.get("/p/{slug}/t/{key}/run", response_class=HTMLResponse)
-    async def run_fragment(request: Request, slug: str, key: str):
-        return await run_panel(request, await find_task(slug, key))
-
-    @router.get("/p/{slug}/t/{key}/run/{run_id}/turns/{seq}", response_class=HTMLResponse)
-    async def run_turn_fragment(request: Request, slug: str, key: str, run_id: int, seq: int):
-        """A turn's report and its stored lines, loaded when the owner opens the turn."""
-        task = await find_task(slug, key)
-        run, turn, report, checks, items = await service.run_turn_detail(
-            await run_of(task, run_id), seq
-        )
-        problem = None
-        if report is not None and report.id >= service.report_marks_from:
-            problem = verified_marks_problem(report.size, len(checks))
-        return render(
-            request,
-            "_run_turn.html",
-            run=run,
-            turn=turn,
-            report=report,
-            checks=checks,
-            warning=f"Warning (rules): {problem}" if problem else None,
-            items=items,
-            board_lines=run_lines.BOARD_LINES,
-        )
-
-    async def run_write(
-        request: Request,
-        slug: str,
-        key: str,
-        csrf: str,
-        write: Callable[[Task, Any], Awaitable[Any]],
-    ) -> Response:
-        """A board act on the card's run: an htmx swap of the panel with the reason in it on a
-        refusal (200, so htmx swaps it), or a redirect for a plain form post."""
-        board_only(request, csrf)
-        task = await find_task(slug, key)
-        form = await request.form()
-        htmx = "hx-request" in request.headers
-        try:
-            await write(task, form)
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            if not htmx:
-                raise
-            return await run_panel(request, task, error=str(exc))
-        if not htmx:
-            # Start anyway from the Inbox goes back there.
-            back = "/inbox" if form.get("from") == "inbox" else f"/p/{slug}?task={task.key}"
-            return RedirectResponse(back, status_code=303)
-        return await run_panel(request, task)
-
-    async def run_of(task: Task, run_id: int) -> int:
-        run = await service.get_run(run_id)
-        if run.task_id != task.id:
-            raise NotFoundError(f"Run #{run_id} is not on {task.key}.")
-        return run.id
-
-    @router.post("/p/{slug}/t/{key}/run/start", response_class=HTMLResponse)
-    async def run_start(
-        request: Request, slug: str, key: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        async def write(task: Task, form: Any) -> None:
-            repo_text = str(form.get("repo") or "").strip()
-            cwd = str(form.get("cwd") or "").strip() or None
-            # Per repository `wt_<id>`: "new" (a new worktree), "self" (in place), "" (not used).
-            picks = [
-                (int(name[3:]), str(form.get(name)) == "new")
-                for name in form
-                if name.startswith("wt_")
-                and name[3:].isdigit()
-                and str(form.get(name)) in ("new", "self")
-            ]
-            await service.start_run(
-                task.key,
-                actor="owner",
-                repo_id=int(repo_text) if repo_text.isdigit() else None,
-                cwd=cwd,
-                repos=picks if cwd is not None else None,
-                model=str(form.get("model") or "") or None,
-                effort=str(form.get("effort") or "") or None,
-                mode=str(form.get("permission_mode") or "") or None,
-                brief=str(form.get("brief") or ""),
-                profile=str(form.get("profile") or "") or None,
-            )
-
-        return await run_write(request, slug, key, csrf, write)
-
-    @router.post("/p/{slug}/t/{key}/run/{run_id}/{action}", response_class=HTMLResponse)
-    async def run_action(
-        request: Request,
-        slug: str,
-        key: str,
-        run_id: int,
-        action: str,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        if action not in ("send", "stop", "end", "desktop", "back", "settings", "anyway"):
-            raise HTTPException(status_code=404)
-
-        async def write(task: Task, form: Any) -> None:
-            own = await run_of(task, run_id)
-            if action == "send":
-                await service.send_to_run(own, str(form.get("text") or ""), actor="owner")
-            elif action == "stop":
-                await service.stop_run(own, actor="owner")
-            elif action == "desktop":
-                await service.open_in_desktop(own, actor="owner")
-            elif action == "back":
-                await service.return_run(own, actor="owner")
-            elif action == "anyway":
-                await service.start_anyway(own, actor="owner")
-            elif action == "settings":
-                await service.set_run_settings(
-                    own,
-                    mode=str(form.get("permission_mode") or ""),
-                    model=str(form.get("model") or ""),
-                    effort=str(form.get("effort") or ""),
-                    actor="owner",
-                )
-            else:
-                await service.end_run(own, actor="owner")
-
-        return await run_write(request, slug, key, csrf, write)
-
-    # --- the Terminal tab of a run: `claude --resume` in a PTY over a WebSocket -------------
-
-    async def terminal_run(slug: str, key: str, run_id: int) -> tuple[Task, Any]:
-        """The card and its run for the terminal routes; 404 while the Terminal tab is off."""
-        if not await service.terminal_enabled():
-            raise HTTPException(status_code=404)
-        task = await find_task(slug, key)
-        return task, await service.get_run(await run_of(task, run_id))
-
-    @router.get("/p/{slug}/t/{key}/run/{run_id}/terminal", response_class=HTMLResponse)
-    async def run_terminal_page(request: Request, slug: str, key: str, run_id: int):
-        task, run = await terminal_run(slug, key, run_id)
-        response = render(
-            request,
-            "terminal.html",
-            t=task,
-            run=run,
-            back=f"/p/{slug}?task={task.key}",
-            base=f"/p/{slug}/t/{task.key}/run/{run.id}/terminal",
-        )
-        # xterm.js styles its rows with <style> elements it writes: this page alone allows
-        # inline styles; scripts stay 'self' only.
-        response.headers["content-security-policy"] = TERMINAL_CSP
-        return response
-
-    @router.post("/p/{slug}/t/{key}/run/{run_id}/terminal/token")
-    async def run_terminal_token(
-        request: Request,
-        slug: str,
-        key: str,
-        run_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ) -> Response:
-        """A one-time token for the WebSocket, from a signed-in browser only (cookie + CSRF, no
-        Bearer); a refusal answers 409 with the reason."""
-        board_only(request, csrf)
-        _, run = await terminal_run(slug, key, run_id)
-        try:
-            if settings.host not in LOOPBACK_BINDS:
-                raise ValidationError(TERMINAL_NOT_LOOPBACK.format(host=settings.host))
-            minted = await service.terminal_token(run.id)
-        except ValidationError as exc:
-            return PlainTextResponse(str(exc), status_code=409)
-        return JSONResponse({"token": minted}, headers={"cache-control": "no-store"})
-
-    def terminal_socket_refusal(websocket: WebSocket) -> str | None:
-        """The SecurityMiddleware passes WebSockets through: every check is made here. The
-        server listens on loopback and the Host is a loopback name; no Bearer client; the
-        board's own cookie; an Origin equal to the board's own origin."""
-        headers = websocket.headers
-        if settings.host not in LOOPBACK_BINDS:
-            return "the server does not listen on loopback only"
-        host = headers.get("host") or ""
-        if host_name(host) not in LOCAL_HOSTS:
-            return "not a loopback host"
-        if "authorization" in headers:
-            return "the board only, not a Bearer client"
-        cookie = websocket.cookies.get(port_cookie(COOKIE_NAME, host))
-        if not same_secret(cookie, session_cookie_value(token)):
-            return "not signed in"
-        origin = headers.get("origin")
-        if origin is None or origin.lower() != f"http://{host.lower()}":
-            return "a foreign origin"
-        return None
-
-    @router.websocket("/p/{slug}/t/{key}/run/{run_id}/terminal")
-    async def run_terminal_socket(websocket: WebSocket, slug: str, key: str, run_id: int):
-        """Text frames out: what the TUI writes. In: JSON `{"type": "input", "data": …}` or
-        `{"type": "resize", "rows": …, "cols": …}`. A refusal closes before the handshake
-        (the browser sees 403); the end closes with the reason."""
-        refusal = terminal_socket_refusal(websocket)
-        if refusal is None and not await service.terminal_enabled():
-            refusal = "the Terminal tab is off"
-        own = run_id
-        if refusal is None:
-            try:
-                task = await find_task(slug, key)
-                own = await run_of(task, run_id)
-            except NotFoundError:
-                refusal = "no such run on this card"
-        await serve_terminal(websocket, own, refusal)
-
-    async def serve_terminal(websocket: WebSocket, own: int, refusal: str | None) -> None:
-        """The run's terminal over an accepted socket, once the checks of its route passed
-        (`refusal` None): the one-time token, then the PTY until the TUI exits or the browser
-        goes."""
-        run_id = own
-        params = websocket.query_params
-        if refusal is None and not service.terminals.take(params.get("token", ""), run_id):
-            refusal = "no valid one-time token"
-        if refusal is not None:
-            logger.warning("Terminal socket of run %d refused: %s", run_id, refusal)
-            await websocket.close(code=1008)
-            return
-        try:
-            terminal = await service.open_terminal(
-                own, params.get("rows", ""), params.get("cols", ""), actor="owner"
-            )
-        except DomainError as exc:
-            # After the handshake, so the page can show why (a close reason holds 123 bytes).
-            await websocket.accept()
-            await websocket.send_text(f"\r\n\x1b[33mrelaybay: {exc}\x1b[0m\r\n")
-            await websocket.close(code=TERMINAL_REFUSED, reason="refused")
-            return
-        reason = "the tab closed"
-        try:
-            await websocket.accept()
-            reason = await pump_terminal(websocket, terminal)
-        finally:
-            # Shielded: a server stop cancels this handler, and the tree must still die first.
-            outcome = await asyncio.shield(
-                service.close_terminal(own, actor="owner", reason=reason)
-            )
-        if reason != TERMINAL_EXITED:
-            return  # the browser went: the card tells the outcome
-        with contextlib.suppress(RuntimeError, WebSocketDisconnect):  # the browser went first
-            if outcome == TERMINAL_BACK:
-                await websocket.close(code=1000, reason="claude exited")
-            else:
-                await websocket.send_text(f"\r\n\x1b[33mrelaybay: {outcome}\x1b[0m\r\n")
-                await websocket.close(code=TERMINAL_HELD, reason="held")
-
-    async def pump_terminal(websocket: WebSocket, terminal: Any) -> str:
-        """Until the TUI exits or the browser goes: the reason the terminal closes."""
-
-        async def out() -> None:
-            while (chunk := await terminal.output()) is not None:
-                await websocket.send_text(chunk)
-
-        async def into() -> None:
-            while True:
-                message = json.loads(await websocket.receive_text())
-                if message.get("type") == "input":
-                    terminal.write(str(message.get("data", "")))
-                elif message.get("type") == "resize":
-                    terminal.resize(*clean_size(message.get("rows"), message.get("cols")))
-
-        writer, reader = asyncio.create_task(out()), asyncio.create_task(into())
-        done, pending = await asyncio.wait({writer, reader}, return_when=asyncio.FIRST_COMPLETED)
-        for job in pending:
-            job.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for job in done:
-            failure = job.exception()
-            if failure is not None and not isinstance(failure, WebSocketDisconnect):
-                logger.warning("The terminal socket of run %d failed: %r", terminal.run_id, failure)
-        if writer in done and writer.exception() is None:
-            return TERMINAL_EXITED
-        return "the tab closed"
-
     # --- Questions to the owner: answered only here, on the board -------------------------
 
     async def questions_panel(
@@ -2176,9 +1846,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             repo_kinds=REPO_KINDS,
             areas=(await service.project_areas(project.slug))[1],
             area_colors=AREA_COLORS,
-            run_defaults=await service.run_defaults(project.slug),
-            run_choices=RUN_CHOICES,
-            run_profiles=await service.profiles("card"),
             proposals=await service.proposals(project.slug),
             policies=await service.environment_policies(items),
             project_policy=await service.effective_policy(project.slug),
@@ -2304,29 +1971,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await environment_write(
             request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}", "Environment saved."
-        )
-
-    @router.post("/p/{slug}/run-defaults")
-    async def save_run_defaults(
-        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        async def write(form: Any) -> None:
-            values = {
-                name: str(form.get(name) or "")
-                for name in (
-                    "model",
-                    "effort",
-                    "profile",
-                    "folder",
-                    "retention",
-                )
-            }
-            await service.set_run_defaults(
-                slug, {**values, "chrome": form.getlist("chrome")[-1:] == ["1"]}, actor="owner"
-            )
-
-        return await environment_write(
-            request, slug, csrf, "run-defaults", write, "#run-defaults", "Agent defaults saved."
         )
 
     @router.post("/p/{slug}/repos")
@@ -2909,151 +2553,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/settings")
     async def settings_index() -> Response:
         return RedirectResponse("/settings/integrations", status_code=303)
-
-    @router.get("/settings/agents", response_class=HTMLResponse)
-    async def agents_settings(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        runs = service.runs
-        login = await runs.login() if runs is not None else None
-        response = await page(
-            request,
-            "agents.html",
-            "settings",
-            available=runs is not None,
-            claude=runs.claude() if runs is not None else None,
-            claude_setting=settings.claude_path,
-            login=login,
-            login_line=run_auth.login_line(login) if login is not None else "",
-            layers=await service.run_layers(),
-            login_any=await service.run_login_any(),
-            terminal_enabled=await service.terminal_enabled(),
-            terminal_available=service.terminal_available(),
-            terminal_bind=None
-            if settings.host in LOOPBACK_BINDS
-            else TERMINAL_NOT_LOOPBACK.format(host=settings.host),
-            fix_command=run_auth.FIX_COMMAND,
-            limits=await service.run_limits(),
-            config_limits=(settings.max_running_turns, settings.min_free_memory_mb),
-            free_mb=await service.free_memory_now(),
-            choices=RUN_CHOICES,
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    @router.post("/settings/agents/limits", response_class=HTMLResponse)
-    async def agents_limits(
-        request: Request,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-        max_running_turns: Annotated[str, Form()] = "",
-        min_free_memory_mb: Annotated[str, Form()] = "",
-    ):
-        board_only(request, csrf)
-        try:
-            await service.set_run_limits(max_running_turns, min_free_memory_mb, actor="owner")
-        except ValidationError as exc:
-            return flash_redirect(request, "/settings/agents#limits", error=str(exc))
-        return flash_redirect(request, "/settings/agents#limits", message="Saved.")
-
-    @router.post("/settings/agents/login-methods", response_class=HTMLResponse)
-    async def agents_login_methods(
-        request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        board_only(request, csrf)
-        # A hidden "0" comes before the checkbox, so the last value is the state.
-        allow = (await request.form()).getlist("allow")[-1:] == ["1"]
-        await service.set_run_login_any(allow, actor="owner")
-        return flash_redirect(request, "/settings/agents", message="Saved.")
-
-    @router.post("/settings/agents/terminal", response_class=HTMLResponse)
-    async def agents_terminal(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
-        board_only(request, csrf)
-        # A hidden "0" comes before the checkbox, so the last value is the state.
-        on = (await request.form()).getlist("on")[-1:] == ["1"]
-        problems = await service.set_terminal_enabled(on, actor="owner")
-        if problems:
-            return flash_redirect(request, "/settings/agents#terminal", error=" ".join(problems))
-        return flash_redirect(request, "/settings/agents#terminal", message="Saved.")
-
-    @router.get("/settings/profiles", response_class=HTMLResponse)
-    async def profiles_settings(request: Request):
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        flash = take_flash(request)
-        response = await page(
-            request,
-            "profiles.html",
-            "settings",
-            profiles=await service.profiles(),
-            modes=run_rules.PERMISSION_MODES,
-            kinds=profile_rules.KINDS,
-            rights=profile_rules.RIGHTS,
-            per_day=profile_rules.PER_DAY,
-            fixed_lines=profile_rules.FIXED_LINES,
-            fixed_disallowed=profile_rules.FIXED_DISALLOWED,
-            message=flash.get("message"),
-            error=flash.get("error"),
-            last_event_id=last_event_id,
-        )
-        return shown_once(request, response)
-
-    def profile_form(form: Any) -> dict[str, Any]:
-        """A profile's fields as the editor sends them: rules one per line, a checkbox per
-        right and per run kind."""
-        return {
-            "description": str(form.get("description") or ""),
-            "permission_mode": str(form.get("permission_mode") or ""),
-            "allowed_tools": str(form.get("allowed_tools") or ""),
-            "disallowed_tools": str(form.get("disallowed_tools") or ""),
-            "rights": {
-                **{name: form.get(f"right_{name}") == "1" for name in profile_rules.RIGHT_NAMES},
-                profile_rules.PER_DAY: str(form.get(profile_rules.PER_DAY) or "0"),
-            },
-            "kinds": [str(k) for k in form.getlist("kinds")],
-        }
-
-    @router.post("/settings/profiles", response_class=HTMLResponse)
-    async def profile_create(request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""):
-        board_only(request, csrf)
-        form = await request.form()
-        try:
-            made = await service.create_profile(
-                str(form.get("name") or ""), profile_form(form), actor="owner"
-            )
-        except DomainError as exc:
-            return flash_redirect(request, "/settings/profiles#new", error=str(exc))
-        return flash_redirect(
-            request, f"/settings/profiles#profile-{made.name}", message=f"{made.name} added."
-        )
-
-    @router.post("/settings/profiles/{name}/{action}", response_class=HTMLResponse)
-    async def profile_action(
-        request: Request,
-        name: str,
-        action: str,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        if action not in ("save", "reset", "delete"):
-            raise HTTPException(status_code=404)
-        board_only(request, csrf)
-        form = await request.form()
-        anchor = f"/settings/profiles#profile-{name}"
-        try:
-            if action == "save":
-                saved = await service.update_profile(name, profile_form(form), actor="owner")
-                message = f"{saved.name} saved (version {saved.version})."
-            elif action == "reset":
-                saved = await service.reset_profile(name, actor="owner")
-                message = f"{saved.name} reset to shipped (version {saved.version})."
-            else:
-                await service.delete_profile(name, actor="owner")
-                anchor, message = "/settings/profiles", f"{name} deleted."
-        except NotFoundError:
-            raise
-        except DomainError as exc:
-            return flash_redirect(request, anchor, error=str(exc))
-        return flash_redirect(request, anchor, message=message)
 
     @router.get("/settings/notifications", response_class=HTMLResponse)
     async def notifications(request: Request):

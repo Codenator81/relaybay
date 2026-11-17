@@ -17,6 +17,10 @@ Deprecations:
 
 | Item | Parameter | Since | Removed not before | Use instead |
 |---|---|---|---|---|
+| `run_start` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
+| `run_status` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
+| `run_events` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
+| `run_settings` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
 | `schedule_add` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
 | `schedule_list` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
 | `schedule_cancel` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
@@ -475,7 +479,7 @@ Stop agents at their next tool call, for coordinator sessions only. It cannot in
 
 ### `run_start`
 
-Start the user's own claude on a card, for coordinator sessions only: cards in plan or dev with no brake on them or on you, each repository in a new worktree, the project's permission profile. Anyone else is refused; a side task goes to backlog_add.
+Removed in 0.12 with runs inside the program: starts nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -492,7 +496,7 @@ Start the user's own claude on a card, for coordinator sessions only: cards in p
 
 ### `run_status`
 
-The card's run (the open one, else the latest): status, folders, Claude session id, tokens and the latest turns; task 'coordinator': the coordinator run, which has no card. Open to every session.
+Removed in 0.12 with runs inside the program: shows nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -500,7 +504,7 @@ The card's run (the open one, else the latest): status, folders, Claude session 
 
 ### `run_events`
 
-A turn's stream-json lines as short, masked items: tool calls with how they ended, texts, refusals, subagent lines indented under their call, the result. Open to every session; it changes nothing.
+Removed in 0.12 with runs inside the program: shows nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -511,7 +515,7 @@ A turn's stream-json lines as short, masked items: tool calls with how they ende
 
 ### `run_settings`
 
-Change the permission mode, model or effort of the card's open run from its next turn on, for coordinator sessions only, never while a turn runs and never under a brake. The mode may only stay or go down; the owner raises it on the card.
+Removed in 0.12 with runs inside the program: changes nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -563,13 +567,13 @@ Removed in 0.12 with every kind of schedule: cancels nothing. Deprecated: runs a
 
 ### `question_ask`
 
-Ask the owner a question on a card; it shows in the owner's Inbox and on the card, and only the owner answers it, on the board. Every question carries a default; at most 5 are open per card. A blocking one: end your turn, the answer comes as your next turn (a run) or as an owner comment (a desktop session). kind look: bring up the screen first, pass its url and the test account's name. The coordinator run may leave task out: the question is its own, on the Coordinator page.
+Ask the owner a question on a card; it shows in the owner's Inbox and on the card, and only the owner answers it, on the board. Every question carries a default; at most 5 are open per card. A blocking one: end your turn, the answer comes as an owner comment through your hooks. kind look: bring up the screen first, pass its url and the test account's name.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `text` | string | yes | The question, or for kind look what to check on the screen. Never a password or token. |
 | `default` | string | yes | What you do when the owner does not answer: required, a question without a default is refused. |
-| `task` | string or null | no | Task key such as 'acme-shop-12', or its numeric id: the card the question is on. Required, except for the coordinator run, which may ask without a card. |
+| `task` | string or null | no | Task key such as 'acme-shop-12', or its numeric id: the card the question is on. Required. |
 | `options` | list of string or null | no | Short answers the owner picks from (at most 8). Optional. |
 | `blocking` | boolean or null | no | true: you end your turn and wait for the answer. Default false: you go on with the default. A look question is always blocking. |
 | `default_after` | string or null | no | For a non-blocking question: when it closes with its default, a time with its zone (2026-12-01T15:00:00Z) or a duration (30m, 2h, 1d). Default 1h. |
@@ -591,7 +595,7 @@ Questions to the owner, newest first: open ones of all cards by default, with th
 
 ### `question_withdraw`
 
-Withdraw an open question you asked (a coordinator may withdraw any): it leaves the Inbox, and a run waiting only for it goes idle.
+Withdraw an open question you asked (a coordinator may withdraw any): it leaves the Inbox.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -602,7 +606,7 @@ Withdraw an open question you asked (a coordinator may withdraw any): it leaves 
 
 ### `approval_request`
 
-Ask the owner to approve one action on a card: it shows in the owner's Inbox and on the card, and only the owner decides, on the board. The guard denies a call that needs an approval until one is given; one approval allows exactly one matching call, run alone as its own command (a push approval names its branch; a force push or a delete needs one that says so). End your turn after asking: the decision comes as your next turn (a run) or as an owner comment (a desktop session). An open request for the same action and target is updated instead of a second one.
+Ask the owner to approve one action on a card: it shows in the owner's Inbox and on the card, and only the owner decides, on the board. The guard denies a call that needs an approval until one is given; one approval allows exactly one matching call, run alone as its own command (a push approval names its branch; a force push or a delete needs one that says so). End your turn after asking: the decision comes as an owner comment through your hooks. An open request for the same action and target is updated instead of a second one.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

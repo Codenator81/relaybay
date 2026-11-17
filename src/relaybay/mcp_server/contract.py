@@ -72,6 +72,7 @@ def _gone(tools: tuple[str, ...], note: str) -> list[Deprecation]:
 
 
 DEPRECATIONS: list[Deprecation] = [
+    *_gone(("run_start", "run_status", "run_events", "run_settings"), RUNS_GONE),
     *_gone(("schedule_add", "schedule_list", "schedule_cancel"), RUNS_GONE),
 ]
 

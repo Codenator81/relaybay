@@ -13,8 +13,8 @@ from uvicorn.logging import AccessFormatter
 REDACTED = "<redacted>"
 
 
-# Paths whose query string carries a secret: the board's token, a terminal's one-time token.
-SECRET_QUERY_PATHS = ("/login", "/terminal")
+# Paths whose query string carries a secret: the board's token.
+SECRET_QUERY_PATHS = ("/login",)
 
 
 def _redacted(value: object) -> object:
@@ -27,9 +27,8 @@ def _redacted(value: object) -> object:
 
 
 class RedactLoginFilter(logging.Filter):
-    """Drop the query string of `/login` and of a run's `/terminal` socket from log lines:
-    uvicorn.access records carry the path as an argument (client_addr, method, full_path, ...),
-    and uvicorn.error logs a WebSocket as (client, path)."""
+    """Drop the query string of `/login` from log lines: uvicorn.access records carry the path
+    as an argument (client_addr, method, full_path, ...)."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):

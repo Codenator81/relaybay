@@ -1770,13 +1770,6 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 }
 .report-checks { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 0; padding: 0; font-size: 12px; }
 .report-check-mark { color: var(--ok); font-weight: 600; }
-.run-turn-more td { padding-top: 0; }
-.run-turn-detail > summary { cursor: pointer; font-size: 13px; }
-.run-events { list-style: none; margin: 4px 0; padding-left: 0; font-size: 12px; }
-.run-events .run-events { padding-left: 16px; border-left: 2px solid var(--border); }
-.run-event { margin: 2px 0; overflow-wrap: anywhere; }
-.run-event pre { white-space: pre-wrap; margin: 2px 0; }
-.run-event.is-error > summary, .run-event-refusal { color: var(--bad); }
 
 /* --- questions to the owner -------------------------------------------------------- */
 .question-list { list-style: none; margin: 0; padding-left: 0; }
@@ -1803,43 +1796,6 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .approval-waits { border: 1px solid var(--warn); }
 .approval-decide input[type=text] { width: 100%; }
 .approval-closed > summary { cursor: pointer; font-size: 13px; }
-
-/* The Terminal tab of a run: the screen takes the rest of the window; xterm.js paints inside. */
-.terminal-page { display: flex; flex-direction: column; min-height: calc(100vh - 56px); }
-.terminal-hint { border: 1px solid var(--warn); border-radius: 6px; padding: 8px 12px; margin: 0 0 8px; }
-.terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
-.terminal-status { flex: 1 1 auto; color: var(--muted); }
-.terminal-screen { flex: 1 1 auto; min-height: 320px; background: #000; padding: 4px; border-radius: 6px; overflow: hidden; }
-
-/* --- the Coordinator page ---------------------------------------------------------------- */
-.coordinator-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 10px 0; }
-.coordinator-facts dt { color: var(--muted); }
-.coordinator-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.coordinator-empty { margin: 0 0 10px; }
-#coordinator-live code { overflow-wrap: anywhere; }
-.coordinator-held { border-left: 3px solid var(--warn); padding-left: 10px; }
-.coordinator-say { margin-top: 12px; }
-.coordinator-say textarea { width: 100%; }
-.coordinator-turns { list-style: none; margin: 0; padding-left: 0; }
-.coordinator-turn { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
-.coordinator-turn.by-owner { border-left: 3px solid var(--accent); }
-.coordinator-turn .run-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; margin: 0 0 6px; }
-.coordinator-exchange { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-.coordinator-exchange h3 { margin: 0 0 4px; }
-.coordinator-events { margin: 0; padding-left: 18px; font-size: 13px; }
-.coordinator-events li { overflow-wrap: anywhere; }
-.coordinator-owner-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.coordinator-prompt > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
-.coordinator-prompt .run-prompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 320px; overflow-y: auto; }
-.coordinator-result { min-width: 0; overflow-wrap: anywhere; }
-.coordinator-paging { margin: 8px 0; }
-.nav-badge-warn { background: var(--chip-bg); color: var(--chip-text); border: 1px solid var(--warn); }
-@media (max-width: 760px) {
-  .coordinator-facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .coordinator-facts dd { margin-bottom: 6px; }
-  .coordinator-exchange { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-  .coordinator-say .btn { width: 100%; }
-}
 
 /* Hover: everything that takes a click shows it under the pointer. */
 .btn:hover:not(:disabled) { border-color: var(--accent); }

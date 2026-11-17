@@ -33,21 +33,9 @@
     "backlog.added", "backlog.updated", "backlog.planned",
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
     "budget.exceeded", "concurrency.over",
-    "run.started", "run.turn_started", "run.turn_queued", "run.turn_ended", "run.stopped",
-    "run.ended", "run.lost", "run.opened_in_desktop", "run.returned", "run.settings_changed",
-    "run.terminal_opened", "run.terminal_closed",
-    "run.waiting", "run.start_anyway", "run.worktree_removed", "run.worktree_kept",
-    "run.secret_seen", "run.touched_live", "run.traces_deleted", "run.events_expired",
-    "settings.run_limits", "settings.terminal_enabled",
-    "profile.created", "profile.updated", "profile.deleted", "profile.reset",
-    "settings.coordinator", "coordinator.started", "coordinator.new_session",
-    "coordinator.stopped", "coordinator.ended", "coordinator.woken", "coordinator.compacting",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn", "question.overdue",
-    "approval.requested", "approval.decided", "approval.used", "approval.released",
-    "approval.expired",
-    "schedule.created", "schedule.updated", "schedule.deleted", "schedule.fired",
-    "schedule.missed", "schedule.skipped", "schedule.ended", "schedule.notice_seen"
+    "approval.requested", "approval.decided", "approval.used", "approval.expired"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
@@ -68,9 +56,7 @@
     "brake.set", "brake.released", "budget.set", "budget.removed", "budget.warned",
     "budget.exceeded", "concurrency.over",
     "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
-    "approval.requested", "approval.decided", "approval.expired",
-    "run.turn_queued", "run.turn_started", "run.start_anyway", "run.ended",
-    "schedule.fired", "schedule.ended", "schedule.notice_seen"
+    "approval.requested", "approval.decided", "approval.expired"
   ];
   var SESSION_KINDS = [
     "session.seen", "session.status_changed", "session.alias_added",
@@ -78,27 +64,6 @@
     "message.sent", "message.read",
     "task.session_bound", "task.session_unbound"
   ];
-  // The Coordinator page: what it shows changes on these (run events only of its own runs).
-  var COORDINATOR_PREFIXES = [
-    "coordinator.", "settings.coordinator", "question.", "approval.", "schedule.", "budget.",
-    "brake.", "run."
-  ];
-  var COORDINATOR_KINDS = ["report.added", "message.sent", "plan.set", "intake.received",
-    "intake.tied"];
-  // The sidebar's mark on Coordinator: its questions and its budget.
-  var COORDINATOR_BADGE_KINDS = [
-    "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
-    "budget.set", "budget.removed", "budget.warned", "budget.exceeded",
-    "coordinator.started", "coordinator.new_session", "coordinator.ended"
-  ];
-  function coordinatorEvent(data, page) {
-    if (COORDINATOR_KINDS.indexOf(data.kind) !== -1) return true;
-    if (!COORDINATOR_PREFIXES.some(function (p) { return data.kind.indexOf(p) === 0; })) {
-      return false;
-    }
-    if (data.kind.indexOf("run.") !== 0 || data.kind === "run.started" || !data.key) return true;
-    return (page.dataset.keys || "").split(" ").indexOf(data.key) !== -1;
-  }
   var DOCS_KINDS = [
     "document.updated", "decision.added", "memory.added", "memory.updated", "project.pulse_set"
   ];
@@ -179,8 +144,8 @@
     throttled.set(el.id, window.setTimeout(function () {
       throttled.delete(el.id);
       var target = document.getElementById(el.id);
-      // The Inbox and the Coordinator page may hold an answer begun while this refresh waited.
-      if (target && (target.id === "inbox" || target.id === "coordinator-live")) {
+      // The Inbox may hold an answer begun while this refresh waited.
+      if (target && target.id === "inbox") {
         var name = target.id;
         unlessAnswering(target, name, function () { queue(document.getElementById(name)); });
       } else {
@@ -219,23 +184,12 @@
   // Plan events and the bound agent's todo changes refetch the Plan panel.
   function isPlan(kind) { return kind.indexOf("plan.") === 0 || kind === "session.todo_updated"; }
   function planPanel(key) { return key ? document.getElementById("plan-" + key) : null; }
-  // Run events refetch the card's Agent block, unless a text is being typed into it.
-  function isRun(kind) { return kind.indexOf("run.") === 0; }
-  function queueRun(key) {
-    var panel = key ? document.getElementById("run-" + key) : null;
-    if (!panel) return;
-    var typing = Array.prototype.some.call(panel.querySelectorAll("textarea[name=text]"),
-      function (f) { return f.value.trim(); });
-    if (!typing) queue(panel);
-  }
-  // Question events refetch the card's questions, unless an answer is being typed, and its
-  // Agent block (a withdrawn question ends a run's wait).
+  // Question events refetch the card's questions, unless an answer is being typed.
   function isQuestion(kind) { return kind.indexOf("question.") === 0; }
   // Approval events refetch the card's approvals the same way: a half-typed line is held.
   function isApproval(kind) { return kind.indexOf("approval.") === 0; }
-  var DRAFT_FIELDS = ".question-answer textarea, .approval-decide input[name=text]," +
-    " #coordinator-say textarea";
-  var DRAFT_FORMS = ".question-answer, .approval-decide, #coordinator-say";
+  var DRAFT_FIELDS = ".question-answer textarea, .approval-decide input[name=text]";
+  var DRAFT_FORMS = ".question-answer, .approval-decide";
   function answerDraft(root) {
     return Array.prototype.some.call(root.querySelectorAll(DRAFT_FIELDS),
       function (f) { return f.value.trim(); });
@@ -261,8 +215,7 @@
   });
   document.addEventListener("htmx:afterSettle", function (event) {
     if (heldForAnswer.size && event.target.closest &&
-        (event.target.closest(".questions, .approvals") || event.target.id === "inbox" ||
-         event.target.id === "coordinator-live")) {
+        (event.target.closest(".questions, .approvals") || event.target.id === "inbox")) {
       releaseHeld();
     }
   });
@@ -273,7 +226,6 @@
         queue(document.getElementById("questions-" + key));
       });
     }
-    queueRun(key);
   }
   function queueApprovals(key) {
     var panel = key ? document.getElementById("approvals-" + key) : null;
@@ -282,7 +234,6 @@
         queue(document.getElementById("approvals-" + key));
       });
     }
-    queueRun(key);
   }
   // A review panel is refetched only while none of its comment boxes holds text.
   function queueReview(key) {
@@ -315,9 +266,6 @@
           queueThrottled(document.getElementById("inbox"));
         });
       }
-    }
-    if (COORDINATOR_BADGE_KINDS.indexOf(data.kind) !== -1) {
-      queueThrottled(document.getElementById("coordinator-badge"));
     }
     if (data.kind.indexOf("brake.") === 0) queue(document.getElementById("brake-banner"));
     if (data.kind.indexOf("budget.") === 0 || data.kind.indexOf("brake.") === 0) {
@@ -358,8 +306,6 @@
         queueReview(data.key);
       } else if (isPlan(data.kind)) {
         queue(planPanel(data.key));
-      } else if (isRun(data.kind)) {
-        queueRun(data.key);
       } else if (isQuestion(data.kind)) {
         queueQuestions(data.key);
       } else if (isApproval(data.kind)) {
@@ -377,11 +323,6 @@
       return;
     }
 
-    var coordinator = document.getElementById("coordinator-live");
-    if (coordinator) {
-      if (coordinatorEvent(data, coordinator)) queueThrottled(coordinator);
-      return;
-    }
     var projects = document.getElementById("projects");
     if (projects) { queue(projects); return; }
     var sessions = document.getElementById("sessions");
@@ -447,12 +388,11 @@
       if (isComment(data.kind)) queue(thread(data.key));
       else if (isReview(data.kind)) queueReview(data.key);
       else if (isPlan(data.kind)) queue(planPanel(data.key));
-      else if (isRun(data.kind)) queueRun(data.key);
       else if (isQuestion(data.kind)) queueQuestions(data.key);
       else if (isApproval(data.kind)) queueApprovals(data.key);
       else refreshDialog();
     }
-    if (isRun(data.kind) || isQuestion(data.kind) || isApproval(data.kind)) return;
+    if (isQuestion(data.kind) || isApproval(data.kind)) return;
     if (isReview(data.kind) || isPlan(data.kind)) {
       // The card shows the plan's steps, not the agent's todo.
       if (data.kind !== "session.todo_updated") queue(card(data.key) || column(data.stage));

@@ -13,7 +13,6 @@ from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import UNASSIGNED, BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
-from relaybay.domain.coordinator import WAKE_KINDS
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -47,19 +46,10 @@ from relaybay.domain.models import (
     TrackerEntry,
 )
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
-from relaybay.domain.profiles import RunProfile, kinds_json, rights_json
 from relaybay.domain.questions import Question
 from relaybay.domain.reports import ReportCheck
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
-from relaybay.domain.run_events import StoredLine, StreamEvent, unpack
-from relaybay.domain.runs import (
-    DEFAULT_RETENTION,
-    Run,
-    RunDefaults,
-    RunTurn,
-    RunWorktree,
-)
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
 from relaybay.domain.usage import Chunk, UsageDayRow, UsageFile, UsageLine
 
@@ -995,19 +985,6 @@ async def insert_report(
         (task_id, session_id, author, state, size, summary, body_md, now),
     )
     return int(cur.lastrowid or 0)
-
-
-async def latest_report_of_session(
-    conn: aiosqlite.Connection, task_id: int, session_id: int, since: str
-) -> Report | None:
-    """The newest report the session added to the task at or after `since`."""
-    row = await _one(
-        conn,
-        "SELECT * FROM report WHERE task_id = ? AND session_id = ? AND created_at >= ?"
-        " ORDER BY id DESC LIMIT 1",
-        (task_id, session_id, since),
-    )
-    return _report(row) if row else None
 
 
 async def all_report_bodies(conn: aiosqlite.Connection) -> list[tuple[int, str]]:
@@ -4747,177 +4724,7 @@ async def backlog_assignees(conn: aiosqlite.Connection, project_id: int | None) 
     return [r[0] for r in rows]
 
 
-# --- runs ------------------------------------------------------------------
-
-
-def _run_defaults(row: aiosqlite.Row) -> RunDefaults:
-    """Without the mode and tools: the service reads them from the named profile."""
-    return RunDefaults(
-        project_id=row["project_id"],
-        model=row["model"],
-        effort=row["effort"],
-        chrome=bool(row["chrome"]),
-        folder=row["folder"],
-        updated_at=row["updated_at"],
-        updated_by=row["updated_by"],
-        profile=row["profile"],
-    )
-
-
-async def get_run_defaults(conn: aiosqlite.Connection, project_id: int) -> RunDefaults | None:
-    row = await _one(conn, "SELECT * FROM project_run_defaults WHERE project_id = ?", (project_id,))
-    return _run_defaults(row) if row else None
-
-
-async def upsert_run_defaults(
-    conn: aiosqlite.Connection, defaults: RunDefaults, now: str, actor: str
-) -> None:
-    """The columns permission_mode and allowed_tools of 0030 are no longer written: the
-    profile holds them."""
-    await conn.execute(
-        "INSERT INTO project_run_defaults (project_id, folder, model, effort, profile,"
-        " chrome, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        " ON CONFLICT (project_id) DO UPDATE SET folder = excluded.folder,"
-        " model = excluded.model, effort = excluded.effort, profile = excluded.profile,"
-        " chrome = excluded.chrome, updated_at = excluded.updated_at,"
-        " updated_by = excluded.updated_by",
-        (
-            defaults.project_id,
-            defaults.folder,
-            defaults.model,
-            defaults.effort,
-            defaults.profile,
-            int(defaults.chrome),
-            now,
-            actor,
-        ),
-    )
-
-
-def _profile(row: aiosqlite.Row) -> RunProfile:
-    return RunProfile(
-        id=row["id"],
-        name=row["name"],
-        description=row["description"],
-        permission_mode=row["permission_mode"],
-        allowed_tools=row["allowed_tools"],
-        disallowed_tools=row["disallowed_tools"],
-        rights=json.loads(row["rights"] or "{}"),
-        kinds=json.loads(row["kinds"] or "[]"),
-        builtin=bool(row["builtin"]),
-        version=row["version"],
-        updated_at=row["updated_at"],
-        updated_by=row["updated_by"],
-    )
-
-
-async def _profile_projects(conn: aiosqlite.Connection) -> dict[str, list[str]]:
-    """Project slugs by the profile their run defaults name; a project without a row of run
-    defaults uses `agent`."""
-    rows = await _all(
-        conn,
-        "SELECT COALESCE(d.profile, 'agent'), p.slug FROM project p"
-        " LEFT JOIN project_run_defaults d ON d.project_id = p.id ORDER BY p.slug",
-    )
-    out: dict[str, list[str]] = {}
-    for name, slug in rows:
-        out.setdefault(name, []).append(slug)
-    return out
-
-
-async def list_profiles(conn: aiosqlite.Connection) -> list[RunProfile]:
-    """Shipped rows first, then by name, each with the projects that use it."""
-    rows = await _all(conn, "SELECT * FROM run_profile ORDER BY builtin DESC, name")
-    users = await _profile_projects(conn)
-    found = [_profile(r) for r in rows]
-    for profile in found:
-        profile.projects = users.get(profile.name, [])
-    return found
-
-
-async def get_profile(conn: aiosqlite.Connection, name: str) -> RunProfile | None:
-    row = await _one(conn, "SELECT * FROM run_profile WHERE name = ?", (name,))
-    if row is None:
-        return None
-    profile = _profile(row)
-    profile.projects = (await _profile_projects(conn)).get(profile.name, [])
-    return profile
-
-
-async def insert_profile(
-    conn: aiosqlite.Connection, name: str, values: dict[str, Any], now: str, actor: str
-) -> None:
-    await conn.execute(
-        "INSERT INTO run_profile (name, description, permission_mode, allowed_tools,"
-        " disallowed_tools, rights, kinds, updated_at, updated_by)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            name,
-            values["description"],
-            values["permission_mode"],
-            values["allowed_tools"],
-            values["disallowed_tools"],
-            rights_json(values["rights"]),
-            kinds_json(values["kinds"]),
-            now,
-            actor,
-        ),
-    )
-
-
-async def update_profile(
-    conn: aiosqlite.Connection, name: str, values: dict[str, Any], now: str, actor: str
-) -> None:
-    """Every edit adds 1 to the version, which the next turn of each run under it records."""
-    await conn.execute(
-        "UPDATE run_profile SET description = ?, permission_mode = ?, allowed_tools = ?,"
-        " disallowed_tools = ?, rights = ?, kinds = ?, version = version + 1,"
-        " updated_at = ?, updated_by = ? WHERE name = ?",
-        (
-            values["description"],
-            values["permission_mode"],
-            values["allowed_tools"],
-            values["disallowed_tools"],
-            rights_json(values["rights"]),
-            kinds_json(values["kinds"]),
-            now,
-            actor,
-            name,
-        ),
-    )
-
-
-async def delete_profile(conn: aiosqlite.Connection, name: str) -> None:
-    await conn.execute("DELETE FROM run_profile WHERE name = ? AND builtin = 0", (name,))
-
-
-async def open_runs_of_profile(
-    conn: aiosqlite.Connection, name: str, kind: str | None = None
-) -> list[int]:
-    """The open runs under the profile; `kind`: only runs of that kind."""
-    sql = "SELECT id FROM run WHERE profile = ? AND ended_at IS NULL"
-    params: tuple[Any, ...] = (name,)
-    if kind is not None:
-        sql, params = sql + " AND kind = ?", (name, kind)
-    rows = await _all(conn, sql + " ORDER BY id", params)
-    return [int(r[0]) for r in rows]
-
-
-async def follow_profile(conn: aiosqlite.Connection, profile: RunProfile, now: str) -> None:
-    """The open runs under the profile show what their next turn starts with: its tools, and
-    its mode unless theirs was chosen for them."""
-    await conn.execute(
-        "UPDATE run SET allowed_tools = ?, disallowed_tools = ?,"
-        " permission_mode = CASE WHEN mode_set = 1 THEN permission_mode ELSE ? END,"
-        " updated_at = ? WHERE profile = ? AND ended_at IS NULL",
-        (
-            profile.allowed_tools,
-            profile.disallowed_tools,
-            profile.permission_mode,
-            now,
-            profile.name,
-        ),
-    )
+# --- app settings ------------------------------------------------------------
 
 
 async def get_app_setting(conn: aiosqlite.Connection, key: str) -> str | None:
@@ -4936,693 +4743,22 @@ async def set_app_setting(
     )
 
 
-# LEFT JOINs: the coordinator run has no card and no project (its key and slug are "").
-_RUN_SELECT = """
-SELECT r.*, COALESCE(t.key, '') AS task_key, COALESCE(p.slug, '') AS project_slug,
-       s.name AS session_name
-FROM run r
-LEFT JOIN task t ON t.id = r.task_id
-LEFT JOIN project p ON p.id = r.project_id
-LEFT JOIN session s ON s.id = r.session_id
-"""
-
-
-def _run(row: aiosqlite.Row) -> Run:
-    return Run(
-        id=row["id"],
-        task_id=row["task_id"],
-        project_id=row["project_id"],
-        session_id=row["session_id"],
-        cwd=row["cwd"],
-        cwd_repo_id=row["cwd_repo_id"],
-        model=row["model"],
-        effort=row["effort"],
-        permission_mode=row["permission_mode"],
-        allowed_tools=row["allowed_tools"],
-        chrome=bool(row["chrome"]),
-        claude_session_id=row["claude_session_id"],
-        status=row["status"],
-        status_reason=row["status_reason"],
-        auth_method=row["auth_method"],
-        hooks_source=row["hooks_source"],
-        mcp_source=row["mcp_source"],
-        started_by=row["started_by"],
-        started_by_kind=row["started_by_kind"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        ended_at=row["ended_at"],
-        ended_by=row["ended_by"],
-        task_key=row["task_key"],
-        project_slug=row["project_slug"],
-        session_name=row["session_name"],
-        with_owner_at=row["with_owner_at"],
-        with_owner_by=row["with_owner_by"],
-        with_owner_in=row["with_owner_in"],
-        desktop_opened_at=row["desktop_opened_at"],
-        secret_seen_at=row["secret_seen_at"],
-        touched_live_at=row["touched_live_at"],
-        transcript_path=row["transcript_path"],
-        deleted_at=row["deleted_at"],
-        profile=row["profile"],
-        disallowed_tools=row["disallowed_tools"],
-        mode_set=bool(row["mode_set"]),
-        kind=row["kind"],
-        started_by_run=row["started_by_run"],
-    )
-
-
-async def insert_run(conn: aiosqlite.Connection, values: dict[str, Any], now: str) -> int:
-    row = {**values, "created_at": now, "updated_at": now}
-    columns = ", ".join(row)
-    cur = await conn.execute(
-        f"INSERT INTO run ({columns}) VALUES ({', '.join('?' for _ in row)})",
-        tuple(row.values()),
-    )
-    return int(cur.lastrowid or 0)
-
-
-async def get_run(conn: aiosqlite.Connection, run_id: int) -> Run | None:
-    row = await _one(conn, _RUN_SELECT + " WHERE r.id = ?", (run_id,))
-    return _run(row) if row else None
-
-
-async def open_run_of_task(conn: aiosqlite.Connection, task_id: int) -> Run | None:
-    row = await _one(conn, _RUN_SELECT + " WHERE r.task_id = ? AND r.ended_at IS NULL", (task_id,))
-    return _run(row) if row else None
-
-
-async def latest_run_of_task(conn: aiosqlite.Connection, task_id: int) -> Run | None:
-    row = await _one(
-        conn, _RUN_SELECT + " WHERE r.task_id = ? ORDER BY r.id DESC LIMIT 1", (task_id,)
-    )
-    return _run(row) if row else None
-
-
-async def open_runs(conn: aiosqlite.Connection) -> list[Run]:
-    rows = await _all(conn, _RUN_SELECT + " WHERE r.ended_at IS NULL ORDER BY r.id")
-    return [_run(r) for r in rows]
-
-
-async def runs_of_task(conn: aiosqlite.Connection, task_id: int) -> list[Run]:
-    rows = await _all(conn, _RUN_SELECT + " WHERE r.task_id = ? ORDER BY r.id", (task_id,))
-    return [_run(r) for r in rows]
-
-
-async def count_running_turns(conn: aiosqlite.Connection) -> int:
-    """Turns marked started and not ended, over all runs but the coordinator's: the slots in
-    use. The coordinator takes no slot, so it reacts while the card runs fill them."""
-    row = await _one(
-        conn,
-        "SELECT COUNT(*) FROM run_turn rt JOIN run r ON r.id = rt.run_id"
-        " WHERE rt.started_at IS NOT NULL AND rt.ended_at IS NULL AND r.kind != 'coordinator'",
-        (),
-    )
-    return int(row[0]) if row else 0
-
-
-async def open_coordinator_run(conn: aiosqlite.Connection) -> Run | None:
-    row = await _one(conn, _RUN_SELECT + " WHERE r.kind = 'coordinator' AND r.ended_at IS NULL", ())
-    return _run(row) if row else None
-
-
-async def coordinator_starts_since(conn: aiosqlite.Connection, since: str) -> int:
-    """Runs a coordinator run started with run_start since `since` (an ISO time), over all its
-    sessions: the daily cap counts the coordinator, not one session of it."""
-    row = await _one(
-        conn,
-        "SELECT COUNT(*) FROM run r JOIN run c ON c.id = r.started_by_run"
-        " WHERE c.kind = 'coordinator' AND r.created_at >= ?",
-        (since,),
-    )
-    return int(row[0]) if row else 0
-
-
-# The events a coordinator wake carries (`domain.coordinator.WAKE_KINDS`), never its own: not
-# written by a coordinator run's session (by id or by name), not about a coordinator run and not
-# of its own budget (its page shows that; a wake for it would spend more). An approval decided
-# is the owner's act whoever's session it names, so only its actor counts. A plan only as a
-# draft, intake only when new and not tied in the same breath (`intake.tied` says it), a
-# message only to a coordinator's session.
-_COORDINATOR_SESSIONS = (
-    "SELECT session_id FROM run WHERE kind = 'coordinator' AND session_id IS NOT NULL"
-)
-_COORDINATOR_NAMES = (
-    "SELECT s.name FROM run r JOIN session s ON s.id = r.session_id WHERE r.kind = 'coordinator'"
-)
-_WAKE_WHERE = f"""
- e.kind IN ({", ".join("?" for _ in WAKE_KINDS)})
- AND (e.session_id IS NULL OR e.kind = 'approval.decided'
-      OR e.session_id NOT IN ({_COORDINATOR_SESSIONS}))
- AND e.actor NOT IN ({_COORDINATOR_NAMES})
- AND NOT (e.kind LIKE 'run.%' AND json_extract(e.payload, '$.run_id') IN
-          (SELECT id FROM run WHERE kind = 'coordinator'))
- AND (e.kind != 'plan.set' OR json_extract(e.payload, '$.status') = 'draft')
- AND (e.kind != 'schedule.fired' OR json_extract(e.payload, '$.schedule_kind') = 'coordinator')
- AND (e.kind != 'intake.received' OR (json_extract(e.payload, '$.status') = 'new'
-      AND NOT EXISTS (SELECT 1 FROM event t WHERE t.id > e.id AND t.kind = 'intake.tied'
-                      AND json_extract(t.payload, '$.message_id')
-                          = json_extract(e.payload, '$.message_id'))))
- AND (e.kind != 'message.sent' OR json_extract(e.payload, '$.recipient') IN ({_COORDINATOR_NAMES}))
- AND NOT (e.kind LIKE 'budget.%' AND json_extract(e.payload, '$.budget_id') IN
-          (SELECT id FROM token_budget WHERE scope = 'session'
-           AND session_id IN ({_COORDINATOR_SESSIONS})))
-"""
-
-
-async def coordinator_wake_events(
-    conn: aiosqlite.Connection,
-    after_id: int,
-    up_to: int,
-    limit: int,
-    returned: list[tuple[int, int]] | None = None,
-) -> tuple[list[Event], int, int]:
-    """The first `limit` events a wake carries in (after_id, up_to] and in the `returned`
-    ranges (first, last) of wakes whose turn never ran, how many there are in all and the id of
-    the last of them."""
-    spans = ["(e.id > ? AND e.id <= ?)", *("(e.id BETWEEN ? AND ?)" for _ in returned or [])]
-    where = f"({' OR '.join(spans)}) AND {_WAKE_WHERE}"
-    params = (after_id, up_to, *(n for span in returned or [] for n in span), *WAKE_KINDS)
-    row = await _one(
-        conn, f"SELECT COUNT(*), COALESCE(MAX(e.id), 0) FROM event e WHERE {where}", params
-    )
-    total, last = (int(row[0]), int(row[1])) if row else (0, 0)
-    if not total:
-        return [], 0, 0
-    rows = await _all(
-        conn, f"SELECT e.* FROM event e WHERE {where} ORDER BY e.id LIMIT ?", (*params, limit)
-    )
-    return [_event(r) for r in rows], total, last
-
-
-_QUEUED_SELECT = """
-SELECT r.*, COALESCE(t.key, '') AS task_key, COALESCE(p.slug, '') AS project_slug,
-       s.name AS session_name,
-       (SELECT q.id FROM run_turn q WHERE q.run_id = r.id AND q.started_at IS NULL
-        AND q.ended_at IS NULL ORDER BY q.seq LIMIT 1) AS next_turn,
-       (SELECT MIN(q.queued_at) FROM run_turn q WHERE q.run_id = r.id AND q.started_at IS NULL
-        AND q.ended_at IS NULL) AS first_queued
-FROM run r
-LEFT JOIN task t ON t.id = r.task_id
-LEFT JOIN project p ON p.id = r.project_id
-LEFT JOIN session s ON s.id = r.session_id
-WHERE r.ended_at IS NULL AND r.with_owner_at IS NULL AND r.status != 'running'
-  AND NOT EXISTS (SELECT 1 FROM run_turn a WHERE a.run_id = r.id AND a.started_at IS NOT NULL
-                  AND a.ended_at IS NULL)
-  AND EXISTS (SELECT 1 FROM run_turn q WHERE q.run_id = r.id AND q.started_at IS NULL
-              AND q.ended_at IS NULL)
-ORDER BY first_queued, r.id
-"""
-
-
-async def queued_runs(conn: aiosqlite.Connection) -> list[tuple[Run, int]]:
-    """Open runs with a turn waiting and none running, not with the owner, in the order their
-    first waiting turn was queued (FIFO over all runs); each with that turn's id."""
-    rows = await _all(conn, _QUEUED_SELECT, ())
-    return [(_run(r), int(r["next_turn"])) for r in rows]
-
-
-async def mark_run(conn: aiosqlite.Connection, run_id: int, column: str, now: str) -> bool:
-    """Set `secret_seen_at` or `touched_live_at` once; True when it was not set before."""
-    if column not in ("secret_seen_at", "touched_live_at"):
-        raise ValueError(f"not a run mark: {column}")
-    cur = await conn.execute(
-        f"UPDATE run SET {column} = ? WHERE id = ? AND {column} IS NULL", (now, run_id)
-    )
-    return cur.rowcount > 0
-
-
-async def open_runs_of_session(conn: aiosqlite.Connection, session_id: int) -> list[Run]:
-    rows = await _all(
-        conn, _RUN_SELECT + " WHERE r.session_id = ? AND r.ended_at IS NULL", (session_id,)
-    )
-    return [_run(r) for r in rows]
-
-
-async def run_of_turn_retention(conn: aiosqlite.Connection, turn_id: int) -> tuple[int, str] | None:
-    """The run of a turn and its project's event retention (a run without a project: the
-    default)."""
-    row = await _one(
-        conn,
-        "SELECT t.run_id, COALESCE(p.run_retention, ?) FROM run_turn t"
-        " JOIN run r ON r.id = t.run_id LEFT JOIN project p ON p.id = r.project_id"
-        " WHERE t.id = ?",
-        (DEFAULT_RETENTION, turn_id),
-    )
-    return (int(row[0]), str(row[1])) if row else None
-
-
-async def delete_run_events(conn: aiosqlite.Connection, run_id: int) -> int:
-    cur = await conn.execute(
-        "DELETE FROM run_event WHERE turn_id IN (SELECT id FROM run_turn WHERE run_id = ?)",
-        (run_id,),
-    )
-    return cur.rowcount
-
-
-async def delete_project_events(
-    conn: aiosqlite.Connection, project_id: int, before: str | None
-) -> int:
-    """The project's runs' lines read before `before` (an ISO time); None: all of them."""
-    where = " AND e.ts < ?" if before is not None else ""
-    params: tuple[Any, ...] = (project_id, before) if before is not None else (project_id,)
-    cur = await conn.execute(
-        "DELETE FROM run_event WHERE id IN (SELECT e.id FROM run_event e"
-        " JOIN run_turn t ON t.id = e.turn_id JOIN run r ON r.id = t.run_id"
-        f" WHERE r.project_id = ?{where})",
-        params,
-    )
-    return cur.rowcount
-
-
-async def delete_projectless_events(conn: aiosqlite.Connection, before: str) -> int:
-    """The lines of runs without a project (the coordinator's) read before `before`."""
-    cur = await conn.execute(
-        "DELETE FROM run_event WHERE id IN (SELECT e.id FROM run_event e"
-        " JOIN run_turn t ON t.id = e.turn_id JOIN run r ON r.id = t.run_id"
-        " WHERE r.project_id IS NULL AND e.ts < ?)",
-        (before,),
-    )
-    return cur.rowcount
-
-
-async def project_retentions(conn: aiosqlite.Connection) -> list[tuple[int, str, str]]:
-    """(id, slug, retention) of the projects that have runs."""
-    rows = await _all(
-        conn,
-        "SELECT p.id, p.slug, p.run_retention FROM project p"
-        " WHERE EXISTS (SELECT 1 FROM run r WHERE r.project_id = p.id) ORDER BY p.id",
-        (),
-    )
-    return [(int(r[0]), str(r[1]), str(r[2])) for r in rows]
-
-
-async def get_project_retention(conn: aiosqlite.Connection, project_id: int) -> str | None:
-    row = await _one(conn, "SELECT run_retention FROM project WHERE id = ?", (project_id,))
-    return str(row[0]) if row else None
-
-
-async def set_project_retention(
-    conn: aiosqlite.Connection, project_id: int, value: str, now: str
-) -> None:
-    await conn.execute(
-        "UPDATE project SET run_retention = ?, updated_at = ? WHERE id = ?",
-        (value, now, project_id),
-    )
-
-
-async def done_cards_to_close(conn: aiosqlite.Connection) -> list[int]:
-    """Cards in done whose close is not finished: an open run, a worktree a run created that is
-    neither removed, nor kept by the owner, nor waiting for the open question about it, or a
-    run to clean (a secret seen or live touched) whose lines and transcript are not deleted
-    yet."""
-    rows = await _all(
-        conn,
-        "SELECT DISTINCT t.id FROM task t JOIN run r ON r.task_id = t.id WHERE t.stage = 'done'"
-        " AND (r.ended_at IS NULL"
-        " OR (r.deleted_at IS NULL AND (r.secret_seen_at IS NOT NULL"
-        " OR r.touched_live_at IS NOT NULL))"
-        " OR EXISTS (SELECT 1 FROM run_worktree w WHERE w.run_id = r.id"
-        " AND w.created_by_run = 1 AND w.removed_at IS NULL AND w.kept_at IS NULL"
-        " AND NOT EXISTS (SELECT 1 FROM question q WHERE q.id = w.question_id"
-        " AND q.status = 'open')))"
-        " ORDER BY t.id",
-        (),
-    )
-    return [int(r[0]) for r in rows]
-
-
-async def update_run(
-    conn: aiosqlite.Connection, run_id: int, changes: dict[str, Any], now: str
-) -> None:
-    sets = "".join(f"{k} = ?, " for k in changes)
-    await conn.execute(
-        f"UPDATE run SET {sets}updated_at = ? WHERE id = ?", (*changes.values(), now, run_id)
-    )
-
-
-_TURN_FIELDS = (
-    "id",
-    "run_id",
-    "seq",
-    "prompt",
-    "sent_by",
-    "sent_by_kind",
-    "queued_at",
-    "started_at",
-    "ended_at",
-    "pid",
-    "outcome",
-    "result_subtype",
-    "exit_code",
-    "num_turns",
-    "duration_ms",
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-    "denials",
-    "profile",
-    "profile_version",
-    "result_md",
-    "compact_pre_tokens",
-    "compact_post_tokens",
-    "context_tokens",
-)
-
-
-_TURN_EXTRA = ("report_summary", "report_state", "report_size", "events")
-
-
-def _turn(row: aiosqlite.Row) -> RunTurn:
-    denied = json.loads(row["denied_tools"]) if row["denied_tools"] else []
-    keys = row.keys()
-    extra = {k: row[k] for k in _TURN_EXTRA if k in keys}
-    return RunTurn(
-        **{k: row[k] for k in _TURN_FIELDS},
-        denied_tools=denied,
-        report_id=row["report_id"],
-        **extra,
-    )
-
-
-async def insert_turn(
-    conn: aiosqlite.Connection,
-    run_id: int,
-    prompt: str,
-    sent_by: str,
-    sent_by_kind: str,
-    now: str,
-) -> int:
-    cur = await conn.execute(
-        "INSERT INTO run_turn (run_id, seq, prompt, sent_by, sent_by_kind, queued_at)"
-        " VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM run_turn WHERE run_id = ?),"
-        " ?, ?, ?, ?)",
-        (run_id, run_id, prompt, sent_by, sent_by_kind, now),
-    )
-    return int(cur.lastrowid or 0)
-
-
-async def get_turn(conn: aiosqlite.Connection, turn_id: int) -> RunTurn | None:
-    row = await _one(conn, "SELECT * FROM run_turn WHERE id = ?", (turn_id,))
-    return _turn(row) if row else None
-
-
-async def list_turns(conn: aiosqlite.Connection, run_id: int) -> list[RunTurn]:
-    """With each turn's report first line and the number of its stored lines."""
-    rows = await _all(
-        conn,
-        "SELECT t.*, r.summary AS report_summary, r.state AS report_state,"
-        " r.size AS report_size,"
-        " (SELECT COUNT(*) FROM run_event e WHERE e.turn_id = t.id) AS events"
-        " FROM run_turn t LEFT JOIN report r ON r.id = t.report_id"
-        " WHERE t.run_id = ? ORDER BY t.seq",
-        (run_id,),
-    )
-    return [_turn(r) for r in rows]
-
-
-async def set_turn_result(conn: aiosqlite.Connection, turn_id: int, text: str) -> None:
-    await conn.execute("UPDATE run_turn SET result_md = ? WHERE id = ?", (text, turn_id))
-
-
-async def set_turn_report(conn: aiosqlite.Connection, turn_id: int, report_id: int) -> None:
-    await conn.execute("UPDATE run_turn SET report_id = ? WHERE id = ?", (report_id, turn_id))
-
-
-async def insert_run_events(
-    conn: aiosqlite.Connection, turn_id: int, events: list[StreamEvent]
-) -> None:
-    """A batch of a turn's lines, already masked and compressed by the runner. A seq stored
-    already (a batch retried) is kept as it was."""
-    await conn.executemany(
-        "INSERT OR IGNORE INTO run_event (turn_id, seq, type, subtype, parent_tool_use_id, ts,"
-        " size, truncated, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            (
-                turn_id,
-                e.seq,
-                e.type,
-                e.subtype,
-                e.parent_tool_use_id,
-                e.ts,
-                e.size,
-                int(e.truncated),
-                e.data,
-            )
-            for e in events
-        ],
-    )
-
-
-async def list_run_events(
-    conn: aiosqlite.Connection,
-    turn_id: int,
-    *,
-    from_seq: int | None = None,
-    limit: int | None = None,
-    last: bool = False,
-) -> list[StoredLine]:
-    """A turn's lines in order, unpacked: from `from_seq` on, or the last `limit` with `last`."""
-    where, params = "turn_id = ?", [turn_id]
-    if from_seq is not None:
-        where += " AND seq >= ?"
-        params.append(from_seq)
-    order = "DESC" if last else "ASC"
-    sql = (
-        "SELECT seq, type, subtype, parent_tool_use_id, truncated, data FROM run_event"
-        f" WHERE {where} ORDER BY seq {order}"
-    )
-    if limit is not None:
-        sql += " LIMIT ?"
-        params.append(limit)
-    rows = await _all(conn, sql, tuple(params))
-    if last:
-        rows.reverse()
-    return [
-        StoredLine(
-            r["seq"],
-            r["type"],
-            r["subtype"],
-            r["parent_tool_use_id"],
-            bool(r["truncated"]),
-            unpack(r["data"]),
-        )
-        for r in rows
-    ]
-
-
-async def run_event_counts(conn: aiosqlite.Connection, turn_id: int) -> dict[str, int]:
-    """A turn's lines by type, with `all` and `subagent` (lines with a parent_tool_use_id)."""
-    rows = await _all(
-        conn,
-        "SELECT type, COUNT(*) AS n, SUM(parent_tool_use_id IS NOT NULL) AS sub FROM run_event"
-        " WHERE turn_id = ? GROUP BY type ORDER BY type",
-        (turn_id,),
-    )
-    counts = {r["type"]: int(r["n"]) for r in rows}
-    counts["all"] = sum(counts.values())
-    counts["subagent"] = sum(int(r["sub"] or 0) for r in rows)
-    return counts
-
-
-async def active_turn(conn: aiosqlite.Connection, run_id: int) -> RunTurn | None:
-    row = await _one(
-        conn,
-        "SELECT * FROM run_turn WHERE run_id = ? AND started_at IS NOT NULL AND ended_at IS NULL",
-        (run_id,),
-    )
-    return _turn(row) if row else None
-
-
-async def next_queued_turn(conn: aiosqlite.Connection, run_id: int) -> RunTurn | None:
-    row = await _one(
-        conn,
-        "SELECT * FROM run_turn WHERE run_id = ? AND started_at IS NULL AND ended_at IS NULL"
-        " ORDER BY seq LIMIT 1",
-        (run_id,),
-    )
-    return _turn(row) if row else None
-
-
-async def start_turn(
-    conn: aiosqlite.Connection,
-    turn_id: int,
-    now: str,
-    profile: str | None = None,
-    version: int | None = None,
-) -> None:
-    await conn.execute(
-        "UPDATE run_turn SET started_at = ?, profile = ?, profile_version = ? WHERE id = ?",
-        (now, profile, version, turn_id),
-    )
-
-
-async def set_turn_profile(
-    conn: aiosqlite.Connection, turn_id: int, profile: str, version: int
-) -> None:
-    await conn.execute(
-        "UPDATE run_turn SET profile = ?, profile_version = ? WHERE id = ? AND ended_at IS NULL",
-        (profile, version, turn_id),
-    )
-
-
-async def set_turn_pid(conn: aiosqlite.Connection, turn_id: int, pid: int) -> None:
-    await conn.execute("UPDATE run_turn SET pid = ? WHERE id = ?", (pid, turn_id))
-
-
-async def end_turn(
-    conn: aiosqlite.Connection, turn_id: int, changes: dict[str, Any], now: str
-) -> None:
-    """`changes`: the outcome and the result's numbers; `denied_tools` is a list of tool names."""
-    values = dict(changes)
-    if "denied_tools" in values:
-        names = values["denied_tools"]
-        values["denied_tools"] = json.dumps(names) if names else None
-    sets = "".join(f", {k} = ?" for k in values)
-    await conn.execute(
-        f"UPDATE run_turn SET ended_at = ?{sets} WHERE id = ?", (now, *values.values(), turn_id)
-    )
-
-
-async def cancel_queued(conn: aiosqlite.Connection, run_id: int, now: str) -> int:
-    cur = await conn.execute(
-        "UPDATE run_turn SET ended_at = ?, outcome = 'cancelled'"
-        " WHERE run_id = ? AND started_at IS NULL AND ended_at IS NULL",
-        (now, run_id),
-    )
-    return cur.rowcount
-
-
-async def lose_open_turns(conn: aiosqlite.Connection, now: str) -> None:
-    """At start: a turn that was running when the server went away is lost; the texts that
-    waited behind it go. A run `queued` for a slot, memory or a brake keeps its turn."""
-    await conn.execute(
-        "UPDATE run_turn SET ended_at = ?, outcome = 'lost'"
-        " WHERE started_at IS NOT NULL AND ended_at IS NULL",
-        (now,),
-    )
-    await conn.execute(
-        "UPDATE run_turn SET ended_at = ?, outcome = 'cancelled'"
-        " WHERE started_at IS NULL AND ended_at IS NULL"
-        " AND run_id NOT IN (SELECT id FROM run WHERE status = 'queued' AND ended_at IS NULL)",
-        (now,),
-    )
-
-
-async def next_run_id(conn: aiosqlite.Connection) -> int:
-    """The id the next run gets: its worktree folders are named after it before it is written.
-    The insert passes it explicitly, so a run started meanwhile makes that insert fail."""
-    row = await _one(conn, "SELECT COALESCE(MAX(id), 0) + 1 FROM run", ())
-    return int(row[0]) if row else 1
-
-
-def _worktree(row: aiosqlite.Row) -> RunWorktree:
-    return RunWorktree(
-        id=row["id"],
-        run_id=row["run_id"],
-        project_repo_id=row["project_repo_id"],
-        repo_name=row["repo_name"],
-        source_path=row["source_path"],
-        path=row["path"],
-        branch=row["branch"],
-        created_by_run=bool(row["created_by_run"]),
-        copied=json.loads(row["copied"]) if row["copied"] else [],
-        created_at=row["created_at"],
-        removed_at=row["removed_at"],
-        kept_reason=row["kept_reason"],
-        question_id=row["question_id"],
-        kept_at=row["kept_at"],
-    )
-
-
-async def insert_run_worktree(
-    conn: aiosqlite.Connection, run_id: int, values: dict[str, Any], now: str
-) -> int:
-    row = {**values, "run_id": run_id, "created_at": now}
-    if "copied" in row:
-        row["copied"] = json.dumps(row["copied"]) if row["copied"] else None
-    columns = ", ".join(row)
-    cur = await conn.execute(
-        f"INSERT INTO run_worktree ({columns}) VALUES ({', '.join('?' for _ in row)})",
-        tuple(row.values()),
-    )
-    return int(cur.lastrowid or 0)
-
-
-async def list_run_worktrees(conn: aiosqlite.Connection, run_id: int) -> list[RunWorktree]:
-    rows = await _all(conn, "SELECT * FROM run_worktree WHERE run_id = ? ORDER BY id", (run_id,))
-    return [_worktree(r) for r in rows]
-
-
-async def get_run_worktree(conn: aiosqlite.Connection, worktree_id: int) -> RunWorktree | None:
-    row = await _one(conn, "SELECT * FROM run_worktree WHERE id = ?", (worktree_id,))
-    return _worktree(row) if row else None
-
-
-async def worktree_of_question(conn: aiosqlite.Connection, question_id: int) -> RunWorktree | None:
-    row = await _one(conn, "SELECT * FROM run_worktree WHERE question_id = ?", (question_id,))
-    return _worktree(row) if row else None
-
-
-async def open_worktree_questions(conn: aiosqlite.Connection, task_id: int) -> list[int]:
-    """relaybay's open questions about the kept worktrees of the card's runs."""
-    rows = await _all(
-        conn,
-        "SELECT q.id FROM question q JOIN run_worktree w ON w.question_id = q.id"
-        " JOIN run r ON r.id = w.run_id WHERE r.task_id = ? AND q.status = 'open' ORDER BY q.id",
-        (task_id,),
-    )
-    return [int(r[0]) for r in rows]
-
-
-async def update_run_worktree(
-    conn: aiosqlite.Connection, worktree_id: int, changes: dict[str, Any]
-) -> None:
-    sets = ", ".join(f"{k} = ?" for k in changes)
-    await conn.execute(
-        f"UPDATE run_worktree SET {sets} WHERE id = ?", (*changes.values(), worktree_id)
-    )
-
-
-async def open_worktrees(conn: aiosqlite.Connection) -> list[tuple[RunWorktree, str]]:
-    """The folders of the open runs that are not removed, each with its run's card key."""
-    rows = await _all(
-        conn,
-        "SELECT w.*, t.key AS task_key FROM run_worktree w JOIN run r ON r.id = w.run_id"
-        " JOIN task t ON t.id = r.task_id"
-        " WHERE r.ended_at IS NULL AND w.removed_at IS NULL ORDER BY w.id",
-        (),
-    )
-    return [(_worktree(r), r["task_key"]) for r in rows]
-
-
 # --- questions ---------------------------------------------------------------
 
 # LEFT JOINs: the coordinator's questions have no card.
 _QUESTION_SELECT = """
 SELECT q.*, COALESCE(t.key, '') AS task_key, COALESCE(t.title, '') AS task_title,
-       COALESCE(p.slug, '') AS project_slug, rt.seq AS turn_seq, rt.outcome AS turn_outcome
+       COALESCE(p.slug, '') AS project_slug
 FROM question q
 LEFT JOIN task t ON t.id = q.task_id
 LEFT JOIN project p ON p.id = t.project_id
-LEFT JOIN run_turn rt ON rt.id = q.turn_id
 """
-# Answered by the owner for a run and not handed to a turn's process: never put on a turn, or put
-# on one that ended before its process got it (cancelled, failed to start, or lost: delivered_at
-# is set with the pid, so a lost turn without it never ran), and not sent on as an owner comment
-# (the run ended).
-_PENDING = (
-    " WHERE q.run_id = ? AND q.status = 'answered' AND q.delivered_at IS NULL"
-    " AND q.comment_id IS NULL AND (q.turn_id IS NULL OR rt.outcome IN ('cancelled',"
-    " 'failed_to_start', 'lost'))"
-)
 
 
 def _question(row: aiosqlite.Row) -> Question:
     return Question(
         id=row["id"],
         task_id=row["task_id"],
-        run_id=row["run_id"],
         session_id=row["session_id"],
         asked_by=row["asked_by"],
         kind=row["kind"],
@@ -5641,15 +4777,11 @@ def _question(row: aiosqlite.Row) -> Question:
         defaulted_at=row["defaulted_at"],
         withdrawn_at=row["withdrawn_at"],
         withdrawn_by=row["withdrawn_by"],
-        turn_id=row["turn_id"],
         comment_id=row["comment_id"],
-        told_at=row["told_at"],
         delivered_at=row["delivered_at"],
         task_key=row["task_key"],
         task_title=row["task_title"],
         project_slug=row["project_slug"],
-        turn_seq=row["turn_seq"],
-        turn_outcome=row["turn_outcome"],
     )
 
 
@@ -5673,7 +4805,6 @@ async def list_questions(
     conn: aiosqlite.Connection,
     *,
     task_id: int | None = None,
-    turn_id: int | None = None,
     statuses: tuple[str, ...] | None = None,
     limit: int = 200,
 ) -> list[Question]:
@@ -5682,9 +4813,6 @@ async def list_questions(
     if task_id is not None:
         where.append("q.task_id = ?")
         params.append(task_id)
-    if turn_id is not None:
-        where.append("q.turn_id = ?")
-        params.append(turn_id)
     if statuses:
         where.append(f"q.status IN ({', '.join('?' for _ in statuses)})")
         params.extend(statuses)
@@ -5703,22 +4831,6 @@ async def count_open_questions(conn: aiosqlite.Connection, task_id: int | None) 
     return int(row[0])
 
 
-async def carry_coordinator_questions(conn: aiosqlite.Connection, run_id: int) -> int:
-    """The questions of the coordinator's earlier runs (on a card or not; a question without a
-    card whose run row is gone too), open or answered and never handed to a turn, move to its
-    new run: their answers come as that run's turns."""
-    cur = await conn.execute(
-        "UPDATE question SET run_id = ? WHERE (run_id IN (SELECT id FROM run"
-        " WHERE kind = 'coordinator' AND id != ?) OR (task_id IS NULL AND run_id IS NULL))"
-        " AND (status = 'open'"
-        " OR (status = 'answered' AND delivered_at IS NULL AND comment_id IS NULL"
-        " AND (turn_id IS NULL OR turn_id IN (SELECT id FROM run_turn"
-        " WHERE outcome IN ('cancelled', 'failed_to_start', 'lost')))))",
-        (run_id, run_id),
-    )
-    return cur.rowcount
-
-
 async def update_question(
     conn: aiosqlite.Connection, question_id: int, changes: dict[str, Any]
 ) -> None:
@@ -5726,15 +4838,12 @@ async def update_question(
     await conn.execute(f"UPDATE question SET {sets} WHERE id = ?", (*changes.values(), question_id))
 
 
-async def open_blocking_questions(
-    conn: aiosqlite.Connection, *, run_id: int | None = None, task_id: int | None = None
-) -> list[Question]:
-    column, value = ("q.run_id", run_id) if run_id is not None else ("q.task_id", task_id)
+async def open_blocking_questions(conn: aiosqlite.Connection, *, task_id: int) -> list[Question]:
     rows = await _all(
         conn,
-        _QUESTION_SELECT
-        + f" WHERE {column} = ? AND q.status = 'open' AND q.blocking = 1 ORDER BY q.id",
-        (value,),
+        _QUESTION_SELECT + " WHERE q.task_id = ? AND q.status = 'open' AND q.blocking = 1"
+        " ORDER BY q.id",
+        (task_id,),
     )
     return [_question(r) for r in rows]
 
@@ -5764,29 +4873,6 @@ async def overdue_unmarked(
     return [_question(r) for r in rows]
 
 
-async def pending_answers(conn: aiosqlite.Connection, run_id: int) -> list[Question]:
-    rows = await _all(conn, _QUESTION_SELECT + _PENDING + " ORDER BY q.id", (run_id,))
-    return [_question(r) for r in rows]
-
-
-async def put_answers_on_turn(
-    conn: aiosqlite.Connection, question_ids: list[int], turn_id: int
-) -> None:
-    marks = ", ".join("?" for _ in question_ids)
-    await conn.execute(
-        f"UPDATE question SET turn_id = ? WHERE id IN ({marks})", (turn_id, *question_ids)
-    )
-
-
-async def undelivered_answers_of_turn(conn: aiosqlite.Connection, turn_id: int) -> list[Question]:
-    rows = await _all(
-        conn,
-        _QUESTION_SELECT + " WHERE q.turn_id = ? AND q.delivered_at IS NULL ORDER BY q.id",
-        (turn_id,),
-    )
-    return [_question(r) for r in rows]
-
-
 async def undelivered_answers_of_comments(
     conn: aiosqlite.Connection, comment_ids: list[int]
 ) -> list[Question]:
@@ -5800,50 +4886,20 @@ async def undelivered_answers_of_comments(
     return [_question(r) for r in rows]
 
 
-async def untold_answers(conn: aiosqlite.Connection, session_id: int) -> list[Question]:
-    """Answers queued on a run's next turn that its running turn has not been told about."""
-    rows = await _all(
-        conn,
-        _QUESTION_SELECT
-        + " WHERE q.session_id = ? AND q.run_id IS NOT NULL AND q.status = 'answered'"
-        " AND q.delivered_at IS NULL AND q.told_at IS NULL AND q.turn_id IS NOT NULL"
-        " AND rt.started_at IS NULL AND rt.ended_at IS NULL ORDER BY q.id",
-        (session_id,),
-    )
-    return [_question(r) for r in rows]
-
-
-async def run_of_session(conn: aiosqlite.Connection, session_id: int) -> Run | None:
-    row = await _one(
-        conn, _RUN_SELECT + " WHERE r.session_id = ? ORDER BY r.id DESC LIMIT 1", (session_id,)
-    )
-    return _run(row) if row else None
-
-
 # --- approvals ---------------------------------------------------------------------------------
 
 _APPROVAL_SELECT = """
-SELECT a.*, t.key AS task_key, t.title AS task_title, p.slug AS project_slug,
-       rt.seq AS turn_seq, rt.outcome AS turn_outcome
+SELECT a.*, t.key AS task_key, t.title AS task_title, p.slug AS project_slug
 FROM approval a
 JOIN task t ON t.id = a.task_id
 JOIN project p ON p.id = t.project_id
-LEFT JOIN run_turn rt ON rt.id = a.turn_id
 """
-# Decided for a run and not handed to a turn's process yet: as `_PENDING` for answers.
-_PENDING_DECISIONS = (
-    " WHERE a.run_id = ? AND a.decision IS NOT NULL AND a.status != 'expired'"
-    " AND a.delivered_at IS NULL"
-    " AND a.comment_id IS NULL AND (a.turn_id IS NULL OR rt.outcome IN ('cancelled',"
-    " 'failed_to_start', 'lost'))"
-)
 
 
 def _approval(row: aiosqlite.Row) -> Approval:
     return Approval(
         id=row["id"],
         task_id=row["task_id"],
-        run_id=row["run_id"],
         session_id=row["session_id"],
         requested_by=row["requested_by"],
         requested_via=row["requested_via"],
@@ -5868,9 +4924,7 @@ def _approval(row: aiosqlite.Row) -> Approval:
         used_session=row["used_session"],
         expired_at=row["expired_at"],
         expired_reason=row["expired_reason"],
-        turn_id=row["turn_id"],
         comment_id=row["comment_id"],
-        told_at=row["told_at"],
         delivered_at=row["delivered_at"],
         reserved_at=row["reserved_at"],
         reserved_for=row["reserved_for"],
@@ -5880,8 +4934,6 @@ def _approval(row: aiosqlite.Row) -> Approval:
         task_key=row["task_key"],
         task_title=row["task_title"],
         project_slug=row["project_slug"],
-        turn_seq=row["turn_seq"],
-        turn_outcome=row["turn_outcome"],
     )
 
 
@@ -5904,7 +4956,6 @@ async def list_approvals(
     conn: aiosqlite.Connection,
     *,
     task_id: int | None = None,
-    turn_id: int | None = None,
     statuses: tuple[str, ...] | None = None,
     limit: int = 200,
 ) -> list[Approval]:
@@ -5913,9 +4964,6 @@ async def list_approvals(
     if task_id is not None:
         where.append("a.task_id = ?")
         params.append(task_id)
-    if turn_id is not None:
-        where.append("a.turn_id = ?")
-        params.append(turn_id)
     if statuses:
         where.append(f"a.status IN ({', '.join('?' for _ in statuses)})")
         params.extend(statuses)
@@ -5924,15 +4972,12 @@ async def list_approvals(
     return [_approval(r) for r in rows]
 
 
-async def open_approvals(
-    conn: aiosqlite.Connection, *, run_id: int | None = None, task_id: int | None = None
-) -> list[Approval]:
+async def open_approvals(conn: aiosqlite.Connection, *, task_id: int) -> list[Approval]:
     """Requests that wait for the owner, oldest first."""
-    column, value = ("a.run_id", run_id) if run_id is not None else ("a.task_id", task_id)
     rows = await _all(
         conn,
-        _APPROVAL_SELECT + f" WHERE {column} = ? AND a.status = 'open' ORDER BY a.id",
-        (value,),
+        _APPROVAL_SELECT + " WHERE a.task_id = ? AND a.status = 'open' ORDER BY a.id",
+        (task_id,),
     )
     return [_approval(r) for r in rows]
 
@@ -6001,21 +5046,6 @@ async def use_reserved(conn: aiosqlite.Connection, approval_id: int, now: str) -
     return cur.rowcount == 1
 
 
-async def release_approval(conn: aiosqlite.Connection, approval_id: int) -> int | None:
-    """The held call did not run: the approval is free again. Its release count, or None when it
-    was not held."""
-    cur = await conn.execute(
-        "UPDATE approval SET reserved_at = NULL, reserved_for = NULL, reserved_call = NULL,"
-        " reserved_session_id = NULL, released_count = released_count + 1"
-        " WHERE id = ? AND status = 'approved' AND reserved_at IS NOT NULL",
-        (approval_id,),
-    )
-    if cur.rowcount != 1:
-        return None
-    row = await _one(conn, "SELECT released_count FROM approval WHERE id = ?", (approval_id,))
-    return int(row["released_count"]) if row else None
-
-
 async def update_approval(
     conn: aiosqlite.Connection, approval_id: int, changes: dict[str, Any]
 ) -> None:
@@ -6063,40 +5093,6 @@ async def expire_approval(
     )
 
 
-async def reserved_by_run(conn: aiosqlite.Connection, run_id: int) -> list[Approval]:
-    """The approvals held for calls of the run's session."""
-    rows = await _all(
-        conn,
-        _APPROVAL_SELECT + " WHERE a.status = 'approved' AND a.reserved_at IS NOT NULL"
-        " AND a.reserved_session_id = (SELECT session_id FROM run WHERE id = ?) ORDER BY a.id",
-        (run_id,),
-    )
-    return [_approval(r) for r in rows]
-
-
-async def pending_decisions(conn: aiosqlite.Connection, run_id: int) -> list[Approval]:
-    rows = await _all(conn, _APPROVAL_SELECT + _PENDING_DECISIONS + " ORDER BY a.id", (run_id,))
-    return [_approval(r) for r in rows]
-
-
-async def put_decisions_on_turn(
-    conn: aiosqlite.Connection, approval_ids: list[int], turn_id: int
-) -> None:
-    marks = ", ".join("?" for _ in approval_ids)
-    await conn.execute(
-        f"UPDATE approval SET turn_id = ? WHERE id IN ({marks})", (turn_id, *approval_ids)
-    )
-
-
-async def undelivered_decisions_of_turn(conn: aiosqlite.Connection, turn_id: int) -> list[Approval]:
-    rows = await _all(
-        conn,
-        _APPROVAL_SELECT + " WHERE a.turn_id = ? AND a.delivered_at IS NULL ORDER BY a.id",
-        (turn_id,),
-    )
-    return [_approval(r) for r in rows]
-
-
 async def undelivered_decisions_of_comments(
     conn: aiosqlite.Connection, comment_ids: list[int]
 ) -> list[Approval]:
@@ -6106,20 +5102,6 @@ async def undelivered_decisions_of_comments(
         _APPROVAL_SELECT
         + f" WHERE a.comment_id IN ({marks}) AND a.delivered_at IS NULL ORDER BY a.id",
         tuple(comment_ids),
-    )
-    return [_approval(r) for r in rows]
-
-
-async def untold_decisions(conn: aiosqlite.Connection, session_id: int) -> list[Approval]:
-    """Decisions queued on a run's next turn that its running turn has not been told about."""
-    rows = await _all(
-        conn,
-        _APPROVAL_SELECT
-        + " WHERE a.session_id = ? AND a.run_id IS NOT NULL AND a.decision IS NOT NULL"
-        " AND a.status != 'expired'"
-        " AND a.delivered_at IS NULL AND a.told_at IS NULL AND a.turn_id IS NOT NULL"
-        " AND rt.started_at IS NULL AND rt.ended_at IS NULL ORDER BY a.id",
-        (session_id,),
     )
     return [_approval(r) for r in rows]
 
@@ -6157,27 +5139,3 @@ async def check_tokens(
         tuple(params),
     )
     return int(row[0]) if row else 0
-
-
-async def check_task(conn: aiosqlite.Connection, run_id: int) -> int | None:
-    """The card a `check` run's schedule names (the run itself has none)."""
-    row = await _one(
-        conn,
-        "SELECT s.task_id FROM schedule_run sr JOIN schedule s ON s.id = sr.schedule_id"
-        " WHERE sr.run_id = ?",
-        (run_id,),
-    )
-    return row[0] if row else None
-
-
-async def check_tasks_of_session(conn: aiosqlite.Connection, session_id: int) -> set[int]:
-    """The cards of the open `check` runs on a session (a brake on the card holds them)."""
-    rows = await _all(
-        conn,
-        "SELECT s.task_id FROM run r JOIN schedule_run sr ON sr.run_id = r.id"
-        " JOIN schedule s ON s.id = sr.schedule_id"
-        " WHERE r.session_id = ? AND r.kind = 'check' AND r.ended_at IS NULL"
-        " AND s.task_id IS NOT NULL",
-        (session_id,),
-    )
-    return {int(r[0]) for r in rows}
