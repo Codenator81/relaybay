@@ -12,6 +12,14 @@
       <option value="">Any stage</option>
       {% for s in stages %}<option value="{{ s }}"{% if s == stage_filter %} selected{% endif %}>{{ label(s) }}</option>{% endfor %}
     </select>
+    {% if areas or area_filter %}
+    <select class="board-filter area-filter" name="area" aria-label="Area">
+      <option value="">Any area</option>
+      {%- set ns = namespace(found=false) %}
+      {% for a in areas %}{% set chosen = a.name|lower == area_filter|lower %}{% if chosen %}{% set ns.found = true %}{% endif %}<option value="{{ a.name }}"{% if chosen %} selected{% endif %}>{{ a.name }}</option>{% endfor %}
+      {% if area_filter and not ns.found %}<option value="{{ area_filter }}" selected>{{ area_filter }} (no such area)</option>{% endif %}
+    </select>
+    {% endif %}
     <input class="board-filter" type="search" name="waiting_on" value="{{ waiting_filter }}" maxlength="200"
            placeholder="Waiting on" aria-label="Waiting on" list="waiting-values">
     <datalist id="waiting-values">{% for w in waiting_values %}<option value="{{ w }}"></option>{% endfor %}</datalist>

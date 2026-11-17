@@ -3,6 +3,7 @@ resource and the "Editable fields" line of `task_get`, so a new field reaches al
 
 from dataclasses import dataclass
 
+from relaybay.domain.areas import AREA_NAME_MAX, AREAS_MAX
 from relaybay.domain.stages import STAGES
 
 TITLE_MAX = 200
@@ -17,7 +18,7 @@ TEXT_CLEARS = "'-', '' or null clears it"
 @dataclass(frozen=True, slots=True)
 class TaskField:
     name: str
-    kind: str  # title, stage, text, markdown, url, bool, integer, size, list
+    kind: str  # title, stage, text, markdown, url, bool, integer, size, area, list
     description: str
     clear: str
     max_length: int | None = None
@@ -77,6 +78,15 @@ TASK_FIELDS: tuple[TaskField, ...] = (
         "Task size: S, M or L. A report whose first line names a size sets it when the task has"
         " none. S tasks may go without an accepted plan.",
         TEXT_CLEARS,
+    ),
+    TaskField(
+        "area",
+        "area",
+        "What part of the project the task belongs to, by name (e.g. 'web shop'), matched"
+        f" without regard to case. A new name is added to the project's areas (at most"
+        f" {AREAS_MAX}); project_snapshot lists them.",
+        TEXT_CLEARS,
+        AREA_NAME_MAX,
     ),
     TaskField(
         "tracker_ref",

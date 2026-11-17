@@ -127,6 +127,7 @@ async def seed(service: Service) -> int:
     await task(
         "acme-shop",
         "Gift cards at checkout",
+        area="web shop",
         description="Let shoppers pay part of an order with a gift card. Needs a decision on"
         " partial refunds: relaybay://doc/acme-shop/spec#gift-cards",
         doc_path="relaybay://doc/acme-shop/spec#gift-cards",
@@ -140,6 +141,7 @@ async def seed(service: Service) -> int:
         "acme-shop",
         "One-page checkout",
         stage="dev",
+        area="web shop",
         branch="feat/one-page-checkout",
         description="Merge address, delivery and payment into one page with inline validation.",
         progress="- Address and delivery steps merged\n- Inline validation for the address form",
@@ -172,6 +174,7 @@ async def seed(service: Service) -> int:
         "acme-shop",
         "Search suggestions",
         stage="test",
+        area="web shop",
         branch="feat/search-suggest",
         description="Suggest products while typing in the search box.",
         progress="- Suggestions endpoint with a 150 ms debounce\n- Keyboard navigation",
@@ -195,6 +198,7 @@ async def seed(service: Service) -> int:
         "acme-shop",
         "Wishlist on the product page",
         stage="review",
+        area="mobile app",
         branch="feat/wishlist",
         description="A heart button on the product page saves the product to a wishlist.",
         progress="- Heart button and wishlist page\n- Saved items survive a sign-out",
@@ -250,6 +254,7 @@ async def seed(service: Service) -> int:
         "acme-shop",
         "Order receipts as PDF",
         stage="dev",
+        area="api",
         progress="- PDF layout\n- Download link on the order page",
         tracker_ref="SHOP-37",
         tracker_name="Tracker",
@@ -264,6 +269,7 @@ async def seed(service: Service) -> int:
     rate = await task(
         "demo-api",
         "Rate limiting per API key",
+        area="gateway",
         branch="feat/rate-limit",
         description="Limit each API key to 100 requests per minute, with a Retry-After header.",
         next_step="Pick the storage for the counters.",

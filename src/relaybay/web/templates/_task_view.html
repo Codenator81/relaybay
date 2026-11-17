@@ -7,6 +7,7 @@
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
 
   <dl class="fields">
+    {% if t.area %}<dt>Area</dt><dd>{% include "_area_chip.html" %}</dd>{% endif %}
     <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
     {%- set is_done = t.stage.value == "done" %}
     {% if t.waiting_on %}<dt>Waiting on</dt><dd>{% if is_done %}<span class="muted">{{ t.waiting_on }}</span>{% else %}<span class="chip waiting">{{ t.waiting_on }}</span>{% endif %}</dd>{% endif %}

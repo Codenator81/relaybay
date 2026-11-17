@@ -10,6 +10,7 @@ import aiosqlite
 
 from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
 from relaybay.domain.approvals import Approval
+from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import UNASSIGNED, BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
 from relaybay.domain.coordinator import WAKE_KINDS, CoordinatorWake, StartedRun
@@ -88,9 +89,11 @@ SELECT t.*, p.slug AS project_slug, p.autonomy AS project_autonomy,
        (SELECT ps.position FROM plan_step ps WHERE ps.task_id = t.id
            AND ps.status = 'in_progress' ORDER BY ps.position LIMIT 1) AS plan_now_position,
        (SELECT MAX(pr.created_at) FROM plan_revision pr WHERE pr.task_id = t.id)
-           AS plan_revised_at
+           AS plan_revised_at,
+       pa.name AS area_name, pa.color AS area_color
 FROM task t
 JOIN project p ON p.id = t.project_id
+LEFT JOIN project_area pa ON pa.id = t.area_id
 LEFT JOIN session s ON s.id = t.session_id
 """
 
@@ -166,6 +169,9 @@ def _task(row: aiosqlite.Row) -> Task:
         archived_at=row["archived_at"],
         archived_by=row["archived_by"],
         unarchived_at=row["unarchived_at"],
+        area_id=row["area_id"],
+        area=row["area_name"],
+        area_color=row["area_color"],
     )
 
 
@@ -338,6 +344,66 @@ async def update_project_repo(
 
 async def delete_project_repo(conn: aiosqlite.Connection, repo_id: int) -> None:
     await conn.execute("DELETE FROM project_repo WHERE id = ?", (repo_id,))
+
+
+def _area(row: aiosqlite.Row) -> ProjectArea:
+    return ProjectArea(
+        id=row["id"],
+        project_id=row["project_id"],
+        name=row["name"],
+        color=row["color"],
+        position=row["position"],
+        created_at=row["created_at"],
+        tasks=row["tasks"],
+    )
+
+
+_AREA_SELECT = (
+    "SELECT a.*, (SELECT COUNT(*) FROM task t WHERE t.area_id = a.id) AS tasks FROM project_area a"
+)
+
+
+async def list_areas(conn: aiosqlite.Connection, project_id: int) -> list[ProjectArea]:
+    rows = await _all(
+        conn, _AREA_SELECT + " WHERE a.project_id = ? ORDER BY a.position, a.id", (project_id,)
+    )
+    return [_area(r) for r in rows]
+
+
+async def all_areas(conn: aiosqlite.Connection) -> list[ProjectArea]:
+    rows = await _all(conn, _AREA_SELECT + " ORDER BY a.project_id, a.position, a.id")
+    return [_area(r) for r in rows]
+
+
+async def insert_area(
+    conn: aiosqlite.Connection, project_id: int, name: str, color: str, position: int, now: str
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO project_area (project_id, name, color, position, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (project_id, name, color, position, now),
+    )
+    return int(cur.lastrowid or 0)
+
+
+async def update_area(conn: aiosqlite.Connection, area_id: int, changes: dict[str, Any]) -> None:
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    await conn.execute(f"UPDATE project_area SET {sets} WHERE id = ?", (*changes.values(), area_id))
+
+
+async def delete_area(conn: aiosqlite.Connection, area_id: int) -> None:
+    await conn.execute("DELETE FROM project_area WHERE id = ?", (area_id,))
+
+
+async def move_area_tasks(
+    conn: aiosqlite.Connection, area_id: int, into_id: int | None, now: str
+) -> None:
+    """The area's tasks carry `into_id` (None: no area): a change of each task, so an open form
+    sees it as one."""
+    await conn.execute(
+        "UPDATE task SET area_id = ?, version = version + 1, updated_at = ? WHERE area_id = ?",
+        (into_id, now, area_id),
+    )
 
 
 async def sync_repo_path(conn: aiosqlite.Connection, project_id: int, now: str) -> None:
@@ -730,13 +796,18 @@ async def list_tasks(
     stages: list[str] | None = None,
     waiting_on: str | None = None,
     session_ids: list[int] | None = None,
+    area_ids: list[int] | None = None,
     by_rank: bool = False,
 ) -> list[Task]:
     """Most recently updated first; `by_rank` gives the board's order within each stage."""
-    where, params = [], []
+    where: list[str] = []
+    params: list[Any] = []
     if project_id is not None:
         where.append("t.project_id = ?")
         params.append(project_id)
+    if area_ids is not None:
+        where.append(f"t.area_id IN ({', '.join('?' for _ in area_ids) or 'NULL'})")
+        params.extend(area_ids)
     if stages:
         where.append(f"t.stage IN ({', '.join('?' for _ in stages)})")
         params.extend(stages)
@@ -2687,6 +2758,7 @@ def _saved_filter(row: aiosqlite.Row) -> SavedFilter:
         session=row["session"],
         q=row["q"],
         created_at=row["created_at"],
+        area=row["area"],
     )
 
 
@@ -2721,12 +2793,13 @@ async def insert_saved_filter(
     conn: aiosqlite.Connection, project_id: int, name: str, query: dict[str, str], now: str
 ) -> int:
     cur = await conn.execute(
-        "INSERT INTO saved_filter (project_id, name, stage, waiting_on, session, q, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO saved_filter (project_id, name, stage, area, waiting_on, session, q,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             project_id,
             name,
             query.get("stage"),
+            query.get("area"),
             query.get("waiting_on"),
             query.get("session"),
             query.get("q"),
@@ -2744,15 +2817,19 @@ async def delete_saved_filter(conn: aiosqlite.Connection, filter_id: int) -> Non
 # --- quick switcher --------------------------------------------------------
 
 
-async def switcher_tasks(conn: aiosqlite.Connection, limit: int) -> list[tuple[str, str, str, str]]:
-    """(key, title, stage, project slug) of the most recently changed tasks."""
+async def switcher_tasks(
+    conn: aiosqlite.Connection, limit: int
+) -> list[tuple[str, str, str, str, str | None, str | None]]:
+    """(key, title, stage, project slug, area, area colour) of the most recently changed tasks."""
     rows = await _all(
         conn,
-        "SELECT t.key, t.title, t.stage, p.slug FROM task t JOIN project p ON p.id = t.project_id"
+        "SELECT t.key, t.title, t.stage, p.slug, pa.name AS area, pa.color AS area_color"
+        " FROM task t JOIN project p ON p.id = t.project_id"
+        " LEFT JOIN project_area pa ON pa.id = t.area_id"
         " ORDER BY t.updated_at DESC, t.id DESC LIMIT ?",
         (limit,),
     )
-    return [(r["key"], r["title"], r["stage"], r["slug"]) for r in rows]
+    return [(r["key"], r["title"], r["stage"], r["slug"], r["area"], r["area_color"]) for r in rows]
 
 
 # --- environments ----------------------------------------------------------

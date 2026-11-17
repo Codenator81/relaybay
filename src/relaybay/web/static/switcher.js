@@ -49,6 +49,7 @@
       link.setAttribute("role", "option");
       link.appendChild(text("span", "switcher-kind", item.kind));
       if (item.key) link.appendChild(text("span", "card-key", item.key));
+      if (item.area) link.appendChild(text("span", "area-chip area-" + item.area_color, item.area));
       link.appendChild(text("span", "switcher-title", item.title));
       link.appendChild(text("span", "switcher-detail muted", item.detail));
       li.appendChild(link);

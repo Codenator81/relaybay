@@ -88,6 +88,17 @@ code { font-family: var(--mono); font-size: 0.9em; }
   border-bottom: 1px solid var(--border);
 }
 .brand { font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+.brand-home { display: inline-grid; place-items: center; width: 24px; height: 24px; color: var(--muted); }
+.brand-home:hover { color: var(--text); }
+.brand-home svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .crumb-sep { color: var(--muted); }
 .crumb { font-weight: 600; }
 
@@ -714,6 +725,49 @@ a.badge.tracker:hover { text-decoration: underline; }
   .state-committed, .state-pushed { --rs-text: #d0b0ff; --rs-bg: #34204f; }
   .state-blocked { --rs-text: #ffa8a8; --rs-bg: #4a1c1c; }
 }
+
+/* Areas: a palette of eight; the stored key picks the pair of the current theme. */
+.area-chip {
+  display: inline-block;
+  max-width: 12em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--area-text, var(--muted));
+  background: var(--area-bg, var(--surface-2));
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+/* On a narrow card the tracker badge gives way first, the chip after it. */
+.card-top .area-chip { flex: 0 1 auto; min-width: 0; }
+.card-top .area-chip ~ .card-tracker { flex-shrink: 8; }
+.area-blue { --area-text: #1c4fb8; --area-bg: #e3ecff; }
+.area-green { --area-text: #1f7a33; --area-bg: #e3f6e7; }
+.area-amber { --area-text: #8a5300; --area-bg: #fff4e0; }
+.area-violet { --area-text: #6b35b8; --area-bg: #f0e6ff; }
+.area-teal { --area-text: #0b6e6e; --area-bg: #dcf5f3; }
+.area-rose { --area-text: #b4235a; --area-bg: #fde6ee; }
+.area-slate { --area-text: #3f4752; --area-bg: #e6e9ee; }
+.area-orange { --area-text: #a63c06; --area-bg: #ffe8d9; }
+@media (prefers-color-scheme: dark) {
+  .area-blue { --area-text: #a5bcff; --area-bg: #1e2b52; }
+  .area-green { --area-text: #8ce99a; --area-bg: #173a22; }
+  .area-amber { --area-text: #ffc66d; --area-bg: #3a2c12; }
+  .area-violet { --area-text: #d0b0ff; --area-bg: #34204f; }
+  .area-teal { --area-text: #7fe0d6; --area-bg: #11393a; }
+  .area-rose { --area-text: #ffa8c5; --area-bg: #4a1c2e; }
+  .area-slate { --area-text: #ced4da; --area-bg: #343a40; }
+  .area-orange { --area-text: #ffb27a; --area-bg: #47240f; }
+}
+.area-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.area-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.area-row form { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; }
+.area-row input[type="text"] { width: 14em; max-width: 100%; }
+.board-filters .area-filter { max-width: 12em; }
 
 /* --- edit form ----------------------------------------------------------- */
 

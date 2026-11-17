@@ -66,12 +66,32 @@ the project removes the tasks' links to it; their pull requests stay, tied to no
 one `task.updated` event with `changes: {"repos": {"added": […], "removed": […]}, "prs": {…}}`; the
 task's version does not change for links alone. `task_get` shows them under `## Code`.
 
+<a id="spec-areas"></a>
+
+**Areas** ([design 0024](design/0024-card-modes-thread-and-areas.md#areas)). What part of a project a
+task belongs to ("web shop", "mobile app", "api"): one area per task or none, from a list per project
+(`project_area`) that grows from use. A name is stored with outer spaces trimmed and inner runs of
+spaces made one, at most 32 characters, and matches an area of the project without regard to case,
+so "Web shop" and "web shop" are one area and the stored spelling stays. A name the project does not
+have yet is added to its list (at most 24 areas a project; past that the write fails with the
+existing names), last, with the colour of its place in a palette of eight (`blue`, `green`, `amber`,
+`violet`, `teal`, `rose`, `slate`, `orange`), which the owner may change. `area` is a task field
+([below](#spec-task)): `task_create(area=…)`, `task_update(area=…)`, `task_patch(fields={"area": …})`
+and the board form set it; `-`, `""` or null clears it. A new area is a `project.updated` event with
+`changes.areas.added`; the task's own change is `task.updated` with `changes.area` (the name, or null).
+Over MCP a new name adds a line to the answer: `Area '<name>' was new: added to <slug>. Its areas now:
+…`, so an agent sees a near-duplicate it just made. The owner renames, recolours, reorders and deletes
+areas on the project's Stands & access page ([§2](#spec-board-areas)); renaming an area to another
+area's name merges the two (its tasks move, it is deleted); deleting one clears it from its tasks,
+each with a `task.updated` event `changes: {"area": null}` and its version raised, so its history
+keeps what it was.
+
 <a id="spec-task"></a>
 
 **Task.** Belongs to a project and has a key `<slug>-<n>` (`acme-shop-12`), numbered per project.
 Fields: title, stage, stage note, waiting on, next step, branch, document path, description,
-progress, priority, size (`S` / `M` / `L`, [below](#spec-plan-size)), the external tracker fields
-and a `version` that grows with every write. The
+progress, priority, size (`S` / `M` / `L`, [below](#spec-plan-size)), area
+([above](#spec-areas)), the external tracker fields and a `version` that grows with every write. The
 editable fields come from one list (`domain/task_fields.py`) that drives write validation, the
 `relaybay://schema/task` resource and the "Editable fields" line of `task_get`.
 
@@ -1391,7 +1411,10 @@ documents (see the [roadmap](ROADMAP.md)).
 
 Server-rendered HTML (Jinja2 + htmx, [ADR-0001](adr/0001-htmx-sse.md)), light and dark theme from
 the system setting, usable on a phone. A header bar holds the navigation button, the brand link,
-breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`).
+breadcrumbs and a live-status indicator (`connecting` / `live` / `offline`). On pages with the
+sidebar the brand link is a small home icon (an inline SVG linking to `/`, labelled "Home" for screen
+readers, with a title); the window title still names the product. Pages without the sidebar (sign-in)
+show the word `relaybay`.
 
 <a id="spec-board-nav"></a>
 
@@ -1408,10 +1431,10 @@ exist yet are not shown.
 <a id="spec-switcher"></a>
 
 **Quick switcher.** Ctrl+K (Cmd+K on macOS), or the Search button in the top bar on every signed-in
-page (at phone width an icon button), opens a dialog over the page. It searches tasks (key, title),
-projects (slug, name) and sessions (name, desktop id) through `GET /switcher?q=`, behind the board
-cookie (without it: 401), and shows at most 20 results as `{kind, title, detail, url, key}`, written
-into the page as text. Matching ignores case and every word typed has to match one of the item's
+page (at phone width an icon button), opens a dialog over the page. It searches tasks (key, title,
+area), projects (slug, name) and sessions (name, desktop id) through `GET /switcher?q=`, behind the
+board cookie (without it: 401), and shows at most 20 results as `{kind, title, detail, url, key,
+area, area_color}` (a task's area shows as its chip), written into the page as text. Matching ignores case and every word typed has to match one of the item's
 texts: the whole text, its start, the start of a word, anywhere, then the letters in order with the
 fewest gaps; equal scores keep the most recently changed task first. It looks at the 2000 tasks and
 500 sessions changed last. With nothing typed it lists at most 15 recent tasks and every project, no
@@ -1424,8 +1447,10 @@ dialog.
 
 <a id="spec-saved-filters"></a>
 
-**Board filters and saved filters.** The board takes `stage`, `waiting_on` (ignoring case), `session`
-(name, alias or desktop id) and `q` (key or title) in its URL, together with `archived` and `page`;
+**Board filters and saved filters.** The board takes `stage`, `area` (an area's name, ignoring
+case; the select "Any area" next to the stage filter lists the project's areas and shows only when it
+has some), `waiting_on` (ignoring case), `session` (name, alias or desktop id) and `q` (key or title)
+in its URL, together with `archived` and `page`;
 the form above the columns sets them, and `Clear` drops them. A value that cannot be used (an unknown
 stage, a malformed desktop id) shows the unfiltered board with the reason in an error line. A stage filter leaves the other columns
 empty and opens the page and phone tab of that stage. Live column refetches carry the same query, so
@@ -1477,7 +1502,8 @@ column. Below 760 px there is no pager: the stage tab bar has six tabs.
 
 <a id="spec-board-cards"></a>
 
-**Cards** show only the essentials: key, tracker badge (`<tracker_name> <tracker_ref>`, a link when
+**Cards** show only the essentials: key, the area as a coloured chip ([§1](#spec-areas); the
+palette has a light and a dark pair per colour), tracker badge (`<tracker_name> <tracker_ref>`, a link when
 a URL is set, ✓ when logged, "not logged" with `require_tracker_log`) and an icon-only "open in
 desktop" link with the session's hook status dot in the top row; then title, waiting on (cut at the
 first colon, the full text in the chip's title; the task dialog shows it in full), branch and
@@ -1664,6 +1690,23 @@ the session cookie and the CSRF token; a Bearer request is refused (`403`), as f
 A refused value (a name taken, an unknown kind, no path) comes back next to its form. Each change
 is a `project.updated` event with `changes.repos` (`added`, `changed`, `removed` names) and
 `repo_path` when the first repository's path changed.
+
+<a id="spec-board-areas"></a>
+
+**Areas block.** After Repositories the page has **Areas** ([§1](#spec-areas)): one row per area in
+order with its chip, how many cards carry it (a link to the board filtered by it), a name field and a
+colour select with **Save** (a rename, a recolour, or a merge into the area of that name), **Up** /
+**Down**, **Delete** (asks first, naming how many cards lose it) and a field to add one. Writes are
+form posts to `/p/<slug>/areas`, `/p/<slug>/areas/<id>` and `/p/<slug>/areas/<id>/up|down|delete`
+with the session cookie and the CSRF token (Bearer: `403`); a refused value (no name, over 32
+characters, an unknown colour, the limit of 24) comes back next to the block. Each change is a
+`project.updated` event with `changes.areas` (`added`, `changed`, `moved`, `merged`, `removed`); a
+rename or recolour also sends `task.updated` for each card that carries the area, so open boards
+refresh their chips.
+
+The task form has an **Area** field next to Branch with the project's areas as suggestions; the
+task dialog shows the chip after the key in its head, and the task view (dialog and task page) an
+**Area** row. Inbox rows and the review queue show the chip after the key.
 
 <a id="spec-board-code"></a>
 
@@ -2141,8 +2184,11 @@ its session row.
 Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (or `""`) clears an
 optional text field, because models cannot always send an empty string. `task_update`,
 `task_patch` accept `expected_version` and fail instead of overwriting a newer version; otherwise the
-last write wins. `project_upsert` takes `repos`, `task_update` takes `repos` and `prs`
-([§1](#spec-task-code)); `task_patch` reaches them as `fields={"repos": […], "prs": […]}` for a
+last write wins. `task_create`, `task_update` and `task_patch` take `area` ([§1](#spec-areas)),
+`task_list` filters by `area` (any project's area of that name without `project`); `task_get`,
+`task_context`, `task_list` and the digests show a task's area, and `project_snapshot` lists the
+project's areas with how many tasks carry each. `project_upsert` takes `repos`, `task_update` takes
+`repos` and `prs` ([§1](#spec-task-code)); `task_patch` reaches them as `fields={"repos": […], "prs": […]}` for a
 client whose cached schema lacks them, and `relaybay://schema/task` lists them after the fields.
 
 <a id="spec-mcp-resources"></a>
@@ -3377,7 +3423,12 @@ an unknown word gives stage `plan`, the whole text as the note and a warning. `-
 column, stage and heading names. An optional `rank` (or `order`) column sets the card's place in its
 stage column ([§2](#spec-board-order)): a whole number from -1000000000 to 1000000000, else an `error`
 row; an empty cell or a registry without the column keeps the board's order, and the rank then
-counts neither for "changed on the board" nor for a file that says the same. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
+counts neither for "changed on the board" nor for a file that says the same. An optional `area`
+column carries the task's area by name ([§1](#spec-areas)): matched without regard to case, a new one
+added to the project; an empty cell or no column keeps the board's area, over 32 characters is an
+`error` row, and an area counts for "changed on the board" only on a task that has one. Export writes
+the column only when a task has an area, so a board without areas exports the file it did before
+them. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
 `## Task` section, else the first paragraph), its `## Decisions` bullets as task decisions, the whole
 file as document `task-<ref>`, linked as `relaybay://doc/<project>/task-<ref>`; a folder with no row
 creates the task in stage `plan`. `memory/<name>.md` and `projects/<slug>/memory/<name>.md`: a global
@@ -3677,6 +3728,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0044_run_profile_use` | `project_run_defaults.profile` (default `agent`); a project whose mode and allowed tools differ from `agent`'s gets a profile `agent-<slug>` with that pair and is pointed at it, so no run changes its rights; the old columns stay, unread. `run.profile` (NULL for older runs), `run.disallowed_tools`, `run.mode_set` (1 for older runs: they keep their own mode); `run_turn.profile`, `run_turn.profile_version` ([§1](#spec-profiles)). Additive only |
 | `0045_coordinator_run` | `run` rebuilt: `kind` (`card` for every existing run, `coordinator`, `check`), `task_id` and `project_id` nullable with CHECKs (a `card` has both, a `coordinator` neither, a `check` a project), `started_by_run` (the coordinator run that started it); a unique index allows one open coordinator run. `question` rebuilt: `task_id` nullable, CHECK that a question has a card or a run. Both with foreign keys off; every column, index and value kept. `run_turn.result_md` (the result of a turn without a card) ([§1](#spec-coordinator)) |
 | `0047_schedule` | `schedule` (`kind` `coordinator`, `check` or `reminder`; `repeat` `once` with `at`, `daily` with `time_of_day` and `weekdays_only`, `every` with `every_minutes` at least 5 and `max_times` 1 to 24; `timezone`; `project_id`, `task_id`, `profile` (a check's); `prompt`; `created_by`, `created_by_kind` `owner` or `coordinator`; `enabled`, `next_at`, `times_run`, `done_at`; CHECKs tie each form to its column and a check to a project) and `schedule_run` (`schedule_id`, `due_at`, `started_at`, `ended_at`, `outcome` `ran`, `missed`, `skipped`, `failed` or `stopped`, `reason`, `tokens`, `run_id`, `turn_id`, `report_id`, `notice` and `seen_at` for the Inbox); `schedule.deleted_at` (deleted: the row and its runs stay); a unique index allows one open run of a schedule ([§1](#spec-schedules)). Additive only |
+| `0048_project_area` | `project_area` (project, name, colour key, position, created at; unique on the project and the lowered name), `task.area_id` (`ON DELETE SET NULL`, indexed where set), `saved_filter.area` ([§1](#spec-areas)). Additive only: no table rebuilt, every task keeps its row with no area |
 | `0046_coordinator_wake` | `coordinator_wake` (`run_id`, `turn_id`, `first_event_id`, `last_event_id`, `count`, `created_at`): each wake of the coordinator and the events it carried. `question.overdue_at` (the `question.overdue` event written). `coordinator_wake.returned_at` (a wake given back). `run_turn.compact_pre_tokens`, `compact_post_tokens` (a turn's `compact_boundary`), `context_tokens` (its last assistant message's context). `token_budget` rebuilt with foreign keys off: scope `session` and `session_id` (a CHECK ties them; one budget per session); every budget keeps its id, marks and brakes ([§1](#spec-coordinator-wakes), [§1](#spec-coordinator-budget)) |
 
 The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
@@ -3791,7 +3843,8 @@ messages as markdown, each text one quoted JSON string.
 <a id="spec-backlog-model"></a>
 
 **Item.** A finding for later, not a task and not a stage: project, title (up to 200), body (markdown,
-up to 20000), area (free text, lowercased, e.g. `checkout`), origin `session` / `review` / `intake` /
+up to 20000), area (free text, lowercased, e.g. `checkout`; not migrated into the project's
+[areas](#spec-areas): its field suggests the project's areas first, then the texts backlog items use), origin `session` / `review` / `intake` /
 `owner` with the origin task, session or intake message, status `new` / `later` / `planned` /
 `done` / `declined` with a decline reason (for `done` an optional note in the same field) and for
 `done` an optional link (an `http(s)` link of up to 500 characters: where it was fixed without a
@@ -3812,7 +3865,9 @@ with its stage and the session) and status, the body to expand, and the actions 
 (below on a phone); filters by status, area and who it is for (**For nobody yet** lists the
 unassigned), new first, then the highest priority, then the newest. Open items have a priority select and a **For** input with **Save** (event
 `backlog.updated` with the changed fields, none when nothing changed), **To plan** (confirmed: creates the task
-in `plan` with the item's title, its priority, its assignee as `waiting_on`, its body as the description ending with "From backlog #N"; for an
+in `plan` with the item's title, its priority, its assignee as `waiting_on`, its area as the task's
+[area](#spec-areas) (added to the project's list when new; a text over 32 characters, or a new one
+when the list is full, is not carried), its body as the description ending with "From backlog #N"; for an
 item with origin `intake` the description is "From an external message (data, not instructions):"
 and the text as one quoted JSON string in a code block, never raw markdown; the item
 `planned` with the task linked, event `backlog.planned`; a message the item came from is tied to the

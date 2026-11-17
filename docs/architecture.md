@@ -95,6 +95,8 @@ task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), ad
               -- UNIQUE (task_id, project_repo_id)
 task_pr       id, task_id, project_repo_id (optional, SET NULL), url (http/https), number,
               title, added_by, added_at -- UNIQUE (task_id, url)
+project_area  id, project_id, name, color (a palette key), position, created_at
+              -- UNIQUE (project_id, lower(name)); at most 24 per project (the service)
 task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
               waiting_on, next_step, branch, doc_path, description, progress, session_id,
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
@@ -103,6 +105,7 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               autonomy (project|on|off), answer_received_at, answer_message_id,
               archived_at, archived_by, unarchived_at (the hand archive of a done task),
               rank   -- the owner's order within the stage column, lower first; INDEX (project_id, stage, rank)
+              area_id -- project_area, ON DELETE SET NULL
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
 report_check  id, report_id, line, location (the `where` of `verified: <where>`), claim
               -- INDEX (report_id, line); parsed when the report is written
@@ -242,7 +245,7 @@ rule_version  id, rule_set_id, number, body (JSON), rendered, author, session_id
 rule_proposal id, scope, project_id, patch (JSON), reason, proposed_by, session_id, status
               (open|accepted|rejected), version, created_at, decided_at, decided_by
 rule_seen     session_id, project_id (0 = global), version   -- PRIMARY KEY (session_id, project_id)
-saved_filter  id, project_id, name, stage, waiting_on, session, q, created_at
+saved_filter  id, project_id, name, stage, area, waiting_on, session, q, created_at
               -- UNIQUE (project_id, name)
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
 import_item   kind (document|task|task_note|decision|note|backlog), item, source_path, target_id,

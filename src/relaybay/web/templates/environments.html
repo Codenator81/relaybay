@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{#- Project → Stands & access. Expects: project, repos, repo_kinds, environments, proposals, policies (by
+{#- Project → Stands & access. Expects: project, repos, repo_kinds, areas, area_colors, environments, proposals, policies (by
     environment id), project_policy, optional error + error_target (the form it belongs to),
     confirm (action, message, fields).
     Plain form posts: every write comes from this page in a browser (cookie + CSRF). -#}
@@ -104,6 +104,11 @@
   <div class="form-actions"><button type="submit" class="btn">{{ "Save" if r else "Add repository" }}</button></div>
 </form>
 {%- endmacro %}
+{%- macro area_color_select(selected) -%}
+<select name="color" aria-label="Colour">
+  {% for c in area_colors %}<option value="{{ c }}"{% if c == selected %} selected{% endif %}>{{ c }}</option>{% endfor %}
+</select>
+{%- endmacro %}
 {% block title %}Stands & access · {{ project.name }} · relaybay{% endblock %}
 {% block crumbs %}<span class="crumb-sep">/</span><a class="crumb" href="/p/{{ project.slug }}">{{ project.name }}</a><span class="crumb-sep">/</span><span class="crumb">Stands &amp; access</span>{% endblock %}
 {% block content %}
@@ -166,6 +171,42 @@
       {{ error_for("repo-new") }}
       {{ repo_form(None, "/p/" ~ project.slug ~ "/repos") }}
     </details>
+  </section>
+
+  <section class="panel" id="areas">
+    <h2>Areas</h2>
+    <p class="muted">What part of the project a card belongs to: one coloured chip per card, a board filter. A name typed on a card or sent by an agent that is not here is added; names match without regard to case. Renaming an area into another one's name merges the two; deleting one clears it from its cards.</p>
+    {% if areas %}
+    <ul class="area-list">
+      {% for a in areas %}
+      <li class="area-row" id="area-{{ a.id }}">
+        <span class="area-chip area-{{ a.color }}">{{ a.name }}</span>
+        <a class="muted" href="/p/{{ project.slug }}?area={{ a.name|urlencode }}">{{ a.tasks }} card{{ "" if a.tasks == 1 else "s" }}</a>
+        <form method="post" action="/p/{{ project.slug }}/areas/{{ a.id }}">
+          {{ hidden_csrf() }}
+          <input type="text" name="name" maxlength="32" required value="{{ a.name }}" aria-label="Name of {{ a.name }}">
+          {{ area_color_select(a.color) }}
+          <button type="submit" class="action">Save</button>
+        </form>
+        {% if not loop.first %}<form class="inline-form" method="post" action="/p/{{ project.slug }}/areas/{{ a.id }}/up">{{ hidden_csrf() }}<button type="submit" class="action" aria-label="Move {{ a.name }} up">Up</button></form>{% endif %}
+        {% if not loop.last %}<form class="inline-form" method="post" action="/p/{{ project.slug }}/areas/{{ a.id }}/down">{{ hidden_csrf() }}<button type="submit" class="action" aria-label="Move {{ a.name }} down">Down</button></form>{% endif %}
+        <form class="inline-form" method="post" action="/p/{{ project.slug }}/areas/{{ a.id }}/delete" data-confirm="Delete the area {{ a.name }}? It is cleared from {{ a.tasks }} card{{ '' if a.tasks == 1 else 's' }}.">
+          {{ hidden_csrf() }}
+          <button type="submit" class="btn danger" aria-label="Delete {{ a.name }}">Delete</button>
+        </form>
+        {{ error_for("area-" ~ a.id) }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No areas yet: type one in a card's Area field, or add one here.</p>
+    {% endif %}
+    {{ error_for("area-new") }}
+    <form class="area-row" method="post" action="/p/{{ project.slug }}/areas">
+      {{ hidden_csrf() }}
+      <input type="text" name="name" maxlength="32" required placeholder="e.g. web shop" aria-label="Name of the new area">
+      <button type="submit" class="btn">Add area</button>
+    </form>
   </section>
 
   <section class="panel" id="run-defaults">

@@ -50,3 +50,5 @@ class SwitcherItem:
     detail: str
     url: str
     key: str | None = None
+    area: str | None = None  # a task's area and its palette key
+    area_color: str | None = None

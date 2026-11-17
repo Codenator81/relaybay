@@ -125,6 +125,8 @@ def task_line(
 ) -> str:
     parts = [f"**{task.key}** {task.title}"]
     extras = []
+    if task.area:
+        extras.append(f"area: {task.area}")
     if task.waiting_on:
         extras.append(f"waiting on: {task.waiting_on}")
     if task.next_step:
@@ -517,6 +519,9 @@ def snapshot(snap: Snapshot, require_log: bool = False) -> str:
     if snap.environments:
         lines.append("Environments (full map: environments_get):")
         lines.extend(environment_line(e, snap.policies[e.id]) for e in snap.environments)
+    if snap.areas:
+        names = ", ".join(f"{a.name} ({a.tasks})" for a in snap.areas)
+        lines.append(f"Areas (tasks carrying each; task_update(area=...) sets one): {names}")
     counts = " · ".join(f"{s} {len(by_stage.get(s, []))}" for s in STAGES if s in by_stage)
     lines.append(f"Tasks: {len(snap.tasks)}" + (f" ({counts})" if counts else ""))
     for stage in STAGES:
@@ -860,6 +865,7 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
         f"- version: {t.version}",
     ]
     for label, value in (
+        ("area", t.area),
         ("waiting on", t.waiting_on),
         ("next step", next_step_label(t)),
         ("branch", t.branch),

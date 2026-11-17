@@ -20,6 +20,7 @@ from typing import Any
 from relaybay.backup import backup_before_upgrade, record_version
 from relaybay.config import Settings
 from relaybay.domain import backlog
+from relaybay.domain.areas import AREA_NAME_MAX, area_key
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.environments import DEFAULT_SECRET_RULES, SecretRules, find_secrets
 from relaybay.domain.errors import DomainError, NotFoundError
@@ -64,7 +65,16 @@ from relaybay.service import SLUG_RE, Service
 
 ACTOR = "import"
 HIDDEN_NAME = "(hidden name)"
-ROW_CELLS = ("project", "ref", "title", "stage_note", "waiting_on", "next_step", "document")
+ROW_CELLS = (
+    "project",
+    "ref",
+    "title",
+    "area",
+    "stage_note",
+    "waiting_on",
+    "next_step",
+    "document",
+)
 REASON = "import"
 FILE_MAX_BYTES = 2_000_000
 DIFF_ITEM_LINES = 40
@@ -254,13 +264,22 @@ def _decide(
 
 
 def task_hash(task: Task, ranked: bool = False) -> str:
-    """The rank counts only for a registry that gives one, so older imports keep their hashes."""
+    """The rank counts only for a registry that gives one, and the area only for a task that has
+    one, so older imports keep their hashes."""
     rank = (str(task.rank),) if ranked else ()
-    return text_hash(*(str(getattr(task, name) or "") for name in TASK_FIELDS), *rank)
+    area = (area_key(task.area),) if task.area else ()
+    return text_hash(*(str(getattr(task, name) or "") for name in TASK_FIELDS), *rank, *area)
 
 
 def _field_text(task: Task, name: str) -> str:
     return str(task.rank) if name == "rank" else str(getattr(task, name) or "")
+
+
+def _same(task: Task, name: str, value: str) -> bool:
+    """A registry cell says what the task holds; areas match without regard to case."""
+    if name == "area":
+        return area_key(task.area or "") == area_key(value)
+    return _field_text(task, name) == value
 
 
 def note_hash(note: MemoryNote) -> str:
@@ -614,6 +633,12 @@ class _Planner:
                 values[name] = value
         if document:
             values["doc_path"] = document
+        if row.area is not None:
+            if len(row.area) > AREA_NAME_MAX:
+                detail = f"area is longer than {AREA_NAME_MAX} characters"
+                self.add("task", source, REGISTRY, "error", detail)
+                return None
+            values["area"] = row.area
         if row.rank is not None:
             try:
                 rank = int(row.rank)
@@ -658,7 +683,7 @@ class _Planner:
             self.warnings.append(row.warning)
         task = self._existing_task(row)
         tracked = self.tracked.get(("task", name))
-        changes = {k: v for k, v in row.values.items() if task is None or _field_text(task, k) != v}
+        changes = {k: v for k, v in row.values.items() if task is None or not _same(task, k, v)}
         ranked = "rank" in row.values
         content_hash = text_hash(row.values)
         target_hash = task_hash(task, ranked) if task else ""

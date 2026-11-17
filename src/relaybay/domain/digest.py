@@ -231,8 +231,10 @@ def _task_ref(task: Task, title_max: int = 80) -> str:
 
 
 def _task_line(task: Task) -> str:
-    """`- [dev] acme-shop-2 Checkout page — next: ... · waiting on: owner`."""
+    """`- [dev] acme-shop-2 Checkout page — area: web shop · next: ... · waiting on: owner`."""
     bits = []
+    if task.area:
+        bits.append(f"area: {task.area}")
     if task.next_step:
         stale = " (stale)" if task.next_step_stale else ""
         bits.append(f"next: {_clip(task.next_step, 120)}{stale}")
@@ -609,6 +611,7 @@ def _task_head(task: Task) -> list[str]:
     lines = [" · ".join(state)]
     stale = " (stale)" if task.next_step_stale else ""
     for label, value in (
+        ("Area", task.area),
         ("Next step", f"{task.next_step}{stale}" if task.next_step else None),
         ("Waiting on", task.waiting_on),
         ("Note", task.stage_note),

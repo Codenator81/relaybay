@@ -34,6 +34,7 @@ from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain import annotations as ann
 from relaybay.domain import approvals as arules
+from relaybay.domain import areas as area_rules
 from relaybay.domain import backlog, guard, intake
 from relaybay.domain import comments as comment_text
 from relaybay.domain import coordinator as crules
@@ -51,6 +52,7 @@ from relaybay.domain import schedules as srules
 from relaybay.domain import usage as usage_data
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
+from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.code import (
     REPO_KINDS,
@@ -638,6 +640,7 @@ class Snapshot:
     rules: Rules
     environments: list[Environment] = field(default_factory=list)
     policies: dict[int, EffectivePolicy] = field(default_factory=dict)  # by environment id
+    areas: list[ProjectArea] = field(default_factory=list)
 
 
 def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
@@ -736,7 +739,35 @@ def _clean_field(name: str, value: Any) -> Any:
                 f"{name} must be one of {', '.join(REPORT_SIZES)}, got {value!r}."
             )
         return size or None
+    if spec.kind == "area":
+        return _clean_area(value)
     return _clean_text(value, name, spec.max_length or TEXT_MAX)
+
+
+def _clean_area_color(value: Any) -> str:
+    color = str(value or "").strip().lower()
+    if color not in area_rules.AREA_COLORS:
+        raise ValidationError(
+            f"An area's colour is one of {', '.join(area_rules.AREA_COLORS)}, got {value!r}."
+        )
+    return color
+
+
+def _clean_area(value: Any) -> str | None:
+    """An area name as typed: None, '' and '-' clear it."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError("area must be a string.")
+    name = area_rules.clean_area_name(value)
+    if name is None:
+        return None
+    if len(name) > area_rules.AREA_NAME_MAX:
+        limit = area_rules.AREA_NAME_MAX
+        raise ValidationError(f"area is longer than {limit} characters: {name!r}.")
+    if has_hidden_chars(name):
+        raise ValidationError("area holds a control or invisible character.")
+    return name
 
 
 def _clean_title(value: Any) -> str:
@@ -3688,10 +3719,25 @@ class Service:
         stage: str | None = None,
         waiting_on: str | None = None,
         session: str | None = None,
+        area: str | None = None,
         include_done: bool = False,
         by_rank: bool = False,
     ) -> list[Task]:
+        """`area` narrows to the tasks carrying an area of that name (any project's, without
+        regard to case); a name no project has lists none."""
         project_id = (await self.get_project(project)).id if project else None
+        area_ids = None
+        clean_area = _clean_area(area)
+        if clean_area is not None:
+            key = area_rules.area_key(clean_area)
+            area_ids = [
+                a.id
+                for a in await repo.all_areas(self._r)
+                if area_rules.area_key(a.name) == key
+                and (project_id is None or a.project_id == project_id)
+            ]
+            if not area_ids:
+                return []
         if stage:
             stages = [parse_stage(stage).value]
         else:
@@ -3708,6 +3754,7 @@ class Service:
             stages=stages,
             waiting_on=_clean_text(waiting_on, "waiting_on"),
             session_ids=session_ids,
+            area_ids=area_ids,
             by_rank=by_rank,
         )
 
@@ -3804,6 +3851,7 @@ class Service:
             rules=await self._rules(self._r, project),
             environments=environments,
             policies=await self._policies(self._r, environments),
+            areas=await repo.list_areas(self._r, project.id),
         )
 
     async def events_since(
@@ -4099,6 +4147,210 @@ class Service:
                 changes=changes,
             )
 
+    # --- areas ---------------------------------------------------------------------------------
+
+    async def project_areas(self, slug: str) -> tuple[Project, list[ProjectArea]]:
+        project = await self.get_project(slug)
+        return project, await repo.list_areas(self._r, project.id)
+
+    async def all_area_names(self) -> list[str]:
+        """Every project's area names, for suggestions where no project is chosen."""
+        names: dict[str, str] = {}
+        for a in await repo.all_areas(self._r):
+            names.setdefault(area_rules.area_key(a.name), a.name)
+        return sorted(names.values(), key=str.casefold)
+
+    @staticmethod
+    def _area_target(
+        found: list[ProjectArea], slug: str, name: str | None
+    ) -> tuple[str | None, ProjectArea | None]:
+        """(the name as stored, the existing area) for a cleaned `name`: an existing area keeps
+        its own spelling; a new name is checked against the limit before anything is written."""
+        if name is None:
+            return None, None
+        match = area_rules.find_area(found, name)
+        if match is not None:
+            return match.name, match
+        if len(found) >= area_rules.AREAS_MAX:
+            raise ValidationError(
+                f"{slug} has {area_rules.AREAS_MAX} areas, the limit; {name!r} is not one of"
+                f" them: {area_rules.names_line(found)}. Use one of these, or rename or delete"
+                " one on the project's settings page."
+            )
+        return name, None
+
+    async def _add_area(
+        self, tx: _Tx, project_id: int, slug: str, name: str, actor: str
+    ) -> ProjectArea:
+        """A new area, last in the project's list, coloured by its place."""
+        found = await repo.list_areas(tx.conn, project_id)
+        position = max((a.position for a in found), default=-1) + 1
+        color = area_rules.color_for(len(found))
+        area_id = await repo.insert_area(tx.conn, project_id, name, color, position, tx.now)
+        added = ProjectArea(area_id, project_id, name, color, position, tx.now)
+        await tx.event(
+            "project.updated",
+            actor,
+            project_id=project_id,
+            project=slug,
+            changes={"areas": {"added": [name]}},
+        )
+        _note(
+            f"Area {name!r} was new: added to {slug}. Its areas now:"
+            f" {area_rules.names_line([*found, added])}."
+        )
+        return added
+
+    async def _area_id(
+        self, tx: _Tx, project_id: int, slug: str, name: str | None, actor: str
+    ) -> tuple[str | None, int | None]:
+        """Find or add the area `name` (cleaned) of a project: (stored name, id)."""
+        found = await repo.list_areas(tx.conn, project_id)
+        stored, match = self._area_target(found, slug, name)
+        if stored is None:
+            return None, None
+        if match is None:
+            match = await self._add_area(tx, project_id, slug, stored, actor)
+        return stored, match.id
+
+    async def add_area(
+        self, slug: str, name: Any, *, color: Any = None, actor: str = "board"
+    ) -> ProjectArea:
+        """An area added on the project's settings page, before any task carries it."""
+        clean = _clean_area(name)
+        if clean is None:
+            raise ValidationError("An area needs a name.")
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            found = await repo.list_areas(tx.conn, project.id)
+            if area_rules.find_area(found, clean) is not None:
+                raise ValidationError(f"{project.slug} already has an area {clean!r}.")
+            self._area_target(found, project.slug, clean)
+            added = await self._add_area(tx, project.id, project.slug, clean, actor)
+            if color not in (None, "") and str(color) != added.color:
+                added.color = _clean_area_color(color)
+                await repo.update_area(tx.conn, added.id, {"color": added.color})
+            return added
+
+    async def _area_in(self, tx: _Tx, slug: str, area_id: int) -> tuple[Project, ProjectArea]:
+        project = await self.get_project(slug, tx.conn)
+        found = await repo.list_areas(tx.conn, project.id)
+        area = next((a for a in found if a.id == area_id), None)
+        if area is None:
+            raise NotFoundError(f"Area #{area_id} not found in {project.slug}.")
+        return project, area
+
+    async def save_area(
+        self, slug: str, area_id: int, *, name: Any, color: Any, actor: str = "board"
+    ) -> ProjectArea:
+        """Rename or recolour an area. A new name that is another area's merges the two: the
+        cards move to that area and this one goes. Returns the area the cards carry now."""
+        clean = _clean_area(name)
+        if clean is None:
+            raise ValidationError("An area needs a name.")
+        clean_color = _clean_area_color(color)
+        async with self._tx() as tx:
+            project, area = await self._area_in(tx, slug, area_id)
+            others = [a for a in await repo.list_areas(tx.conn, project.id) if a.id != area.id]
+            into = area_rules.find_area(others, clean)
+            if into is not None:
+                await self._clear_area(tx, project, area, actor, into=into)
+                await tx.event(
+                    "project.updated",
+                    actor,
+                    project_id=project.id,
+                    project=project.slug,
+                    changes={"areas": {"merged": [f"{area.name} -> {into.name}"]}},
+                )
+                return into
+            changes = {
+                k: v for k, v in (("name", clean), ("color", clean_color)) if getattr(area, k) != v
+            }
+            if not changes:
+                return area
+            await repo.update_area(tx.conn, area.id, changes)
+            label = f"{area.name} -> {clean}" if "name" in changes else area.name
+            await tx.event(
+                "project.updated",
+                actor,
+                project_id=project.id,
+                project=project.slug,
+                changes={"areas": {"changed": [label]}},
+            )
+            # The chip is on the cards: they refresh, and a rename stays in each card's history.
+            renamed = {"area": clean} if "name" in changes else {}
+            for task in await repo.list_tasks(tx.conn, project_id=project.id, area_ids=[area.id]):
+                await self._area_card_event(tx, task, actor, renamed)
+            area.name, area.color = clean, clean_color
+            return area
+
+    async def _area_card_event(
+        self, tx: _Tx, task: Task, actor: str, changes: dict[str, Any]
+    ) -> None:
+        """A card changed by a write on its area: `changes` for the card's own history, empty
+        when only the chip's colour differs."""
+        await tx.event(
+            "task.updated",
+            actor,
+            project_id=task.project_id,
+            task_id=task.id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            changes=changes,
+        )
+
+    async def _clear_area(
+        self,
+        tx: _Tx,
+        project: Project,
+        area: ProjectArea,
+        actor: str,
+        into: ProjectArea | None = None,
+    ) -> None:
+        """Take `area` off its cards (onto `into`, when merging) and delete it."""
+        tasks = await repo.list_tasks(tx.conn, project_id=project.id, area_ids=[area.id])
+        await repo.move_area_tasks(tx.conn, area.id, into.id if into else None, tx.now)
+        await repo.delete_area(tx.conn, area.id)
+        for task in tasks:
+            await self._area_card_event(tx, task, actor, {"area": into.name if into else None})
+
+    async def delete_area(self, slug: str, area_id: int, *, actor: str = "board") -> int:
+        """Delete an area: its cards carry none (each card's history keeps what it was).
+        Returns how many cards it was cleared from."""
+        async with self._tx() as tx:
+            project, area = await self._area_in(tx, slug, area_id)
+            await self._clear_area(tx, project, area, actor)
+            await tx.event(
+                "project.updated",
+                actor,
+                project_id=project.id,
+                project=project.slug,
+                changes={"areas": {"removed": [area.name]}},
+            )
+            return area.tasks
+
+    async def move_area(self, slug: str, area_id: int, step: int, *, actor: str = "board") -> None:
+        """Move an area one place up (`step` < 0) or down in the project's list."""
+        async with self._tx() as tx:
+            project, area = await self._area_in(tx, slug, area_id)
+            found = await repo.list_areas(tx.conn, project.id)
+            at = next(i for i, a in enumerate(found) if a.id == area.id)
+            to = at + (1 if step > 0 else -1)
+            if not 0 <= to < len(found):
+                return
+            found[at], found[to] = found[to], found[at]
+            for position, a in enumerate(found):
+                if a.position != position:
+                    await repo.update_area(tx.conn, a.id, {"position": position})
+            await tx.event(
+                "project.updated",
+                actor,
+                project_id=project.id,
+                project=project.slug,
+                changes={"areas": {"moved": [area.name]}},
+            )
+
     async def create_task(
         self,
         project: str,
@@ -4117,12 +4369,14 @@ class Service:
         tracker_name: str | None = None,
         tracker_url: str | None = None,
         tracker_logged: bool = False,
+        area: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
         actor: str = "mcp",
     ) -> Task:
         await self._coordinator_right(self._r, session, hook_session, "tasks_write", "task_create")
+        clean_area = _clean_area(area)
         fields: dict[str, Any] = {
             "title": _clean_title(title),
             "stage": parse_stage(stage) if stage else Stage.PLAN,
@@ -4146,6 +4400,7 @@ class Service:
             sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
+            _, fields["area_id"] = await self._area_id(tx, proj.id, proj.slug, clean_area, actor)
             key = f"{proj.slug}-{await repo.next_task_number(tx.conn, proj.id)}"
             task_id = await repo.insert_task(tx.conn, proj.id, key, fields, session_id, tx.now)
             if fields["tracker_ref"]:
@@ -4280,6 +4535,10 @@ class Service:
                 f"Task {task.key} is at version {task.version}, not {expected_version}:"
                 " someone changed it meanwhile. Re-read it with task_get and retry."
             )
+        area: ProjectArea | None = None
+        if "area" in clean:
+            found = await repo.list_areas(tx.conn, task.project_id)
+            clean["area"], area = self._area_target(found, task.project_slug, clean["area"])
         diff = _task_diff(task, clean)
         if not diff and not any(links.values()):
             return Saved(task, [])
@@ -4304,12 +4563,20 @@ class Service:
         # The mark belongs to the issue: a new key starts not logged unless the write says so.
         new_issue = "tracker_ref" in diff and "tracker_logged" not in clean and task.tracker_logged
         writes = {**diff, "tracker_logged": False} if unlog or new_issue else diff
+        # The event names the area; the row holds its id.
+        columns = {k: v for k, v in writes.items() if k != "area"}
+        if "area" in diff:
+            if diff["area"] is not None and area is None:
+                area = await self._add_area(
+                    tx, task.project_id, task.project_slug, diff["area"], actor
+                )
+            columns["area_id"] = area.id if area else None
         if "stage" in diff:
             rank = await repo.top_rank(tx.conn, task.project_id, diff["stage"])
             await repo.set_rank(tx.conn, task.id, rank)
-        if writes:  # links alone do not bump the task's version
-            await repo.update_task(tx.conn, task.id, writes, tx.now)
-            await self._sync_tracker(tx, task, writes)
+        if columns:  # links alone do not bump the task's version
+            await repo.update_task(tx.conn, task.id, columns, tx.now)
+            await self._sync_tracker(tx, task, columns)
         how = "owner" if default_actor in BOARD_ACTORS else "agent"
         linked = await self._write_code_links(tx, task, links, actor, how) if links else {}
         ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
@@ -7370,8 +7637,21 @@ class Service:
         return await repo.list_backlog(self._r, limit=-1)  # SQLite: a negative limit is none
 
     async def backlog_areas(self, project: str | None = None) -> list[str]:
+        """Suggestions for a backlog item's area: the project's areas first (every project's
+        without one), then the texts backlog items use that are not one of them."""
+        if project:
+            _, found = await self.project_areas(project)
+            names = [a.name for a in found]
+        else:
+            names = await self.all_area_names()
         project_id = (await self.get_project(project)).id if project else None
-        return await repo.backlog_areas(self._r, project_id)
+        known = {area_rules.area_key(n) for n in names}
+        rest = [
+            t
+            for t in await repo.backlog_areas(self._r, project_id)
+            if area_rules.area_key(t) not in known
+        ]
+        return [*names, *rest]
 
     async def backlog_assignees(self, project: str | None = None) -> list[str]:
         project_id = (await self.get_project(project)).id if project else None
@@ -7671,6 +7951,24 @@ class Service:
                 await self._set_backlog_status(tx, item, status[choice], why, actor, where)
             return await self._backlog(tx.conn, item.id)
 
+    async def _backlog_area(
+        self, tx: _Tx, project: Project, text: str | None, actor: str
+    ) -> int | None:
+        """The project area a backlog item's free-text area names, added when new. A text an
+        area cannot hold (too long, or the list is full) is not carried: planning never fails
+        on it."""
+        try:
+            name = _clean_area(text)
+        except ValidationError:
+            return None
+        found = await repo.list_areas(tx.conn, project.id)
+        match = area_rules.find_area(found, name) if name else None
+        if match is not None:
+            return match.id
+        if name is None or len(found) >= area_rules.AREAS_MAX:
+            return None
+        return (await self._add_area(tx, project.id, project.slug, name, actor)).id
+
     async def _plan_backlog(self, tx: _Tx, item: BacklogItem, actor: str) -> Task:
         project = await self.get_project(item.project_slug, tx.conn)
         line = backlog.FROM_BACKLOG.format(id=item.id)
@@ -7693,6 +7991,7 @@ class Service:
             "description": description,
             "priority": item.priority,
             "waiting_on": item.assignee,
+            "area_id": await self._backlog_area(tx, project, item.area, actor),
         }
         task_id = await repo.insert_task(tx.conn, project.id, key, fields, None, tx.now)
         await tx.event(
@@ -10399,11 +10698,14 @@ class Service:
         if not text:
             return await self._switcher_start()
         items: list[tuple[int, SwitcherItem]] = []
-        for key, title, stage, slug in await repo.switcher_tasks(self._r, TASKS_SCANNED):
-            score = fuzzy_score(text, key, title)
+        for key, title, stage, slug, area, color in await repo.switcher_tasks(
+            self._r, TASKS_SCANNED
+        ):
+            score = fuzzy_score(text, key, title, area)
             if score is not None:
                 url = f"/p/{slug}?{urlencode({'task': key})}"
-                items.append((score, SwitcherItem("task", title, f"{stage} · {slug}", url, key)))
+                item = SwitcherItem("task", title, f"{stage} · {slug}", url, key, area, color)
+                items.append((score, item))
         for summary in await self.list_projects():
             p = summary.project
             score = fuzzy_score(text, p.slug, p.name)
@@ -10425,9 +10727,15 @@ class Service:
         return [
             *(
                 SwitcherItem(
-                    "task", title, f"{stage} · {slug}", f"/p/{slug}?{urlencode({'task': key})}", key
+                    "task",
+                    title,
+                    f"{stage} · {slug}",
+                    f"/p/{slug}?{urlencode({'task': key})}",
+                    key,
+                    area,
+                    color,
                 )
-                for key, title, stage, slug in tasks
+                for key, title, stage, slug, area, color in tasks
             ),
             *(
                 SwitcherItem("project", s.project.name, s.project.slug, f"/p/{s.project.slug}")
@@ -10445,6 +10753,7 @@ class Service:
         name: str,
         *,
         stage: str | None = None,
+        area: str | None = None,
         waiting_on: str | None = None,
         session: str | None = None,
         q: str | None = None,
@@ -10456,13 +10765,14 @@ class Service:
             raise ValidationError("A saved filter needs a name.")
         query = {
             "stage": parse_stage(stage).value if stage and stage.strip() else "",
+            "area": _clean_area(area) or "",
             "waiting_on": _clean_text(waiting_on, "waiting on", FILTER_TEXT_MAX) or "",
             "session": _clean_text(session, "session", NAME_MAX) or "",
             "q": _clean_text(q, "search text", FILTER_TEXT_MAX) or "",
         }
         query = {key: value for key, value in query.items() if value}
         if not query:
-            raise ValidationError("Set a stage, waiting on, session or search text first.")
+            raise ValidationError("Set a stage, area, waiting on, session or search text first.")
         async with self._tx() as tx:
             proj = await self.get_project(project, tx.conn)
             if await repo.saved_filter_named(tx.conn, proj.id, clean_name) is not None:

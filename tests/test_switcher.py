@@ -124,6 +124,8 @@ def test_endpoint_returns_json_and_the_page_has_the_button(board: TestClient) ->
         "detail": "plan · acme-shop",
         "url": "/p/acme-shop?task=acme-shop-1",
         "key": "acme-shop-1",
+        "area": None,
+        "area_color": None,
     }
     page = board.get("/").text
     assert 'class="switcher-open"' in page and 'id="switcher"' in page

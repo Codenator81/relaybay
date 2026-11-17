@@ -1,0 +1,2 @@
+{#- The area chip in the task dialog's head, refetched with the dialog's view (app.js). Expects: t. -#}
+<span class="dialog-area" hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/area" hx-trigger="rb:refresh" hx-swap="outerHTML">{% include "_area_chip.html" %}</span>
