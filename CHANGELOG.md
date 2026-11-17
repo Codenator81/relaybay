@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-19
+
 ### Added
 
 - Areas: what part of a project a card belongs to ("web shop", "mobile app", "api"), one per card or none, from a list per project that grows from use (design 0024). Names match without regard to case and outer spaces; a new name is added to the project's list (at most 24 areas, 32 characters a name) with a colour from a palette of eight by its place, readable in light and dark themes. The card shows a coloured chip after its key, as do the task dialog's head, the task page, Inbox and review queue rows and the quick switcher (which also searches areas). The task form has an Area field with the project's areas as suggestions, and the board an "Any area" filter next to the stage filter, kept in saved filters. The Stands & access page lists the areas with their card counts: rename, recolour, reorder, delete (cleared from its cards, each card's history keeps it) and add; renaming one into another's name merges the two. Events `project.updated` (`changes.areas`) and `task.updated` (`changes.area`).
@@ -1030,7 +1032,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.12.0
 [0.11.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.11.0
 [0.10.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.10.0
 [0.9.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.9.0
