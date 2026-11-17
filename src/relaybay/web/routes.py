@@ -336,7 +336,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         t, utcnow(), settings.done_window_days, settings.require_tracker_log
     )
     env.filters["age"] = age
-    # Schedules show the machine's local time, as they are planned in it.
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
     env.filters["http_url"] = http_url

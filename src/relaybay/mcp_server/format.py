@@ -964,7 +964,8 @@ def comments(task: Task, items: list[Comment], unread_only: bool = False) -> str
 
 
 def event_subject(e: Event) -> str:
-    """The task key of an event, or its project; "coordinator" for the coordinator run's."""
+    """The task key of an event, or its project; "coordinator" for one of 0.11's coordinator
+    run."""
     p = e.payload
     if p.get("run_kind") == "coordinator":
         return "coordinator"
@@ -1263,7 +1264,7 @@ def audit(items: list[Event], days: int) -> str:
     return "\n".join(lines)
 
 
-# --- intake and backlog ------------------------------------------------------------------
+# --- backlog -------------------------------------------------------------------------------
 
 
 def _backlog_queue(b: BacklogItem) -> list[str]:

@@ -184,7 +184,7 @@ class Comment:
 
     id: int
     task_id: int
-    author_kind: str  # 'owner', 'agent' or 'external' (an intake message forwarded to the agent)
+    author_kind: str  # 'owner', 'agent' or 'external' (an intake message of 0.11, forwarded)
     author: str
     session_id: int | None
     body_md: str

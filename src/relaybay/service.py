@@ -2146,8 +2146,8 @@ class Service:
         poll: float = 1.0,
         gone: Callable[[], Awaitable[bool]] | None = None,
     ) -> str | None:
-        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment, a
-        session message or the owner's acceptance of a plan (as the tool hooks tell it) arrives
+        """The wake-up hook's long poll: wait up to `hold` seconds until an owner comment or
+        the owner's acceptance of a plan (as the tool hooks tell it) arrives
         for the idle, exactly linked session of `payload`, mark it delivered and return the
         text for the agent. None when the time is up, the session is not idle (its own hooks
         deliver then), a newer wait for the same session started, or `gone()` says the hook
@@ -3812,7 +3812,7 @@ class Service:
         format_problem: str | None,
         size_task: bool = True,
     ) -> int:
-        """The writes of one report, for report_add and a run's turn alike: the rules warnings
+        """The writes of one report: the rules warnings
         (`format_problem`, the first line's, checked by the caller; no `verified:` mark on an M or
         L report), the task's fields, the report with its marks, its event and its index row.
         `size_task` off: the report's size does not size the task (a check's `S`)."""
@@ -5427,9 +5427,7 @@ class Service:
         task = await self.get_task(ref)
         return task, await repo.list_comments(self._r, task.id, unread_only=unread_only)
 
-    # --- session messages --------------------------------------------------
-
-    # --- intake: messages from chats and mailboxes -----------------------------------------
+    # --- the done card's archive ---------------------------------------------
 
     async def set_archived(self, ref: str | int, archived: bool, *, actor: str = "owner") -> Task:
         """The board's "Archive" / "Back from the archive" on a done card."""

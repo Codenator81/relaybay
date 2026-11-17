@@ -1400,9 +1400,6 @@ async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> 
     return [_comment(r) for r in rows]
 
 
-# --- session message -------------------------------------------------------
-
-
 # --- review ----------------------------------------------------------------
 
 

@@ -459,8 +459,8 @@
     return projectPath() + (query ? "?" + query : "");
   }
 
-  // The dialog's edit form only: other forms there (the Agent block's Start form) share the
-  // .task-form layout class but are no edit form and sit in no .task-form-box.
+  // The dialog's edit form only: a form there that shares the .task-form layout class but
+  // sits in no .task-form-box is no edit form.
   var EDIT_FORM = ".task-form-box > form.task-form";
   function editForm() { return dialog.querySelector(EDIT_FORM); }
 

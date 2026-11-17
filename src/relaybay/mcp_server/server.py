@@ -1741,7 +1741,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         marked = f"; marked {', '.join(f'#{i}' for i in read)} read" if read else ""
         return f"Comment #{comment.id} added to **{comment.task_key}**{marked}."
 
-    # --- session messages ---------------------------------------------------------------
+    # --- removed in 0.12: messages between sessions -----------------------------------
 
     @mcp.tool(annotations=WRITE, structured_output=False)
     @contract.deprecated()
