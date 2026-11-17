@@ -3,7 +3,7 @@ quiet when none runs.
 
 python scripts/hook_timing.py [--runs 20] [--limit-ms 800] -- dist/relaybay/relaybay-hook
 python scripts/hook_timing.py --interpreter   # this interpreter: -I -m relaybay.hook_client
-python scripts/hook_timing.py --server        # the PreToolUse answer, with and without brake
+python scripts/hook_timing.py --server        # the PreToolUse answer
 
 Timed against the limit: N runs of `--version`, which exits before any network work, so the
 median is the start-up alone (a bloated bundle takes seconds; Claude Code allows the command
@@ -56,8 +56,7 @@ def run(command: list[str], port: int, token: Path) -> subprocess.CompletedProce
 
 
 async def time_server(runs: int) -> dict[str, float]:
-    """Median ms of `Service.hook_answer` for a PreToolUse: no brake, then a brake on another
-    project (the brake is read and does not apply), then one that stops the call."""
+    """Median ms of `Service.hook_answer` for a PreToolUse."""
     from relaybay.service import Service
 
     payload = {
@@ -83,11 +82,7 @@ async def time_server(runs: int) -> dict[str, float]:
             await service.upsert_project("acme-shop", repo_path="/d/acme")
             await service.upsert_project("demo-api", repo_path="/d/demo")
             await service.record_hook(payload)
-            found = {"no brake": await median(service)}
-            await service.set_board_brake("project", project="demo-api")
-            found["brake elsewhere"] = await median(service)
-            await service.set_board_brake("all")
-            found["stopped"] = await median(service)
+            found = {"pre_tool_use": await median(service)}
         finally:
             await service.close()
     return found
