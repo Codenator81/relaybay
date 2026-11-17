@@ -1,5 +1,6 @@
 # 0012 — Runner and embedded terminal (agents inside relaybay)
 
+- **Superseded by [0025](0025-board-with-the-desktop.md) in 0.12: runs and the terminal were removed.**
 - Status: **Accepted** (direction); the runner shipped in 0.9, the terminal is built for 0.10
   ([0021](0021-agents-inside.md)). Starts with the probes below.
 - Size: runner about 4 agent-days (0.9, PR 1 of [0021](0021-agents-inside.md#plan-of-09-by-pull-request)),
