@@ -318,6 +318,21 @@ session at a time; every binding is kept in the task's binding history. A plain 
 that name exists (the call warns and changes nothing). The session identity is for display only; the
 token is the only authorisation.
 
+<a id="spec-session-surface"></a>
+
+**Where a session runs** (`session.surface`, migration 0050; [design
+0025](design/0025-board-with-the-desktop.md#decided-points)): `desktop` (the Claude desktop app),
+`terminal` or unknown. The command hook sends Claude Code's `CLAUDE_CODE_ENTRYPOINT` with
+`SessionStart` ([§4](#spec-hooks-surface)): a value starting with `claude-desktop` is `desktop`,
+`cli` is `terminal`, anything else (an SDK, an IDE) leaves the surface as it was, and the raw
+value is kept in `session.entrypoint`; an older hook client or an http hook sends nothing. A
+session with a desktop id (`local_<uuid>`) is a desktop one whatever these say. When the surface
+is unknown, the `SessionStart` answer asks the session to say it once with `task_patch(task,
+fields={"session_surface": "desktop" | "terminal"}, hook_session=…)`: the field is stored on the
+calling session (the one of `hook_session`, else the one named by `session`; neither is a
+validation error), not on the task, and writes `session.surface_set` when it changes; `-`, `''`
+or null clears it.
+
 <a id="spec-run"></a>
 <a id="spec-run-limits"></a>
 <a id="spec-run-lifecycle"></a>
@@ -604,6 +619,7 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `project.updated`, `task.created`, `task.updated`, `task.stage_changed`, `task.reordered`, `task.session_bound`,
 `task.session_unbound`, `task.tracker_unlogged`, `task.archived`, `task.unarchived` ([§2](#spec-board-archive)), `report.added`, `decision.added`, `session.seen`,
 `session.status_changed`, `session.alias_added`, `session.no_live_on`, `session.no_live_off`,
+`session.surface_set`, `session.terminal_opened` ([§2](#spec-board-state)),
 `comment.added`, `comment.delivered`,
 `comment.read`, `plan.acceptance_delivered`, `environment.created`, `environment.updated`, `environment.deleted`,
 `environment.access_added`, `environment.access_updated`, `environment.access_removed`,
@@ -744,7 +760,9 @@ column. Below 760 px there is no pager: the stage tab bar has six tabs.
 **Cards** show only the essentials: key, the area as a coloured chip ([§1](#spec-areas); the
 palette has a light and a dark pair per colour), tracker badge (`<tracker_name> <tracker_ref>`, a link when
 a URL is set, ✓ when logged, "not logged" with `require_tracker_log`) and an icon-only "open in
-desktop" link with the session's hook status dot in the top row; then title, waiting on (cut at the
+desktop" link with the session's hook status dot in the top row, and the word of the card's
+state line ([below](#spec-board-state)) next to it (a dot of its own when there is no desktop link;
+nothing for No session; its title lists why it waits for you); then title, waiting on (cut at the
 first colon, the full text in the chip's title; the task dialog shows it in full), branch and
 the next step (two lines, muted with "stale" when stale). Done cards hide waiting on and the next
 step. A task with a checklist shows **Review 2/5** (accepted / all; green when all are accepted,
@@ -863,6 +881,57 @@ longer sorts its cards.
   `version` and the updated time stay, so an open edit form still saves. The event is left out of
   the digests' changes and makes no tray or browser notification.
 
+<a id="spec-board-state"></a>
+
+**The session card** ([design 0025](design/0025-board-with-the-desktop.md#what-gets-stronger)).
+The task dialog's Overview and the task page show, in this order: the title, the **state line**,
+the Questions and Approvals folds, the **last report** as the main content (older ones below it),
+the **comment thread**, then the folds **Session and its history** and **Task details** (the fields)
+with Description, Done so far, Decisions, Findings, Document, Tracker history and Actions on live;
+the comment box comes last, outside every fragment that live events refetch, so an event never
+clears a half-typed comment (the dialog's Edit task fold follows it).
+
+The state line is derived and never set by hand (`relaybay.domain.card.card_state`), in a large
+word with the session's dot:
+
+- **Waits for you** when the card has an open question or approval request, is in `review` or
+  `test` with a checklist, has `waiting_on` naming the owner (`owner_names`; not on a done card) or
+  its bound session asks for its user (hook status `waiting`, with the notification's text); each
+  reason is listed under the word;
+- else **Working** or **Idle** by the bound session's hook status (a bound session without one
+  counts as idle), **Ended** when the session of the latest binding has ended (a terminal
+  session's end unbinds it; a desktop session stays bound), **No session** otherwise.
+
+Under the word: the session's name and last activity with its age. The line refreshes live on the
+card's events and on `session.status_changed` of its session (not while an answer is being typed).
+One **Open** follows where the session runs ([§1](#spec-session-surface)): a desktop session opens
+its `desktop_link_template` link; an ended terminal session posts to
+`/sessions/<id>/open-terminal`, which opens a new terminal window on this machine running `claude
+--resume <its Claude Code id>` in its folder; a live terminal session gets the button disabled with
+"running in a terminal" (the board cannot find that window, and a second process on a live session
+is unsafe); an unknown surface gets no button, only the reason. Every disabled or missing Open says
+why in one line, and a refusal of the terminal endpoint (409) is shown in the state line.
+
+The terminal endpoint takes only the session's internal id, from a signed-in browser (cookie and
+CSRF; refused with a Bearer token) on the machine itself (a client address that is not loopback,
+such as the board on a phone, gets 409); the command is fixed, the id must be a lowercase UUID read
+from the database, the folder must exist, and every command is an argument list: Windows Terminal
+(`wt -d <folder> claude --resume <id>`, unless the folder holds a `;`), else `claude` in a console
+window of its own; on macOS `osascript` tells Terminal to run the quoted line; elsewhere the first
+of `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xterm` on the PATH. No terminal or no
+`claude` on the PATH: 409 with that reason. Each opening writes `session.terminal_opened` (session,
+folder, program; on the Audit page with "Changes"). relaybay never starts a session otherwise.
+
+While no session works on the card (No session, Ended, or Waits for you without a live bound
+session) the line has **Copy the brief**: the text a new session needs (the card's key, project
+and title; the line that tells it to bind itself with `task_bind_session` and pass its
+`hook_session`; the task's digest as `task_context` builds it without a reader: next step,
+waiting on, branch, the description (whole, in a section of its own when the digest cuts it), done
+so far, the plan and its current step, decisions, linked document sections, environments, rules;
+the card's attachments with their paths on disk; the report line). It goes to the clipboard, or,
+where the clipboard API is not available, the fold under the line opens with the text selected.
+relaybay starts nothing.
+
 <a id="spec-board-dialog"></a>
 
 **Task dialog / page** shows every field (stage with note, waiting on, next step, branch, tracker,
@@ -879,9 +948,10 @@ misses a rule shows the warning in the form (or the refusal in `strict` mode).
 
 <a id="spec-board-folds"></a>
 
-**Collapsible blocks.** Every block of the Overview tab and of the task page (Findings,
-Document, Tracker history, Session, Description, Done so far, Last report, Actions on live,
-Decisions, Comments, Edit task) folds under its title: a chevron, the whole title row clickable, by
+**Collapsible blocks.** The folds of the Overview tab and of the task page (Questions,
+Approvals, Session and its history, Task details, Description, Done so far, Decisions, Findings,
+Document, Tracker history, Actions on live, Edit task; not the state line, the last report and the
+comments) fold under their title: a chevron, the whole title row clickable, by
 keyboard too. They start open, except Document and Edit task. The owner's choice is kept per browser
 in `localStorage` by section, not by task (collapse Decisions once and it stays collapsed on every
 task), survives live refreshes and lives nowhere on the server; without storage it lasts until the
@@ -937,10 +1007,12 @@ both on, a review is told twice.
 
 **Comments** (task dialog and task page): the thread oldest first, then a comment box (markdown, up
 to 4000 characters, CSRF-protected form). Each owner comment shows `sent <age>`, then
-`delivered <age> to <session>` or `not delivered yet`, and `read <age>` once acknowledged (exact UTC
+`delivered <age> to <session>` or `not delivered yet` with its reason (no session bound; the session
+ended; the session has not linked its hooks yet, i.e. passed no `hook_session`; the session is idle
+and the wake-up hook is off, [§4](#spec-hooks-wake)), and `read <age>` once acknowledged (exact UTC
 times on hover); agent replies show their author, age and `unread` until marked read. **Mark replies
 read** marks the task's unread replies read; sending a comment does the same. A note under the
-thread says which session a new comment goes to, or that none is bound and it waits. The thread
+thread says which session a new comment goes to, or why it would wait. The thread
 refreshes live on `comment.*` events of its task; a draft in the box is kept (on the task page, other
 changes then refresh the details instead of reloading the page).
 
@@ -1011,6 +1083,9 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
 - **Limits** ([below](#spec-concurrency)): sessions running above the cap.
 - **Agent replies:** tasks with agent comments the owner has not marked read, with the newest
   reply's author and text.
+- **Comments not delivered:** open tasks with owner comments written more than an hour ago and
+  still not delivered, with how many, since when, why they wait (as on the thread) and the oldest
+  one's text. A task counts as one row.
 - **Proposed by agents:** pending environment proposals ([§7](#spec-proposals)), linking to the
   project's Stands & access page.
 - **Policy proposals:** pending policy proposals ([§7](#spec-policy-proposals)), linking to
@@ -1023,7 +1098,7 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
 Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?task=<key>`). The
 sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
-`comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
+`comment.delivered`, `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
 `policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `backlog.*`, `concurrency.over`, `question.*` except `question.delivered`, `approval.requested`,
 `approval.decided`, `approval.expired`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
@@ -1059,7 +1134,7 @@ page; "Load more" appends the next page (`?before=<event id>`, also a plain link
 session, project, stand, tool, redacted command, decision, level, rule, task. Filters: project,
 stand, session (its number, from the list), decision, period (1, 7 (the default), 30 or 90 days, or
 All). The checkbox "Changes to the policy, stands and switches" (`?changes=1`) adds the `policy.*`,
-`environment.*`, `session.no_live_on` and `session.no_live_off` events as rows with their kind and a
+`environment.*`, `session.no_live_on`, `session.no_live_off` and `session.terminal_opened` events as rows with their kind and a
 short description, and with them questions and approvals. On the first page new rows are prepended live on `live.action`, and on those
 kinds with the checkbox on. A note on the page says what it does not show: only tool calls that
 touch a live stand are journaled, known by the names in its access map; test and local stands are
@@ -1270,7 +1345,7 @@ waiting on anything else.
 
 | Hook event | Session status | Activity |
 |---|---|---|
-| `SessionStart` | working | `started (<source>)`; the answer adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the agent's context (`hookSpecificOutput.additionalContext`), then the task context or a short project digest ([§8](#spec-digest-session-start)) |
+| `SessionStart` | working | `started (<source>)`; the answer adds "Your relaybay hook session: <id>. Pass it as `hook_session` in relaybay writes." to the agent's context (`hookSpecificOutput.additionalContext`), a line asking where it runs when relaybay cannot tell ([below](#spec-hooks-surface)), then the task context or a short project digest ([§8](#spec-digest-session-start)) |
 | `UserPromptSubmit` | working | `prompt` (the prompt text is never stored) |
 | `PreToolUse`, `PostToolUse` | working | the tool name (the tool input is never stored; `PreToolUse` is also checked by the guard, and a call that touches live leaves a redacted summary in the journal, [§7](#spec-guard)) |
 | `Notification` | waiting | the notification message |
@@ -1334,6 +1409,17 @@ started whom); for now only [Activity](#spec-board-activity) shows it, one line 
    other live hook sessions): nothing is guessed; the hook session stays **unlinked** with a reason
    and is listed on the Integrations page.
 4. No desktop session in the project, or no project: a plain session named after the folder.
+
+<a id="spec-hooks-surface"></a>
+
+**Where the session runs.** The command hook adds Claude Code's `CLAUDE_CODE_ENTRYPOINT` to
+`SessionStart` as `relaybay_entrypoint` (up to 60 characters are kept); the server records the
+session's surface from it ([§1](#spec-session-surface)). An older hook client or an http hook
+sends nothing and keeps working. A started session (not one a desktop session's tool started)
+whose surface is still unknown gets one more line in the answer: "relaybay could not tell whether
+you run in the Claude desktop app or in a terminal. Tell it once, with your next relaybay write on
+your task: task_patch(task, fields={"session_surface": "desktop"} or {"session_surface":
+"terminal"}, hook_session="<id>")."
 
 <a id="spec-hooks-repos"></a>
 
@@ -2527,7 +2613,12 @@ of this leaves the machine.
     `Content-Disposition: inline`, `nosniff` and the CSP above, so a file is never run as a page.
     `GET /files/<id>/annotated` answers the same way with `image/png`; its upload and the viewer's
     other writes need the board cookie and the CSRF header ([Annotations](#spec-annotations)).
-11. **Backups and updates:** a backup before a new version copies the database, `config.toml`,
+11. **Opening a terminal** ([§2](#spec-board-state)): the only place the board starts a program.
+    A board write (cookie, CSRF, no Bearer) from a loopback client only; it takes a session's
+    internal id and nothing else, runs the fixed `claude --resume <uuid from the database>` in the
+    session's folder (which must exist) as an argument list, never through a shell string, and
+    records `session.terminal_opened`.
+12. **Backups and updates:** a backup before a new version copies the database, `config.toml`,
     `policy.json` and the `token` into `backups/` of the data folder (created 0700 on POSIX), so
     it is as sensitive as the data folder itself ([§13](#spec-backups)). An installer is run only
     after its SHA-256 matches `SHA256SUMS.txt` of the same release: that checks integrity, not
@@ -2663,6 +2754,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0048_project_area` | `project_area` (project, name, colour key, position, created at; unique on the project and the lowered name), `task.area_id` (`ON DELETE SET NULL`, indexed where set), `saved_filter.area` ([§1](#spec-areas)). Additive only: no table rebuilt, every task keeps its row with no area |
 | `0046_coordinator_wake` | `coordinator_wake` (`run_id`, `turn_id`, `first_event_id`, `last_event_id`, `count`, `created_at`): each wake of the coordinator and the events it carried. `question.overdue_at` (the `question.overdue` event written). `coordinator_wake.returned_at` (a wake given back). `run_turn.compact_pre_tokens`, `compact_post_tokens` (a turn's `compact_boundary`), `context_tokens` (its last assistant message's context). `token_budget` rebuilt with foreign keys off: scope `session` and `session_id` (a CHECK ties them; one budget per session); every budget keeps its id, marks and brakes |
 | `0049_remove_runs` | Data only, no table dropped: lists the worktrees runs created and did not remove for the Inbox (`app_setting` `removed_runs_worktrees`); cancels the waiting turns of runs and marks the running ones lost; ends every open run (status reason "runs inside the program were removed in 0.12", ended by `relaybay`); withdraws the open questions that have a run (the coordinator's questions without a card among them) and relaybay's own open questions about a kept worktree, with that reason; expires the open and the approved, unused approvals that have a run; stops the open schedule runs ("schedules were removed in 0.12") and disables every schedule not deleted or done; clears every task's "answer received" mark. Questions and approvals of desktop sessions stay open ([§1](#spec-run)) |
+| `0050_session_surface` | Additive: `session.surface` (`desktop`, `terminal` or NULL) and `session.entrypoint` (the raw `CLAUDE_CODE_ENTRYPOINT`), [§1](#spec-session-surface) |
 
 The tables and columns of runs, the coordinator run, profiles and schedules (`run`, `run_turn`,
 `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`,

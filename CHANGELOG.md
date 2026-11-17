@@ -14,6 +14,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The backlog's free-text area field suggests the project's areas first, and "To plan" gives the new card the item's area (added to the project's list when new; a text over 32 characters is not carried). Backlog rows are not migrated.
 - Markdown export and import carry a task's area by name in an `area` column of `TASKS.md`, written only when a task has an area.
 - Migration 0048: `project_area`, `task.area_id` and `saved_filter.area`, additive only.
+- The session card (design 0025): the task dialog and the task page start with a large state line, derived and never set by hand: Working (with the session's last activity), Idle, Waits for you (an open question or approval request, a review in review or test, `waiting_on` naming the owner, or a session asking for its user, each reason listed), Ended or No session. The same word shows on the board card next to the session's dot.
+- One Open in the state line follows where the session runs: a desktop session opens in the desktop app; an ended terminal session opens a new terminal window on this machine running `claude --resume <id>` in its folder (`POST /sessions/<id>/open-terminal`, board only, from the machine itself; Windows Terminal or a console window, Terminal on macOS through `osascript`, the first of `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xterm` elsewhere; event `session.terminal_opened`, shown on the Audit page with "Changes"); a live terminal session gets the button disabled with "running in a terminal"; an unknown surface gets only the reason.
+- Copy the brief: a card without a live session gives the text a new session needs (key, title, the line to bind itself with `task_bind_session`, the task's digest with next step, description, done so far, plan, decisions, the attachments by path, the report line), to the clipboard or selected in a fold. relaybay starts nothing.
+- Where a session runs: the command hook sends `CLAUDE_CODE_ENTRYPOINT` with `SessionStart` (`relaybay_entrypoint`), and the session is recorded as desktop or terminal; when the hook cannot tell (an older hook client, an http hook, another entrypoint) the session start asks the session once to say it with `task_patch(task, fields={"session_surface": ...}, hook_session=...)`. MCP (additive, contract v1): the field `session_surface` in `task_patch` and `relaybay://schema/task`, stored on the calling session (event `session.surface_set`).
+- "Not delivered yet" on an owner comment names why it waits: no session bound, the session ended, the session has not linked its hooks yet, or the session is idle and the wake-up hook is off. The Inbox has a group "Comments not delivered" for comments waiting longer than an hour.
+- Migration 0050: `session.surface` and `session.entrypoint`, additive only.
 
 ### Changed
 
@@ -31,6 +37,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `relaybay setup --mode http` no longer writes the `X-Relaybay-Run` header; an http install made before keeps working and the server ignores the header. Sessions no longer record their transcript path.
 - The removed pages answer 404: `/coordinator`, `/schedules`, `/settings/agents`, `/settings/profiles`, `/settings/intake`, `/usage`, `/messages` and the run and terminal routes. Settings has the tabs Integrations, Policy, Rules and Notifications.
 - CI runs the desktop builds on main and on a pull request that changes what goes into them; other pull requests skip them (not a required check).
+- The task dialog and the task page have one order: the state line, the Questions and Approvals folds, the last report as the main content, the comment thread, then the folds Session and its history, Task details (the fields), Description, Done so far and the rest; the comment box comes last and outside every fragment that live events refetch, so a live event never clears a half-typed comment. The Last report and the Comments are no longer folds.
 
 ### Deprecated
 
