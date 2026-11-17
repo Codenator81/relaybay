@@ -156,11 +156,6 @@ the same desktop session by itself. `SessionEnd` unbinds the session from its ta
 kept), except after `/clear` or `/resume` and for desktop sessions. A session can also be bound from
 the task dialog (**Bind**, next to Unbind).
 
-**Messages between sessions.** `message_send` carries text from one session to another on the same
-hooks as comments, framed as coming from a session and not from the owner; the board shows it under
-Messages. A session that never passed `hook_session` receives nothing through its hooks, and the
-sender is told so.
-
 **Comments from the board.** A comment written on a task reaches the agent of the bound session
 through these hooks, only once the agent linked itself with `hook_session`: with its next prompt or
 tool call (as added context), and `Stop` keeps the turn going (at most twice) until the agent calls
@@ -175,7 +170,7 @@ relaybay setup --apply --no-wake               # take only the wake-up hook out 
 ```
 
 It is an `asyncRewake` command hook that runs in the background after every turn and waits up to 25
-minutes for a comment (or a session message, or your acceptance of its plan on the board); when one
+minutes for a comment (or your acceptance of its plan on the board); when one
 arrives it exits 2 with it, which wakes the session.
 On an older Claude Code (or one whose version setup cannot read) it also needs `--force-wake`: a
 build that ignored `asyncRewake` would run the hook in the foreground and every turn would end only

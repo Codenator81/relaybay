@@ -17,7 +17,6 @@ you click **Update to X.Y.Z** in the program, the download of that release's ins
   [install with your coding agent](getting-started/agent-install.md).
 - **How-to guides** — [coordinate many projects](how-to/coordinator.md),
   [import and export markdown](how-to/markdown-import-export.md),
-  [intake from chats and e-mail](how-to/intake.md),
   [phone and LAN access](how-to/lan-access.md),
   [screenshots for review](how-to/screenshots-for-review.md),
   [troubleshooting](how-to/troubleshooting.md),

@@ -56,7 +56,7 @@ Ships when a coordinator runs its daily work from relaybay.
 | Item | Status | Design |
 |---|---|---|
 | Screenshot annotations: drawing, numbered pins, flattened PNG for the agent (11.5b) | done | [0009](design/0009-screenshot-annotations.md) |
-| Map (structure and "now" views) and Usage | done | [0010](design/0010-map-and-usage.md) |
+| Map (structure and "now" views) and Usage | done; the Map removed in 0.8.2, Usage in 0.12 | [0010](design/0010-map-and-usage.md) |
 | Rules versioning, `rules_update` / `rules_propose`, Settings → Rules, MCP prompts (1.5b–c) | done | [0002](design/0002-working-rules.md) |
 | Ctrl+K quick switcher, saved filters | done | [0004](design/0004-navigation.md) |
 | Project documents in the database (SPEC, STATUS, TASK) and moving a markdown coordinator setup over | done | [0011](design/0011-docs-in-database.md) |
@@ -65,8 +65,8 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| Intake from chats and e-mail: sources, matching to the waiting task, "answer received", autonomy switch per project and task, example Telegram and e-mail watchers | done | [0015](design/0015-intake-and-autonomy.md) |
-| Backlog: findings of sessions and reviews, intake proposals, "To plan" creates the task, `backlog.md` import and export | done | [0015](design/0015-intake-and-autonomy.md#backlog) |
+| Intake from chats and e-mail: sources, matching to the waiting task, "answer received", autonomy switch per project and task, example Telegram and e-mail watchers | done; removed in 0.12 | [0015](design/0015-intake-and-autonomy.md) |
+| Backlog: findings of sessions and reviews, intake proposals, "To plan" creates the task, `backlog.md` import and export || done; intake proposals removed in 0.12 | [0015](design/0015-intake-and-autonomy.md#backlog) |
 
 ## 0.6.0 — desktop program (released 2026-11-05)
 
@@ -107,8 +107,8 @@ Ships when a coordinator runs its daily work from relaybay.
 
 | Item | Status | Design |
 |---|---|---|
-| Tray notifications: a task waiting on you, a review arrival, an agent's answer, a server problem, also with the board closed | done | [0020](design/0020-tray-notifications.md) |
-| Messages between sessions on the board; stop all and budgets; a fake `claude` and end-to-end tests; a versioned MCP contract; backlog priority and assignee; an Audit page and a per-agent live switch | done | [0017](design/0017-readiness-for-agents-inside.md) |
+| Tray notifications: a task waiting on you, a review arrival, an agent's answer, a server problem, also with the board closed | done; the intake, brake and budget kinds removed in 0.12 | [0020](design/0020-tray-notifications.md) |
+| Messages between sessions on the board; stop all and budgets; a fake `claude` and end-to-end tests; a versioned MCP contract; backlog priority and assignee; an Audit page and a per-agent live switch | done; messages, stop all and budgets removed in 0.12 | [0017](design/0017-readiness-for-agents-inside.md) |
 
 ## 0.8.1 — the Map shows agents (released 2026-11-09)
 
@@ -162,29 +162,29 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 |---|---|---|
 | The probes of 0012 (resume, permissions in `-p`, the owner's word, concurrent access, bare and subscription terms, token numbers) | done | [0012](design/0012-runner-and-embedded-terminal.md#probes-2026-11) |
 | The server ends open wake-up long polls when it stops | done | [0021](design/0021-agents-inside.md#the-pain-it-removes) |
-| A run on a card in one repository used in place: the login check, headless turns with `--resume`, model, effort, permission profile, waiting texts, stop with the process tree, end, hooks linked by `RELAYBAY_RUN_ID` | done | [0021](design/0021-agents-inside.md#the-run) |
-| A run over a project folder with a worktree per touched repository (`--add-dir`, the untracked Claude Code files copied in), relaybay's hooks and MCP server added per run when setup did not install them, `run_start` / `run_status` over MCP | done | [0021](design/0021-agents-inside.md#the-run) |
-| A run's session opened in the Claude desktop app and handed back; permission mode, model and effort between turns (`run_settings` over MCP lowers only) | done | [0021](design/0021-agents-inside.md#plan-of-09-by-pull-request) |
-| Full turn reports with `verified` marks: every stream-json line stored masked (`run_event`), the turn's report and refusals on the card with nested subagent events, the rules warning on an M or L report without marks, `run_events` over MCP | done | [0021](design/0021-agents-inside.md#the-run) |
-| Questions (with "look at this" for visual acceptance) and approvals as objects on the card and in the Inbox | done | [0022](design/0022-questions-and-approvals.md) |
-| Slots and free memory per machine, queueing with a reason; the brake and budgets on runs; lifecycle and retention | done | [0021](design/0021-agents-inside.md#the-run) |
+| A run on a card in one repository used in place: the login check, headless turns with `--resume`, model, effort, permission profile, waiting texts, stop with the process tree, end, hooks linked by `RELAYBAY_RUN_ID` | done; removed in 0.12 | [0021](design/0021-agents-inside.md#the-run) |
+| A run over a project folder with a worktree per touched repository (`--add-dir`, the untracked Claude Code files copied in), relaybay's hooks and MCP server added per run when setup did not install them, `run_start` / `run_status` over MCP | done; removed in 0.12 | [0021](design/0021-agents-inside.md#the-run) |
+| A run's session opened in the Claude desktop app and handed back; permission mode, model and effort between turns (`run_settings` over MCP lowers only) | done; removed in 0.12 | [0021](design/0021-agents-inside.md#plan-of-09-by-pull-request) |
+| Full turn reports with `verified` marks: every stream-json line stored masked (`run_event`), the turn's report and refusals on the card with nested subagent events, the rules warning on an M or L report without marks, `run_events` over MCP | done; removed in 0.12 except the `verified:` marks and the rules warning | [0021](design/0021-agents-inside.md#the-run) |
+| Questions (with "look at this" for visual acceptance) and approvals as objects on the card and in the Inbox | done; the run roads removed in 0.12, kept for desktop sessions | [0022](design/0022-questions-and-approvals.md) |
+| Slots and free memory per machine, queueing with a reason; the brake and budgets on runs; lifecycle and retention | done; removed in 0.12 | [0021](design/0021-agents-inside.md#the-run) |
 
 ## 0.10 — the terminal (released 2026-11-13)
 
 | Item | Status | Design |
 |---|---|---|
-| A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | done | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
+| A Terminal tab on a run: PTY, vendored xterm.js, `claude --resume <id>`, off by default, loopback | done; removed in 0.12 | [0012](design/0012-runner-and-embedded-terminal.md#embedded-terminal) |
 
 ## 0.11 — the coordinator, schedules and profiles (released 2026-11-16)
 
 | Item | Status | Design |
 |---|---|---|
 | The probes of 0023 (nested `CLAUDE.md`, profiles, Claude Code's own schedule tools, `/compact` headless, the cost of a wake, one-shot checks) | done | [0023](design/0023-coordinator-and-schedules.md#probes-2026-11-16) |
-| PR 1: permission profiles as data (`agent`, `coordinator`, `read-only`), editable on the board in Settings → Profiles, read on every turn | done | [0023](design/0023-coordinator-and-schedules.md#profiles-as-data) |
-| PR 2: the coordinator as one permanent run without a card, in a folder outside any git repository, with a replaceable starter `CLAUDE.md` | done | [0023](design/0023-coordinator-and-schedules.md#the-coordinator) |
-| PR 3: wakes by events, compaction, the coordinator's budget | done | [0023](design/0023-coordinator-and-schedules.md#wakes) |
-| PR 4: schedules: coordinator turns, read-only `-p` checks, reminders | done | [0023](design/0023-coordinator-and-schedules.md#schedules) |
-| PR 5: the Coordinator page complete: what waits, what came in and what it decided, runs it started today, its schedules, live, paged, the sidebar's mark | done | [0023](design/0023-coordinator-and-schedules.md#the-coordinator-page) |
+| PR 1: permission profiles as data (`agent`, `coordinator`, `read-only`), editable on the board in Settings → Profiles, read on every turn | done; removed in 0.12 | [0023](design/0023-coordinator-and-schedules.md#profiles-as-data) |
+| PR 2: the coordinator as one permanent run without a card, in a folder outside any git repository, with a replaceable starter `CLAUDE.md` | done; removed in 0.12 | [0023](design/0023-coordinator-and-schedules.md#the-coordinator) |
+| PR 3: wakes by events, compaction, the coordinator's budget | done; removed in 0.12 | [0023](design/0023-coordinator-and-schedules.md#wakes) |
+| PR 4: schedules: coordinator turns, read-only `-p` checks, reminders | done; removed in 0.12 | [0023](design/0023-coordinator-and-schedules.md#schedules) |
+| PR 5: the Coordinator page complete: what waits, what came in and what it decided, runs it started today, its schedules, live, paged, the sidebar's mark | done; removed in 0.12 | [0023](design/0023-coordinator-and-schedules.md#the-coordinator-page) |
 
 ## 0.12 — the board with the desktop
 
@@ -192,28 +192,23 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 |---|---|---|
 | PR 1: areas (one per card from a project list that grows from use, a chip on the card, a board filter, MCP), a home icon for the product name in the top bar | next | [0024](design/0024-card-modes-thread-and-areas.md#areas) |
 | The rest of design 0024 (card modes, the run as a thread, the Coordinator page) | superseded by [0025](design/0025-board-with-the-desktop.md) |  |
-| Agents inside removed, the board with the desktop: the session card, Copy the brief, questions, approvals and reminders for desktop sessions | next | [0025](design/0025-board-with-the-desktop.md) |
+| Agents inside removed, the board with the desktop: runs, the terminal, the coordinator run, profiles, schedules (reminders included), the brake, budgets, the Usage page, intake and messages between sessions removed; the session card, Copy the brief, questions and approvals for desktop sessions | next | [0025](design/0025-board-with-the-desktop.md) |
 
 ## After 0.12
 
 | Item | Status | Design |
 |---|---|---|
-| An agents view: who started whom, who writes to whom (the Coordinator page lists its runs in 0.11) | later | [0010](design/0010-map-and-usage.md) |
-| Agent Client Protocol adapters, containers: not before the runner has run a week | later | [0017](design/0017-readiness-for-agents-inside.md) |
+| An agents view: who started whom, who writes to whom | later | [0010](design/0010-map-and-usage.md) |
+| Opening a new desktop session with the brief already in it (a probe of the desktop app's link first) | later | [0025](design/0025-board-with-the-desktop.md#what-gets-stronger) |
 
 Not planned: project managers and a Managers page (the owner, 2026-11-16).
 
 ## 1.0
 
 Stable MCP contract, complete documentation, a migration path from earlier versions, tested on three
-operating systems, and a week of the maintainer's daily work through relaybay without going back to the
-desktop app for anything relaybay should do.
+operating systems, and a week of the maintainer's daily work with the board next to the desktop app.
 
 ## Later, not planned
-
-- Agent runtime: local process | Docker container (sandbox with the task's repo for `claude -p`,
-  report back, container stopped), run by the program on a manager's MCP call; a separate setting
-  from the server mode. 0.6 starts no containers.
 
 - Optional semantic search (`relaybay[semantic]`): moved out of 0.5.0, no corpus justifies it yet;
   [0008](design/0008-memory-and-context.md) enables it only when it beats full-text search on an

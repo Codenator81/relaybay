@@ -41,25 +41,14 @@ run the official SDK client against a uvicorn server started on a free local por
 comes with a test.
 
 `tests/e2e/` runs whole scenarios against a real server: `tests/e2e/fake_claude.py` stands in for
-`claude -p` (a JSON scenario instead of a model), found on PATH through a shim in a temporary folder.
-It runs the hook commands from a temporary Claude home as real processes and calls MCP through the
-SDK client. Assert by polling, never by a fixed wait; keep the folder under 60 s. A feature that
-changes what a session sees gets a scenario there. Runs on cards (`tests/e2e/test_runs.py`) let the
-server start the fake itself: the `runs` fixture puts `FAKE_CLAUDE_SCENARIO`, `FAKE_CLAUDE_TRACE`
-and `FAKE_CLAUDE_AUTH` (the JSON answer and exit code of `claude auth status`; without it, a
-subscription sign-in) into the environment the server passes on. The fake takes the prompt from
-stdin when it is missing (a `claude.cmd` shim), `--model`, `--effort`, `--chrome` and the `manual`
-mode; a scenario may give `turns` (one list of steps per turn of a session) and the steps
-`spawn_child` (a sleeping grandchild that writes its pid) and `exit` (no result); each run traces
-its argv, prompt and `RELAYBAY_RUN_ID` (`kind: argv`) and its end (`kind: turn_end`). Hooks come
-from the user layer (`$CLAUDE_CONFIG_DIR/settings.json`, when `user` is in `--setting-sources`) and
-each `--settings`; an identical command handler runs once; each hook run is traced (`kind: hook`).
-The memory it loads is traced (`kind: memory`): the user `CLAUDE.md` of the config folder, the cwd's
-`CLAUDE.md` and `CLAUDE.local.md`, and those of each `--add-dir` with
-`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`. `make_git_repo` in `tests/e2e/conftest.py` makes a
-repository with untracked files for worktree tests. Against the real CLI, by hand and never in CI:
-`RELAYBAY_E2E_REAL_CLAUDE=1 uv run pytest tests/e2e/test_real_claude.py` and
-`uv run python scripts/probe_claude.py` (both use your login and spend a little quota).
+`claude -p … --output-format stream-json --verbose` (a JSON scenario instead of a model: `turn`
+steps `text`, `tool`, `mcp` and `wait_file`, plus `on_stop_block`, `auto_classifier` and
+`configured_servers`), found on PATH through a shim in a temporary folder, to test the hooks and
+MCP. It runs the hook commands of the user layer and of each `--settings` from a temporary Claude
+home as real processes and calls MCP through the SDK client; each hook run is traced
+(`kind: hook`), and so is the memory it loads (`kind: memory`: the user `CLAUDE.md` of the config
+folder, the cwd's `CLAUDE.md` and `CLAUDE.local.md`). Assert by polling, never by a fixed wait; keep the folder under 60 s. A feature
+that changes what a session sees gets a scenario there. Tests never run the real `claude`.
 
 ## Commits and pull requests
 
@@ -113,7 +102,9 @@ uv run --no-sync pyinstaller --noconfirm packaging/relaybay.spec   # dist/relayb
 uv run --no-sync python scripts/hook_timing.py -- dist/relaybay/relaybay-hook
 ```
 
-CI builds and smoke-tests them on Windows, macOS and Linux (`.github/workflows/desktop.yml`). A new
+CI builds and smoke-tests them on Windows, macOS and Linux (`.github/workflows/desktop.yml`) on
+`main` and on a pull request that changes what goes into them (desktop code, `hook_client.py`,
+`packaging/`, `pyproject.toml`, `uv.lock`, the licences file, the CI workflows). A new
 runtime dependency adds a line to `THIRD_PARTY_LICENSES.txt` (a test checks it against `uv.lock`).
 
 To try setup from a frozen build, run its `relaybay` against a scratch Claude Code folder, never

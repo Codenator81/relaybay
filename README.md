@@ -293,7 +293,6 @@ variables, then command-line flags.
 | legacy: the guard mode (`off`, `log`, `warn`, `block`), a layer under the policy file | from the policy (`warn`) | `RELAYBAY_GUARD_MODE` | — |
 | legacy: agents' level per environment kind (`[permission_defaults]`), a layer under the policy file | from the policy (local `full`, test `full`, live `read`) | — | — |
 | folder with Claude Code's `.claude/` and `.claude.json` (setup, Integrations) | your home directory | `RELAYBAY_CLAUDE_HOME` | `--claude-home` |
-| the `claude` a run on a card starts (`claude_path`) | `claude` on PATH, then the usual install folders | `RELAYBAY_CLAUDE_PATH` | — |
 | extra folders `attach_file` may read screenshots from (besides the project repository and the temp folder) | none | `RELAYBAY_ATTACHMENT_ROOTS` (comma-separated) | — |
 | largest screenshot / screenshots per task, MB | `10` / `200` | `RELAYBAY_ATTACHMENTS_MAX_MB` / `RELAYBAY_ATTACHMENTS_TASK_MAX_MB` | — |
 | the server's update check of the latest GitHub release (`update_check`) | `true` | `RELAYBAY_UPDATE_CHECK` | — |
