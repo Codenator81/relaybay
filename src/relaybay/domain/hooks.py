@@ -6,7 +6,7 @@ from pathlib import PureWindowsPath
 from typing import Any
 
 from relaybay.domain.errors import ValidationError
-from relaybay.domain.sessions import parse_session_id
+from relaybay.domain.sessions import ENTRYPOINT_MAX, parse_session_id
 
 HOOK_PATH = "/hooks/claude-code"
 # Opt-in wake-up hook (`relaybay setup --wake`): an `asyncRewake` command hook started at Stop
@@ -25,6 +25,13 @@ HOOK_STATUS = {
     "SessionEnd": "ended",
 }
 HOOK_EVENTS = tuple(HOOK_STATUS)
+# A Notification by its `notification_type`: Claude Code tells an idle prompt (about a minute
+# after the turn ended) apart from a question to its user. An unknown or missing type waits.
+NOTIFICATION_STATUS = {
+    "idle_prompt": "idle",
+    "permission_prompt": "waiting",
+    "elicitation_dialog": "waiting",
+}
 # Events whose answer may carry `hookSpecificOutput.additionalContext` with owner comments.
 DELIVERY_EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse")
 CC_ID_MAX = 200
@@ -41,6 +48,10 @@ HOST_SESSION_HEADER = "X-Relaybay-Host-Session"
 ATTENDED_ENV = "CLAUDE_CODE_SESSION_ATTENDED"
 ATTENDED_FIELD = "relaybay_host_attended"
 ATTENDED_HEADER = "X-Relaybay-Host-Attended"
+# Where Claude Code was started from (`claude-desktop…` in the desktop app, `cli` in a terminal).
+# The forwarder adds it to SessionStart as ENTRYPOINT_FIELD; http hooks cannot read it.
+ENTRYPOINT_ENV = "CLAUDE_CODE_ENTRYPOINT"
+ENTRYPOINT_FIELD = "relaybay_entrypoint"
 # SessionEnd reasons after which the same window goes on with a new Claude Code id.
 CONTINUED_END_REASONS = ("clear", "resume")
 # The forwarder's spool: an event the server did not take is sent again later with the time it
@@ -77,6 +88,7 @@ class HookEvent:
     # None when the field is empty or missing (older desktop apps may not send it).
     attended: bool | None = None
     transcript_path: str | None = None  # the session's transcript file (`*.jsonl`)
+    entrypoint: str | None = None  # SessionStart: CLAUDE_CODE_ENTRYPOINT as the forwarder sent it
     spooled_at: str | None = None  # a replay from the forwarder's spool: when it happened (UTC)
 
     @property
@@ -194,6 +206,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
     cc_id = _text(payload.get("session_id"), CC_ID_MAX)
     if event not in HOOK_STATUS or cc_id is None:
         return None
+    status = HOOK_STATUS[event]
     source = _text(payload.get("source"), 40) if event == "SessionStart" else None
     if event == "SessionStart":
         activity = f"started ({source or 'startup'})"
@@ -203,14 +216,17 @@ def parse_hook(payload: Any) -> HookEvent | None:
         activity = _text(payload.get("tool_name"), ACTIVITY_MAX) or "tool"
     elif event == "Notification":
         activity = _text(payload.get("message"), ACTIVITY_MAX) or "needs you"
+        status = NOTIFICATION_STATUS.get(payload.get("notification_type"), status)
     elif event == "Stop":
         activity = "turn finished"
     else:
         activity = "session ended"
+    starting = event == "SessionStart"
+    entrypoint = _text(payload.get(ENTRYPOINT_FIELD), ENTRYPOINT_MAX) if starting else None
     return HookEvent(
         cc_session_id=cc_id,
         event=event,
-        status=HOOK_STATUS[event],
+        status=status,
         cwd=_text(payload.get("cwd"), 4096),
         activity=activity,
         end_reason=_text(payload.get("reason"), 40) if event == "SessionEnd" else None,
@@ -221,6 +237,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
         ),
         attended=_attended(payload.get(ATTENDED_FIELD)) if event == "SessionStart" else None,
         transcript_path=_transcript_path(payload.get("transcript_path")),
+        entrypoint=entrypoint,
         spooled_at=_spooled_at(payload.get(SPOOLED_FIELD)),
     )
 
@@ -237,4 +254,14 @@ def session_start_context(cc_session_id: str) -> str:
     return (
         f"Your relaybay hook session: {cc_session_id}. Pass it as `hook_session` in relaybay"
         " writes."
+    )
+
+
+def surface_question(cc_session_id: str, session_name: str) -> str:
+    """The line SessionStart adds when the hook could not tell where the session runs."""
+    return (
+        "relaybay could not tell whether you run in the Claude desktop app or in a terminal."
+        " Tell it once, with your next relaybay write on your task: task_patch(task, fields="
+        '{"session_surface": "desktop"} or {"session_surface": "terminal"},'
+        f' session="{session_name}", hook_session="{cc_session_id}").'
     )

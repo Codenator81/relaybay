@@ -322,7 +322,7 @@ async def test_mcp_tools_take_repos_and_prs(service: Service) -> None:
     detail = await call("task_get", task="acme-shop-1")
     assert "## Code" in detail and "PR #12 https://github.com/acme/web/pull/12" in detail
     assert "- api (api) `/home/dev/acme-shop/api` (linked: agent)" in detail
-    assert detail.rstrip().endswith("tracker_logged, repos, prs")
+    assert detail.rstrip().endswith("tracker_logged, repos, prs, session_surface")
     with pytest.raises(ToolError, match="Its repositories: web, api"):
         await mcp.call_tool("task_update", {"task": "acme-shop-1", "repos": ["shop"]})
     schema = await mcp.read_resource("relaybay://schema/task")

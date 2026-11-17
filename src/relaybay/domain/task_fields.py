@@ -142,3 +142,18 @@ LINK_FIELDS: tuple[TaskField, ...] = (
     ),
 )
 LINK_NAMES: tuple[str, ...] = tuple(f.name for f in LINK_FIELDS)
+
+# Not a field of the task either: where the calling session runs, stored on that session. Asked
+# for at session start when the hook could not tell (design 0025).
+SESSION_SURFACE = "session_surface"
+SESSION_FIELDS: tuple[TaskField, ...] = (
+    TaskField(
+        SESSION_SURFACE,
+        "surface",
+        "Where you, the calling session, run: 'desktop' (the Claude desktop app) or 'terminal'."
+        " Stored on your session, not on the task; pass hook_session so relaybay knows which"
+        " session you are. Send it once when your session start asks for it.",
+        TEXT_CLEARS,
+    ),
+)
+SESSION_FIELD_NAMES: tuple[str, ...] = tuple(f.name for f in SESSION_FIELDS)

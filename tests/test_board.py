@@ -442,24 +442,28 @@ def test_compact_rules_touch_only_task_cards(board: TestClient, seeded: str) -> 
     assert "data-key" not in page[start : page.index(">", start)]
 
 
-def test_every_block_of_the_task_view_is_a_fold(board: TestClient, seeded: str) -> None:
+def test_the_folds_of_the_task_view(board: TestClient, seeded: str) -> None:
+    """The session card (design 0025): the state line, the last report and the comments are
+    always shown; the session, the task details and the rest fold."""
     templates = Path(relaybay.__file__).parent / "web" / "templates"
-    for name in ("_task_view.html", "_comments.html"):
-        text = (templates / name).read_text(encoding="utf-8")
-        assert '<section class="panel' not in text, name
-        assert '<details class="panel"' not in text, name
+    text = (templates / "_task_view.html").read_text(encoding="utf-8")
+    assert '<details class="panel"' not in text
+    sections = re.findall(r'<section class="panel ([a-z-]+)"', text)
+    assert sections == ["task-report", "comments"]
     run_in_app(
         board,
         board.app.state.service.update_task,
         seeded,
         {"description": "D1", "progress": "P1"},
     )
-    always = ("session", "description", "progress", "reports", "comments")
+    always = ("questions", "approvals", "session", "details", "description", "progress")
     for url in (f"/t/{seeded}", f"/p/acme-shop/t/{seeded}/dialog"):
         page = board.get(url).text
         for key in always:
             assert re.search(rf'<details class="panel fold[^"]*" data-fold="{key}" open', page), key
         assert "<summary><h2>Description</h2></summary>" in page
+        assert 'data-fold="reports"' not in page and 'data-fold="comments"' not in page
+        assert '<section class="panel state-line state-none"' in page
     dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
     assert '<details class="panel fold dialog-edit" data-fold="edit">' in dialog
     assert "<summary><h2>Edit task</h2></summary>" in dialog
@@ -469,13 +473,13 @@ def test_every_block_of_the_task_view_is_a_fold(board: TestClient, seeded: str) 
     assert 'data-fold="plan"' not in dialog and 'data-fold="review"' not in dialog
 
 
-def test_the_reports_accordion_lives_inside_its_fold(board: TestClient, seeded: str) -> None:
+def test_the_reports_accordion_lives_inside_the_last_report(board: TestClient, seeded: str) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.add_report, seeded, "verified · M · second")
     page = board.get(f"/t/{seeded}").text
-    fold = page.split('data-fold="reports" open>', 1)[1].split('data-fold="', 1)[0]
-    assert "<summary><h2>Last report</h2></summary>" in fold
-    assert '<details class="report report-older" data-report="' in fold
+    block = page.split('<section class="panel task-report"', 1)[1].split("</section>", 1)[0]
+    assert ">Last report</h2>" in block
+    assert '<details class="report report-older" data-report="' in block
 
 
 def test_compact_controls_are_real_buttons_and_no_server_state(

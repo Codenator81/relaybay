@@ -64,9 +64,12 @@ the desktop app:
 
 1. **A state line on the card**, large, derived, never set by hand: **Working** (with the
    session's last activity), **Idle**, **Waits for you** (an open question or approval, a review,
-   or "waiting on" names the owner), **Ended**, **No session**. One action in the line: **Open in
-   the desktop app** (the link the card has today, made the main button). The same word shows on
-   the board card next to the session's dot.
+   or "waiting on" names the owner), **Ended**, **No session**. One action in the line: **Open**,
+   which follows where the session runs ([R10 to R12](#decided-points)): a desktop session opens in
+   the desktop app (the link the card has today, made the main button), an ended terminal session
+   is resumed with `claude --resume` in a new terminal window on the machine itself, a live
+   terminal session is not opened. A disabled or missing Open says why in one line. The same word
+   shows on the board card next to the session's dot.
 2. **Start or continue from the card.** A card without a live session gets **Copy the brief**: the
    text a new session needs (the card's key, description, decisions, plan and its current step,
    done so far, next step, attachments by path, and the line that tells the session to bind
@@ -189,6 +192,9 @@ session with a cached schema keeps working.
 | R7 | "Copy the brief" | in 0.12 | later |
 | R8 | The 1.0 line in ROADMAP | reworded as above | the owner words it |
 | R9 | README and the one-line description | a pull request of their own; the text waits for the owner's yes | inside the removal pull request |
+| R10 | The state line's action | one **Open** that follows the session's surface: the desktop link for a desktop session, a new terminal window running `claude --resume <id>` in the session's folder for an ended terminal session (owner, 2026-11-17) | "Open in the desktop app" only |
+| R11 | How relaybay knows the surface | the hook sends `CLAUDE_CODE_ENTRYPOINT` with `SessionStart` (`claude-desktop…` desktop, `cli` terminal) and a desktop id means desktop; the session is asked to say it with `task_patch(session_surface)` only when the hook cannot tell (owner, 2026-11-17) | always ask the session |
+| R12 | A live terminal session | not opened: the button is disabled with "running in a terminal"; the board cannot find that window, and a second process on a live session is unsafe (owner, 2026-11-17) | open a second terminal on it |
 
 ## Plan by pull request
 
@@ -198,7 +204,7 @@ session with a cached schema keeps working.
 | B | Remove what stands on runs: the Terminal tab and its dependencies, the coordinator run with its wakes and page, schedules of every kind and the Schedules page, permission profiles | reviewer: what a desktop session path lost | 1.5 |
 | C | Remove runs: the runner, the Agent block, Settings → Agents, limits, the run roads of questions and approvals; the brake, budgets, the Usage page and the usage reader; MCP stubs; migration 0049; ignored config keys; SPEC sections, reference, CHANGELOG | reviewer: migration, MCP contract, hooks | 2 |
 | C2 | The project's description: README, ROADMAP, the SPEC's overview and the site's pages, the package's and the repository's one line | the owner (text) | 0.5 |
-| D | The session card: state line, order, the comment field outside the refetch, Copy the brief, the state on the board card, the reason of an undelivered comment | — | 1 |
+| D | The session card: state line with one Open by the session's surface (migration 0050, the hook's entrypoint, `session_surface` in `task_patch`, resuming an ended terminal session), order, the comment field outside the refetch, Copy the brief, the state on the board card, the reason of an undelivered comment and the Inbox line for comments waiting over an hour | reviewer: the terminal endpoint | 1.3 |
 | E | Release 0.12.0 | — | 0.3 |
 
 PR 1 of 0024 (areas, the home icon) is merged before B.

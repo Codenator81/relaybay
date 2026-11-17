@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import ipaddress
 import json
 import logging
 import secrets
@@ -12,7 +13,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Form, Header, HTTPException, Query, Request
 from fastapi.responses import (
@@ -169,6 +170,8 @@ EVENT_KINDS = (
     "session.todo_updated",
     "session.message",
     "session.launched",
+    "session.surface_set",
+    "session.terminal_opened",
     "session.no_live_on",
     "session.no_live_off",
     "attachment.added",
@@ -325,6 +328,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         pulse_stale=service.pulse_stale,
         pulse_stale_days=settings.pulse_stale_days,
         plan_draft_hours=service.plan_draft_hours,
+        card_state=service.card_state,
     )
     versions = static_versions()
 
@@ -816,6 +820,27 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await board_write(request, csrf, write, back_to(back, "/sessions"))
 
+    @router.post("/sessions/{session_id}/open-terminal")
+    async def session_open_terminal(
+        request: Request,
+        session_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> PlainTextResponse:
+        """The card's Open for an ended terminal session: a new terminal window on this machine
+        runs `claude --resume`. Only the session's id comes in; everything else is read from
+        the database. A refusal is a 409 with the reason the card shows."""
+        board_only(request, csrf)
+        if not from_this_machine(request):
+            return PlainTextResponse(
+                "A terminal opens only on the machine relaybay runs on: open the board there.",
+                status_code=409,
+            )
+        try:
+            session = await service.open_terminal(session_id, actor="owner")
+        except ConflictError as exc:
+            return PlainTextResponse(str(exc), status_code=409)
+        return PlainTextResponse(f"A terminal resumes {session.name}.")
+
     async def audit_context(
         project: str,
         environment: str,
@@ -1187,6 +1212,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             comments=comments,
             error=error,
             doc_refs=doc_refs,
+            wait_reason=await service.comment_wait_reason(task),
         )
         if saved:
             response.headers["X-Relaybay-Comment"] = "saved"  # app.js clears the form
@@ -1587,6 +1613,24 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return JSONResponse({"comment": comment.id if comment else None})
 
     # --- Stands & access: environments, access map, permission levels -----------------
+
+    def from_this_machine(request: Request) -> bool:
+        """The request comes from a loopback address (not a phone or another computer) and
+        names a loopback host: behind a local reverse proxy a remote client also comes from
+        127.0.0.1, but the Host it asked for is the published name."""
+        client = request.client.host if request.client else ""
+        try:
+            if not ipaddress.ip_address(client).is_loopback:
+                return False
+        except ValueError:
+            return False
+        host = urlsplit(f"//{request.headers.get('host', '')}").hostname or ""
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def board_only(request: Request, csrf: str) -> None:
         """Environment writes come from a signed-in browser (cookie + CSRF), not from a

@@ -22,7 +22,7 @@
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
     "plan.set", "plan.step_added", "plan.step_updated", "plan.accepted", "session.todo_updated",
-    "session.message", "session.launched",
+    "session.message", "session.launched", "session.surface_set", "session.terminal_opened",
     "document.updated", "memory.added", "memory.updated", "block.updated",
     "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied",
     "backlog.added", "backlog.updated", "backlog.planned",
@@ -35,7 +35,7 @@
   var INBOX_KINDS = [
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
     "task.archived", "task.unarchived",
-    "session.seen", "session.status_changed", "comment.added", "comment.read",
+    "session.seen", "session.status_changed", "comment.added", "comment.delivered", "comment.read",
     "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
     "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
     "policy.proposal_reopened",
@@ -278,7 +278,17 @@
     // the page (not every hook status of its session, which comes every few seconds while it
     // works), or only refetch the details while a comment is being written.
     if (live.dataset.task) {
-      if (data.key !== live.dataset.task || data.kind === "session.status_changed") return;
+      // A hook status comes every few seconds while the session works: only the view (with its
+      // state line) is refetched, never the page.
+      if (data.kind === "session.status_changed" || data.kind === "session.terminal_opened") {
+        if ((data.keys || []).indexOf(live.dataset.task) !== -1) {
+          unlessAnswering(document, "task-state", function () {
+            queue(document.querySelector(".task-view"));
+          });
+        }
+        return;
+      }
+      if (data.key !== live.dataset.task) return;
       if (isComment(data.kind)) {
         queue(thread(data.key));
       } else if (isReview(data.kind)) {
@@ -292,8 +302,7 @@
       } else {
         unlessAnswering(document, "task-page", function () {
           if (commentDraft(document)) {
-            queue(document.querySelector(".task-view"));
-            queue(thread(data.key));
+            queue(document.querySelector(".task-view"));  // the comment thread is inside it
           } else {
             reloadPage();
           }
@@ -357,6 +366,13 @@
     if (!document.getElementById("board")) return;
     // Every page listens to all projects (the Inbox count); the board only to its own.
     if (data.project !== live.dataset.project) return;
+    if ((data.kind === "session.status_changed" || data.kind === "session.terminal_opened") &&
+        dialog && dialog.open &&
+        (data.keys || []).indexOf(dialog.dataset.key) !== -1) {
+      unlessAnswering(dialog, "dialog-state", function () {
+        if (dialog.open) queue(dialog.querySelector(".task-view"));  // the state line
+      });
+    }
     if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) {
       if (isComment(data.kind)) queue(thread(data.key));
       else if (isReview(data.kind)) queueReview(data.key);
@@ -437,6 +453,52 @@
     }
   }
 
+  // "Copy the brief" of the state line: the same clipboard rule as Copy link; the fallback opens
+  // the fold with the brief selected.
+  function copyBrief(button) {
+    var line = button.closest(".state-line");
+    var field = line && line.querySelector(".brief-text");
+    if (!field) return;
+    function fallback() {
+      var fold = field.closest("details");
+      if (fold) fold.open = true;
+      field.focus();
+      field.select();
+      button.textContent = "Selected: copy it";
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(field.value).then(function () {
+        button.textContent = "Copied";
+        window.setTimeout(function () { button.textContent = "Copy the brief"; }, 1500);
+      }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  // Open for an ended terminal session: the answer (or the refusal, a 409 with its reason) is
+  // shown in the state line. After a success the button stays disabled: the server refuses a
+  // second Open until the session starts, and the card refreshes on `session.terminal_opened`.
+  document.addEventListener("submit", function (event) {
+    var form = event.target.closest && event.target.closest("form.open-terminal");
+    if (!form) return;
+    event.preventDefault();
+    var note = form.closest(".state-line").querySelector(".state-result");
+    var button = form.querySelector("button");
+    button.disabled = true;
+    fetch(form.action, { method: "POST", credentials: "same-origin", body: new FormData(form) })
+      .then(function (response) {
+        return response.text().then(function (text) { return { ok: response.ok, text: text }; });
+      }, function () { return { ok: false, text: "relaybay did not answer." }; })
+      .then(function (answer) {
+        note.textContent = answer.ok ? "Opening… " + answer.text : answer.text;
+        note.classList.toggle("is-error", !answer.ok);
+        note.hidden = false;
+        if (answer.ok) button.textContent = "Opening…";
+        else button.disabled = false;
+      });
+  });
+
   // --- task dialog: /p/<slug>?task=<key> --------------------------------------------------
   // Opening pushes the ?task= URL; Back, Esc, the close button and a click on the backdrop close
   // it. The board under it keeps updating; the dialog refetches its read-only part on events for
@@ -514,9 +576,8 @@
       heldForAnswer.set("dialog", function () { if (dialog && dialog.open) refreshDialog(); });
       return;
     }
-    queue(dialog.querySelector(".task-view"));
+    queue(dialog.querySelector(".task-view"));  // the comment thread is inside it
     queue(dialog.querySelector(".dialog-area"));
-    queue(dialog.querySelector(".comment-thread"));
     queueReview(dialog.dataset.key);
     var form = editForm();
     if (!form) return;
@@ -748,6 +809,12 @@
     if (button) {
       event.preventDefault();
       copyLink(button);
+      return;
+    }
+    var brief = event.target.closest(".copy-brief");
+    if (brief) {
+      event.preventDefault();
+      copyBrief(brief);
       return;
     }
     var plain = event.button === 0 &&

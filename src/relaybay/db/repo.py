@@ -74,6 +74,12 @@ SELECT t.*, p.slug AS project_slug,
            AND ps.status = 'in_progress' ORDER BY ps.position LIMIT 1) AS plan_now_position,
        (SELECT MAX(pr.created_at) FROM plan_revision pr WHERE pr.task_id = t.id)
            AS plan_revised_at,
+       (SELECT COUNT(*) FROM question q WHERE q.task_id = t.id AND q.status = 'open')
+           AS open_questions,
+       (SELECT COUNT(*) FROM approval a WHERE a.task_id = t.id AND a.status = 'open')
+           AS open_approvals,
+       (SELECT ls.status FROM task_session b JOIN session ls ON ls.id = b.session_id
+           WHERE b.task_id = t.id ORDER BY b.id DESC LIMIT 1) AS last_session_status,
        pa.name AS area_name, pa.color AS area_color
 FROM task t
 JOIN project p ON p.id = t.project_id
@@ -151,6 +157,9 @@ def _task(row: aiosqlite.Row) -> Task:
         area_id=row["area_id"],
         area=row["area_name"],
         area_color=row["area_color"],
+        open_questions=row["open_questions"],
+        open_approvals=row["open_approvals"],
+        last_session_status=row["last_session_status"],
     )
 
 
@@ -523,6 +532,9 @@ def _session(row: aiosqlite.Row) -> Session:
         transcript_path=row["transcript_path"],
         no_live_at=row["no_live_at"],
         no_live_by=row["no_live_by"],
+        surface=row["surface"],
+        entrypoint=row["entrypoint"],
+        start_cwd=row["start_cwd"],
     )
 
 
@@ -723,11 +735,42 @@ async def rebind(
     )
 
 
-async def unbind(conn: aiosqlite.Connection, task_id: int, now: str) -> None:
+async def unbind(
+    conn: aiosqlite.Connection, task_id: int, now: str, reason: str | None = None
+) -> None:
     await conn.execute(
-        "UPDATE task_session SET unbound_at = ? WHERE task_id = ? AND unbound_at IS NULL",
-        (now, task_id),
+        "UPDATE task_session SET unbound_at = ?, unbound_reason = ?"
+        " WHERE task_id = ? AND unbound_at IS NULL",
+        (now, reason, task_id),
     )
+
+
+async def tasks_ended_with_session(conn: aiosqlite.Connection, session_id: int) -> list[Task]:
+    """Open tasks whose latest binding was to this session and ended with its own end (none
+    bound since, not unbound by hand)."""
+    rows = await _all(
+        conn,
+        _TASK_SELECT + " WHERE t.session_id IS NULL AND t.stage != 'done' AND EXISTS ("
+        "SELECT 1 FROM task_session b WHERE b.task_id = t.id AND b.session_id = ?"
+        " AND b.unbound_reason = 'session_end'"
+        " AND b.id = (SELECT MAX(b2.id) FROM task_session b2 WHERE b2.task_id = t.id))"
+        " ORDER BY t.id",
+        (session_id,),
+    )
+    return [_task(r) for r in rows]
+
+
+async def tasks_last_bound_to(conn: aiosqlite.Connection, session_id: int) -> list[Task]:
+    """Tasks whose latest binding is (or was) to this session."""
+    rows = await _all(
+        conn,
+        _TASK_SELECT + " WHERE EXISTS (SELECT 1 FROM task_session b WHERE b.task_id = t.id"
+        " AND b.session_id = ?"
+        " AND b.id = (SELECT MAX(b2.id) FROM task_session b2 WHERE b2.task_id = t.id))"
+        " ORDER BY t.id",
+        (session_id,),
+    )
+    return [_task(r) for r in rows]
 
 
 async def list_bindings(conn: aiosqlite.Connection, task_id: int, limit: int = 50) -> list[Binding]:
@@ -1387,6 +1430,19 @@ async def count_stop_blocks(conn: aiosqlite.Connection, comment_ids: list[int]) 
 async def mark_comments_read(conn: aiosqlite.Connection, comment_ids: list[int], now: str) -> None:
     marks = ", ".join("?" for _ in comment_ids)
     await conn.execute(f"UPDATE comment SET read_at = ? WHERE id IN ({marks})", (now, *comment_ids))
+
+
+async def waiting_owner_comments(
+    conn: aiosqlite.Connection, before: str, limit: int = 200
+) -> list[Comment]:
+    """Comments for the agent written before `before` and still not delivered, oldest first."""
+    rows = await _all(
+        conn,
+        _COMMENT_SELECT + " WHERE c.author_kind != 'agent' AND c.delivered_at IS NULL"
+        " AND c.read_at IS NULL AND c.created_at < ? ORDER BY c.id LIMIT ?",
+        (before, limit),
+    )
+    return [_comment(r) for r in rows]
 
 
 async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> list[Comment]:

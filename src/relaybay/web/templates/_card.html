@@ -9,6 +9,9 @@
     <a class="open-desktop icon" href="{{ t.session_link }}" title="Open in desktop: {{ t.session_name }}{{ status_text }}"
        aria-label="Open {{ t.session_name }} in the Claude desktop app{{ status_text }}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7.5 8.5M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"/></svg>{% if t.session_status %}<span class="status-dot dot-{{ t.session_status }}"></span>{% endif %}</a>
     {% endif %}
+    {#- The state word of the task dialog's state line (design 0025), next to the session's dot. #}
+    {%- set st = card_state(t) %}
+    {% if st.key != "none" %}<span class="card-state state-{{ st.key }}" title="{{ st.label }}{% if st.reasons %}: {{ st.reasons|join(', ') }}{% endif %}">{% if not t.session_link %}<span class="status-dot inline{% if t.session_id and t.session_status %} dot-{{ t.session_status }}{% elif st.key == 'ended' %} dot-ended{% endif %}" aria-hidden="true"></span>{% endif %}{{ st.label }}</span>{% endif %}
     {#- Shown only in compact mode; app.js keeps its state per browser, the server never knows. #}
     <button type="button" class="card-expand" aria-expanded="false" aria-label="Expand {{ t.key }}" title="Expand {{ t.key }}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
     {#- The keyboard and phone way of what a drag does (board.js); a stage move lands on top. #}

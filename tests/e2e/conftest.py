@@ -199,9 +199,11 @@ class Stand:
         *flags: str,
         prompt: str = "Work on the task",
         mcp: bool = True,
+        env: dict[str, str] | None = None,
     ) -> FakeRun:
         """Start `claude -p` in the project folder with the options a session would get. `mcp`:
-        a run without MCP calls may go without, the SDK takes two seconds to import on Windows."""
+        a run without MCP calls may go without, the SDK takes two seconds to import on Windows.
+        `env`: variables Claude Code would set for its hooks (e.g. CLAUDE_CODE_ENTRYPOINT)."""
         name = uuid.uuid4().hex
         scenario_file = self.root / f"scenario-{name}.json"
         scenario_file.write_text(json.dumps(scenario), encoding="utf-8")
@@ -223,6 +225,7 @@ class Stand:
             cwd=self.project_dir,
             env={
                 **self.env,
+                **(env or {}),
                 "FAKE_CLAUDE_SCENARIO": str(scenario_file),
                 "FAKE_CLAUDE_TRACE": str(trace_file),
             },

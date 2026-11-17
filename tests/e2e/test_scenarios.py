@@ -73,6 +73,8 @@ def test_task_session_plan_report_review_inbox(stand: Stand) -> None:
     session_id = run.init["session_id"]
     contexts = [e["text"] for e in run.trace("context") if e["event"] == "SessionStart"]
     assert f"Your relaybay hook session: {session_id}" in contexts[0]
+    # No CLAUDE_CODE_ENTRYPOINT in its hooks' environment: the session is asked where it runs.
+    assert "could not tell whether you run in the Claude desktop app" in contexts[0]
 
     key = "acme-shop-1"
     task = stand.mcp("task_get", task=key)
@@ -196,3 +198,10 @@ def test_events_of_a_session_are_spooled_while_the_server_is_away(stand: Stand) 
     # Replayed in order: the spooled start, stop and end of the resumed session.
     replayed = stand.events().split("ended → working", 1)[1]
     assert "working → idle" in replayed and "idle → ended" in replayed
+
+
+def test_a_terminal_session_says_where_it_runs_through_its_hooks(stand: Stand) -> None:
+    run = stand.run({"turn": [{"text": "Hi."}]}, mcp=False, env={"CLAUDE_CODE_ENTRYPOINT": "cli"})
+    run.finish()
+    contexts = [e["text"] for e in run.trace("context") if e["event"] == "SessionStart"]
+    assert contexts and "could not tell whether you run" not in contexts[0]

@@ -42,6 +42,15 @@ from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import BacklogItem
+from relaybay.domain.card import (
+    NO_SESSION,
+    CardState,
+    OpenAction,
+    card_state,
+    open_action,
+    session_surface,
+    undelivered_reason,
+)
 from relaybay.domain.code import (
     REPO_KINDS,
     REPO_NAME_MAX,
@@ -89,6 +98,7 @@ from relaybay.domain.hooks import (
     parse_launched_session,
     parse_message_recipient,
     session_start_context,
+    surface_question,
 )
 from relaybay.domain.models import (
     Binding,
@@ -179,7 +189,13 @@ from relaybay.domain.rules import (
     verified_marks_problem,
     warning_text,
 )
-from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
+from relaybay.domain.sessions import (
+    DEFAULT_DESKTOP_LINK_TEMPLATE,
+    SURFACES,
+    TERMINAL,
+    parse_session_id,
+    surface_of_entrypoint,
+)
 from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
 from relaybay.domain.switcher import (
     EMPTY_QUERY_TASKS,
@@ -196,6 +212,8 @@ from relaybay.domain.task_fields import (
     LINK_NAMES,
     MARKDOWN_MAX,
     NAME_MAX,
+    SESSION_FIELD_NAMES,
+    SESSION_SURFACE,
     TEXT_MAX,
     TITLE_MAX,
 )
@@ -216,6 +234,7 @@ from relaybay.policy import (
     validate_layer,
     widened_on_live,
 )
+from relaybay.terminal import TerminalLauncher
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -230,6 +249,21 @@ HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatc
 LIVE_ACTION = "live.action"
 NO_LIVE_ON = "session.no_live_on"
 NO_LIVE_OFF = "session.no_live_off"
+TERMINAL_OPENED = "session.terminal_opened"
+COMMENT_WAIT_HOURS = 1  # an owner comment undelivered for longer is listed in the Inbox
+SESSION_END_UNBOUND = "session_end"  # task_session.unbound_reason of a session's own end
+# After Open, the same session is not opened again until its SessionStart arrives or this
+# many seconds pass: a second `claude --resume` on one conversation is unsafe.
+TERMINAL_OPEN_HOLD_SECONDS = 60.0
+BRIEF_BIND_LINE = (
+    'First bind yourself to this card: task_bind_session("{key}", session=<your desktop session'
+    " id local_… if you know it, else a name>). On every relaybay write pass the same session and"
+    " the hook session your session start gave you as hook_session."
+)
+BRIEF_REPORT_LINE = (
+    "At the end of each stage add a report with report_add on this card; its first line is"
+    " `state · size · gist`."
+)
 # Kinds of features removed in 0.12 (design 0025): never written again, still shown for the
 # rows already in the journal.
 HISTORIC_AUDIT_KINDS = (
@@ -283,6 +317,7 @@ AUDIT_CHANGE_KINDS = (
     "environment.proposal_rejected",
     NO_LIVE_ON,
     NO_LIVE_OFF,
+    TERMINAL_OPENED,
     "question.asked",
     "question.answered",
     "question.defaulted",
@@ -465,6 +500,14 @@ class TaskDetail:
     code: TaskCode = field(default_factory=lambda: TaskCode([], [], []))
     checks: dict[int, list[ReportCheck]] = field(default_factory=dict)  # `verified:` marks
     marks_from: int = 0  # reports with a smaller id were written before marks existed
+    # The session card (design 0025): its state line, the session it is about (the bound one,
+    # or the ended one of the latest binding), what Open does, the brief for a new session
+    # (only while no session works on the card) and why owner comments wait.
+    state: CardState = field(default_factory=lambda: CardState(NO_SESSION))
+    card_session: Session | None = None
+    open: OpenAction = field(default_factory=OpenAction)
+    brief: str | None = None
+    undelivered: str | None = None
 
     def marks_warning(self, report: Report) -> str | None:
         """The rules warning of an M or L report without `verified:` marks."""
@@ -510,6 +553,8 @@ class Inbox:
     running_cap: int = 0
     questions: list[Question] = field(default_factory=list)  # open, of all cards
     approvals: list[Approval] = field(default_factory=list)  # open requests, of all cards
+    # Owner comments not delivered for over COMMENT_WAIT_HOURS: per task, with why they wait.
+    undelivered: list[tuple[Task, list[Comment], str | None]] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -524,6 +569,7 @@ class Inbox:
             + len(self.not_logged)
             + len(self.unlinked)
             + len(self.replies)
+            + len(self.undelivered)
             + len(self.proposals)
             + len(self.policy_proposals)
             + len(self.rule_proposals)
@@ -643,6 +689,16 @@ def _link_entries(value: Any, name: str) -> list[str]:
     if len(entries) > REPOS_MAX:
         raise ValidationError(f"{name}: at most {REPOS_MAX} entries in one write.")
     return entries
+
+
+def _clean_surface(value: Any) -> str | None:
+    """`session_surface`: desktop or terminal; None (or '') clears it."""
+    if value is not None and not isinstance(value, str):
+        raise ValidationError(f"{SESSION_SURFACE} must be a string.")
+    surface = (value or "").strip().lower()
+    if surface and surface not in SURFACES:
+        raise ValidationError(f"{SESSION_SURFACE} must be one of {', '.join(SURFACES)}.")
+    return surface or None
 
 
 def _clean_field(name: str, value: Any) -> Any:
@@ -1068,6 +1124,11 @@ class Service:
         self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
         self.attachments_dir = attachments_dir or db_path.parent / "attachments"
+        # Opens an ended terminal session again; tests replace it so no window opens.
+        self.terminal = TerminalLauncher()
+        self.terminal_hold = TERMINAL_OPEN_HOLD_SECONDS
+        self._terminal_opened: dict[int, float] = {}  # session id -> monotonic time of Open
+        self._terminal_lock = asyncio.Lock()
         self.attachment_roots = list(attachment_roots or [])
         self.attachment_max_bytes = attachment_max_bytes
         self.attachment_task_max_bytes = attachment_task_max_bytes
@@ -1455,6 +1516,10 @@ class Service:
                 activity_at=other.activity_at,
                 cwd=other.cwd,
             )
+            # Where the hooks saw it run goes along, unless the session already knows.
+            for name in ("surface", "entrypoint", "start_cwd"):
+                if getattr(session, name) is None and getattr(other, name) is not None:
+                    changes[name] = getattr(other, name)
             if other.kind == "hook" and not await repo.has_bindings(tx.conn, other.id):
                 await repo.delete_session(tx.conn, other.id)
             else:
@@ -1787,6 +1852,20 @@ class Service:
             changes: dict[str, Any] = {"status": hook.status, "activity": hook.activity}
             if hook.cwd and hook.cwd != session.cwd:
                 changes["cwd"] = hook.cwd
+            if hook.event == "SessionStart":
+                self._terminal_opened.pop(session.id, None)  # the opened terminal has started
+                # A resume or a compaction goes on in the conversation's own folder; any other
+                # start begins a conversation where it starts.
+                goes_on = hook.source in ("resume", "compact") and session.start_cwd
+                if hook.cwd and not goes_on and hook.cwd != session.start_cwd:
+                    changes["start_cwd"] = hook.cwd
+            if hook.entrypoint:
+                # An entrypoint that tells nothing keeps what the session itself may have said.
+                surface = surface_of_entrypoint(hook.entrypoint)
+                if hook.entrypoint != session.entrypoint:
+                    changes["entrypoint"] = hook.entrypoint
+                if surface is not None and surface != session.surface:
+                    changes["surface"] = surface
             if changes["status"] != session.status or changes["activity"] != session.activity:
                 # A replay keeps its own time, so the spooled events after it stay in order.
                 changes["activity_at"] = hook.spooled_at or tx.now
@@ -1811,9 +1890,11 @@ class Service:
             if hook.event == "SessionEnd":
                 self._activity_written.pop(session.id, None)
                 self._status_evented.pop(session.id, None)
+            if hook.event == "SessionStart" and hook.source == "resume":
+                await self._bind_again_after_resume(tx, updated)
             if hook.event == "SessionEnd" and not self._continues(updated, hook):
                 for task in await repo.open_tasks_of_session(tx.conn, session.id):
-                    await repo.unbind(tx.conn, task.id, tx.now)
+                    await repo.unbind(tx.conn, task.id, tx.now, SESSION_END_UNBOUND)
                     await repo.update_task(tx.conn, task.id, {"session_id": None}, tx.now)
                     await tx.event(
                         "task.session_unbound",
@@ -1830,6 +1911,12 @@ class Service:
                         end_reason=hook.end_reason,
                     )
             return updated
+
+    async def _bind_again_after_resume(self, tx: _Tx, session: Session) -> None:
+        """A resumed Claude Code session (the same id) takes back the tasks its own end
+        unbound; a task unbound by hand or bound to another session since stays as it is."""
+        for task in await repo.tasks_ended_with_session(tx.conn, session.id):
+            await self._bind(tx, task, session, session.name)
 
     @staticmethod
     def _continues(session: Session, hook: HookEvent) -> bool:
@@ -1942,6 +2029,9 @@ class Service:
             context = session_start_context(hook.cc_session_id)
             if hook.nested:
                 return _context("SessionStart", context)
+            row = session or await repo.get_session_by_cc(self._r, hook.cc_session_id)
+            if row is not None and session_surface(row) is None:
+                context += " " + surface_question(hook.cc_session_id, row.name)
             unread = await repo.unread_owner_count(self._r, session.id) if session else 0
             if unread:
                 context += " " + comment_text.unread_line(unread)
@@ -2222,6 +2312,13 @@ class Service:
         replies: dict[int, list[Comment]] = {}
         for reply in await repo.unread_agent_replies(self._r):
             replies.setdefault(reply.task_id, []).append(reply)
+        waiting_since = (now - timedelta(hours=COMMENT_WAIT_HOURS)).isoformat(
+            timespec="milliseconds"
+        )
+        undelivered: dict[int, list[Comment]] = {}
+        for comment in await repo.waiting_owner_comments(self._r, waiting_since):
+            if comment.task_id in by_id and by_id[comment.task_id].stage != Stage.DONE:
+                undelivered.setdefault(comment.task_id, []).append(comment)
         return Inbox(
             waiting=waiting,
             rule_warnings=warned,
@@ -2229,6 +2326,10 @@ class Service:
             unlinked=await self.unlinked_hook_sessions(),
             replies=[
                 (by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id
+            ],
+            undelivered=[
+                (by_id[task_id], items, await self.comment_wait_reason(by_id[task_id]))
+                for task_id, items in undelivered.items()
             ],
             proposals=await repo.list_proposals(self._r),
             policy_proposals=await repo.list_policy_proposals(self._r),
@@ -2391,6 +2492,46 @@ class Service:
             assert found is not None
             return found
 
+    async def open_terminal(self, session_id: int, *, actor: str = "owner") -> Session:
+        """Open a new terminal window running `claude --resume` for an ended terminal session,
+        in its folder (the card's Open). A live one is refused: the board cannot find its window,
+        and a second process on a live session is unsafe."""
+        session = await repo.get_session_by_id(self._r, session_id)
+        if session is None:
+            raise NotFoundError(f"Session {session_id} not found.")
+        if session_surface(session) != TERMINAL:
+            raise ConflictError(f"{session.name} does not run in a terminal.")
+        if session.status != "ended":
+            raise ConflictError(
+                f"{session.name} is running in a terminal: relaybay cannot find its window."
+            )
+        # One Open at a time: the check and the start must not interleave with another click.
+        async with self._terminal_lock:
+            opened = self._terminal_opened.get(session.id)
+            if opened is not None and time.monotonic() - opened < self.terminal_hold:
+                raise ConflictError(
+                    f"A terminal for {session.name} was opened"
+                    f" {int(time.monotonic() - opened)} s ago and has not started yet;"
+                    " look for its window."
+                )
+            folder = session.start_cwd or session.cwd
+            launch = await asyncio.to_thread(self.terminal.open, session.cc_session_id, folder)
+            self._terminal_opened[session.id] = time.monotonic()
+        tasks = await repo.tasks_last_bound_to(self._r, session.id)
+        async with self._tx() as tx:
+            await tx.event(
+                TERMINAL_OPENED,
+                actor,
+                project_id=session.project_id,
+                session_id=session.id,
+                session=session.name,
+                cwd=str(launch.cwd),
+                program=Path(launch.argv[0]).name,
+                project=tasks[0].project_slug if tasks else None,
+                keys=[t.key for t in tasks],
+            )
+        return session
+
     async def named_session_ids(self, ref: str) -> list[int]:
         """Sessions a name, external id, alias or Claude Code id names."""
         found = await repo.find_sessions(self._r, ref)
@@ -2513,13 +2654,72 @@ class Service:
             by_rank=by_rank,
         )
 
+    def card_state(self, task: Task) -> CardState:
+        return card_state(task, {name.strip().casefold() for name in self.owner_names})
+
+    async def card_session(self, task: Task) -> Session | None:
+        """The session the card is about: the bound one, else the session of the latest binding
+        when it has ended (a terminal session's end unbinds it)."""
+        if task.session_id is not None:
+            return await repo.get_session_by_id(self._r, task.session_id)
+        if task.last_session_status != "ended":
+            return None
+        latest = await repo.list_bindings(self._r, task.id, limit=1)
+        return await repo.get_session_by_id(self._r, latest[0].session_id) if latest else None
+
+    def _open_action(self, session: Session | None) -> OpenAction:
+        """`open_action`, held while a terminal opened for the session has not started."""
+        if session is not None:
+            opened = self._terminal_opened.get(session.id)
+            if opened is not None and time.monotonic() - opened < self.terminal_hold:
+                return OpenAction(
+                    "terminal", disabled=True, note="a terminal is opening; waiting for it to start"
+                )
+        return open_action(session)
+
+    async def comment_wait_reason(self, task: Task, session: Session | None = None) -> str | None:
+        """Why the task's undelivered owner comments wait (None: they go with the next hook)."""
+        if session is None and task.session_id is not None:
+            session = await repo.get_session_by_id(self._r, task.session_id)
+        bound = session if task.session_id is not None else None
+        return undelivered_reason(task, bound, bound is not None and bound.id in self._waiters)
+
+    async def task_brief(self, task: Task) -> str:
+        """What a new session needs to take the card over: the task's digest (the text a run's
+        first turn had before 0.12), the whole description, attachments by path, how to bind
+        itself and how to report."""
+        text, _ = await self._task_context(task, None, None, self.digest_budget_chars)
+        parts = [
+            f"relaybay card {task.key} ({task.project_slug}): {task.title}",
+            BRIEF_BIND_LINE.format(key=task.key),
+            "",
+            text,
+        ]
+        if task.description and len(task.description) > digests.ABOUT_MAX:
+            parts += ["", "## Description", task.description]
+        attachments = await repo.list_attachments(self._r, task.id)
+        if attachments:
+            parts += ["", "## Attachments"]
+            parts += [
+                f"- {a.original_name or a.stored_name}: {self._file_path(a)}" for a in attachments
+            ]
+        parts += ["", BRIEF_REPORT_LINE]
+        return "\n".join(parts)
+
     async def task_detail(self, ref: str | int, reports: int = 5) -> TaskDetail:
         task = await self.get_task(ref)
         shown_reports = await repo.list_reports(self._r, task.id, reports)
         comments = await repo.list_comments(self._r, task.id)
         texts = [r.body_md for r in shown_reports] + [c.body_md for c in comments]
         cache: dict[tuple[str, str], tuple[mem.Document, str] | None] = {}
+        state = self.card_state(task)
+        session = await self.card_session(task)
         return TaskDetail(
+            state=state,
+            card_session=session,
+            open=self._open_action(session),
+            brief=None if state.live else await self.task_brief(task),
+            undelivered=await self.comment_wait_reason(task, session),
             task=task,
             reports=shown_reports,
             checks=await repo.report_checks(self._r, [r.id for r in shown_reports]),
@@ -3251,11 +3451,18 @@ class Service:
         actor: str = "mcp",
     ) -> Saved:
         """`update_task` that also returns the rule warnings of a stage move. `repos` and `prs`
-        in `changes` add or remove the task's code links in the same transaction."""
+        in `changes` add or remove the task's code links in the same transaction;
+        `session_surface` says where the calling session runs."""
         links = {k: _link_entries(changes[k], k) for k in LINK_NAMES if k in changes}
-        changes = {k: v for k, v in changes.items() if k not in LINK_NAMES}
+        surface = changes.get(SESSION_SURFACE)
+        told = SESSION_SURFACE in changes
+        if told:
+            surface = _clean_surface(surface)
+        changes = {
+            k: v for k, v in changes.items() if k not in LINK_NAMES and k not in SESSION_FIELD_NAMES
+        }
         async with self._tx() as tx:
-            return await self._update_task_tx(
+            saved = await self._update_task_tx(
                 tx,
                 ref,
                 changes,
@@ -3266,6 +3473,54 @@ class Service:
                 hook_session=hook_session,
                 actor=actor,
             )
+            if told:
+                await self._set_session_surface(
+                    tx, saved.task, surface, session, session_title, hook_session
+                )
+            return saved
+
+    async def _set_session_surface(
+        self,
+        tx: _Tx,
+        task: Task,
+        surface: str | None,
+        session: str | None,
+        session_title: str | None,
+        hook_session: str | None,
+    ) -> None:
+        """Store where the calling session runs: the one named by `session` (its `hook_session`
+        linked to it as on any write, with the same guard), else the session of `hook_session`
+        while no agent has linked that id to itself: a caller cannot set another session's."""
+        cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
+        found = await self._session(tx, session, session_title, hook_session)
+        if found is None and cc_id is not None:
+            row = await repo.get_session_by_cc(tx.conn, cc_id)
+            if row is not None and row.cc_exact and row.status != "ended":
+                raise ValidationError(
+                    f"hook_session {cc_id} is linked to {row.name}: pass that session as"
+                    " `session` as well if it is you."
+                )
+            found = row
+        if found is None:
+            raise ValidationError(
+                f"{SESSION_SURFACE} is stored on your session: pass session and hook_session"
+                " (the id your session start gave you)."
+            )
+        if found.surface == surface:
+            return
+        await repo.touch_session(tx.conn, found.id, tx.now, {"surface": surface})
+        await tx.event(
+            "session.surface_set",
+            found.name,
+            project_id=task.project_id,
+            task_id=task.id,
+            session_id=found.id,
+            project=task.project_slug,
+            key=task.key,
+            stage=task.stage.value,
+            session=found.name,
+            surface=surface,
+        )
 
     async def _update_task_tx(
         self,
@@ -3285,7 +3540,7 @@ class Service:
         if unknown:
             raise ValidationError(
                 f"Unknown task field(s): {', '.join(sorted(unknown))}."
-                f" Allowed: {', '.join((*FIELD_NAMES, *LINK_NAMES))}."
+                f" Allowed: {', '.join((*FIELD_NAMES, *LINK_NAMES, *SESSION_FIELD_NAMES))}."
             )
         clean = {name: _clean_field(name, value) for name, value in changes.items()}
         default_actor = actor
