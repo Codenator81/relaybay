@@ -300,6 +300,9 @@ AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
 # Left free in the SessionStart answer next to the lines it holds anyway.
 SESSION_CONTEXT_RESERVE = 500
+# Written by migration 0049: the worktrees runs left behind, for one Inbox line.
+LEFTOVER_WORKTREES_KEY = "removed_runs_worktrees"
+WORKTREES_SEEN = "inbox.worktrees_seen"
 # Too many sessions at once: looked at every CONCURRENCY_CHECK_SECONDS; a session counts as
 # running with activity in the last CONCURRENCY_MINUTES, which is also the event's quiet time.
 CONCURRENCY_CHECK_SECONDS = 60.0
@@ -501,6 +504,8 @@ class Inbox:
     backlog_new: int = 0  # one Inbox line, however many items
     # A newer relaybay release: one line on the Inbox page, not counted (badge, digests).
     update: updates.UpdateNotice | None = None
+    # Worktrees that runs of 0.11 created and left (paths), until the owner marks them seen.
+    leftover_worktrees: list[str] = field(default_factory=list)
     running_over: int | None = None  # sessions running while above the concurrency cap
     running_cap: int = 0
     questions: list[Question] = field(default_factory=list)  # open, of all cards
@@ -525,6 +530,7 @@ class Inbox:
             + len(self.rule_notices)
             + len(self.review)
             + (1 if self.running_over is not None else 0)
+            + (1 if self.leftover_worktrees else 0)
         )
 
 
@@ -2231,11 +2237,27 @@ class Service:
             rule_notices=await repo.list_rule_notices(self._r),
             backlog_new=sum((await repo.backlog_new_counts(self._r)).values()),
             update=self.update_notice(),
+            leftover_worktrees=await self.leftover_worktrees(),
             running_over=await self._concurrency_over(now),
             running_cap=self.max_concurrent_sessions,
             questions=await self.open_questions(),
             approvals=await self.open_approval_requests(),
         )
+
+    async def leftover_worktrees(self) -> list[str]:
+        """The worktrees runs of 0.11 created and did not remove, as migration 0049 listed
+        them; relaybay touches none of them."""
+        value = await repo.get_app_setting(self._r, LEFTOVER_WORKTREES_KEY)
+        if not value:
+            return []
+        paths = json.loads(value)
+        return [str(p) for p in paths] if isinstance(paths, list) else []
+
+    async def dismiss_leftover_worktrees(self, *, actor: str = "owner") -> None:
+        """The owner's Seen on the Inbox line: the list goes, the folders stay."""
+        async with self._tx() as tx:
+            if await repo.delete_app_setting(tx.conn, LEFTOVER_WORKTREES_KEY):
+                await tx.event(WORKTREES_SEEN, actor)
 
     def update_notice(self) -> updates.UpdateNotice | None:
         """The Inbox line about a newer release, with the upgrade command of this install."""

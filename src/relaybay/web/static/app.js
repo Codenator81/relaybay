@@ -26,7 +26,7 @@
     "document.updated", "memory.added", "memory.updated", "block.updated",
     "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied",
     "backlog.added", "backlog.updated", "backlog.planned",
-    "concurrency.over",
+    "concurrency.over", "inbox.worktrees_seen",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn", "question.overdue",
     "approval.requested", "approval.decided", "approval.used", "approval.expired"
@@ -44,7 +44,7 @@
     "review.step_added", "review.step_updated", "review.step_removed", "review.step_accepted",
     "review.step_rejected",
     "backlog.added", "backlog.updated", "backlog.planned",
-    "concurrency.over",
+    "concurrency.over", "inbox.worktrees_seen",
     "question.asked", "question.answered", "question.defaulted", "question.withdrawn",
     "approval.requested", "approval.decided", "approval.expired"
   ];

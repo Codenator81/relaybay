@@ -209,6 +209,7 @@ EVENT_KINDS = (
     "budget.warned",
     "budget.exceeded",
     "concurrency.over",
+    "inbox.worktrees_seen",
     "run.started",
     "run.turn_started",
     "run.turn_queued",
@@ -2689,6 +2690,16 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         except DomainError as exc:
             return flash_redirect(request, back, error=str(exc))
         return flash_redirect(request, back, message=message)
+
+    @router.post("/inbox/worktrees/seen")
+    async def leftover_worktrees_seen(
+        request: Request, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
+    ) -> Response:
+        async def write() -> str:
+            await service.dismiss_leftover_worktrees(actor="owner")
+            return "The list of leftover worktrees is gone; the folders stay."
+
+        return await board_write(request, csrf, write)
 
     async def archive_answer(
         request: Request, slug: str, key: str, archived: bool, target: str, csrf: str

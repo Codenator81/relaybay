@@ -20,6 +20,20 @@
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
 
+  {% if inbox.leftover_worktrees %}
+  <section class="panel inbox-group" id="inbox-worktrees">
+    <h2>Worktrees left by runs <span class="col-count">{{ inbox.leftover_worktrees|length }}</span></h2>
+    <p class="muted inbox-hint">Runs on cards were removed in 0.12; these git worktrees they created are still on disk. relaybay does not touch them: remove each one you no longer need with <code>git worktree remove &lt;path&gt;</code> in its repository.</p>
+    <ul class="inbox-list">
+      {% for path in inbox.leftover_worktrees %}<li class="inbox-row"><code>{{ path }}</code></li>{% endfor %}
+    </ul>
+    <form class="inline-form" method="post" action="/inbox/worktrees/seen">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Seen</button>
+    </form>
+  </section>
+  {% endif %}
+
   {% if inbox.update %}
   {%- set u = inbox.update %}
   <section class="panel inbox-group" id="inbox-update">

@@ -3748,6 +3748,11 @@ async def set_app_setting(
     )
 
 
+async def delete_app_setting(conn: aiosqlite.Connection, key: str) -> bool:
+    cur = await conn.execute("DELETE FROM app_setting WHERE key = ?", (key,))
+    return cur.rowcount > 0
+
+
 # --- questions ---------------------------------------------------------------
 
 # LEFT JOINs: the coordinator's questions have no card.
