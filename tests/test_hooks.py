@@ -621,3 +621,19 @@ def test_a_run_id_from_0_11_is_not_passed_on(monkeypatch: pytest.MonkeyPatch) ->
     assert hook_client.with_host_session(start) is start
     pre = json.dumps(RECORDED["PreToolUse"]).encode()
     assert hook_client.with_host_session(pre) is pre
+
+
+@pytest.mark.parametrize(
+    ("kind", "status"),
+    [
+        ("idle_prompt", "idle"),
+        ("permission_prompt", "waiting"),
+        ("elicitation_dialog", "waiting"),
+        ("auth_success", "waiting"),
+        (None, "waiting"),
+    ],
+)
+def test_a_notification_waits_only_when_it_asks_the_user(kind: str | None, status: str) -> None:
+    payload = hook("Notification") | ({"notification_type": kind} if kind else {})
+    parsed = parse_hook(payload)
+    assert parsed is not None and parsed.status == status

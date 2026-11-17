@@ -42,6 +42,7 @@ class Session:
     no_live_by: str | None = None
     surface: str | None = None  # desktop or terminal, as the hook or the session told; else None
     entrypoint: str | None = None  # the raw CLAUDE_CODE_ENTRYPOINT the hook sent
+    start_cwd: str | None = None  # the folder of its first SessionStart: where a resume starts
 
 
 @dataclass(slots=True)

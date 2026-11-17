@@ -534,6 +534,7 @@ def _session(row: aiosqlite.Row) -> Session:
         no_live_by=row["no_live_by"],
         surface=row["surface"],
         entrypoint=row["entrypoint"],
+        start_cwd=row["start_cwd"],
     )
 
 
@@ -734,11 +735,42 @@ async def rebind(
     )
 
 
-async def unbind(conn: aiosqlite.Connection, task_id: int, now: str) -> None:
+async def unbind(
+    conn: aiosqlite.Connection, task_id: int, now: str, reason: str | None = None
+) -> None:
     await conn.execute(
-        "UPDATE task_session SET unbound_at = ? WHERE task_id = ? AND unbound_at IS NULL",
-        (now, task_id),
+        "UPDATE task_session SET unbound_at = ?, unbound_reason = ?"
+        " WHERE task_id = ? AND unbound_at IS NULL",
+        (now, reason, task_id),
     )
+
+
+async def tasks_ended_with_session(conn: aiosqlite.Connection, session_id: int) -> list[Task]:
+    """Open tasks whose latest binding was to this session and ended with its own end (none
+    bound since, not unbound by hand)."""
+    rows = await _all(
+        conn,
+        _TASK_SELECT + " WHERE t.session_id IS NULL AND t.stage != 'done' AND EXISTS ("
+        "SELECT 1 FROM task_session b WHERE b.task_id = t.id AND b.session_id = ?"
+        " AND b.unbound_reason = 'session_end'"
+        " AND b.id = (SELECT MAX(b2.id) FROM task_session b2 WHERE b2.task_id = t.id))"
+        " ORDER BY t.id",
+        (session_id,),
+    )
+    return [_task(r) for r in rows]
+
+
+async def tasks_last_bound_to(conn: aiosqlite.Connection, session_id: int) -> list[Task]:
+    """Tasks whose latest binding is (or was) to this session."""
+    rows = await _all(
+        conn,
+        _TASK_SELECT + " WHERE EXISTS (SELECT 1 FROM task_session b WHERE b.task_id = t.id"
+        " AND b.session_id = ?"
+        " AND b.id = (SELECT MAX(b2.id) FROM task_session b2 WHERE b2.task_id = t.id))"
+        " ORDER BY t.id",
+        (session_id,),
+    )
+    return [_task(r) for r in rows]
 
 
 async def list_bindings(conn: aiosqlite.Connection, task_id: int, limit: int = 50) -> list[Binding]:

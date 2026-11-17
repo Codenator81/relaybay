@@ -251,6 +251,10 @@ NO_LIVE_ON = "session.no_live_on"
 NO_LIVE_OFF = "session.no_live_off"
 TERMINAL_OPENED = "session.terminal_opened"
 COMMENT_WAIT_HOURS = 1  # an owner comment undelivered for longer is listed in the Inbox
+SESSION_END_UNBOUND = "session_end"  # task_session.unbound_reason of a session's own end
+# After Open, the same session is not opened again until its SessionStart arrives or this
+# many seconds pass: a second `claude --resume` on one conversation is unsafe.
+TERMINAL_OPEN_HOLD_SECONDS = 60.0
 BRIEF_BIND_LINE = (
     'First bind yourself to this card: task_bind_session("{key}", session=<your desktop session'
     " id local_… if you know it, else a name>). On every relaybay write pass the same session and"
@@ -1122,6 +1126,9 @@ class Service:
         self.attachments_dir = attachments_dir or db_path.parent / "attachments"
         # Opens an ended terminal session again; tests replace it so no window opens.
         self.terminal = TerminalLauncher()
+        self.terminal_hold = TERMINAL_OPEN_HOLD_SECONDS
+        self._terminal_opened: dict[int, float] = {}  # session id -> monotonic time of Open
+        self._terminal_lock = asyncio.Lock()
         self.attachment_roots = list(attachment_roots or [])
         self.attachment_max_bytes = attachment_max_bytes
         self.attachment_task_max_bytes = attachment_task_max_bytes
@@ -1509,6 +1516,10 @@ class Service:
                 activity_at=other.activity_at,
                 cwd=other.cwd,
             )
+            # Where the hooks saw it run goes along, unless the session already knows.
+            for name in ("surface", "entrypoint", "start_cwd"):
+                if getattr(session, name) is None and getattr(other, name) is not None:
+                    changes[name] = getattr(other, name)
             if other.kind == "hook" and not await repo.has_bindings(tx.conn, other.id):
                 await repo.delete_session(tx.conn, other.id)
             else:
@@ -1841,6 +1852,13 @@ class Service:
             changes: dict[str, Any] = {"status": hook.status, "activity": hook.activity}
             if hook.cwd and hook.cwd != session.cwd:
                 changes["cwd"] = hook.cwd
+            if hook.event == "SessionStart":
+                self._terminal_opened.pop(session.id, None)  # the opened terminal has started
+                # A resume or a compaction goes on in the conversation's own folder; any other
+                # start begins a conversation where it starts.
+                goes_on = hook.source in ("resume", "compact") and session.start_cwd
+                if hook.cwd and not goes_on and hook.cwd != session.start_cwd:
+                    changes["start_cwd"] = hook.cwd
             if hook.entrypoint:
                 # An entrypoint that tells nothing keeps what the session itself may have said.
                 surface = surface_of_entrypoint(hook.entrypoint)
@@ -1872,9 +1890,11 @@ class Service:
             if hook.event == "SessionEnd":
                 self._activity_written.pop(session.id, None)
                 self._status_evented.pop(session.id, None)
+            if hook.event == "SessionStart" and hook.source == "resume":
+                await self._bind_again_after_resume(tx, updated)
             if hook.event == "SessionEnd" and not self._continues(updated, hook):
                 for task in await repo.open_tasks_of_session(tx.conn, session.id):
-                    await repo.unbind(tx.conn, task.id, tx.now)
+                    await repo.unbind(tx.conn, task.id, tx.now, SESSION_END_UNBOUND)
                     await repo.update_task(tx.conn, task.id, {"session_id": None}, tx.now)
                     await tx.event(
                         "task.session_unbound",
@@ -1891,6 +1911,12 @@ class Service:
                         end_reason=hook.end_reason,
                     )
             return updated
+
+    async def _bind_again_after_resume(self, tx: _Tx, session: Session) -> None:
+        """A resumed Claude Code session (the same id) takes back the tasks its own end
+        unbound; a task unbound by hand or bound to another session since stays as it is."""
+        for task in await repo.tasks_ended_with_session(tx.conn, session.id):
+            await self._bind(tx, task, session, session.name)
 
     @staticmethod
     def _continues(session: Session, hook: HookEvent) -> bool:
@@ -2005,7 +2031,7 @@ class Service:
                 return _context("SessionStart", context)
             row = session or await repo.get_session_by_cc(self._r, hook.cc_session_id)
             if row is not None and session_surface(row) is None:
-                context += " " + surface_question(hook.cc_session_id)
+                context += " " + surface_question(hook.cc_session_id, row.name)
             unread = await repo.unread_owner_count(self._r, session.id) if session else 0
             if unread:
                 context += " " + comment_text.unread_line(unread)
@@ -2479,7 +2505,19 @@ class Service:
             raise ConflictError(
                 f"{session.name} is running in a terminal: relaybay cannot find its window."
             )
-        launch = await asyncio.to_thread(self.terminal.open, session.cc_session_id, session.cwd)
+        # One Open at a time: the check and the start must not interleave with another click.
+        async with self._terminal_lock:
+            opened = self._terminal_opened.get(session.id)
+            if opened is not None and time.monotonic() - opened < self.terminal_hold:
+                raise ConflictError(
+                    f"A terminal for {session.name} was opened"
+                    f" {int(time.monotonic() - opened)} s ago and has not started yet;"
+                    " look for its window."
+                )
+            folder = session.start_cwd or session.cwd
+            launch = await asyncio.to_thread(self.terminal.open, session.cc_session_id, folder)
+            self._terminal_opened[session.id] = time.monotonic()
+        tasks = await repo.tasks_last_bound_to(self._r, session.id)
         async with self._tx() as tx:
             await tx.event(
                 TERMINAL_OPENED,
@@ -2489,6 +2527,8 @@ class Service:
                 session=session.name,
                 cwd=str(launch.cwd),
                 program=Path(launch.argv[0]).name,
+                project=tasks[0].project_slug if tasks else None,
+                keys=[t.key for t in tasks],
             )
         return session
 
@@ -2627,6 +2667,16 @@ class Service:
         latest = await repo.list_bindings(self._r, task.id, limit=1)
         return await repo.get_session_by_id(self._r, latest[0].session_id) if latest else None
 
+    def _open_action(self, session: Session | None) -> OpenAction:
+        """`open_action`, held while a terminal opened for the session has not started."""
+        if session is not None:
+            opened = self._terminal_opened.get(session.id)
+            if opened is not None and time.monotonic() - opened < self.terminal_hold:
+                return OpenAction(
+                    "terminal", disabled=True, note="a terminal is opening; waiting for it to start"
+                )
+        return open_action(session)
+
     async def comment_wait_reason(self, task: Task, session: Session | None = None) -> str | None:
         """Why the task's undelivered owner comments wait (None: they go with the next hook)."""
         if session is None and task.session_id is not None:
@@ -2667,7 +2717,7 @@ class Service:
         return TaskDetail(
             state=state,
             card_session=session,
-            open=open_action(session),
+            open=self._open_action(session),
             brief=None if state.live else await self.task_brief(task),
             undelivered=await self.comment_wait_reason(task, session),
             task=task,
@@ -3438,16 +3488,23 @@ class Service:
         session_title: str | None,
         hook_session: str | None,
     ) -> None:
-        """Store where the calling session runs: the session of `hook_session` (the id its
-        SessionStart gave it), else the one named by `session`."""
+        """Store where the calling session runs: the one named by `session` (its `hook_session`
+        linked to it as on any write, with the same guard), else the session of `hook_session`
+        while no agent has linked that id to itself: a caller cannot set another session's."""
         cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX)
-        found = await repo.get_session_by_cc(tx.conn, cc_id) if cc_id else None
-        if found is None:
-            found = await self._session(tx, session, session_title, hook_session)
+        found = await self._session(tx, session, session_title, hook_session)
+        if found is None and cc_id is not None:
+            row = await repo.get_session_by_cc(tx.conn, cc_id)
+            if row is not None and row.cc_exact and row.status != "ended":
+                raise ValidationError(
+                    f"hook_session {cc_id} is linked to {row.name}: pass that session as"
+                    " `session` as well if it is you."
+                )
+            found = row
         if found is None:
             raise ValidationError(
-                f"{SESSION_SURFACE} is stored on your session: pass hook_session (the id your"
-                " session start gave you) or session."
+                f"{SESSION_SURFACE} is stored on your session: pass session and hook_session"
+                " (the id your session start gave you)."
             )
         if found.surface == surface:
             return

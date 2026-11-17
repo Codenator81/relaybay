@@ -64,7 +64,7 @@ def card_state(task: Task, owner_names: set[str]) -> CardState:
     if is_open and waiting_on.casefold() in owner_names:
         reasons.append(f"waiting on {waiting_on}")
     if status == "waiting":
-        reasons.append(f"the session: {task.session_activity or 'needs you'}")
+        reasons.append(f"the session asks for its user: {task.session_activity or 'needs you'}")
     live = bound and status != "ended"
     if reasons:
         return CardState(WAITS, tuple(reasons), live)
@@ -107,9 +107,10 @@ def open_action(session: Session | None) -> OpenAction:
             return OpenAction("terminal", disabled=True, note="running in a terminal")
         if resumable_id(session.cc_session_id) is None:
             return OpenAction(note="ended in a terminal; no Claude Code session id to resume")
-        if not session.cwd:
+        folder = session.start_cwd or session.cwd
+        if not folder:
             return OpenAction(note="ended in a terminal; its folder is not known")
-        return OpenAction("terminal", note=f"resumes it in a new terminal in {session.cwd}")
+        return OpenAction("terminal", note=f"resumes it in a new terminal in {folder}")
     return OpenAction(note="not known whether it runs in the desktop app or a terminal")
 
 
@@ -126,6 +127,8 @@ def undelivered_reason(task: Task, session: Session | None, wake_hook: bool) -> 
         return "the session ended"
     if not session.cc_exact:
         return "the session has not linked its hooks yet (hook_session on its writes)"
-    if session.status in ("idle", "waiting") and not wake_hook:
-        return "the session is idle and the wake-up hook is off"
+    if session.status == "waiting":
+        return "the session waits for its user: the comment arrives with its next tool call"
+    if session.status == "idle" and not wake_hook:
+        return "the session is idle and the wake-up hook is not waiting"
     return None

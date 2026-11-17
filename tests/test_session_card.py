@@ -197,7 +197,7 @@ def test_why_a_comment_has_not_arrived(board: TestClient) -> None:
     )
     run_in_app(board, service.record_hook, hook("Stop"))
     thread = board.get(f"/p/acme-shop/t/{task.key}/comments").text
-    assert "not delivered yet: the session is idle and the wake-up hook is off" in thread
+    assert "not delivered yet: the session is idle and the wake-up hook is not waiting" in thread
 
 
 def test_the_inbox_lists_comments_waiting_longer_than_an_hour(board: TestClient) -> None:

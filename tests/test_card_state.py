@@ -98,7 +98,7 @@ def test_waits_for_you_names_every_reason_in_order() -> None:
         "1 approval request",
         "review 1/3",
         "waiting on Owner",
-        "the session: Claude needs your permission to use Bash",
+        "the session asks for its user: Claude needs your permission to use Bash",
     )
 
 
@@ -156,6 +156,8 @@ def test_open_follows_the_surface() -> None:
     assert (live.kind, live.disabled, live.note) == ("terminal", True, "running in a terminal")
     ended = open_action(session(surface=TERMINAL, status="ended"))
     assert (ended.kind, ended.disabled) == ("terminal", False)
+    resumed_in = open_action(session(surface=TERMINAL, status="ended", start_cwd="/work"))
+    assert resumed_in.note == "resumes it in a new terminal in /work"
     assert open_action(session(surface=TERMINAL, status="ended", cc_session_id="x")).kind is None
     assert open_action(session(surface=TERMINAL, status="ended", cwd=None)).kind is None
 
@@ -173,7 +175,11 @@ def test_undelivered_reason() -> None:
     assert undelivered_reason(bound, session(status="ended"), False) == "the session ended"
     assert "hook_session" in (undelivered_reason(bound, session(cc_exact=False), False) or "")
     assert undelivered_reason(bound, session(status="idle"), False) == (
-        "the session is idle and the wake-up hook is off"
+        "the session is idle and the wake-up hook is not waiting"
     )
     assert undelivered_reason(bound, session(status="idle"), True) is None
+    for waker in (False, True):  # the wake-up hook wakes only an idle session
+        assert undelivered_reason(bound, session(status="waiting"), waker) == (
+            "the session waits for its user: the comment arrives with its next tool call"
+        )
     assert undelivered_reason(bound, session(status="working"), False) is None

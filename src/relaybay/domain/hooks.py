@@ -25,6 +25,13 @@ HOOK_STATUS = {
     "SessionEnd": "ended",
 }
 HOOK_EVENTS = tuple(HOOK_STATUS)
+# A Notification by its `notification_type`: Claude Code tells an idle prompt (about a minute
+# after the turn ended) apart from a question to its user. An unknown or missing type waits.
+NOTIFICATION_STATUS = {
+    "idle_prompt": "idle",
+    "permission_prompt": "waiting",
+    "elicitation_dialog": "waiting",
+}
 # Events whose answer may carry `hookSpecificOutput.additionalContext` with owner comments.
 DELIVERY_EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse")
 CC_ID_MAX = 200
@@ -199,6 +206,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
     cc_id = _text(payload.get("session_id"), CC_ID_MAX)
     if event not in HOOK_STATUS or cc_id is None:
         return None
+    status = HOOK_STATUS[event]
     source = _text(payload.get("source"), 40) if event == "SessionStart" else None
     if event == "SessionStart":
         activity = f"started ({source or 'startup'})"
@@ -208,6 +216,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
         activity = _text(payload.get("tool_name"), ACTIVITY_MAX) or "tool"
     elif event == "Notification":
         activity = _text(payload.get("message"), ACTIVITY_MAX) or "needs you"
+        status = NOTIFICATION_STATUS.get(payload.get("notification_type"), status)
     elif event == "Stop":
         activity = "turn finished"
     else:
@@ -217,7 +226,7 @@ def parse_hook(payload: Any) -> HookEvent | None:
     return HookEvent(
         cc_session_id=cc_id,
         event=event,
-        status=HOOK_STATUS[event],
+        status=status,
         cwd=_text(payload.get("cwd"), 4096),
         activity=activity,
         end_reason=_text(payload.get("reason"), 40) if event == "SessionEnd" else None,
@@ -248,11 +257,11 @@ def session_start_context(cc_session_id: str) -> str:
     )
 
 
-def surface_question(cc_session_id: str) -> str:
+def surface_question(cc_session_id: str, session_name: str) -> str:
     """The line SessionStart adds when the hook could not tell where the session runs."""
     return (
         "relaybay could not tell whether you run in the Claude desktop app or in a terminal."
         " Tell it once, with your next relaybay write on your task: task_patch(task, fields="
         '{"session_surface": "desktop"} or {"session_surface": "terminal"},'
-        f' hook_session="{cc_session_id}").'
+        f' session="{session_name}", hook_session="{cc_session_id}").'
     )
