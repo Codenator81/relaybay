@@ -184,6 +184,7 @@ from relaybay.domain.rules import (
 from relaybay.domain.sessions import (
     DEFAULT_DESKTOP_LINK_TEMPLATE,
     SURFACES,
+    TERMINAL,
     parse_session_id,
     surface_of_entrypoint,
 )
@@ -225,6 +226,7 @@ from relaybay.policy import (
     validate_layer,
     widened_on_live,
 )
+from relaybay.terminal import TerminalLauncher
 
 logger = logging.getLogger("relaybay")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -239,6 +241,7 @@ HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)  # use fullmatc
 LIVE_ACTION = "live.action"
 NO_LIVE_ON = "session.no_live_on"
 NO_LIVE_OFF = "session.no_live_off"
+TERMINAL_OPENED = "session.terminal_opened"
 # Kinds of features removed in 0.12 (design 0025): never written again, still shown for the
 # rows already in the journal.
 HISTORIC_AUDIT_KINDS = (
@@ -292,6 +295,7 @@ AUDIT_CHANGE_KINDS = (
     "environment.proposal_rejected",
     NO_LIVE_ON,
     NO_LIVE_OFF,
+    TERMINAL_OPENED,
     "question.asked",
     "question.answered",
     "question.defaulted",
@@ -1087,6 +1091,8 @@ class Service:
         self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
         self.attachments_dir = attachments_dir or db_path.parent / "attachments"
+        # Opens an ended terminal session again; tests replace it so no window opens.
+        self.terminal = TerminalLauncher()
         self.attachment_roots = list(attachment_roots or [])
         self.attachment_max_bytes = attachment_max_bytes
         self.attachment_task_max_bytes = attachment_task_max_bytes
@@ -2419,6 +2425,32 @@ class Service:
             found = await repo.get_session_by_id(tx.conn, session.id)
             assert found is not None
             return found
+
+    async def open_terminal(self, session_id: int, *, actor: str = "owner") -> Session:
+        """Open a new terminal window running `claude --resume` for an ended terminal session,
+        in its folder (the card's Open). A live one is refused: the board cannot find its window,
+        and a second process on a live session is unsafe."""
+        session = await repo.get_session_by_id(self._r, session_id)
+        if session is None:
+            raise NotFoundError(f"Session {session_id} not found.")
+        if session_surface(session) != TERMINAL:
+            raise ConflictError(f"{session.name} does not run in a terminal.")
+        if session.status != "ended":
+            raise ConflictError(
+                f"{session.name} is running in a terminal: relaybay cannot find its window."
+            )
+        launch = await asyncio.to_thread(self.terminal.open, session.cc_session_id, session.cwd)
+        async with self._tx() as tx:
+            await tx.event(
+                TERMINAL_OPENED,
+                actor,
+                project_id=session.project_id,
+                session_id=session.id,
+                session=session.name,
+                cwd=str(launch.cwd),
+                program=Path(launch.argv[0]).name,
+            )
+        return session
 
     async def named_session_ids(self, ref: str) -> list[int]:
         """Sessions a name, external id, alias or Claude Code id names."""

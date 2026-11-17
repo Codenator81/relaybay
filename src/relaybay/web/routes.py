@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import ipaddress
 import json
 import logging
 import secrets
@@ -818,6 +819,27 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await board_write(request, csrf, write, back_to(back, "/sessions"))
 
+    @router.post("/sessions/{session_id}/open-terminal")
+    async def session_open_terminal(
+        request: Request,
+        session_id: int,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> PlainTextResponse:
+        """The card's Open for an ended terminal session: a new terminal window on this machine
+        runs `claude --resume`. Only the session's id comes in; everything else is read from
+        the database. A refusal is a 409 with the reason the card shows."""
+        board_only(request, csrf)
+        if not from_this_machine(request):
+            return PlainTextResponse(
+                "A terminal opens only on the machine relaybay runs on: open the board there.",
+                status_code=409,
+            )
+        try:
+            session = await service.open_terminal(session_id, actor="owner")
+        except ConflictError as exc:
+            return PlainTextResponse(str(exc), status_code=409)
+        return PlainTextResponse(f"A terminal resumes {session.name}.")
+
     async def audit_context(
         project: str,
         environment: str,
@@ -1589,6 +1611,14 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return JSONResponse({"comment": comment.id if comment else None})
 
     # --- Stands & access: environments, access map, permission levels -----------------
+
+    def from_this_machine(request: Request) -> bool:
+        """The request comes from a loopback address (not a phone or another computer)."""
+        host = request.client.host if request.client else ""
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def board_only(request: Request, csrf: str) -> None:
         """Environment writes come from a signed-in browser (cookie + CSRF), not from a
