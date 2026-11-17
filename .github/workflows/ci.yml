@@ -79,6 +79,39 @@ jobs:
       - run: uv sync --locked
       - run: uv run python scripts/gen_reference.py --check
 
+  changes:
+    name: What the pull request changes
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.paths.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: paths
+        name: Files that go into the frozen builds
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE...$HEAD")
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(src/relaybay/desktop/|src/relaybay/hook_client\.py$|packaging/|pyproject\.toml$|uv\.lock$|THIRD_PARTY_LICENSES\.txt$|scripts/hook_timing\.py$|\.github/workflows/(desktop|ci)\.yml$)'; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Not a required check: skipped on a pull request that touches nothing of the frozen builds;
+  # always on main (release.yml builds the installers for a tag).
   desktop:
     name: Desktop builds
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     uses: ./.github/workflows/desktop.yml

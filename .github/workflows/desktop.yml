@@ -1,7 +1,8 @@
 name: Desktop builds
 
 # Frozen builds (PyInstaller onedir) and installers per OS, with smokes on the frozen output and
-# on the installed program. Called by ci.yml (every pull request) and release.yml (v* tags).
+# on the installed program. Called by ci.yml (main, and pull requests that touch the frozen
+# builds) and release.yml (v* tags).
 on:
   workflow_call:
     inputs:
