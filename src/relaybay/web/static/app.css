@@ -1678,22 +1678,7 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 
 /* --- intake and backlog -------------------------------------------------------- */
 .intake-text { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
-.answer-mark { display: flex; align-items: center; gap: 2px; margin: 0; }
-/* Above the card's whole-card link (.card-open::after), so the clear button takes the click;
-   only as wide as its content, so the rest of the row still opens the task. */
-.card .answer-mark { position: relative; z-index: 1; width: fit-content; }
-.answer-chip {
-  padding: 1px 8px;
-  border: 1px solid var(--ok);
-  border-radius: 999px;
-  color: var(--ok);
-  background: transparent;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.5;
-  white-space: nowrap;
-}
-.answer-mark .saved-filter-delete { min-width: 20px; min-height: 20px; padding: 0; line-height: 1; }
+.answer-mark { border: 1px solid var(--ok); color: var(--ok); background: transparent; border-radius: 999px; padding: 1px 8px; font-size: 12px; font-weight: 600; }
 .inline-form { display: inline; margin: 0; }
 .autonomy-reason { align-self: end; margin: 0 0 8px; font-size: 13px; }
 .comment.from-external { border-left: 3px solid var(--warn); }

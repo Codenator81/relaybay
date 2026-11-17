@@ -1727,8 +1727,7 @@ compact card ([below](#spec-board-compact)) shows only a count instead: `Code: 2
 <a id="spec-board-compact"></a>
 
 **Compact** (a toggle in the board's tools row, on phones too) leaves key, tracker badge, title and
-the waiting-on chip on every task card, plus the "answer received" mark when a fresh answer is
-there; the "open in desktop" icon, the Review and Plan badges, the branch and the next step are
+the waiting-on chip on every task card; the "open in desktop" icon, the Review and Plan badges, the branch and the next step are
 hidden, and the Code row turns into its count. A chevron button on a card
 (`aria-expanded`, shown only in this mode) expands just that card; a click on the card still opens
 the dialog. Both choices are kept per browser in `localStorage` (the expanded cards by task key, the
@@ -3777,11 +3776,11 @@ that task.
 <a id="spec-intake-answer"></a>
 
 **Answer received.** A message tied to an open task whose `waiting_on` is set marks the task: the
-card shows **answer received** with a clear button (×), the task dialog shows the mark with **Clear**,
-the Inbox lists the task under **Answers**, a browser notification `Answer received: <key>` fires in
+the Inbox lists the task under **Answers** with **Seen**, which clears the mark (the card and the
+task dialog show no mark since 0.12; the message itself is in the dialog's Intake block), a browser notification `Answer received: <key>` fires in
 open tabs that allow notifications ([§2](#spec-board-notify)), event `intake.answer_received`. The
 stage never changes. The mark clears when `waiting_on` changes (any write) or when the owner clears
-it (`intake.answer_cleared`).
+it with **Seen** (`intake.answer_cleared`).
 
 <a id="spec-intake-autonomy"></a>
 

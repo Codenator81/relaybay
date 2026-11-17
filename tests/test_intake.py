@@ -466,15 +466,19 @@ def test_board_csrf_cookie_and_xss(board: TestClient, token: str) -> None:
     tie = board.post(f"/intake/{r.message.id}/tie", data={**csrf, "task": task.key}, headers=FORM)
     assert tie.status_code == 200 and f"tied to {task.key}" in tie.text
     dialog = board.get(f"/p/acme-shop/t/{task.key}/dialog").text
-    assert hostile not in dialog and "&lt;script&gt;" in dialog and "answer received" in dialog
+    assert hostile not in dialog and "&lt;script&gt;" in dialog and "answer received" not in dialog
     card = board.get(f"/p/acme-shop/t/{task.key}/card").text
-    assert "answer received" in card
+    assert "answer received" not in card  # the Inbox carries the mark, not the card
+    inbox = board.get("/inbox").text
+    assert "answer received" in inbox and f"/t/{task.key}/answer/clear" in inbox
     cleared = board.post(
         f"/p/acme-shop/t/{task.key}/answer/clear",
-        data={**csrf, "target": "card"},
-        headers={**FORM, "HX-Request": "true"},
+        data={**csrf, "target": "inbox"},
+        headers=FORM,
+        follow_redirects=False,
     )
-    assert cleared.status_code == 200 and "answer received" not in cleared.text
+    assert cleared.status_code == 303 and cleared.headers["location"] == "/inbox#inbox-answers"
+    assert (run_in_app(board, service.get_task, task.key)).answer_received_at is None
     assert "Settings" in board.get("/settings/intake").text
 
 

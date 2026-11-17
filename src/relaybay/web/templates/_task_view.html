@@ -23,12 +23,6 @@
     {%- set d = detail.document %}
     {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
     {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
-    {% if t.answer_received_at %}<dt>Answer</dt><dd><span class="chip answer-chip">answer received</span> <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time>
-      <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/answer/clear"
-            hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/answer/clear" hx-target="closest .task-view" hx-swap="outerHTML">
-        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-        <button type="submit" class="action">Clear</button>
-      </form></dd>{% endif %}
     {% if is_done %}{% set in_archive = task_archived(t) %}<dt>Archive</dt><dd>{% if t.archived_at %}archived <time datetime="{{ t.archived_at }}" data-age>{{ t.archived_at|age }}</time> by {{ t.archived_by }}{% elif in_archive %}archived: closed more than {{ done_window_days }} days ago{% else %}<span class="muted">in the done column</span>{% endif %}
       <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}"
             hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}" hx-target="closest .task-view" hx-swap="outerHTML">

@@ -121,7 +121,12 @@
       {% for t in inbox.answers %}
       <li class="inbox-row">
         {{ task_row(t) }}
-        <p class="inbox-note"><span class="chip answer-mark">answer received</span> <span class="muted">waiting on {{ t.waiting_on }} · <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time></span></p>
+        <p class="inbox-note"><span class="chip answer-mark">answer received</span> <span class="muted">waiting on {{ t.waiting_on }} · <time datetime="{{ t.answer_received_at }}" data-age>{{ t.answer_received_at|age }}</time></span>
+          <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/answer/clear">
+            <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+            <input type="hidden" name="target" value="inbox">
+            <button type="submit" class="action">Seen</button>
+          </form></p>
       </li>
       {% endfor %}
     </ul>

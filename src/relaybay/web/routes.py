@@ -3802,6 +3802,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     ):
         board_only(request, csrf)
         task = await service.clear_answer((await find_task(slug, key)).key, actor="owner")
+        if target == "inbox":
+            return RedirectResponse("/inbox#inbox-answers", status_code=303)
         if "hx-request" not in request.headers:
             return RedirectResponse(f"/p/{slug}?task={task.key}", status_code=303)
         if target == "card":

@@ -17,6 +17,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The "answer received" mark of an external message is no longer on the card or in the task dialog: the Inbox lists it under Answers with a Seen button; the message stays in the dialog's Intake block.
 - `relaybay import` now reads an `area` column of `TASKS.md` (also in a hand-written registry): a text over 32 characters, or a new name past the project's 24 areas, leaves the task without its area and adds a warning.
 - On pages with the sidebar, the top bar's product name is a small home icon linking to the start page (labelled "Home"); the sign-in page keeps the word.
 
