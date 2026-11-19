@@ -114,7 +114,7 @@ program as its client:
   [Work a card with a session](https://codenator81.github.io/relaybay/how-to/work-a-card/).
 - **Areas** — a card can name the part of its project it belongs to ("web shop", "api"), from a
   list per project that grows from use; the area shows as a coloured chip and filters the board.
-- **Repositories and "Open in VS Code"** — a project lists its repositories (Stands & access, or
+- **Repositories and "Open in VS Code"** — a project lists its repositories (the project's Settings, or
   `project_upsert(repos=…)`); each card shows the ones the task touches with its pull requests and
   an "Open in VS Code" link, linked by agents (`task_update(repos=…, prs=…)`) or by the hooks from
   the folder a bound session works in.
@@ -154,14 +154,12 @@ program as its client:
   comment or your acceptance of its plan.
 - **Backlog** — findings and ideas of sessions and reviews wait on the backlog until you plan
   them; **To plan** turns an item into a task.
-- **Stands & access** — per project, the local, test and live environments with their base URL and
-  how agents reach them (ssh alias, kube context, database host, GitOps repository, log links),
-  stored as references only, never secrets; agents' permission level per environment (`none`,
-  `read`, `ask`, `full`; live is `read` by default), changed only by you on the board (agents
-  propose with `environment_propose`). The `PreToolUse` hook warns about or blocks a command aimed
-  at an environment its level forbids — a safety net against mistakes, not a sandbox — and every
-  agent tool call that touches live lands in a journal (the Audit page, with filters). A
-  **No live now** switch on a session denies it any touch of live at its next tool call.
+- **Guard and live journal** — hosts and access stay in each project's own notes (the Stands &
+  access page was removed in 0.15). Environments stored before 0.15 still drive the `PreToolUse`
+  guard, which warns about or blocks a command aimed at an environment its level forbids — a
+  safety net against mistakes, not a sandbox — and every agent tool call that touches live lands
+  in a journal (the Audit page, with filters). A **No live now** switch on a session denies it any
+  touch of live at its next tool call.
 - **Policy as data** — the levels, the guard and the secret checks come from a policy, not from
   the code: a preset (`default`, `strict`, `trusted`), an optional `policy.json` in the data
   directory and project or environment layers, each value showing which layer set it (Settings →

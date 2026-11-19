@@ -13,7 +13,13 @@ Contract version 2.
 
 Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_patch` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
 
-Deprecations: none.
+Deprecations:
+
+| Item | Parameter | Since | Removed not before | Use instead |
+|---|---|---|---|---|
+| `environments_get` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
+| `environment_propose` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
+| `relaybay://project/{slug}/environments` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
 
 ## Tools
 
@@ -142,7 +148,7 @@ Everything at a glance, for a coordinator: one line per project with stage count
 
 ### `project_digest`
 
-One project, for a manager: pulse, tasks by stage with next step and waiting on, open questions, recent decisions, environments, blocks, notes flagged 'verify' or 'never read' and what changed since your last read. Index lines; each section says which tool shows more.
+One project, for a manager: pulse, tasks by stage with next step and waiting on, open questions, recent decisions, blocks, notes flagged 'verify' or 'never read' and what changed since your last read. Index lines; each section says which tool shows more.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -155,7 +161,7 @@ One project, for a manager: pulse, tasks by stage with next step and waiting on,
 
 ### `task_context`
 
-One task, for the session working on it: fields and progress, plan with the current step, decisions, linked document sections, environment map, rules, unread owner comments (ids; text only of those already delivered to you), relevant notes and what changed since your last read. It delivers no comment.
+One task, for the session working on it: fields and progress, plan with the current step, decisions, linked document sections, rules, unread owner comments (ids; text only of those already delivered to you), relevant notes and what changed since your last read. It delivers no comment.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -893,7 +899,7 @@ Change the caption of a screenshot.
 
 ### `environments_get`
 
-The project's environments (local, test, live): base URL, how to reach each one (ssh alias, kube context, database host, GitOps repository, log links; references only, never secrets) and your permission level there: none, read, ask (ask the owner first) or full. Read it before you touch a server, a cluster or a database.
+Removed in 0.15 with the environments: shows nothing. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -901,13 +907,13 @@ The project's environments (local, test, live): base URL, how to reach each one 
 
 ### `environment_propose`
 
-Propose a change to a project's environments or your permission level there. Nothing changes until the owner accepts it on the board; it shows in the owner's Inbox.
+Removed in 0.15 with the environments: records nothing. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | string | yes | Project slug such as 'acme-shop'. |
-| `change` | object | yes | What to change: {'environment': <name>, then any of kind (local, test, live), base_url, notes, sign_in_allowed, login_state_path, level (none, read, ask, full or default), overrides ({capability: level} for sign_in, ssh, kubectl, db, deploy), access ([{kind: ssh\|kubectl\|db\|gitops\|logs\|monitoring\|other, fields: {...}}] to add)}. References only: a key path, a variable name or a vault path, never a secret value. |
-| `reason` | string | yes | Why the change is needed, for the owner. |
+| `change` | object | yes | Ignored. |
+| `reason` | string | yes | Ignored. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -942,7 +948,7 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 | `relaybay://contract` | contract | text/markdown | The MCP contract: its version, the compatibility rule and the deprecations. |
 | `relaybay://doc/{project}/{doc}` | project-document | text/markdown | A project document's current markdown (same as doc_get). |
 | `relaybay://project/{slug}` | project-snapshot | text/markdown | Markdown snapshot of a project (same as project_snapshot). |
-| `relaybay://project/{slug}/environments` | project-environments | text/markdown | A project's environments, access map (no secrets) and permission levels. |
+| `relaybay://project/{slug}/environments` | project-environments | text/markdown | Removed in 0.15 with the environments. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |
 | `relaybay://rules/{project}` | project-rules | text/markdown | A project's working rules: global rules merged with the project override. |
 | `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_patch: name, type, description, clearing. |

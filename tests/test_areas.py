@@ -307,7 +307,7 @@ def test_settings_page_manages_areas(board: TestClient, token: str) -> None:
     )
     assert added.status_code == 303 and added.headers["location"].endswith("#areas")
     _, (web, api) = run_in_app(board, service.project_areas, "acme-shop")
-    page = board.get("/p/acme-shop/environments").text
+    page = board.get("/p/acme-shop/settings").text
     assert 'id="areas"' in page and "1 card" in page and 'value="rose"' in page
 
     recoloured = board.post(

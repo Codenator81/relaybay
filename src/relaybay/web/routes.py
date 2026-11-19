@@ -31,7 +31,6 @@ from relaybay import __version__, machine_setup
 from relaybay.config import Settings
 from relaybay.domain import digest as digests
 from relaybay.domain import doc_index, guard
-from relaybay.domain import environments as env_domain
 from relaybay.domain import memory as mem
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
@@ -272,10 +271,9 @@ EVENT_KINDS = (
 CSRF_HEADER = "x-relaybay-csrf"
 ANNOTATION_JSON_MAX = 256 * 1024  # a pen line of the most points fits
 BOARD_ONLY = (
-    "Environments, permission levels and the policy change only from the board in a browser;"
-    " agents propose changes with environment_propose or policy_propose."
+    "Settings and the policy change only from the board in a browser; agents propose policy"
+    " changes with policy_propose."
 )
-ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "level")
 JOURNAL_LIMIT = 20
 DOCS_DECISIONS = 200
 DOC_NEW_FIELDS = ("doc", "title", "kind", "source_url", "source_path", "body", "reason")
@@ -370,8 +368,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["vscode_url"] = vscode_url
     env.filters["event_detail"] = event_detail
     env.filters["event_subject"] = event_subject
-    env.filters["change_summary"] = env_domain.change_summary
-    env.globals["fields_text"] = env_domain.fields_text
     env.filters["tojson_compact"] = lambda value: json.dumps(value, ensure_ascii=False)
 
     def render(request: Request, name: str, status: int = 200, **context: Any) -> HTMLResponse:
@@ -436,7 +432,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         `boards`, `activity`, `audit`, `settings`, `sessions`;
         `board`,
         `sessions`,
-        `environments` or
+        `project_settings` or
         `docs` with `project`)."""
         nav = {
             "active": active,
@@ -1651,7 +1647,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         comment = await service.send_annotations(attachment_id)
         return JSONResponse({"comment": comment.id if comment else None})
 
-    # --- Stands & access: environments, access map, permission levels -----------------
+    # --- Project settings: repositories, archive, areas ------------------------------
 
     def from_this_machine(request: Request) -> bool:
         """The request comes from a loopback address (not a phone or another computer) and
@@ -1672,8 +1668,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return False
 
     def board_only(request: Request, csrf: str) -> None:
-        """Environment writes come from a signed-in browser (cookie + CSRF), not from a
-        client that sends the token as a Bearer header."""
+        """Board writes come from a signed-in browser (cookie + CSRF), not from a client that
+        sends the token as a Bearer header."""
         check_csrf(csrf)
         cookie = request.cookies.get(cookie_name(request, COOKIE_NAME))
         if "authorization" in request.headers or not same_secret(
@@ -1681,59 +1677,31 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         ):
             raise HTTPException(status_code=403, detail=BOARD_ONLY)
 
-    async def environments_page(
+    async def project_settings_page(
         request: Request,
         slug: str,
         *,
         error: str | None = None,
         error_target: str = "",
-        confirm: dict[str, Any] | None = None,
         message: str | None = None,
         status: int = 200,
     ) -> HTMLResponse:
-        last_event_id = await service.last_event_id()  # before the data, see projects_page
-        project, items = await service.environments(slug)
+        project = await service.get_project(slug)
         return await page(
             request,
-            "environments.html",
-            "environments",
+            "project_settings.html",
+            "project_settings",
             project.slug,
             status=status,
             project=project,
-            environments=items,
             repos=(await service.project_repos(project.slug))[1],
             repo_kinds=REPO_KINDS,
             areas=(await service.project_areas(project.slug))[1],
             area_colors=AREA_COLORS,
-            proposals=await service.proposals(project.slug),
-            policies=await service.environment_policies(items),
-            project_policy=await service.effective_policy(project.slug),
             error=error,
             error_target=error_target,
-            confirm=confirm,
             message=message,
-            last_event_id=last_event_id,
         )
-
-    def environment_values(form: Any) -> dict[str, Any]:
-        """The environment fields a board form sent; a field it did not send stays."""
-        values: dict[str, Any] = {}
-        for name in ENV_TEXT_FIELDS:
-            submitted = form.getlist(name)
-            if submitted and isinstance(submitted[-1], str):
-                values[name] = submitted[-1]
-        sign_in = form.getlist("sign_in_allowed")
-        if sign_in:
-            # A hidden "0" comes before the checkbox, so the last value is the state.
-            values["sign_in_allowed"] = sign_in[-1] == "1"
-        overrides = {
-            cap: form.get(f"override_{cap}") or ""
-            for cap in env_domain.CAPABILITIES
-            if f"override_{cap}" in form
-        }
-        if overrides:
-            values["overrides"] = overrides
-        return values
 
     def confirm_fields(form: Any) -> list[tuple[str, str]]:
         """The submitted fields, to resend with the confirmation."""
@@ -1743,7 +1711,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             if isinstance(v, str) and k not in (CSRF_FIELD, "confirm_live")
         ]
 
-    async def environment_write(
+    async def settings_write(
         request: Request,
         slug: str,
         csrf: str,
@@ -1752,85 +1720,33 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         anchor: str = "",
         message: str = "Saved.",
     ) -> Response:
-        """Run a board write; on success back to the page, on failure the page with the
-        reason next to the form, or a confirmation for raising live above read."""
+        """Run a project settings write; on success back to the page, on failure the page with
+        the reason next to the form."""
         board_only(request, csrf)
         form = await request.form()
         try:
             await write(form)
-        except ConfirmationNeeded as exc:
-            confirm = {
-                "action": str(request.url.path),
-                "message": str(exc),
-                "fields": confirm_fields(form),
-            }
-            return await environments_page(request, slug, confirm=confirm)
         except NotFoundError:
             raise
         except DomainError as exc:
-            return await environments_page(
+            return await project_settings_page(
                 request, slug, error=str(exc), error_target=target, status=400
             )
-        return flash_redirect(request, f"/p/{slug}/environments{anchor}", message=message)
+        return flash_redirect(request, f"/p/{slug}/settings{anchor}", message=message)
 
     def confirmed(form: Any) -> bool:
         return form.get("confirm_live") == "1"
 
-    def test_secrets_of(form: Any) -> dict[str, str] | None:
-        """The test secrets textarea (`name: value` lines, `***` keeps a stored value); None
-        when the form has none, so stored ones stay."""
-        if "test_secrets" not in form:
-            return None
-        return env_domain.parse_fields_text(str(form.get("test_secrets") or ""))
-
-    @router.get("/p/{slug}/environments", response_class=HTMLResponse)
-    async def environments(request: Request, slug: str):
+    @router.get("/p/{slug}/settings", response_class=HTMLResponse)
+    async def project_settings(request: Request, slug: str):
         flash = take_flash(request)
-        response = await environments_page(request, slug, message=flash.get("message"))
+        response = await project_settings_page(request, slug, message=flash.get("message"))
         return shown_once(request, response)
 
-    @router.get("/p/{slug}/environments/proposals", response_class=HTMLResponse)
-    async def proposals_fragment(request: Request, slug: str):
-        project = await service.get_project(slug)
-        return render(
-            request,
-            "_proposals.html",
-            project=project,
-            proposals=await service.proposals(project.slug),
-        )
-
-    @router.post("/p/{slug}/environments")
-    async def create_environment(
-        request: Request, slug: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
-    ):
-        async def write(form: Any) -> None:
-            await service.save_environment(
-                slug, environment_values(form), confirm_live=confirmed(form), actor="owner"
-            )
-
-        return await environment_write(
-            request, slug, csrf, "new", write, message="Environment added."
-        )
-
-    @router.post("/p/{slug}/environments/{env_id}")
-    async def update_environment(
-        request: Request,
-        slug: str,
-        env_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        async def write(form: Any) -> None:
-            await service.save_environment(
-                slug,
-                environment_values(form),
-                env_id=env_id,
-                confirm_live=confirmed(form),
-                actor="owner",
-            )
-
-        return await environment_write(
-            request, slug, csrf, f"env-{env_id}", write, f"#env-{env_id}", "Environment saved."
-        )
+    @router.get("/p/{slug}/environments")
+    async def environments_moved(slug: str) -> RedirectResponse:
+        """The old Stands & access page (removed in 0.15): its settings moved here."""
+        return RedirectResponse(f"/p/{slug}/settings", status_code=301)
 
     @router.post("/p/{slug}/repos")
     async def add_repo(
@@ -1839,7 +1755,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         async def write(form: Any) -> None:
             await service.save_project_repo(slug, None, **repo_values(form), actor="owner")
 
-        return await environment_write(
+        return await settings_write(
             request, slug, csrf, "repo-new", write, "#repos", "Repository added."
         )
 
@@ -1853,7 +1769,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         async def write(form: Any) -> None:
             await service.save_project_repo(slug, repo_id, **repo_values(form), actor="owner")
 
-        return await environment_write(
+        return await settings_write(
             request, slug, csrf, f"repo-{repo_id}", write, "#repos", "Repository saved."
         )
 
@@ -1877,7 +1793,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 )
 
         message = "Repository removed." if action == "delete" else "Order saved."
-        return await environment_write(
+        return await settings_write(
             request, slug, csrf, f"repo-{repo_id}", write, "#repos", message
         )
 
@@ -1894,9 +1810,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 slug, form_text(form, "name"), color=form_text(form, "color"), actor="owner"
             )
 
-        return await environment_write(
-            request, slug, csrf, "area-new", write, "#areas", "Area added."
-        )
+        return await settings_write(request, slug, csrf, "area-new", write, "#areas", "Area added.")
 
     @router.post("/p/{slug}/areas/{area_id}")
     async def update_area(
@@ -1914,7 +1828,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 actor="owner",
             )
 
-        return await environment_write(
+        return await settings_write(
             request, slug, csrf, f"area-{area_id}", write, "#areas", "Area saved."
         )
 
@@ -1936,7 +1850,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 await service.move_area(slug, area_id, -1 if action == "up" else 1, actor="owner")
 
         message = "Area deleted." if action == "delete" else "Order saved."
-        return await environment_write(
+        return await settings_write(
             request, slug, csrf, f"area-{area_id}", write, "#areas", message
         )
 
@@ -1945,105 +1859,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             name: (value if isinstance(value := form.get(name), str) else None)
             for name in ("name", "path", "kind")
         }
-
-    @router.post("/p/{slug}/environments/{env_id}/delete")
-    async def delete_environment(
-        request: Request,
-        slug: str,
-        env_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        async def write(form: Any) -> None:
-            await service.delete_environment(slug, env_id, actor="owner")
-
-        return await environment_write(
-            request, slug, csrf, f"env-{env_id}", write, message="Environment deleted."
-        )
-
-    @router.post("/p/{slug}/environments/{env_id}/access")
-    async def add_access(
-        request: Request,
-        slug: str,
-        env_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        async def write(form: Any) -> None:
-            fields = env_domain.parse_fields_text(str(form.get("fields") or ""))
-            await service.save_access(
-                slug,
-                env_id,
-                str(form.get("kind") or ""),
-                fields,
-                test_secrets=test_secrets_of(form),
-                actor="owner",
-            )
-
-        return await environment_write(
-            request, slug, csrf, f"access-new-{env_id}", write, f"#env-{env_id}"
-        )
-
-    @router.post("/p/{slug}/environments/{env_id}/access/{access_id}")
-    async def update_access(
-        request: Request,
-        slug: str,
-        env_id: int,
-        access_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        async def write(form: Any) -> None:
-            fields = env_domain.parse_fields_text(str(form.get("fields") or ""))
-            await service.save_access(
-                slug,
-                env_id,
-                str(form.get("kind") or ""),
-                fields,
-                test_secrets=test_secrets_of(form),
-                access_id=access_id,
-                actor="owner",
-            )
-
-        return await environment_write(
-            request, slug, csrf, f"access-{access_id}", write, f"#env-{env_id}"
-        )
-
-    @router.post("/p/{slug}/environments/{env_id}/access/{access_id}/delete")
-    async def delete_access(
-        request: Request,
-        slug: str,
-        env_id: int,
-        access_id: int,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        async def write(form: Any) -> None:
-            await service.delete_access(slug, env_id, access_id, actor="owner")
-
-        return await environment_write(
-            request, slug, csrf, f"access-{access_id}", write, f"#env-{env_id}"
-        )
-
-    @router.post("/p/{slug}/proposals/{proposal_id}/{decision}")
-    async def decide_proposal(
-        request: Request,
-        slug: str,
-        proposal_id: int,
-        decision: str,
-        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
-    ):
-        if decision not in ("accept", "reject"):
-            raise HTTPException(status_code=404)
-
-        async def write(form: Any) -> None:
-            await service.decide_proposal(
-                proposal_id,
-                decision == "accept",
-                project=slug,
-                confirm_live=confirmed(form),
-                actor="owner",
-            )
-
-        return await environment_write(
-            request, slug, csrf, "", write, message=f"Proposal #{proposal_id} {decision}ed."
-        )
 
     # --- Docs & rules: documents, decisions, memory notes, blocks, rules, search --------------
 
@@ -2899,7 +2714,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         action: str,
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ) -> Response:
-        """Stands & access: "Archive project" / "Back from the archive"."""
+        """Project settings: "Archive project" / "Back from the archive"."""
         if action not in ("archive", "unarchive"):
             raise HTTPException(status_code=404)
         board_only(request, csrf)
@@ -2909,10 +2724,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 request,
                 "/?archived=1",
                 message=f"{project.name} is in the archive; Back from the archive on its"
-                " Stands & access page brings it back.",
+                " Settings page brings it back.",
             )
         return flash_redirect(
-            request, f"/p/{project.slug}/environments#archive", message="Back from the archive."
+            request, f"/p/{project.slug}/settings#archive", message="Back from the archive."
         )
 
     # --- Backlog -------------------------------------------------------------------------

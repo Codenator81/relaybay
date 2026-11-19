@@ -13,7 +13,7 @@ A later layer wins: the built-in **preset** named by the global layer → `[perm
 and `guard_mode` from `config.toml` (legacy, only when set) → the **global** file
 (`policy.json` in the data directory, setting `policy_file`) → the **project** layer → the
 **environment** layer (both stored in the database, edited in Settings → Policy). The
-environment's own level and per-capability overrides on Stands & access win over every layer.
+environment's own level and per-capability overrides (stored before 0.15) win over every layer.
 
 Objects merge key by key; scalars and lists replace. A list key may also be written `key+` (add
 items; a pattern with an existing `id` replaces it) or `key-` (remove items by value or `id`);
@@ -96,7 +96,7 @@ JSON Schema: [`policy.schema.json`](policy.schema.json) (the same file as
 | `secrets.test_secrets` | object | Whether access fields may hold harmless test values marked {"value": "...", "test": true}. There is no live key: never on live. |
 | `secrets.test_secrets.local` | boolean | Allowed on local environments. |
 | `secrets.test_secrets.test` | boolean | Allowed on test environments. |
-| `secrets.expose_test_secrets_to_agents` | boolean | Show test secret values to agents in environments_get (otherwise only their names). |
+| `secrets.expose_test_secrets_to_agents` | boolean | Show test secret values to agents (otherwise only their names). Unused since 0.15: no tool shows environments to agents. |
 
 A custom pattern (`guard.patterns`, `guard.patterns+`):
 

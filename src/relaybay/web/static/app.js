@@ -36,7 +36,6 @@
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
     "task.archived", "task.unarchived",
     "session.seen", "session.status_changed", "comment.added", "comment.delivered", "comment.read",
-    "environment.proposed", "environment.proposal_accepted", "environment.proposal_rejected",
     "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
     "policy.proposal_reopened",
     "rules.updated", "rules.notice_read", "rules.proposed", "rules.proposal_accepted",
@@ -320,7 +319,7 @@
     }
     var journal = document.getElementById("journal");
     if (journal && data.kind === "live.action") queueThrottled(journal);
-    // Settings → Policy: only the proposals list is live, like Stands & access below.
+    // Settings → Policy: only the proposals list is live.
     var policyProposals = document.getElementById("policy-proposals");
     if (policyProposals) {
       if (data.kind.indexOf("policy.propos") === 0) queue(policyProposals);
@@ -330,14 +329,6 @@
     var ruleProposals = document.getElementById("rule-proposals");
     if (ruleProposals) {
       if (data.kind.indexOf("rules.propos") === 0) queue(ruleProposals);
-      return;
-    }
-    // Stands & access: only the proposals list is live; the forms stay as the user left them.
-    var proposals = document.getElementById("proposals");
-    if (proposals) {
-      if (data.kind.indexOf("environment.propos") === 0 && data.project === live.dataset.project) {
-        queue(proposals);
-      }
       return;
     }
     // Docs & rules: documents, decisions and notes are live; block forms and search results

@@ -6,7 +6,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 from starlette.testclient import TestClient
 
@@ -20,11 +19,11 @@ from relaybay.domain.environments import (
     Environment,
     check_secret,
     clean_access,
-    parse_fields_text,
     redact,
     repo_identifier,
 )
-from relaybay.domain.errors import ConfirmationNeeded, ConflictError, ValidationError
+from relaybay.domain.errors import ConfirmationNeeded, ValidationError
+from relaybay.mcp_server import contract
 from relaybay.policy import EffectivePolicy, Layer, preset
 from relaybay.security import csrf_token
 from relaybay.service import Service, collect_notes
@@ -144,12 +143,6 @@ def test_access_fields_per_kind() -> None:
     assert clean_access("other", {"vpn_profile": "acme-office"})[1] == {
         "vpn_profile": "acme-office"
     }
-    assert parse_fields_text("alias: acme-live\r\n# comment\nkey-path-ref = ~/.ssh/x\n") == {
-        "alias": "acme-live",
-        "key_path_ref": "~/.ssh/x",
-    }
-    with pytest.raises(ValidationError, match="Line 1"):
-        parse_fields_text("just text")
     assert repo_identifier("git@git.example.com:acme/deploy.git") == "git.example.com/acme/deploy"
     assert repo_identifier("https://git.example.com/acme/deploy/") == "git.example.com/acme/deploy"
 
@@ -260,15 +253,6 @@ async def test_changing_the_kind_does_not_skip_the_confirmation(service: Service
         await service.save_environment("acme-shop", {"kind": "live"}, env_id=test.id)
     _, items = await service.environments("acme-shop")
     assert [(e.kind, e.level) for e in items] == [("live", None), ("test", "full")]
-    # The same through an accepted proposal.
-    proposal = await service.propose_environment_change(
-        "acme-shop", {"environment": "live", "kind": "test", "level": "full"}, "why"
-    )
-    with pytest.raises(ConfirmationNeeded):
-        await service.decide_proposal(proposal.id, True)
-    assert (await service.decide_proposal(proposal.id, True, confirm_live=True)).status == (
-        "accepted"
-    )
 
 
 async def test_permission_defaults_from_config(tmp_path: Path) -> None:
@@ -295,80 +279,6 @@ async def test_permission_defaults_from_config(tmp_path: Path) -> None:
         await svc.close()
     with pytest.raises(ValueError, match="permission_defaults"):
         Service(tmp_path / "y.sqlite", permission_defaults={"live": "root"})
-
-
-# --- proposals ------------------------------------------------------------------------------
-
-
-async def test_proposals_change_nothing_until_accepted(service: Service) -> None:
-    env_id = await live_project(service)
-    proposal = await service.propose_environment_change(
-        "acme-shop",
-        {
-            "environment": "LIVE",
-            "level": "full",
-            "access": {"kind": "kubectl", "fields": {"context": "acme-prod"}},
-        },
-        "Deploys need kubectl",
-        session="dev-1",
-    )
-    assert (proposal.environment, proposal.proposed_by, proposal.status) == (
-        "live",
-        "dev-1",
-        "pending",
-    )
-    _, items = await service.environments("acme-shop")
-    assert (items[0].level, len(items[0].access)) == (None, 1)
-    inbox = await service.inbox(["owner"])
-    assert [p.id for p in inbox.proposals] == [proposal.id] and inbox.count == 1
-
-    with pytest.raises(ConfirmationNeeded):
-        await service.decide_proposal(proposal.id, True)
-    accepted = await service.decide_proposal(proposal.id, True, confirm_live=True)
-    assert accepted.status == "accepted" and accepted.decided_by == "board"
-    _, items = await service.environments("acme-shop")
-    assert items[0].id == env_id and items[0].level == "full"
-    assert [a.kind for a in items[0].access] == ["ssh", "kubectl"]
-    with pytest.raises(ConflictError, match="already accepted"):
-        await service.decide_proposal(proposal.id, False)
-
-    new = await service.propose_environment_change(
-        "acme-shop", {"environment": "staging", "kind": "test"}, "A staging stand exists"
-    )
-    rejected = await service.decide_proposal(new.id, False)
-    assert rejected.status == "rejected"
-    assert [e.name for e in (await service.environments("acme-shop"))[1]] == ["live"]
-    assert (await service.inbox(["owner"])).proposals == []
-    kinds = [e.kind for e in await service.activity(project="acme-shop")]
-    for kind in (
-        "environment.proposed",
-        "environment.proposal_accepted",
-        "environment.proposal_rejected",
-    ):
-        assert kind in kinds
-
-
-async def test_proposal_validation(service: Service) -> None:
-    await live_project(service)
-    cases = [
-        ({"environment": "qa"}, "nothing to change"),
-        ({"environment": "qa", "level": "full"}, "needs kind"),
-        ({"environment": "live", "colour": "red"}, "Unknown key"),
-        ({"environment": "live", "level": "root"}, "level must be one of"),
-        ({"environment": "live", "overrides": {"shell": "full"}}, "Unknown capability"),
-        (
-            {"environment": "live", "access": [{"kind": "db", "fields": {"password_ref": SECRET}}]},
-            "never stores secrets",
-        ),
-    ]
-    for change, message in cases:
-        with pytest.raises(ValidationError, match=message):
-            await service.propose_environment_change("acme-shop", change, "why")
-    with pytest.raises(ValidationError, match="reason"):
-        await service.propose_environment_change(
-            "acme-shop", {"environment": "live", "level": "ask"}, " "
-        )
-    assert await service.proposals() == []
 
 
 # --- guard ----------------------------------------------------------------------------------
@@ -975,97 +885,20 @@ async def test_upgrade_from_0008_adds_environments(tmp_path: Path) -> None:
 # --- board ------------------------------------------------------------------------------------
 
 
-def test_stands_page_writes_need_the_board(board: TestClient, token: str) -> None:
-    service: Service = board.app.state.service
-    run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop")
-    page = board.get("/p/acme-shop/environments")
-    assert page.status_code == 200 and "Stands &amp; access" in page.text
-    assert 'href="/p/acme-shop/environments"' in board.get("/p/acme-shop").text
-
-    form = {"csrf_token": csrf_token(token), "name": "live", "kind": "live", "level": "default"}
-    assert (
-        board.post(
-            "/p/acme-shop/environments", data={**form, "csrf_token": "x"}, headers=FORM
-        ).status_code
-        == 403
-    )
-    bearer = board.post(
-        "/p/acme-shop/environments",
-        data=form,
-        headers={**FORM, "Authorization": f"Bearer {token}"},
-    )
-    assert bearer.status_code == 403 and "environment_propose" in bearer.text
-
-    created = board.post(
-        "/p/acme-shop/environments", data=form, headers=FORM, follow_redirects=False
-    )
-    assert created.status_code == 303
-    env = run_in_app(board, service.environments, "acme-shop")[1][0]
-    access = board.post(
-        f"/p/acme-shop/environments/{env.id}/access",
-        data={
-            "csrf_token": csrf_token(token),
-            "kind": "ssh",
-            "fields": "alias: prod-alias\nuser: deploy",
-        },
-        headers=FORM,
-        follow_redirects=False,
-    )
-    assert access.status_code == 303
-    refused = board.post(
-        f"/p/acme-shop/environments/{env.id}/access",
-        data={"csrf_token": csrf_token(token), "kind": "db", "fields": f"password_ref: {SECRET}"},
-        headers=FORM,
-    )
-    assert refused.status_code == 400 and "never stores secrets" in refused.text
-    assert SECRET not in refused.text
-
-    raise_form = {**form, "level": "full"}
-    confirm = board.post(f"/p/acme-shop/environments/{env.id}", data=raise_form, headers=FORM)
-    assert confirm.status_code == 200 and "Confirm and save" in confirm.text
-    assert run_in_app(board, service.environments, "acme-shop")[1][0].level is None
-    done = board.post(
-        f"/p/acme-shop/environments/{env.id}",
-        data={**raise_form, "confirm_live": "1"},
-        headers=FORM,
-        follow_redirects=False,
-    )
-    assert done.status_code == 303
-    page = board.get("/p/acme-shop/environments").text
-    assert "agents: full" in page and "prod-alias" in page
-
-
-def test_proposals_on_the_board_and_in_the_inbox(board: TestClient, token: str) -> None:
+def test_the_stands_page_is_gone(board: TestClient, token: str) -> None:
     service: Service = board.app.state.service
     run_in_app(board, live_project, service)
-    proposal = run_in_app(
-        board,
-        service.propose_environment_change,
-        "acme-shop",
-        {"environment": "live", "notes": "Read logs at https://logs.example.com"},
-        "Logs are useful <script>x()</script>",
-        session="dev-1",
-    )
-    inbox = board.get("/inbox").text
-    assert "Proposed by agents" in inbox and "&lt;script&gt;" in inbox
-    assert f"#proposal-{proposal.id}" in inbox
-    page = board.get("/p/acme-shop/environments").text
-    assert f'id="proposal-{proposal.id}"' in page
-    url = f"/p/acme-shop/proposals/{proposal.id}/accept"
-    assert board.post(url, data={}, headers=FORM).status_code == 403
-    accepted = board.post(
-        url, data={"csrf_token": csrf_token(token)}, headers=FORM, follow_redirects=False
-    )
-    assert accepted.status_code == 303
-    assert "logs.example.com" in run_in_app(board, service.environments, "acme-shop")[1][0].notes
-    again = board.post(url, data={"csrf_token": csrf_token(token)}, headers=FORM)
-    assert again.status_code == 400 and "already accepted" in again.text
-    assert (
-        board.post(
-            "/p/demo-api/proposals/1/accept", data={"csrf_token": csrf_token(token)}, headers=FORM
-        ).status_code
-        == 404
-    )
+    moved = board.get("/p/acme-shop/environments", follow_redirects=False)
+    assert moved.status_code == 301 and moved.headers["location"] == "/p/acme-shop/settings"
+    page = board.get("/p/acme-shop/settings").text
+    assert "Stands &amp; access" not in page and "Add an environment" not in page
+    assert "prod-alias" not in page and 'id="archive"' in page
+    form = {"csrf_token": csrf_token(token), "name": "qa", "kind": "test"}
+    assert board.post("/p/acme-shop/environments", data=form, headers=FORM).status_code == 405
+    env = run_in_app(board, service.environments, "acme-shop")[1][0]
+    gone = board.post(f"/p/acme-shop/environments/{env.id}/delete", data=form, headers=FORM)
+    assert gone.status_code == 404
+    assert [e.name for e in run_in_app(board, service.environments, "acme-shop")[1]] == ["live"]
 
 
 def test_journal_on_activity_and_task(board: TestClient) -> None:
@@ -1095,60 +928,21 @@ def test_journal_on_activity_and_task(board: TestClient) -> None:
 # --- MCP --------------------------------------------------------------------------------------
 
 
-async def test_mcp_environment_tools(live_server: Callable[[], LiveServer]) -> None:
+async def test_mcp_environment_tools_are_stubs(live_server: Callable[[], LiveServer]) -> None:
     live = live_server()
     async with mcp_connect(live) as client:
         await call(client, "project_upsert", slug="acme-shop")
-        empty = await call(client, "environments_get", project="acme-shop")
-        assert "No environments for acme-shop" in empty
-        secret_change = {
-            "environment": "live",
-            "kind": "live",
-            "access": [{"kind": "db", "fields": {"password_ref": SECRET}}],
-        }
-        refused = await client.call_tool(
-            "environment_propose",
-            {"project": "acme-shop", "change": secret_change, "reason": "db"},
+        gone = f"{contract.STUB_RESULT}\n{contract.ENVIRONMENTS_GONE}"
+        assert await call(client, "environments_get", project="acme-shop") == gone
+        change = {"environment": "live", "kind": "live"}
+        proposed = await call(
+            client, "environment_propose", project="acme-shop", change=change, reason="why"
         )
-        assert refused.is_error
-        text = "\n".join(c.text for c in refused.content if hasattr(c, "text"))
-        assert "never stores secrets" in text and SECRET not in text
-        change = {
-            "environment": "live",
-            "kind": "live",
-            "base_url": "https://shop.example.com",
-            "access": [{"kind": "ssh", "fields": {"alias": "prod-alias"}}],
-        }
-        saved = await call(
-            client,
-            "environment_propose",
-            project="acme-shop",
-            change=change,
-            reason="The shop runs there",
-            session="dev-1",
-        )
-        assert "Nothing changed yet" in saved
-        assert "No environments" in await call(client, "environments_get", project="acme-shop")
-
-        # The owner accepts it on the board, signed in with the cookie.
-        async with httpx.AsyncClient(base_url=live.url, follow_redirects=True) as browser:
-            await browser.get(f"/login?token={live.token}")
-            accepted = await browser.post(
-                "/p/acme-shop/proposals/1/accept",
-                data={"csrf_token": csrf_token(live.token)},
-                headers={"Origin": live.url},
-            )
-            assert accepted.status_code == 200 and "prod-alias" in accepted.text
-
-        full = await call(client, "environments_get", project="acme-shop")
-        assert "## live (live)" in full and "agents: read (default)" in full
-        assert "ssh: alias=prod-alias" in full and "Guard: warn" in full
-        snapshot = await call(client, "project_snapshot", project="acme-shop")
-        assert "- live — live · agents: read (default) · https://shop.example.com" in snapshot
+        assert proposed == gone
         resource = await client.read_resource("relaybay://project/acme-shop/environments")
-        assert "prod-alias" in resource.contents[0].text
+        assert resource.contents[0].text == gone
         events = await call(client, "events_since", project="acme-shop")
-        assert "environment.proposed" in events and "environment.proposal_accepted" in events
+        assert "environment.proposed" not in events
 
 
 # --- second review: hosts as shell words, the password family, kind changes --------------
@@ -1166,11 +960,6 @@ async def test_leaving_live_compares_effective_levels(service: Service) -> None:
     ):
         with pytest.raises(ConfirmationNeeded):
             await service.save_environment("acme-shop", values, env_id=live.id)
-    proposal = await service.propose_environment_change(
-        "acme-shop", {"environment": "live", "kind": "test"}, "why"
-    )
-    with pytest.raises(ConfirmationNeeded):
-        await service.decide_proposal(proposal.id, True)
     # Lowering on the way out of live needs nothing.
     lowered = await service.save_environment(
         "acme-shop", {"kind": "test", "level": "read"}, env_id=live.id

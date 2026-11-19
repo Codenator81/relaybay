@@ -186,7 +186,7 @@
         },
         "expose_test_secrets_to_agents": {
           "type": "boolean",
-          "description": "Show test secret values to agents in environments_get (otherwise only their names)."
+          "description": "Show test secret values to agents (otherwise only their names). Unused since 0.15: no tool shows environments to agents."
         }
       }
     }

@@ -261,7 +261,7 @@ def test_board_repositories_and_code_row(board: TestClient, token: str) -> None:
     assert board.post("/p/acme-shop/repos", data=second, headers=FORM).status_code == 200
     _, repos = run_in_app(board, service.project_repos, "acme-shop")
     assert [(r.name, r.kind) for r in repos] == [("web", None), ("api", "api")]
-    page = board.get("/p/acme-shop/environments")
+    page = board.get("/p/acme-shop/settings")
     assert "Repositories" in page.text and "vscode://file/C:/code/acme/web" in page.text
     moved = board.post(
         f"/p/acme-shop/repos/{repos[1].id}/up", data={"csrf_token": csrf_token(token)}, headers=FORM

@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
 from relaybay.domain.doc_index import IndexedSection, size_label, whole_size
-from relaybay.domain.environments import Environment
 from relaybay.domain.errors import ValidationError
 from relaybay.domain.memory import Document, MemoryBlock, MemoryNote
 from relaybay.domain.models import Comment, Decision, Project, Task
@@ -296,11 +295,6 @@ def _block_line(block: MemoryBlock) -> str:
     return f"- **{block.label}** (v{block.version}): {_clip(block.body, 240)}"
 
 
-def _env_line(env: Environment, level: str, url: bool = False) -> str:
-    base = f" · {_clip(env.base_url, 120)}" if url and env.base_url else ""
-    return f"- {_clip(env.name, 60)} ({env.kind}): agents {level}{base}"
-
-
 # --- changes since the last read -----------------------------------------------------------
 
 
@@ -461,7 +455,6 @@ def inbox_lines(inbox: "Inbox") -> list[str]:
         for a in inbox.approvals
     ]
     lines += [_card_line(c) for c in inbox.cards]
-    lines += [f"- environment proposal #{p.id} in {p.project_slug}" for p in inbox.proposals]
     lines += [f"- policy proposal #{p.id} on {p.scope}" for p in inbox.policy_proposals]
     lines += [f"- rules proposal #{p.id} on {p.scope}" for p in inbox.rule_proposals]
     lines += [f"- rules changed directly: {v.scope} v{v.number}" for v in inbox.rule_notices]
@@ -547,7 +540,6 @@ class ProjectData:
     owner_names: set[str]  # casefolded
     decisions: list[Decision]
     decisions_total: int
-    environments: list[tuple[Environment, str]]  # with the agents' level
     blocks: list[MemoryBlock]
     notes: list[MemoryNote]  # current, project and global
     changes: Changes
@@ -592,13 +584,6 @@ def project_text(data: ProjectData, footer: Callable[[bool], str], budget: int) 
         f'decision_list("{slug}")',
         3,
         extra=data.decisions_total - len(data.decisions),
-    )
-    _section(
-        sections,
-        "## Environments",
-        [_env_line(env, level) for env, level in data.environments],
-        f'environments_get("{slug}")',
-        6,
     )
     _section(
         sections,
@@ -690,7 +675,6 @@ class TaskData:
     decisions_total: int
     doc_lines: list[str]
     doc_links_total: int
-    environments: list[tuple[Environment, str]]
     rules_line: str
     comments: list[Comment]  # unread owner comments
     reader_session_id: int | None
@@ -794,13 +778,6 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
         6,
         # A `Note:` line about a file changed outside relaybay follows a link; it is no link.
         extra=data.doc_links_total - sum(not x.startswith("Note:") for x in data.doc_lines),
-    )
-    _section(
-        sections,
-        "## Environments",
-        [_env_line(env, level, url=True) for env, level in data.environments],
-        f'environments_get("{slug}")',
-        8,
     )
     sections.append(Section("## Rules", [data.rules_line], f'rules_get("{slug}")', 7))
     _section(

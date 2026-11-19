@@ -56,7 +56,20 @@ class Deprecation:
         return today >= self.remove_not_before and _minor(version) > _minor(self.since)
 
 
-DEPRECATIONS: list[Deprecation] = []
+# Tools of the Stands & access page, removed in 0.15: registered with their parameters, they do
+# nothing; the first later minor release past the date removes them and raises the version.
+REMOVED_SINCE = "0.15"
+REMOVED_NOT_BEFORE = date(2026, 12, 19)
+STUB_RESULT = "Nothing done: this tool does nothing since 0.15."
+ENVIRONMENTS_GONE = (
+    "Deprecated: environments and access were removed in 0.15; environments are kept in the"
+    " project's own notes."
+)
+
+DEPRECATIONS: list[Deprecation] = [
+    Deprecation(t, None, REMOVED_SINCE, REMOVED_NOT_BEFORE, None, ENVIRONMENTS_GONE)
+    for t in ("environments_get", "environment_propose", "relaybay://project/{slug}/environments")
+]
 
 
 def _minor(version: str) -> tuple[int, int]:

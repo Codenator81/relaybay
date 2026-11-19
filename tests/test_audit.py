@@ -264,3 +264,28 @@ async def test_second_session_keeps_its_own_switch(service: Service) -> None:
     denied = await answer(service, bash("ssh prod-alias uptime"))
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert await answer(service, bash("ssh prod-alias uptime", CC_B)) is None
+
+
+def test_audit_page_shows_environment_events_from_before_0_15(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, journal_two, service)
+    project = run_in_app(board, service.get_project, "acme-shop")
+
+    async def old_events() -> None:
+        async with service._tx() as tx:
+            for kind in ("environment.proposed", "environment.proposal_accepted"):
+                await tx.event(
+                    kind,
+                    "dev-1",
+                    project_id=project.id,
+                    project="acme-shop",
+                    environment="live",
+                    proposal_id=1,
+                    change="live: level → full",
+                )
+
+    run_in_app(board, old_events)
+    page = board.get("/audit?changes=1")
+    assert page.status_code == 200
+    assert "environment.proposed" in page.text and "environment.proposal_accepted" in page.text
+    assert board.get("/audit?environment=live&changes=1").status_code == 200

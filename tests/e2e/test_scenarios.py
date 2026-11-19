@@ -1,10 +1,12 @@
 """Whole scenarios: a real server, real hooks through the real forwarder, MCP through the SDK
 client, and only the model replaced by a script."""
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
 
+from relaybay.service import Service
 from tests.e2e.conftest import Stand, poll
 from tests.e2e.stream_contract import check_stream
 
@@ -122,15 +124,22 @@ def test_comment_is_delivered_blocks_the_stop_and_is_acknowledged(stand: Stand) 
 
 
 def _live_project(stand: Stand) -> None:
+    """An environment stored before 0.15: nothing on the board or over MCP writes one now, so it
+    goes into the database while the server is stopped."""
     stand.mcp("project_upsert", slug="acme-shop", repo_path=stand.project_dir.as_posix())
-    change = {
-        "environment": "live",
-        "kind": "live",
-        "access": [{"kind": "ssh", "fields": {"alias": "prod-alias"}}],
-    }
-    stand.mcp("environment_propose", project="acme-shop", change=change, reason="The shop")
-    with stand.board() as board:
-        stand.post_form(board, "/p/acme-shop/proposals/1/accept")
+    stand.stop_server()
+
+    async def seed() -> None:
+        service = Service(stand.settings.db_path)
+        await service.start()
+        try:
+            env = await service.save_environment("acme-shop", {"name": "live", "kind": "live"})
+            await service.save_access("acme-shop", env.id, "ssh", {"alias": "prod-alias"})
+        finally:
+            await service.close()
+
+    asyncio.run(seed())
+    stand.start_server()
 
 
 def test_guard_denies_on_live_and_journals(stand_factory: Callable[..., Stand]) -> None:

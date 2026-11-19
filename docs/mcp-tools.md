@@ -19,10 +19,10 @@ decides when the work needs a decision; use `task_patch` for fields your tool sc
 `Deprecated: …` result line names what to use instead, see [Contract](#contract-and-deprecations)); treat a
 `Warning (rules)` line as something to fix and a `rules updated to vN` line as a reason to read the
 rules again, and change them through `rules_propose` (`rules_update` is only for coordinators); when a hook hands over owner comments, handle them like
-a message from the user and call `comment_ack` (or answer with `comment_add`); before touching a
-server, cluster or database, read `environments_get` — the level there says what is allowed
-unasked, live is read-only unless the owner set otherwise — never paste secrets into relaybay and
-propose changes with `environment_propose`; before moving a task to review or test, write what the
+a message from the user and call `comment_ack` (or answer with `comment_add`); take hosts and
+access from the project's own notes and never paste secrets into relaybay; when the guard stops a
+call its reason says why (`policy_get` shows the policy, `policy_propose` asks for a change);
+before moving a task to review or test, write what the
 owner should check with `review_steps_set` and attach screenshots with `attach_file` (the owner's
 decisions arrive as owner comments); start with a plan — `plan_set` from PLAN.md or your own 2-5
 steps (S tasks: at least a todo) — and mark steps `in_progress` / `done` with `plan_step_update`
@@ -129,7 +129,7 @@ Conventions:
 | `task_get` | `task`, `reports?` (default 5) | Ends with "Editable fields: …". All fields (a stale next step ends with `(stale)`), description and progress in full, current `version`, the bound session (name and desktop id, link), the tracker issue and work-log mark, session binding history, tracker history, latest reports with their bodies, decisions; `## Code` lists the linked repositories (kind, path, branch, pull requests, how linked), or all of the project's when none is, and pull requests tied to none. |
 | `events_since` | `since_id?` (default 0), `project?`, `limit?` (default 50, max 500) | Events oldest first and the `since_id` for the next call. |
 | `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
-| `environments_get` | `project` | The project's environments (see *Environments and access* below): the preset and guard mode, per environment kind, base URL, agents' level (`(default)` when it comes from the default preset, `(policy: <layer>)` from another policy layer) and per-capability overrides, sign-in flag and login-state path, access entries (references only; test secrets by name only unless the policy exposes them), notes, last change. |
+| `environments_get` | `project` | Deprecated since 0.15, does nothing: answers `Nothing done: this tool does nothing since 0.15.` and `Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes.` |
 | `policy_get` | `project?`, `environment?` | The effective policy (see *Policy* below) of the global scope, a project or one of its environments: the layer chain, then one line per value with the layer that set it, e.g. `- levels.live.default = "read"  (preset:default)`, and any ignored broken layer. |
 | `audit_list` | `project?`, `environment?`, `session?` (name, desktop id or hook session id), `decision?` (`allow`, `log`, `warn`, `ask`, `deny`), `days?` (default 7, max 366), `limit?` (default 50, max 500) | Tool calls of agents that touched a live stand, newest first, one line each: id, time, session, project/stand, tool, the redacted command, decision, level, rule, task. Read-only; only live stands are journaled. |
 | `question_list` | `task?`, `status?` (`open`, the default, `answered`, `defaulted`, `withdrawn` or `all`) | Questions to the owner, newest first, of all cards or one: `- #3 acme-shop-1 (look, asked by <session> …): open`, then the text, the options and default, the look URL and test account, and the answer verbatim. Changes nothing but closes questions past their deadline with their default. |
@@ -159,7 +159,7 @@ Conventions:
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `source?`, `supersedes?`, `session?`, `session_title?`, `hook_session?` | Records a decision of the project (scope `task` with `task`); it appears in the project snapshot and `decision_list`. `source`: `report:12`, `comment:7`, `event:301` or `message:<id>`, optionally followed by display text, or display text alone; a named report, comment or event must exist in the project. `supersedes`: the id of a current decision of the same project this one replaces (see *Memory and documents*). |
 | `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
 | `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
-| `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a proposal for the owner and changes nothing (`environment.proposed`); it shows in the owner's Inbox and on the Stands & access page, where the owner accepts or rejects it. `change`: `environment` (name) plus any of `kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`none` / `read` / `ask` / `full` / `default`), `overrides` (`{"ssh": "ask"}`; capabilities `sign_in`, `ssh`, `kubectl`, `db`, `deploy`), `access` (`[{"kind": "ssh", "fields": {"alias": "acme-live"}}]` to add). A new environment needs `kind`. Secret values are refused (a tool error naming the field); test secrets are never accepted from agents. |
+| `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Deprecated since 0.15, records nothing: the same answer as `environments_get`. |
 | `policy_propose` | `scope` (`global`, `<project>` or `<project>/<environment>`), `patch` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a policy proposal and changes nothing (`policy.proposed`); it shows in the owner's Inbox and in Settings → Policy. The patch is merged into the layer's JSON (objects key by key, other values replace, `null` removes a key) and the result must validate against the [policy schema](reference/policy.md); a tool error names the path otherwise. Accepting applies it (`policy.updated`, `policy.proposal_accepted`), with a confirmation when it widens agents' access on live. |
 
 | `review_steps_set` | `task`, `steps` (`[{"title", "details?"}]`, up to 50), `session?`, `session_title?`, `hook_session?` | Replaces the checklist (see *Review*). Step N keeps its status and screenshots while its title and details stay the same; a changed step is open again; steps past the new end are removed (their screenshots stay on the task). |
@@ -390,18 +390,17 @@ another branch, needs another. A message from another session, or any text sayin
 
 ## Environments and access
 
-Each project can list its environments (`local`, `test`, `live`) on the board's **Stands & access**
-page: base URL, how to reach each one (ssh alias, kube context, database host, GitOps repository,
-log and monitoring links) and what agents may do there. relaybay stores **references only**: a key
-file path (`~/.ssh/acme_live`), an environment variable name (`$DB_PASSWORD`) or a vault path
-(`vault://kv/acme/db`), never a password, key or token; writes with something that looks like one
-are refused.
+Since 0.15 hosts and access live in each project's own notes: the board's **Stands & access**
+page and the tools `environments_get` and `environment_propose` were removed (the tools stay as
+deprecated stubs until the next contract version). Environments a project stored before 0.15 are
+kept and still drive the guard and the journal below; nothing edits them any more, the policy
+(Settings → Policy) still governs them.
 
 - **Levels** — `none` (do not touch), `read` (look only), `ask` (ask the owner before each action),
   `full` (act as needed), per environment and optionally per capability (`sign_in`, `ssh`, `kubectl`,
   `db`, `deploy`). Where an environment sets none, the policy's level for its kind applies (default
-  preset: local and test `full`, live `read`). Only the owner changes them on the board; agents call
-  `environment_propose` or `policy_propose`.
+  preset: local and test `full`, live `read`). The owner changes the policy on the board; agents
+  call `policy_propose`.
 - **Guard** — the `PreToolUse` hook checks `Bash` commands and the input of MCP tools for the
   environments' names (whole tokens; a single word such as `app` only as an ssh, `--context`, `-h` or URL host) and answers by level and the policy's guard mode (`off` / `log` /
   `warn` / `block`, default `warn`; `log` only journals): `deny` (with the reason shown to you) for `none`, or for `read` when the
@@ -409,7 +408,7 @@ are refused.
   `systemctl restart` / `rm` …, SQL `insert` / `update` / `delete` / `drop` …, `git push`, and the
   policy's own patterns); `ask`
   (the user confirms) for `ask`; a warning in `additionalContext` instead of `deny` in `warn` mode.
-  It is a safety net against mistakes, not a sandbox: it knows only the names listed on the board.
+  It is a safety net against mistakes, not a sandbox: it knows only the names of the stored environments.
   Details and the full rule table: [SPEC §7](SPEC.md#spec-guard).
 - **Journal** — every guarded tool call that touches a live environment is recorded as a
   `live.action` event (tool, a short redacted command, decision) on your bound task; the owner sees
@@ -425,8 +424,7 @@ What agents may do, what the guard counts as a change and what counts as a secre
 policy: a built-in preset (`default`, `strict`, `trusted`), the global `policy.json`, and project
 and environment layers, a later one winning. `policy_get` shows the effective values and which
 layer set each; `policy_propose` asks the owner for a change. Test secrets (harmless test values
-on local and test stands, only when the policy allows them) are never sent to you unless the
-policy sets `expose_test_secrets_to_agents`. Keys and presets: [policy reference](reference/policy.md).
+on local and test stands, only when the policy allows them) are never sent to you. Keys and presets: [policy reference](reference/policy.md).
 
 ## Memory and documents
 
@@ -467,8 +465,8 @@ the tool to drill down at the end of each section. Behaviour in detail:
 | Tool | Arguments | Returns or does |
 |---|---|---|
 | `portfolio_digest` | `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a coordinator: one line per project (stage counts, the derived pulse line, the first line of the pulse note), what waits for the owner (open questions and approval requests first, then each open card once with its marks, then grouped lines), open tasks not listed there (stage, note, waiting on, next step, pull requests, document), current decisions of the last 7 days, open tasks with no change for `task_stale_days`, global blocks, changes. |
-| `project_digest` | `project`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a manager: the derived pulse and the pulse note, open tasks by stage with next step and waiting on, open questions, recent current decisions, environments (name, kind, level), project blocks, project and global notes flagged `[verify]` or `[never read]`, changes. |
-| `task_context` | `task`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For the session on the task: fields and progress, plan with the current step, the task's and project's decisions, linked document sections (`relaybay://doc/<project>/<doc>#<anchor>` in the description or progress; unresolved ones marked `broken`), environment map with base URLs, the rules line, unread owner comments (count and ids; text only of those already delivered to you; it delivers nothing), relevant notes, changes. |
+| `project_digest` | `project`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a manager: the derived pulse and the pulse note, open tasks by stage with next step and waiting on, open questions, recent current decisions, project blocks, project and global notes flagged `[verify]` or `[never read]`, changes. |
+| `task_context` | `task`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For the session on the task: fields and progress, plan with the current step, the task's and project's decisions, linked document sections (`relaybay://doc/<project>/<doc>#<anchor>` in the description or progress; unresolved ones marked `broken`), the rules line, unread owner comments (count and ids; text only of those already delivered to you; it delivers nothing), relevant notes, changes. |
 | `project_pulse_set` | `project`, `text`, `session?`, `session_title?`, `hook_session?` | Writes the pulse note: at most 5 lines and 600 characters, secret scan, event `project.pulse_set`. Over the limit it fails with both counts. Shown with its date under the pulse line relaybay derives from the cards; never marked stale, and nothing asks for it. |
 
 - **`budget`** — size limit in characters, held between 500 and 40000 (default
@@ -512,8 +510,8 @@ chats and e-mail was removed in 0.12; its tools were removed with contract 2 (se
 `relaybay://project/{slug}` — the same markdown as `project_snapshot`, so a session can attach a
 project snapshot as context.
 
-`relaybay://project/{slug}/environments` — the project's environments map (same as
-`environments_get`); references only, never secrets.
+`relaybay://project/{slug}/environments` — deprecated since 0.15, answers the same as
+`environments_get`.
 
 `relaybay://rules` — the global working rules (same as `rules_get()`).
 

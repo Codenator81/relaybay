@@ -18,7 +18,6 @@ from relaybay.domain.environments import (
     AccessEntry,
     Environment,
     PolicyProposal,
-    Proposal,
     split_test_secrets,
 )
 from relaybay.domain.memory import (
@@ -2905,73 +2904,6 @@ async def get_access(conn: aiosqlite.Connection, access_id: int) -> AccessEntry 
 
 async def delete_access(conn: aiosqlite.Connection, access_id: int) -> None:
     await conn.execute("DELETE FROM environment_access WHERE id = ?", (access_id,))
-
-
-# --- environment proposals -------------------------------------------------
-
-_PROPOSAL_SELECT = (
-    "SELECT x.*, p.slug AS project_slug FROM environment_proposal x"
-    " JOIN project p ON p.id = x.project_id"
-)
-
-
-def _proposal(row: aiosqlite.Row) -> Proposal:
-    return Proposal(
-        id=row["id"],
-        project_id=row["project_id"],
-        project_slug=row["project_slug"],
-        change=json.loads(row["change"]),
-        reason=row["reason"],
-        proposed_by=row["proposed_by"],
-        session_id=row["session_id"],
-        status=row["status"],
-        created_at=row["created_at"],
-        decided_at=row["decided_at"],
-        decided_by=row["decided_by"],
-    )
-
-
-async def insert_proposal(
-    conn: aiosqlite.Connection,
-    project_id: int,
-    change: dict[str, Any],
-    reason: str,
-    proposed_by: str,
-    session_id: int | None,
-    now: str,
-) -> int:
-    cur = await conn.execute(
-        "INSERT INTO environment_proposal (project_id, change, reason, proposed_by, session_id,"
-        " created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (project_id, json.dumps(change, ensure_ascii=False), reason, proposed_by, session_id, now),
-    )
-    return int(cur.lastrowid or 0)
-
-
-async def get_proposal(conn: aiosqlite.Connection, proposal_id: int) -> Proposal | None:
-    row = await _one(conn, _PROPOSAL_SELECT + " WHERE x.id = ?", (proposal_id,))
-    return _proposal(row) if row else None
-
-
-async def list_proposals(
-    conn: aiosqlite.Connection, project_id: int | None = None, limit: int = 100
-) -> list[Proposal]:
-    """Pending proposals, oldest first."""
-    sql, params = _PROPOSAL_SELECT + " WHERE x.status = 'pending'", ()
-    if project_id is not None:
-        sql += " AND x.project_id = ?"
-        params = (project_id,)
-    rows = await _all(conn, sql + " ORDER BY x.id LIMIT ?", (*params, limit))
-    return [_proposal(r) for r in rows]
-
-
-async def decide_proposal(
-    conn: aiosqlite.Connection, proposal_id: int, status: str, actor: str, now: str
-) -> None:
-    await conn.execute(
-        "UPDATE environment_proposal SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
-        (status, now, actor, proposal_id),
-    )
 
 
 # --- policy layers and proposals --------------------------------------------

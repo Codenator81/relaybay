@@ -10,7 +10,7 @@
   <section class="panel" id="archived-projects">
     <h2>Archived projects</h2>
     {% if archived_projects %}
-    <p class="muted">Not in the sidebar, the Inbox or the digests. Their boards and cards are kept; Back from the archive is on each project's Stands &amp; access page.</p>
+    <p class="muted">Not in the sidebar, the Inbox or the digests. Their boards and cards are kept; Back from the archive is on each project's Settings page.</p>
     <ul class="project-list">
       {% for p in archived_projects %}
       <li class="project-row">
@@ -19,7 +19,7 @@
           <span class="project-slug">{{ p.slug }}</span>
         </a>
         <span class="muted">archived <time datetime="{{ p.archived_at }}" data-age>{{ p.archived_at|age }}</time> ·
-          <a href="/p/{{ p.slug }}/environments#archive">Back from the archive</a></span>
+          <a href="/p/{{ p.slug }}/settings#archive">Back from the archive</a></span>
       </li>
       {% endfor %}
     </ul>
