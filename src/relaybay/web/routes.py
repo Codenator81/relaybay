@@ -30,8 +30,8 @@ from starlette.responses import StreamingResponse
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
 from relaybay.domain import digest as digests
+from relaybay.domain import doc_index, guard
 from relaybay.domain import environments as env_domain
-from relaybay.domain import guard
 from relaybay.domain import memory as mem
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
@@ -39,6 +39,7 @@ from relaybay.domain.areas import AREA_COLORS
 from relaybay.domain.backlog import ASSIGNEE_MAX, KINDS, NO_KIND, QUERY_MAX
 from relaybay.domain.code import REPO_KINDS, vscode_url
 from relaybay.domain.comments import COMMENT_MAX
+from relaybay.domain.doc_index import IndexedSection
 from relaybay.domain.errors import (
     ConfirmationNeeded,
     ConflictError,
@@ -277,7 +278,28 @@ BOARD_ONLY = (
 ENV_TEXT_FIELDS = ("name", "kind", "base_url", "login_state_path", "notes", "level")
 JOURNAL_LIMIT = 20
 DOCS_DECISIONS = 200
-DOC_NEW_FIELDS = ("doc", "title", "kind", "source_url", "body", "reason")
+DOC_NEW_FIELDS = ("doc", "title", "kind", "source_url", "source_path", "body", "reason")
+
+
+def doc_toc_rows(text: str) -> list[IndexedSection]:
+    """The section index of a text the database does not index (an older version)."""
+    return doc_index.build(text)[0]
+
+
+def doc_toc(rows: list[IndexedSection]) -> list[tuple[IndexedSection, list[IndexedSection]]]:
+    """The table of contents folded to two levels: each heading of level 1 or 2 with the deeper
+    headings under it."""
+    out: list[tuple[IndexedSection, list[IndexedSection]]] = []
+    for r in rows:
+        if r.level == 0:
+            continue
+        if r.level <= 2 or not out:
+            out.append((r, []))
+        else:
+            out[-1][1].append(r)
+    return out
+
+
 # Hook status changes arrive every few seconds per working session: the Activity feed shows
 # them only when the kind filter asks for them.
 QUIET_KINDS = ("session.status_changed",)
@@ -343,6 +365,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.filters["age"] = age
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
+    env.filters["chars"] = doc_index.chars_label
     env.filters["http_url"] = http_url
     env.filters["vscode_url"] = vscode_url
     env.filters["event_detail"] = event_detail
@@ -2140,16 +2163,19 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         board_only(request, csrf)
         form = await request.form()
         fields = {name: str(form.get(name) or "") for name in DOC_NEW_FIELDS}
+        on_disk = bool(fields["source_path"].strip())  # "A file on disk": relaybay reads it
+        target = "doc-file" if on_disk else "doc-new"
         try:
             saved = await service.update_document(
                 slug,
                 fields["doc"].strip().lower(),
-                fields["body"],
+                "-" if on_disk else fields["body"],
                 fields["reason"],
                 0,
                 title=fields["title"] or None,
                 kind=fields["kind"].strip().lower() or None,
                 source_url=fields["source_url"] or None,
+                source_path=fields["source_path"] if on_disk else None,
                 author="owner",
             )
         except DomainError as exc:
@@ -2158,8 +2184,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 request,
                 slug,
                 error=str(exc),
-                error_target="doc-new",
-                draft={f"doc-new-{name}": value for name, value in fields.items()},
+                error_target=target,
+                draft={f"{target}-{name}": value for name, value in fields.items()},
                 status=400,
             )
         return flash_redirect(
@@ -2167,12 +2193,31 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         )
 
     @router.get("/p/{slug}/docs/{doc}", response_class=HTMLResponse)
-    async def document_page(request: Request, slug: str, doc: str, version: int | None = None):
+    async def document_page(
+        request: Request, slug: str, doc: str, version: int | None = None, q: str = ""
+    ):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
         found, text = await service.get_document(slug, doc, version=version)
-        _, versions = await service.document_history(slug, doc)
-        editable = found.shown_version == found.version and not found.source_url
+        versions, changes = [], []
+        if found.is_file:
+            _, changes = await service.file_history(slug, doc)
+        else:
+            _, versions = await service.document_history(slug, doc)
+        editable = (
+            found.shown_version == found.version and not found.source_url and not found.is_file
+        )
         edit_url = f"/p/{found.project_slug}/docs/{found.slug}/edit" if editable else None
+        if version is None:
+            _, rows, _ = await service.document_outline(slug, doc)
+        else:
+            rows = doc_toc_rows(text)
+        q = q.strip()[:SEARCH_MAX]
+        hits, search_error = [], None
+        if q:
+            try:
+                _, hits = await service.search_documents(slug, q, doc=found.slug, limit=30)
+            except ValidationError as exc:
+                search_error = str(exc)
         flash = take_flash(request)
         response = await page(
             request,
@@ -2182,9 +2227,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             project=await service.get_project(slug),
             doc=found,
             body_html=render_document(text, edit_url),
-            sections=mem.sections(text),
+            toc=doc_toc(rows),
             versions=versions,
+            changes=changes,
             edit_url=edit_url,
+            q=q,
+            hits=hits,
+            search_error=search_error,
             message=flash.get("message"),
             last_event_id=last_event_id,
         )
@@ -2226,6 +2275,12 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     async def document_edit(request: Request, slug: str, doc: str, section: str = ""):
         wanted = section.strip().lstrip("#").casefold() or None
         found, text = await service.get_document(slug, doc, section=wanted)
+        if found.is_file:
+            return flash_redirect(
+                request,
+                f"/p/{found.project_slug}/docs/{found.slug}",
+                message="This document lives in a file; edit the file itself.",
+            )
         if found.source_url:
             return flash_redirect(
                 request,

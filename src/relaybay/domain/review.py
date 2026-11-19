@@ -167,6 +167,11 @@ def _under_configured(text: str, roots: list[Path]) -> bool:
     return False
 
 
+def network_path_allowed(text: str, roots: list[Path]) -> bool:
+    """A local path, or a network share or device path one of `roots` names."""
+    return not _network_or_device(text) or _under_configured(text, roots)
+
+
 def resolve_source(
     raw: str, roots: list[Path], refused: list[Path], private: Path | None = None
 ) -> tuple[Path, os.stat_result]:

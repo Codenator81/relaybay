@@ -2,6 +2,7 @@
 level agents have there."""
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -183,6 +184,15 @@ class SecretRules:
 DEFAULT_SECRET_RULES = SecretRules()
 
 
+@dataclass(frozen=True, slots=True)
+class SecretSpan:
+    """Where a detector found a secret: characters start-end of the text, never the value."""
+
+    detector: str
+    start: int
+    end: int
+
+
 def is_reference(value: str) -> bool:
     return any(r.match(value) for r in _REFERENCE_RES)
 
@@ -195,46 +205,57 @@ def _passes(value: str, rules: SecretRules) -> bool:
     return not value or is_reference(value) or rules.allows(value)
 
 
-def _secret_found(text: str, rules: SecretRules) -> str | None:
-    """The id of the first enabled detector that finds a secret in `text`."""
+def secret_spans(text: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> Iterator[SecretSpan]:
+    """Every secret the enabled detectors find in `text`, in detector order: its detector and
+    where it is (a private key runs to its END line, or to the end of the text). One pass per
+    detector over the whole text."""
     for name, pattern in _SECRET_VALUE_RES:
         if name in rules.disabled:
             continue
-        if any(not rules.allows(m.group(0)) for m in pattern.finditer(text)):
-            return name
+        covered = 0  # the end of the last private key block: a BEGIN inside it is part of it
+        for m in pattern.finditer(text):
+            if m.start() < covered or rules.allows(m.group(0)):
+                continue
+            end = m.end()
+            if name == "private-key":
+                block = _PRIVATE_KEY_RE.match(text, m.start())
+                end = covered = block.end() if block else end
+            yield SecretSpan(name, m.start(), end)
     for name, pattern, command in _SECRET_SPOTS:
         if name in rules.disabled or (command is not None and not command.search(text)):
             continue
         for match in pattern.finditer(text):
             if not _passes(_unquoted(match.group(2)), rules):
-                return name
+                yield SecretSpan(name, match.start(), match.end())
     if "secret-assignment" not in rules.disabled:
         for match in _ASSIGNMENT_RE.finditer(text):
             value = _unquoted(match.group(3))
             if _passes(value, rules):
                 continue
-            if "=" in match.group(2):
-                return "secret-assignment"
-            if len(value) >= 6 and _PROSE_SECRET_RE.search(match.group(1)):
-                return "secret-assignment"
-    return None
+            if "=" in match.group(2) or (
+                len(value) >= 6 and _PROSE_SECRET_RE.search(match.group(1))
+            ):
+                yield SecretSpan("secret-assignment", match.start(), match.end())
+
+
+def _secret_found(text: str, rules: SecretRules) -> str | None:
+    """The id of the first enabled detector that finds a secret in `text`."""
+    return next((span.detector for span in secret_spans(text, rules)), None)
 
 
 def find_secrets(text: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> list[tuple[int, str]]:
     """(1-based line, detector id) for every line of `text` holding a secret, never the value.
     What only the whole text shows (a flag and its value on two lines, a command named elsewhere)
-    is reported at the line that completes it, so this finds all that `check_secret` refuses."""
+    is reported at the line where the first such secret ends, so this finds all that
+    `check_secret` refuses."""
     lines = text.split("\n")
     found = [(n, name) for n, line in enumerate(lines, 1) if (name := _secret_found(line, rules))]
     if found:
         return found
-    whole = _secret_found(text, rules)
-    if not whole:
+    first = min(secret_spans(text, rules), key=lambda s: s.end, default=None)
+    if first is None:
         return []
-    for n in range(1, len(lines) + 1):
-        if _secret_found("\n".join(lines[:n]), rules):
-            return [(n, whole)]
-    return [(1, whole)]
+    return [(text.count("\n", 0, max(first.end - 1, 0)) + 1, first.detector)]
 
 
 def check_secret(name: str, value: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> None:

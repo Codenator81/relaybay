@@ -177,7 +177,8 @@ again; both are listed as `skipped`.
   [policy](../SPEC.md#spec-policy).
 - **Paths.** Only files under the root are read. A link leaving the root is refused. Project,
   document and task folder names must be valid slugs, so no name can lead anywhere else.
-- **Size.** A file over 2 MB, a document over 200000 characters, a note over 8000.
+- **Size.** A file over 2 MB, a document over 200000 characters, a note over 8000. A larger
+  document stays in its file: [add it as a file document](large-documents.md).
 - **Encoding.** A file that is not UTF-8 is an error for that file alone.
 
 ## Export
@@ -189,7 +190,11 @@ relaybay export ./notes --apply    # write it
 
 Export writes documents (a document that lives in a repository only when it has text of its own),
 current and superseded decisions (`projects/<slug>/decisions.md`), the repositories and the tasks'
-links (`projects/<slug>/code.md`), current notes and the task registry to the same layout. A document goes back to the file it was imported from.
+links (`projects/<slug>/code.md`), current notes and the task registry to the same layout. A document goes back to the file it was imported from,
+byte for byte while it was not changed on the board: its line endings (LF or CRLF), a byte order
+mark and the blank lines before and after the text are kept from the import (a file with mixed line
+endings imports with a warning and comes back with LF). File documents are not exported: they live
+in their own file.
 It reads a copy of the database, so it changes nothing on the board. The output is deterministic
 (sorted, no times but the stored ones), so git diffs stay small, and an import of an export changes
 nothing.

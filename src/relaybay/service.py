@@ -28,10 +28,12 @@ import aiosqlite
 from relaybay import gitinfo, updates
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
+from relaybay.desktop.settings import FILE_NAME as DESKTOP_FILE
+from relaybay.desktop.settings import config_dir
 from relaybay.domain import annotations as ann
 from relaybay.domain import approvals as arules
 from relaybay.domain import areas as area_rules
-from relaybay.domain import backlog, guard, intake
+from relaybay.domain import backlog, doc_index, guard, intake
 from relaybay.domain import comments as comment_text
 from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
@@ -73,6 +75,7 @@ from relaybay.domain.comments import (
     STOP_BLOCK_CAP,
     STOP_COMMENT_CAP,
 )
+from relaybay.domain.doc_index import IndexedSection
 from relaybay.domain.environments import (
     DEFAULT_LEVELS,
     GUARD_MODES,
@@ -103,6 +106,7 @@ from relaybay.domain.hooks import (
     session_start_context,
     surface_question,
 )
+from relaybay.domain.markdown_layout import FileStyle
 from relaybay.domain.models import (
     Binding,
     Comment,
@@ -164,6 +168,7 @@ from relaybay.domain.review import (
     clean_markdown,
     clean_original_name,
     clean_step_title,
+    network_path_allowed,
     read_source,
     require_image,
     require_png,
@@ -519,6 +524,47 @@ class TaskDetail:
             return None
         problem = verified_marks_problem(report.size, len(self.checks.get(report.id, [])))
         return f"Warning (rules): {problem}" if problem else None
+
+
+DocCache = dict[tuple[str, str], tuple[mem.Document, list[IndexedSection]] | None]
+
+
+class PreparedFile(NamedTuple):
+    """A new file document, read and indexed before its write transaction."""
+
+    path: Path
+    seen: doc_index.FileStat
+    digest: str
+    rows: list[IndexedSection]
+    masked: int
+    heading: str | None
+
+
+@dataclass(slots=True)
+class DocRead:
+    """A doc_get answer: the text shown (lines first-last, or fewer when `cut`), the document's
+    section index, the section asked for, and the size of the whole text."""
+
+    doc: mem.Document
+    text: str
+    rows: list[IndexedSection]
+    section: IndexedSection | None
+    first: int
+    last: int
+    total_chars: int
+    cut: doc_index.Cut | None
+    total_lines: int = 0
+    cap: int | None = None  # the cap of the answer, None for a read that is not capped
+
+
+@dataclass(slots=True)
+class DocHit:
+    """A doc_search hit: the section, the best line and the non-blank lines around it."""
+
+    doc: mem.Document
+    section: IndexedSection
+    line: int
+    around: list[tuple[int, str]]
 
 
 @dataclass(slots=True)
@@ -1116,16 +1162,16 @@ def _scan(rules: SecretRules, **texts: str | None) -> None:
             envs.check_secret(name, text, rules)
 
 
-def _doc_ref(link: digests.DocLink, body: str | None) -> mem.DocRef:
-    """The board target of a document link, given the document's current text (None when the
-    document does not exist)."""
-    if body is None:
+def _doc_ref(link: digests.DocLink, rows: list[IndexedSection] | None) -> mem.DocRef:
+    """The board target of a document link, given the document's section index (None when the
+    document does not exist). An explicit anchor leads to its section's heading."""
+    if rows is None:
         return mem.DocRef(None, "no such document")
     href = f"/p/{link.project}/docs/{link.doc}"
     if not link.anchor:
         return mem.DocRef(href)
     wanted = link.anchor.casefold()
-    found = next((s for s in mem.sections(body) if s.anchor == wanted), None)
+    found = next((r for r in rows if r.anchor and wanted in (r.anchor, r.alias)), None)
     if found is None:
         return mem.DocRef(href, "no such section")
     return mem.DocRef(f"{href}#{found.anchor}")
@@ -1187,6 +1233,7 @@ class Service:
         policy_file: Path | None = None,
         attachments_dir: Path | None = None,
         attachment_roots: list[Path] | None = None,
+        protected_paths: list[Path] | None = None,
         attachment_max_bytes: int = DEFAULT_FILE_MAX_MB * MB,
         attachment_task_max_bytes: int = DEFAULT_TASK_MAX_MB * MB,
         plan_reminder_every: int = DEFAULT_REMINDER_EVERY,
@@ -1245,6 +1292,8 @@ class Service:
         self._terminal_opened: dict[int, float] = {}  # session id -> monotonic time of Open
         self._terminal_lock = asyncio.Lock()
         self.attachment_roots = list(attachment_roots or [])
+        # Single files a file document may never be: the token, desktop.toml.
+        self.protected_paths = [*(protected_paths or []), config_dir() / DESKTOP_FILE]
         self.attachment_max_bytes = attachment_max_bytes
         self.attachment_task_max_bytes = attachment_task_max_bytes
         self.bus = bus or EventBus()
@@ -1309,6 +1358,11 @@ class Service:
             async with self._tx() as tx:
                 count = await repo.rebuild_search_index(tx.conn)
             logger.info("Search index rebuilt: %d item(s).", count)
+        await repo.ensure_section_index(self._write_conn, self.search_fts)
+        if await repo.section_index_stale(self._write_conn, self.search_fts):
+            async with self._tx() as tx:
+                count = await self._rebuild_section_index(tx)
+            logger.info("Section index rebuilt: %d document(s).", count)
         await self._sync_rule_versions()
         # A broken project override is reported now; it never stops the server or the project.
         for slug, body in await repo.list_project_rules(self._read_conn):
@@ -2940,7 +2994,7 @@ class Service:
         shown_reports = await repo.list_reports(self._r, task.id, reports)
         comments = await repo.list_comments(self._r, task.id)
         texts = [r.body_md for r in shown_reports] + [c.body_md for c in comments]
-        cache: dict[tuple[str, str], tuple[mem.Document, str] | None] = {}
+        cache: DocCache = {}
         state = self.card_state(task)
         session = await self.card_session(task)
         return TaskDetail(
@@ -4655,6 +4709,7 @@ class Service:
             ):
                 continue
             line, snippet = mem.matching_line(row["body"] or "", words)
+            anchor = mem.anchor_at(row["body"] or "", line) if row["kind"] == "doc" else None
             hits.append(
                 mem.SearchHit(
                     kind=row["kind"],
@@ -4665,6 +4720,7 @@ class Service:
                     title=row["title"] or _first_words(row["body"] or ""),
                     line=line,
                     snippet=snippet,
+                    anchor=anchor,
                 )
             )
             if len(hits) == limit:
@@ -4688,6 +4744,181 @@ class Service:
             raise NotFoundError(f"{proj.slug} has no document {slug!r}; documents: {names}.")
         return proj, found
 
+    async def _index_sections(
+        self, tx: _Tx, doc: mem.Document, text: str, rules: SecretRules
+    ) -> tuple[list[IndexedSection], int]:
+        rows, masked = await asyncio.to_thread(doc_index.build, text, rules)
+        await repo.replace_sections(
+            tx.conn, doc.id, doc.project_id, doc.title, rows, self.search_fts
+        )
+        return rows, masked
+
+    async def _rebuild_section_index(self, tx: _Tx) -> int:
+        """Index every database document again; file documents follow at their next read."""
+        await repo.clear_section_index(tx.conn, self.search_fts)
+        found = await repo.database_documents_with_text(tx.conn)
+        for doc_id, project_id, title, body in found:
+            # Database text passed the secret check when it was written: nothing to mask.
+            rows, _ = doc_index.build(body)
+            await repo.replace_sections(tx.conn, doc_id, project_id, title, rows, self.search_fts)
+        return len(found)
+
+    async def _place(self, conn: aiosqlite.Connection, doc: mem.Document) -> str | None:
+        """`<repo>:<path>` when a file document is inside a repository of its project."""
+        if doc.source_path is None:
+            return None
+        repos = [(r.name, r.path) for r in await repo.list_project_repos(conn, doc.project_id)]
+        return await asyncio.to_thread(doc_index.place, doc.source_path, repos)
+
+    async def _refresh_file(self, doc: mem.Document, need_text: bool) -> str | None:
+        """Bring a file document's index up to the file: its size and time first, its hash when
+        they differ, the index and one `document.updated` event when the hash differs. The path
+        is resolved and checked again first; the file is read and indexed before the write
+        transaction opens. Returns the text when `need_text` (None when the file is missing,
+        refused or unreadable, with the reason in `doc.file_problem`)."""
+        assert doc.source_path is not None
+        doc.place = await self._place(self._r, doc)
+        refused = await asyncio.to_thread(doc_index.recheck, doc.source_path, self._path_rules())
+        if refused:
+            doc.file_problem = f"{refused}; the outline is the last index"
+            return None
+        seen = await asyncio.to_thread(doc_index.file_stat, doc.source_path)
+        if seen is None:
+            if doc.file_missing_at is None:
+                async with self._tx() as tx:
+                    await repo.set_file_missing(tx.conn, doc.id, tx.now)
+                doc.file_missing_at = now_iso()
+            doc.file_problem = (
+                f"file missing since {doc.file_missing_at[:16]}Z at {doc.source_path}; the outline"
+                " is the last index"
+            )
+            return None
+        same = (
+            doc.file_hash is not None
+            and doc.file_missing_at is None
+            and (seen.size, seen.mtime) == (doc.file_size, doc.file_mtime)
+        )
+        if same and not need_text:
+            return None
+        try:
+            data, text = await asyncio.to_thread(doc_index.read_file, doc.source_path)
+        except (OSError, ValidationError) as exc:
+            reason = exc.strerror if isinstance(exc, OSError) else str(exc)
+            doc.file_problem = (
+                f"cannot read {doc.source_path}: {reason}; the outline is the last index"
+            )
+            return None
+        if same:
+            return text
+        digest = doc_index.content_hash(data)
+        indexed = await repo.count_sections(self._r, doc.id)
+        if digest == doc.file_hash and indexed:
+            async with self._tx() as tx:
+                await repo.set_file_state(
+                    tx.conn,
+                    doc.id,
+                    file_hash=digest,
+                    size=seen.size,
+                    mtime=seen.mtime,
+                    seen_at=tx.now,
+                )
+        else:
+            proj = await repo.get_project_by_id(self._r, doc.project_id)
+            rules = await self._secret_rules(self._r, proj)
+            rows, masked = await asyncio.to_thread(doc_index.build, text, rules)
+            async with self._tx() as tx:
+                current = await repo.get_document(tx.conn, doc.project_id, doc.slug)
+                if current is None:
+                    raise NotFoundError(f"{doc.slug} was removed while it was being read.")
+                old = await repo.list_sections(tx.conn, doc.id)
+                await repo.replace_sections(
+                    tx.conn, doc.id, doc.project_id, doc.title, rows, self.search_fts
+                )
+                # The same hash is an index rebuilt (after an upgrade or a lost search index),
+                # not a change of the file: no event then.
+                changed = current.file_hash is not None and digest != current.file_hash
+                await repo.set_file_state(
+                    tx.conn,
+                    doc.id,
+                    file_hash=digest,
+                    size=seen.size,
+                    mtime=seen.mtime,
+                    seen_at=tx.now,
+                    masked_lines=masked,
+                    changed=changed,
+                )
+                if changed:
+                    changes = doc_index.changed_anchors(old, rows)
+                    await tx.event(
+                        "document.updated",
+                        "file",
+                        project_id=doc.project_id,
+                        project=proj.slug if proj else "",
+                        doc=doc.slug,
+                        file=True,
+                        hash_before=current.file_hash,
+                        hash_after=digest,
+                        sections_changed=sum(len(v) for v in changes.values()),
+                        **{k: v[: doc_index.EVENT_ANCHORS_MAX] for k, v in changes.items() if v},
+                    )
+            doc.masked_lines = masked
+        doc.file_hash, doc.file_size, doc.file_mtime = digest, seen.size, seen.mtime
+        doc.file_missing_at = None
+        return text
+
+    def _path_rules(self) -> doc_index.PathRules:
+        roots = [*self.attachment_roots]
+        return doc_index.PathRules(
+            data_dir=self.db_path.parent,
+            protected=tuple(self.protected_paths),
+            home=Path.home(),
+            network_ok=lambda text: network_path_allowed(text, roots),
+        )
+
+    async def _prepare_file(self, project: Project, source_path: str) -> PreparedFile:
+        """A new file document's path checked, its file read and indexed: all before the write
+        transaction opens."""
+        rules = self._path_rules()
+        real = await asyncio.to_thread(doc_index.check_path, source_path, rules)
+        seen = await asyncio.to_thread(doc_index.file_stat, str(real))
+        if seen is None:
+            raise ValidationError(f"File {source_path!r} is gone (it was there a moment ago).")
+        data, text = await asyncio.to_thread(doc_index.read_file, str(real))
+        secret_rules = await self._secret_rules(self._r, project)
+        rows, masked = await asyncio.to_thread(doc_index.build, text, secret_rules)
+        heading = next((r.title for r in rows if r.level == 1), None)
+        return PreparedFile(real, seen, doc_index.content_hash(data), rows, masked, heading)
+
+    async def _doc_text(
+        self, doc: mem.Document, version: int | None = None
+    ) -> tuple[str | None, list[IndexedSection]]:
+        """The text of a document (a version of a database document) and its section index;
+        a file document's text is None when the file cannot be read (`doc.file_problem`)."""
+        if doc.is_file:
+            if version is not None:
+                raise ValidationError(
+                    f"{doc.slug} lives in a file and has no versions here; its history is in"
+                    " doc_history (and in git, when the file is in a repository)."
+                )
+            text = await self._refresh_file(doc, need_text=True)
+            return text, await repo.list_sections(self._r, doc.id)
+        wanted = doc.version if version is None else int(version)
+        row = await repo.get_document_version(self._r, doc.id, wanted)
+        if row is None:
+            raise NotFoundError(
+                f"{doc.slug} has no version {wanted}; versions are 1 to {doc.version}."
+            )
+        doc.body, doc.shown_version, doc.author = row.body, row.version, row.author
+        if wanted == doc.version:
+            return row.body, await repo.list_sections(self._r, doc.id)
+        return row.body, doc_index.build(row.body)[0]
+
+    async def _doc_rows(self, doc: mem.Document) -> list[IndexedSection]:
+        """The current section index; a file document is checked against its file first."""
+        if doc.is_file:
+            await self._refresh_file(doc, need_text=False)
+        return await repo.list_sections(self._r, doc.id)
+
     async def get_document(
         self,
         project: str,
@@ -4697,17 +4928,100 @@ class Service:
         section: str | None = None,
     ) -> tuple[mem.Document, str]:
         """A document with the text of `version` (the current one by default) and that text,
-        or only one section of it (the heading up to the next heading of its level)."""
+        or only one section of it (the heading up to the next heading of its level). A file
+        document's text is read from the file ('' when it cannot be, see `file_problem`)."""
         _, found = await self._document(self._r, project, doc)
-        wanted = found.version if version is None else int(version)
-        row = await repo.get_document_version(self._r, found.id, wanted)
-        if row is None:
-            raise NotFoundError(
-                f"{found.slug} has no version {wanted}; versions are 1 to {found.version}."
-            )
-        found.body, found.shown_version, found.author = row.body, row.version, row.author
-        text = mem.section_text(row.body, section) if section else row.body
-        return found, text
+        body, _ = await self._doc_text(found, version)
+        if body is None:
+            return found, ""
+        found.body = body
+        return found, mem.section_text(body, section) if section else body
+
+    async def read_document(
+        self,
+        project: str,
+        doc: str,
+        *,
+        section: str | None = None,
+        lines: str | None = None,
+        max_chars: int | None = None,
+        version: int | None = None,
+    ) -> DocRead:
+        """doc_get: the whole text, one section (its anchor or explicit anchor) or a line range,
+        capped: over `max_chars` (by default READ_CAP for a document over DOC_BODY_MAX) the read
+        is the first lines, the outline of the rest and the range to read next."""
+        cap_asked = doc_index.clean_max_chars(max_chars)
+        if section and lines:
+            raise ValidationError("Pass section or lines, not both.")
+        _, found = await self._document(self._r, project, doc)
+        body, rows = await self._doc_text(found, version)
+        if body is None:
+            row = doc_index.find(rows, section) if section else None
+            return DocRead(found, "", rows, row, 0, 0, 0, None)
+        all_lines = body.split("\n")
+        row = None
+        if section:
+            row = doc_index.find(rows, section)
+            first, last = row.first_line, row.last_line
+        elif lines:
+            first, last = mem.parse_lines(lines, len(all_lines))
+        else:
+            first, last = 1, len(all_lines)
+        cap = doc_index.cap_for(len(body), cap_asked)
+        text, cut = doc_index.capped(all_lines, first, last, cap, rows)
+        if row is not None and cut is None:
+            text = text.rstrip("\n")
+        return DocRead(found, text, rows, row, first, last, len(body), cut, len(all_lines), cap)
+
+    async def document_outline(
+        self, project: str, doc: str, *, depth: int | None = None, under: str | None = None
+    ) -> tuple[mem.Document, list[IndexedSection], IndexedSection | None]:
+        """The headings of a document with their lines and sizes; `under` an anchor: only the
+        headings inside that section; `depth`: at most that many levels (below `under`)."""
+        if depth is not None and (isinstance(depth, bool) or not 1 <= int(depth) <= 6):
+            raise ValidationError("depth must be 1 to 6.")
+        _, found = await self._document(self._r, project, doc)
+        rows = await self._doc_rows(found)
+        if found.is_file and found.place is None:
+            found.place = await self._place(self._r, found)
+        parent = doc_index.find(rows, under) if under else None
+        return found, doc_index.outline(rows, int(depth) if depth else None, parent), parent
+
+    async def search_documents(
+        self, project: str, query: str, *, doc: str | None = None, limit: int = 10
+    ) -> tuple[Project, list[DocHit]]:
+        """Hits per section of the project's documents (or one document): every word of the
+        query (or its stem) is in the section's own text or its heading path, best first."""
+        words = mem.query_words(query)
+        limit = max(1, min(int(limit), doc_index.SEARCH_LIMIT_MAX))
+        proj = await self.get_project(project)
+        docs = {d.id: d for d in await repo.list_documents(self._r, proj.id)}
+        only = None
+        if doc:
+            _, picked = await self._document(self._r, project, doc)
+            only = picked.id
+        for d in docs.values():
+            if d.is_file and (only is None or d.id == only):
+                await self._refresh_file(d, need_text=False)
+        match = mem.fts_query(words) if self.search_fts else None
+        found = await repo.search_sections(self._r, words, match, proj.id, only, limit)
+        rows: dict[int, list[IndexedSection]] = {}
+        hits = []
+        for h in found:
+            if h.document_id not in rows:
+                rows[h.document_id] = await repo.list_sections(self._r, h.document_id)
+            row = next((r for r in rows[h.document_id] if r.position == h.position), None)
+            if row is None:
+                continue
+            at, _ = mem.matching_line(h.body, words)
+            own = h.body.split("\n")
+            around = [
+                (row.first_line + n, own[n])
+                for n in range(max(0, at - 2), min(len(own), at + 1))
+                if own[n].strip()
+            ]
+            hits.append(DocHit(docs[h.document_id], row, row.first_line + at - 1, around))
+        return proj, hits
 
     async def document_history(
         self, project: str, doc: str
@@ -4715,11 +5029,19 @@ class Service:
         _, found = await self._document(self._r, project, doc)
         return found, await repo.list_document_versions(self._r, found.id)
 
+    async def file_history(self, project: str, doc: str) -> tuple[mem.Document, list[Event]]:
+        """A file document's changes as relaybay saw them (its text is not versioned here)."""
+        proj, found = await self._document(self._r, project, doc)
+        await self._doc_rows(found)
+        return found, await repo.document_events(self._r, proj.id, found.slug)
+
     async def document_diff(
         self, project: str, doc: str, from_version: int, to_version: int
     ) -> tuple[mem.Document, list[str]]:
         """The unified diff between two versions of a document (any order)."""
         _, found = await self._document(self._r, project, doc)
+        if found.is_file:
+            raise ValidationError(f"{found.slug} lives in a file: its diff is in git.")
         texts = []
         for number in (int(from_version), int(to_version)):
             row = await repo.get_document_version(self._r, found.id, number)
@@ -4733,51 +5055,118 @@ class Service:
         )
         return found, lines
 
-    async def _current_text(
-        self, project: str, doc: str, cache: dict[tuple[str, str], tuple[mem.Document, str] | None]
-    ) -> tuple[mem.Document, str] | None:
-        """A document and its current text, read once per `cache` (one page)."""
+    async def _linked_doc(
+        self, project: str, doc: str, cache: DocCache
+    ) -> tuple[mem.Document, list[IndexedSection]] | None:
+        """A document and its section index, read once per `cache` (one page)."""
         key = (project, doc)
         if key not in cache:
             proj = await repo.get_project(self._r, project)
             found = await repo.get_document(self._r, proj.id, doc) if proj else None
-            row = (
-                await repo.get_document_version(self._r, found.id, found.version) if found else None
-            )
-            cache[key] = (found, row.body) if found and row else None
+            has_text = found is not None and (found.is_file or found.version > 0)
+            cache[key] = (found, await self._doc_rows(found)) if found and has_text else None
         return cache[key]
 
     async def resolve_doc_links(
-        self,
-        *texts: str | None,
-        cache: dict[tuple[str, str], tuple[mem.Document, str] | None] | None = None,
+        self, *texts: str | None, cache: DocCache | None = None
     ) -> dict[str, mem.DocRef]:
         """Where each `relaybay://doc/<project>/<doc>[#<anchor>]` link in `texts` points on the
         board, by link text. A missing section still points at the document, marked broken."""
         cache = {} if cache is None else cache
         refs: dict[str, mem.DocRef] = {}
         for link in digests.doc_links(*texts):
-            loaded = await self._current_text(link.project, link.doc, cache)
+            loaded = await self._linked_doc(link.project, link.doc, cache)
             refs[link.uri] = _doc_ref(link, loaded[1] if loaded else None)
         return refs
 
-    async def _task_document(
-        self,
-        doc_path: str | None,
-        cache: dict[tuple[str, str], tuple[mem.Document, str] | None],
-    ) -> TaskDocument | None:
+    async def _task_document(self, doc_path: str | None, cache: DocCache) -> TaskDocument | None:
         link = digests.doc_link(doc_path)
         if link is None:
             return None
-        loaded = await self._current_text(link.project, link.doc, cache)
+        loaded = await self._linked_doc(link.project, link.doc, cache)
         ref = _doc_ref(link, loaded[1] if loaded else None)
         if loaded is None:
             return TaskDocument(link, ref, None, "")
-        found, body = loaded
-        text = body
-        if link.anchor and not ref.broken:
+        found, _ = loaded
+        if found.is_file:
+            # The dialog shows the linked part, capped like a doc_get: a file document can be
+            # far larger than a database one.
+            read = await self.read_document(
+                link.project,
+                link.doc,
+                section=link.anchor if link.anchor and not ref.broken else None,
+                max_chars=doc_index.READ_CAP,
+            )
+            return TaskDocument(link, ref, read.doc, read.text)
+        body, _ = await self._doc_text(found)
+        text = body or ""
+        if link.anchor and not ref.broken and body is not None:
             text = mem.section_text(body, link.anchor)
         return TaskDocument(link, ref, found, text)
+
+    async def _create_file_document(
+        self,
+        tx: _Tx,
+        proj: Project,
+        slug: str,
+        prepared: PreparedFile,
+        *,
+        title: str | None,
+        kind: str | None,
+        reason: str,
+        actor: str,
+        session_id: int | None,
+    ) -> mem.Document:
+        doc_id = await repo.insert_document(
+            tx.conn,
+            proj.id,
+            slug,
+            title or prepared.heading or slug,
+            kind or "doc",
+            tx.now,
+            source_path=str(prepared.path),
+        )
+        found = await repo.get_document(tx.conn, proj.id, slug)
+        assert found is not None and found.id == doc_id
+        await repo.replace_sections(
+            tx.conn, doc_id, proj.id, found.title, prepared.rows, self.search_fts
+        )
+        await repo.set_file_state(
+            tx.conn,
+            doc_id,
+            file_hash=prepared.digest,
+            size=prepared.seen.size,
+            mtime=prepared.seen.mtime,
+            seen_at=tx.now,
+            masked_lines=prepared.masked,
+        )
+        await tx.event(
+            "document.updated",
+            actor,
+            project_id=proj.id,
+            session_id=session_id,
+            project=proj.slug,
+            doc=slug,
+            reason=reason[:200],
+            file=True,
+            created=True,
+            hash_after=prepared.digest,
+        )
+        saved = await repo.get_document(tx.conn, proj.id, slug)
+        assert saved is not None
+        return saved
+
+    async def _refuse_file_write(self, found: mem.Document, section: str | None) -> None:
+        where = found.source_path
+        if section:
+            rows = await repo.list_sections(self._r, found.id)
+            row = doc_index.find(rows, section)
+            where = f"{where}, lines {row.first_line}-{row.last_line}"
+        raise ValidationError(
+            f"{found.project_slug}/{found.slug} lives in the file {where}. relaybay never writes"
+            " it: edit the file with your own tools (in your own working tree) and commit it with"
+            " the code."
+        )
 
     async def update_document(
         self,
@@ -4791,6 +5180,9 @@ class Service:
         title: str | None = None,
         kind: str | None = None,
         source_url: str | None = None,
+        source_path: str | None = None,
+        lines: str | None = None,
+        expected: str | None = None,
         force: bool = False,
         author: str | None = None,
         session: str | None = None,
@@ -4798,17 +5190,30 @@ class Service:
         hook_session: str | None = None,
     ) -> mem.Document:
         """Write a new version of a document; `base_version` 0 creates it. With `section`, the
-        text replaces only that section. A `base_version` other than the current version is a
-        conflict whose message holds the current text to merge. `source_url` links the document
-        to its repository ('-' unlinks it); a linked document changes only with `force`, and its
-        body may be '-' (no text of its own)."""
+        text replaces only that section; with `lines` ('a-b') and `expected` (their text now),
+        only those lines ('-' removes them), whatever version they were read in. A
+        `base_version` other than the current version is a conflict whose message holds the
+        current text to merge. `source_url` links the document to its repository ('-' unlinks
+        it); a linked document changes only with `force`, and its body may be '-' (no text of
+        its own). `source_path` (with base_version 0 and body '-') creates a file document:
+        relaybay reads and indexes that file and never writes it."""
         slug = _clean_doc_slug(doc)
         no_text = str(body or "").strip() == "-"
         text = "" if no_text else _clean_text(body, "body", mem.DOC_BODY_MAX) or ""
         if not text and not no_text:
             raise ValidationError("body must not be empty.")
+        if (lines is None) != (expected is None):
+            raise ValidationError("lines and expected go together: the range and its text now.")
+        if lines is not None and section:
+            raise ValidationError("Pass section or lines, not both.")
         if no_text and section:
             raise ValidationError("A section needs text; '-' empties a linked document only.")
+        path_text = _clean_text(source_path, "source_path", mem.SOURCE_URL_MAX)
+        if path_text and (source_url or section or lines or not no_text or base_version != 0):
+            raise ValidationError(
+                "A file document is created with base_version 0, body '-' and source_path only;"
+                " relaybay reads the file and never writes it."
+            )
         unlink = str(source_url or "").strip() == "-"
         link = None if unlink else _clean_url(source_url, "source_url")
         if link is not None and len(link) > mem.SOURCE_URL_MAX:
@@ -4820,6 +5225,13 @@ class Service:
         new_kind = _clean_text(kind, "kind", mem.DOC_KIND_MAX)
         base = _clean_version(base_version)
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
+        # Lines keep their leading spaces; only the line endings and the final newlines go.
+        line_text = None if no_text else str(body or "").replace("\r\n", "\n").rstrip("\n")
+        if line_text is not None and len(line_text) > mem.DOC_BODY_MAX:
+            raise ValidationError(f"body is longer than {mem.DOC_BODY_MAX} characters.")
+        prepared = None
+        if path_text:
+            prepared = await self._prepare_file(await self.get_project(project), path_text)
         async with self._tx() as tx:
             proj = await self.get_project(project, tx.conn)
             _scan(
@@ -4831,13 +5243,31 @@ class Service:
                 source_url=link,
             )
             found = await repo.get_document(tx.conn, proj.id, slug)
+            if prepared is not None:
+                if found is not None:
+                    raise ValidationError(
+                        f"{proj.slug} already has a document {slug!r}; a file document gets a"
+                        " name of its own."
+                    )
+                sess = await self._session(tx, session, session_title, hook_session)
+                return await self._create_file_document(
+                    tx,
+                    proj,
+                    slug,
+                    prepared,
+                    title=new_title,
+                    kind=new_kind,
+                    reason=why,
+                    actor=sess.name if sess else default_actor,
+                    session_id=sess.id if sess else None,
+                )
             current = ""
             if found is None:
                 if base != 0:
                     raise NotFoundError(
                         f"{proj.slug} has no document {slug!r}; create it with base_version 0."
                     )
-                if section:
+                if section or lines:
                     raise ValidationError("A new document is written whole, without section.")
                 heading = next((s.title for s in mem.sections(text) if s.level == 1), None)
                 doc_id = await repo.insert_document(
@@ -4852,6 +5282,8 @@ class Service:
                 found = await repo.get_document(tx.conn, proj.id, slug)
                 assert found is not None and found.id == doc_id
             else:
+                if found.is_file:
+                    await self._refuse_file_write(found, section)
                 if found.source_url and not force:
                     raise ValidationError(
                         f"{proj.slug}/{found.slug} lives in the repository: {found.source_url}."
@@ -4865,12 +5297,9 @@ class Service:
                 latest = await repo.get_document_version(tx.conn, found.id, found.version)
                 assert latest is not None
                 current = latest.body
-                if base != found.version:
+                if base != found.version and lines is None:
                     shown = current
-                    if section and any(
-                        s.anchor == section.strip().lstrip("#").casefold()
-                        for s in mem.sections(current)
-                    ):
+                    if section and mem.section_named(mem.sections(current), section):
                         shown = mem.section_text(current, section)
                     raise ConflictError(
                         f"{found.slug} is at version {found.version}, not {base}: someone"
@@ -4878,9 +5307,27 @@ class Service:
                         f" {'section' if shown is not current else 'text'} below and send it"
                         f" again with base_version {found.version}.\n\n{shown}"
                     )
-            new_body = mem.replace_section(current, section, text) if section else text
+            span = None
+            if lines is not None:
+                assert expected is not None
+                if not current:
+                    raise ValidationError(f"{found.slug} has no text yet; write it whole.")
+                span = mem.parse_lines(lines, len(current.split("\n")))
+                # Stored text has no outer blank lines, like every other write.
+                new_body = mem.replace_lines(current, *span, expected, line_text).strip()
+                if not new_body:
+                    raise ValidationError(
+                        f"Removing lines {span[0]}-{span[1]} would leave {found.slug} empty."
+                    )
+            elif section:
+                new_body = mem.replace_section(current, section, text)
+            else:
+                new_body = text
             if len(new_body) > mem.DOC_BODY_MAX:
-                raise ValidationError(f"The document would exceed {mem.DOC_BODY_MAX} characters.")
+                raise ValidationError(
+                    f"The document would exceed {mem.DOC_BODY_MAX} characters; a larger one is"
+                    " a file document (doc_update with source_path)."
+                )
             final_title = new_title or found.title
             final_kind = new_kind or found.kind
             final_link = None if unlink else link or found.source_url
@@ -4913,6 +5360,8 @@ class Service:
                 now=tx.now,
             )
             await self._index(tx, "doc", found.id)
+            found.title = final_title
+            await self._index_sections(tx, found, new_body, await self._secret_rules(tx.conn, proj))
             await tx.event(
                 "document.updated",
                 actor,
@@ -4923,6 +5372,7 @@ class Service:
                 version=version,
                 reason=why[:200],
                 **({"section": anchor} if anchor else {}),
+                **({"lines": f"{span[0]}-{span[1]}"} if span else {}),
                 **({"created": True} if version == 1 else {}),
             )
             saved = await repo.get_document(tx.conn, proj.id, slug)
@@ -5233,10 +5683,16 @@ class Service:
         target_id: int,
         content_hash: str,
         target_hash: str,
+        *,
+        style: FileStyle | None = None,
     ) -> None:
-        """Remember what an import wrote. Bookkeeping only: no event, nothing on the board."""
+        """Remember what an import wrote, and for a document how its file looked (`style`).
+        Bookkeeping only: no event, nothing on the board."""
         async with self._tx() as tx:
             row = ImportItem(kind, item, source_path, target_id, content_hash, target_hash, tx.now)
+            if style is not None:
+                row.eol, row.bom = style.eol, style.bom
+                row.lead_blank, row.final_newlines = style.lead, style.trail
             await repo.save_import_item(tx.conn, row)
 
     async def forget_import_item(self, kind: str, item: str) -> None:
@@ -5602,12 +6058,23 @@ class Service:
         open_tasks = await repo.list_tasks(self._r, stages=[s.value for s in OPEN_STAGES])
         stale = [t for t in open_tasks if t.updated_at < stale_before and t.project_id not in gone]
         decisions = await repo.list_decisions(self._r, since=since, limit=digests.DECISIONS_MAX)
+        inbox = await self.inbox(self.owner_names, require_tracker_log=self.require_tracker_log)
+        # Open tasks: every open card of a project not archived that the waiting section (one
+        # row per card) and the stale section do not already list.
+        listed = {c.task.id for c in inbox.cards} | {t.id for t in stale}
+        rest = digests.open_task_order(
+            [t for t in open_tasks if t.id not in listed and t.project_id not in gone]
+        )
+        prs: dict[int, list[str]] = {}
+        for project_id in dict.fromkeys(t.project_id for t in rest):
+            mine = [t for t in rest if t.project_id == project_id]
+            for task_id, code in (await self.task_codes(project_id, mine)).items():
+                found = [*code.loose_prs, *(p for r in code.repos for p in r.prs)]
+                prs[task_id] = [p.label for p in sorted(found, key=lambda p: p.id)]
         data = digests.PortfolioData(
             projects=[(s.project, s.counts) for s in await self.list_projects()],
-            inbox=await self.inbox(
-                self.owner_names,
-                require_tracker_log=self.require_tracker_log,
-            ),
+            inbox=inbox,
+            open_tasks=[(t, prs.get(t.id, [])) for t in rest],
             decisions=[d for d in decisions if d.project_id not in gone],
             decisions_total=await repo.count_current_decisions(self._r, since=since),
             stale_tasks=sorted(stale, key=lambda t: t.updated_at),
@@ -5686,12 +6153,15 @@ class Service:
         return "\n".join([text, *hints])
 
     async def _doc_lines(self, links: list[digests.DocLink]) -> list[str]:
+        """A pointer per link: lines, size and the call that reads it, never the text."""
+        cache: DocCache = {}
         lines = []
         for link in links:
-            project = await repo.get_project(self._r, link.project)
-            doc = await repo.get_document(self._r, project.id, link.doc) if project else None
-            version = await repo.get_document_version(self._r, doc.id, doc.version) if doc else None
-            lines.append(link.line(doc, version.body if version else ""))
+            loaded = await self._linked_doc(link.project, link.doc, cache)
+            found, rows = loaded if loaded else (None, [])
+            if found is not None and found.is_file and found.place is None:
+                found.place = await self._place(self._r, found)
+            lines.append(link.pointer(found, rows))
         return lines
 
     async def _relevant_notes(self, task: Task) -> list[mem.MemoryNote]:
@@ -5721,7 +6191,15 @@ class Service:
             "task", task.id, reader, since_event, task_id=task.id, new_context=new_context
         )
         project = await self.get_project(task.project_slug)
-        links = digests.doc_links(task.description, task.progress)
+        field_link = digests.doc_link(task.doc_path)
+        links = list(
+            dict.fromkeys(
+                [
+                    *([field_link] if field_link else []),
+                    *digests.doc_links(task.description, task.progress),
+                ]
+            )
+        )
         unread = await repo.list_comments(self._r, task.id, unread_only=True)
         project_id = task.project_id
         limit = digests.TASK_DECISIONS_MAX

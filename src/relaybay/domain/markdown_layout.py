@@ -164,6 +164,39 @@ def normalize(text: str) -> str:
     return text.replace("\r\n", "\n").strip()
 
 
+@dataclass(frozen=True, slots=True)
+class FileStyle:
+    """What `normalize` takes from a file, so the stored text can be written back byte for
+    byte: the line ending, a byte order mark and the exact whitespace around the text (LF)."""
+
+    eol: str = "lf"  # or "crlf"
+    bom: bool = False
+    lead: str = ""
+    trail: str = "\n"
+
+    def apply(self, body: str) -> str:
+        text = f"{self.lead}{body}{self.trail}"
+        if self.eol == "crlf":
+            text = text.replace("\n", "\r\n")
+        return ("\ufeff" if self.bom else "") + text
+
+
+def file_style(text: str, bom: bool) -> tuple[FileStyle, bool]:
+    """The style of a file's text (after the BOM was dropped), and whether its line endings are
+    mixed (then the style says LF, and an export writes LF)."""
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    flat = text.replace("\r\n", "\n")
+    body = flat.strip()
+    if not body:
+        return FileStyle(bom=bom), False
+    start = flat.index(body)
+    style = FileStyle(
+        "crlf" if crlf and not lf else "lf", bom, flat[:start], flat[start + len(body) :]
+    )
+    return style, bool(crlf and lf)
+
+
 def slugify(text: str, limit: int = TITLE_SLUG_MAX) -> str:
     """`Gift cards at checkout` -> `gift-cards-at-checkout`; letters of any language stay."""
     slug = re.sub(r"[^\w-]+|_+", "-", text.casefold()).strip("-")

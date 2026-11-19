@@ -12,9 +12,10 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
+from relaybay.domain.doc_index import IndexedSection, size_label, whole_size
 from relaybay.domain.environments import Environment
 from relaybay.domain.errors import ValidationError
-from relaybay.domain.memory import Document, MemoryBlock, MemoryNote, find_section
+from relaybay.domain.memory import Document, MemoryBlock, MemoryNote
 from relaybay.domain.models import Comment, Decision, Project, Task
 from relaybay.domain.plan import Plan, TodoItem, one_line, reminder_line
 from relaybay.domain.stages import STAGES
@@ -43,7 +44,6 @@ OTHERS_KEY = "others"
 FIRST_SECTION_LINE_MAX = 1_600
 ABOUT_MAX = 600  # the description in a task's head line; the brief adds the rest
 PLAN_LINE_MAX = 500
-DOC_PREVIEW_LINES = 3
 
 # Left out of "changes since the last read": session status and activity, delivery marks, the
 # owner's order of the cards.
@@ -384,6 +384,32 @@ class PortfolioData:
     now: datetime
     rules_line: str = ""
     pulses: dict[int, Pulse] = field(default_factory=dict)  # by project id
+    # Open cards not listed under "Waiting for the owner" or as stale, with their pull requests.
+    open_tasks: list[tuple[Task, list[str]]] = field(default_factory=list)
+
+
+def open_task_line(task: Task, prs: list[str]) -> str:
+    """`- [test] demo-api-7 Retry webhooks · note: on test since 12.11 · waiting on: QA · next:
+    ... · PR #41 · doc relaybay://doc/demo-api/spec#retries`: one row of a task registry."""
+    bits = []
+    if task.stage_note:
+        bits.append(f"note: {_clip(task.stage_note, 80)}")
+    if task.waiting_on:
+        bits.append(f"waiting on: {_clip(task.waiting_on, 40)}")
+    if task.next_step:
+        bits.append(f"next: {_clip(task.next_step, 100)}")
+    if prs:
+        bits.append(f"PR {', '.join(prs[:3])}" + (f" +{len(prs) - 3}" if len(prs) > 3 else ""))
+    if task.doc_path:
+        bits.append(f"doc {_clip(task.doc_path, 80)}")
+    tail = " · " + " · ".join(bits) if bits else ""
+    return f"- [{task.stage.value}] {_task_ref(task, 60)}{tail}"
+
+
+def open_task_order(tasks: list[Task]) -> list[Task]:
+    """By project, work in progress first (dev, review, test, live, then plan)."""
+    rank = {stage: n for n, stage in enumerate(_STAGE_ORDER)}
+    return sorted(tasks, key=lambda t: (t.project_slug, rank.get(t.stage.value, 9)))
 
 
 def _project_line(
@@ -478,6 +504,13 @@ def portfolio_text(data: PortfolioData, footer: Callable[[bool], str], budget: i
         inbox_lines(data.inbox),
         "task_get(task), or the Inbox on the board",
         2,
+    )
+    _section(
+        sections,
+        "## Open tasks",
+        [open_task_line(t, prs) for t, prs in data.open_tasks],
+        "task_list(project)",
+        4,
     )
     _section(
         sections,
@@ -603,23 +636,31 @@ class DocLink:
         section = f"#{self.anchor}" if self.anchor else ""
         return f"relaybay://doc/{self.project}/{self.doc}{section}"
 
-    def line(self, document: Document | None, body: str) -> str:
-        """The section's heading and first lines, or why the link is broken. A link without an
-        anchor stands for the start of the document."""
+    def pointer(self, document: Document | None, rows: list[IndexedSection]) -> str:
+        """Where the link points, without the text: the section's title, lines and size, the
+        file of a file document and the call that reads it; or why the link is broken. A link
+        without an anchor names the document's size and its outline."""
         if document is None:
             return f"- broken: {self.uri} (no such document)"
-        lines = body.split("\n")
-        heading = document.title
-        if self.anchor:
-            try:
-                found = find_section(body, self.anchor)
-            except ValidationError:
-                return f"- broken: {self.uri} (no such section)"
-            heading = found.title
-            lines = lines[found.start + 1 : found.end]
-        first = [x.strip() for x in lines if x.strip()][:DOC_PREVIEW_LINES]
-        text = _clip(" ".join(first), 240)
-        return f"- {self.uri}: **{_clip(heading, 80)}** — {text}" if text else f"- {self.uri}"
+        where = f" · {document.place}" if document.place else ""
+        problem = " · file missing" if document.file_missing_at else ""
+        args = f'"{self.project}", "{self.doc}"'
+        if not self.anchor:
+            chars, size = whole_size(rows)
+            return (
+                f'- {self.doc} "{_clip(document.title, 80)}" · {size_label(chars, size)}'
+                f"{where}{problem} · doc_outline({args})"
+            )
+        wanted = self.anchor.casefold()
+        row = next((r for r in rows if r.anchor and wanted in (r.anchor, r.alias)), None)
+        if row is None:
+            return f"- broken: {self.uri} (no such section)"
+        # The card's own name for the section: an explicit anchor outlives a reworded heading.
+        return (
+            f'- {self.doc}#{wanted} "{_clip(row.title, 80)}" · lines'
+            f" {row.first_line}-{row.last_line} · {size_label(row.chars, row.bytes)}{where}"
+            f'{problem} · doc_get({args}, section="{wanted}")'
+        )
 
 
 def doc_links(*texts: str | None) -> list[DocLink]:

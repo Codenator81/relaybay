@@ -9,7 +9,7 @@ from markdown_it.token import Token
 from markupsafe import Markup
 
 from relaybay.domain.digest import doc_link, doc_link_spans
-from relaybay.domain.memory import DocRef, sections
+from relaybay.domain.memory import DocRef, alias_lines, sections
 
 # Reports come from agents and are untrusted: raw HTML stays escaped; markdown-it's default link
 # validation already refuses javascript:, vbscript: and file: URLs.
@@ -25,7 +25,10 @@ def _heading_open(self: Any, tokens: list[Any], idx: int, options: Any, env: dic
     anchor = env.get("anchors", {}).get(token.map[0]) if token.map else None
     if anchor:
         token.attrSet("id", anchor)
-    return str(self.renderToken(tokens, idx, options, env))
+    alias = env.get("aliases", {}).get(token.map[0]) if token.map else None
+    # An explicit anchor gets an element of its own: a heading carries one id.
+    mark = f'<span class="doc-alias" id="{escapeHtml(alias)}"></span>' if alias else ""
+    return mark + str(self.renderToken(tokens, idx, options, env))
 
 
 def _heading_close(self: Any, tokens: list[Any], idx: int, options: Any, env: dict) -> str:
@@ -131,5 +134,13 @@ def render_markdown(text: str | None, doc_refs: Mapping[str, DocRef] | None = No
 def render_document(text: str | None, edit_url: str | None = None) -> Markup:
     """A project document: like `render_markdown`, with ids on headings for section links, and
     with `edit_url` an edit link per top-level heading."""
-    anchors = {s.start: s.anchor for s in sections(text or "")}
-    return Markup(_doc_md.render(text or "", {"edit_url": edit_url, "anchors": anchors}))
+    found = sections(text or "")
+    anchors = {s.start: s.anchor for s in found}
+    aliases = {s.start: s.alias for s in found if s.alias}
+    # The `<a id>` lines are not shown (raw HTML stays escaped); blank, the lines keep their place.
+    hidden = alias_lines(text or "")
+    shown = "\n".join(
+        "" if n in hidden else line for n, line in enumerate((text or "").split("\n"))
+    )
+    env = {"edit_url": edit_url, "anchors": anchors, "aliases": aliases}
+    return Markup(_doc_md.render(shown, env))

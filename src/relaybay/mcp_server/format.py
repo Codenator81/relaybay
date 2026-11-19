@@ -12,6 +12,7 @@ from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskCode
 from relaybay.domain.digest import age
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
+from relaybay.domain.doc_index import SNIPPET_MAX, IndexedSection, outline_line, size_label
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -58,7 +59,7 @@ from relaybay.domain.task_fields import (
     TASK_FIELDS,
 )
 from relaybay.policy import EffectivePolicy
-from relaybay.service import NoteResult, ProjectSummary, Snapshot, TaskDetail
+from relaybay.service import DocHit, DocRead, NoteResult, ProjectSummary, Snapshot, TaskDetail
 
 
 def who_label(name: str, external_id: str | None) -> str:
@@ -701,6 +702,8 @@ def documents(project: Project, items: list[Document]) -> str:
         f"- {d.slug} — {d.title} ({d.kind}, version {d.version},"
         f" updated {d.updated_at[:16]}Z) relaybay://doc/{project.slug}/{d.slug}"
         + (f" · lives in the repository: {d.source_url}" if d.source_url else "")
+        + (f" · lives in the file {d.source_path}" if d.source_path else "")
+        + (f" · file missing since {d.file_missing_at[:16]}Z" if d.file_missing_at else "")
         for d in items
     )
     return "\n".join(lines)
@@ -742,6 +745,181 @@ def document_history(doc: Document, versions: list[DocumentVersion], diff: list[
     if diff:
         lines += ["", "```diff", *diff, "```"]
     return "\n".join(lines)
+
+
+_outline_line = outline_line
+
+
+def _file_head(doc: Document) -> str:
+    seen = f" · hash {doc.file_hash[:12]}" if doc.file_hash else ""
+    masked = f" · {doc.masked_lines} line(s) masked in the index" if doc.masked_lines else ""
+    return (
+        f"<!-- file {_clip_name(doc.place or doc.source_path or '', 200)}{seen}{masked} ·"
+        " relaybay never writes it:"
+        " edit the file itself -->"
+    )
+
+
+def _clip_name(name: str, limit: int = 80) -> str:
+    return name if len(name) <= limit else name[: limit - 1] + "…"
+
+
+def document_read(read: DocRead) -> str:
+    """doc_get: the header (version or file and hash), the text, and for a capped read the
+    outline of what was not shown and the call that reads on. With a cap the whole answer is
+    measured as it is written and never longer than the cap: the outline loses headings first,
+    then the text loses lines from its end (a single line its end)."""
+    doc = read.doc
+    args = f'project="{doc.project_slug}", doc="{doc.slug}"'
+    anchor = read.section.anchor if read.section else None
+    if not doc.is_file and read.cap is None:
+        whole = read.first == 1 and read.last == len(doc.body.split("\n"))
+        if read.cut is None and (anchor is not None or whole):
+            return document(doc, read.text, anchor)
+    if doc.is_file:
+        named = f" section #{_clip_name(anchor)}" if anchor else ""
+        head = [f"<!-- {doc.project_slug}/{doc.slug}{named} · {doc.kind} -->", _file_head(doc)]
+    else:
+        head = [document(doc, "", _clip_name(anchor) if anchor else None).split("\n")[0]]
+    if doc.file_problem:
+        tail = [_outline_line(read.section)] if read.section else []
+        return "\n".join(
+            [*head, f"<!-- {doc.file_problem} -->", *tail, f"Outline: doc_outline({args})"]
+        )
+    cut = read.cut
+    body = read.text.split("\n")
+    inside = list(cut.inside) if cut else []
+    more = cut.more if cut else 0
+    shown_last = cut.shown_last if cut else read.last
+    next_lines = cut.next_lines if cut else ""
+    long_line = cut.long_line if cut else None
+    range_chars = cut.total_chars if cut else len(read.text)
+    under = f', under="{anchor}"' if anchor and len(anchor) <= 100 else ""
+
+    def render() -> str:
+        lines = [
+            *head,
+            f"<!-- lines {read.first}-{shown_last} shown · the document has {read.total_lines}"
+            f" lines, {read.total_chars} characters -->",
+            "\n".join(body),
+        ]
+        if shown_last < read.last or long_line is not None:
+            lines.append("")
+            lines.append(
+                f"<!-- cut: lines {read.first}-{read.last} have {range_chars} characters, over"
+                f" the cap; shown {read.first}-{shown_last}. Inside the range: -->"
+            )
+            if long_line is not None:
+                lines.append(
+                    f"<!-- line {long_line} alone is longer than the cap: only its start is"
+                    " shown -->"
+                )
+            lines.extend(_outline_line(r) for r in inside)
+            if more:
+                lines.append(f"… {more} more heading(s): doc_outline({args}{under})")
+            if next_lines:
+                lines.append(
+                    f'Read on: doc_get({args}, lines="{next_lines}"), or a section above by its'
+                    " anchor; max_chars sets the cap."
+                )
+        return "\n".join(lines)
+
+    answer = render()
+    while read.cap is not None and len(answer) > read.cap:
+        excess = len(answer) - read.cap
+        if inside:
+            while inside and excess > 0:
+                excess -= len(_outline_line(inside.pop())) + 1
+                more += 1
+        elif len(body) > 1:
+            while len(body) > 1 and excess > 0:
+                excess -= len(body.pop()) + 1
+            end = next_lines.split("-")[1] if next_lines else str(read.last)
+            shown_last = read.first + len(body) - 1
+            next_lines = f"{shown_last + 1}-{end}"
+        elif body[0]:
+            body[0] = body[0][: max(len(body[0]) - excess - 200, 0)]
+            long_line = read.first
+        else:
+            break  # only the header is left; its names are clipped so this does not happen
+        answer = render()
+    return answer
+
+
+def document_outline(
+    doc: Document, rows: list[IndexedSection], under: IndexedSection | None, all_rows: int
+) -> str:
+    where = f" under #{under.anchor} (lines {under.first_line}-{under.last_line})" if under else ""
+    head = [
+        f"# Outline of {doc.project_slug}/{doc.slug}{where} · {len(rows)} heading(s) · each:"
+        " level, #anchor, title, lines a-b, characters/tokens (~bytes/3.5)"
+    ]
+    if doc.is_file:
+        head.append(_file_head(doc))
+    if doc.file_problem:
+        head.append(f"<!-- {doc.file_problem} -->")
+    if not rows:
+        head.append("No headings." if not all_rows else "No headings at this depth.")
+    head.extend(_outline_line(r) for r in rows)
+    head.append(
+        f'Read: doc_get(project="{doc.project_slug}", doc="{doc.slug}", section=anchor) or'
+        ' lines="a-b".'
+    )
+    return "\n".join(head)
+
+
+def document_hits(project: Project, hits: list[DocHit], query: str) -> str:
+    if not hits:
+        return f"Nothing found in the documents of {project.slug} for {query!r}."
+    lines = [
+        f"# doc_search {project.slug}: {query} · {len(hits)} section(s)",
+        "Read a hit: doc_get(project, doc, section=anchor), or lines around the line.",
+    ]
+    for h in hits:
+        r = h.section
+        name = (
+            f"{h.doc.slug}#{r.anchor}" if r.anchor else f"{h.doc.slug} (before the first heading)"
+        )
+        where = f" · {h.doc.place}" if h.doc.place else ""
+        lines.append(
+            f'- {name} "{r.heading_path or h.doc.title}" · line {h.line} · section lines'
+            f" {r.first_line}-{r.last_line} · {size_label(r.chars, r.bytes)}{where}"
+        )
+        lines.extend(f"    {n}: {_short(text)}" for n, text in h.around)
+    return "\n".join(lines)
+
+
+def _short(text: str, limit: int = SNIPPET_MAX) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def file_history(doc: Document, events: list[Event]) -> str:
+    lines = [
+        f"# History of {doc.project_slug}/{doc.slug} (the file {doc.place or doc.source_path};"
+        " its text is not versioned here, git keeps it where the file is in a repository)"
+    ]
+    for e in events:
+        p = e.payload
+        if p.get("created"):
+            what = f"added by {e.actor}: {p.get('reason') or ''}".rstrip(": ")
+        else:
+            parts = [f"{k} {', '.join(p[k])}" for k in ("added", "removed", "changed") if p.get(k)]
+            what = f"changed: {p.get('sections_changed', 0)} section(s)" + (
+                f" ({'; '.join(parts)})" if parts else ""
+            )
+        before = f"{p['hash_before'][:12]} → " if p.get("hash_before") else ""
+        after = (p.get("hash_after") or "")[:12]
+        lines.append(f"- {e.ts[:16]}Z {what} · hash {before}{after}")
+    return "\n".join(lines)
+
+
+def file_document_saved(doc: Document, rows: int) -> str:
+    return (
+        f"{doc.project_slug}/{doc.slug} is a file document: {doc.source_path} ({rows} section(s)"
+        f" indexed). relaybay reads it on demand and never writes it; read it with"
+        f' doc_outline(project="{doc.project_slug}", doc="{doc.slug}") and doc_get.'
+    )
 
 
 def note_line(n: MemoryNote, similarity: float | None = None) -> str:
@@ -810,7 +988,12 @@ def search_hits(hits: list[SearchHit], query: str) -> str:
     lines = [f"# Search: {query}"]
     for h in hits:
         where = " · ".join(x for x in (h.project_slug, h.task_key) if x)
-        if h.kind == "doc":
+        if h.kind == "doc" and h.anchor:
+            ref = (
+                f"doc {h.name}#{h.anchor} (doc_get project={h.project_slug} doc={h.name}"
+                f" section={h.anchor})"
+            )
+        elif h.kind == "doc":
             ref = f"doc {h.name} (doc_get project={h.project_slug} doc={h.name})"
         elif h.kind == "note":
             ref = f"note #{h.id} (memory_get)"
@@ -1033,6 +1216,10 @@ def event_detail(e: Event) -> str:
     if e.kind == "decision.added":
         supersedes = f" (supersedes #{p['supersedes']})" if p.get("supersedes") else ""
         return f"#{p.get('decision_id')} {p.get('text', '')}{supersedes}"
+    if e.kind == "document.updated" and p.get("file"):
+        if p.get("created"):
+            return f"{p.get('doc')} (a file document) added: {p.get('reason') or ''}".rstrip(": ")
+        return f"{p.get('doc')} changed in its file: {p.get('sections_changed', 0)} section(s)"
     if e.kind == "document.updated":
         part = f" #{p['section']}" if p.get("section") else ""
         return f"{p.get('doc')} v{p.get('version')}{part}: {p.get('reason') or ''}".rstrip()

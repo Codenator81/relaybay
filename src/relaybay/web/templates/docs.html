@@ -77,7 +77,7 @@
       {% for h in hits %}
       <li class="inbox-row hit-row">
         <span class="inbox-title"><span class="note-scope">{{ h.kind }}</span>
-          {% if h.kind == "doc" %}<a href="/p/{{ h.project_slug }}/docs/{{ h.name }}">{{ h.title }}</a>
+          {% if h.kind == "doc" %}<a href="/p/{{ h.project_slug }}/docs/{{ h.name }}{% if h.anchor %}#{{ h.anchor }}{% endif %}">{{ h.title }}</a>
           {% elif h.kind == "decision" %}<a href="#decision-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
           {% elif h.kind == "note" %}<a href="#note-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
           {% elif h.kind == "backlog" %}<a href="/p/{{ h.project_slug }}/backlog?history=1#backlog-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
@@ -120,6 +120,33 @@
         <input name="reason" required maxlength="500" placeholder="First draft" value="{{ draft.get('doc-new-reason', '') }}">
       </label>
       <div class="form-actions"><button type="submit" class="btn primary">Create document</button></div>
+    </form>
+  </details>
+
+  <details class="panel doc-add" id="doc-file"{% if error and error_target == "doc-file" %} open{% endif %}>
+    <summary class="btn">New document: a file on disk</summary>
+    <form class="task-form doc-new-form" method="post" action="/p/{{ project.slug }}/docs/new">
+      {{ hidden_csrf() }}
+      <p class="muted inbox-hint">relaybay reads and indexes the file whenever it is read, and never writes it: the file stays the source (in its repository or in a notes folder). Use it for a document over 200,000 characters.</p>
+      {% if error and error_target == "doc-file" %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+      <div class="field-row">
+        <label class="field"><span>Name</span>
+          <input name="doc" required maxlength="63" pattern="[a-z0-9][a-z0-9\-]*" placeholder="spec" spellcheck="false" value="{{ draft.get('doc-file-doc', '') }}">
+        </label>
+        <label class="field"><span>Kind</span>
+          <input name="kind" maxlength="40" list="doc-kinds" placeholder="spec" spellcheck="false" value="{{ draft.get('doc-file-kind', '') }}">
+        </label>
+      </div>
+      <label class="field"><span>Path <span class="muted">· absolute, on the machine relaybay runs on</span></span>
+        <input name="source_path" required maxlength="500" placeholder="/home/me/work/acme-shop/docs/spec.md" spellcheck="false" value="{{ draft.get('doc-file-source_path', '') }}">
+      </label>
+      <label class="field"><span>Title <span class="muted">· default: the first <code>#</code> heading</span></span>
+        <input name="title" maxlength="200" value="{{ draft.get('doc-file-title', '') }}">
+      </label>
+      <label class="field"><span>Reason</span>
+        <input name="reason" required maxlength="500" placeholder="The spec, read from its file" value="{{ draft.get('doc-file-reason', '') }}">
+      </label>
+      <div class="form-actions"><button type="submit" class="btn primary">Add the file</button></div>
     </form>
   </details>
 
