@@ -37,8 +37,7 @@ def instructions(rules: Rules) -> str:
             "1. Start with the digest for your level (portfolio_digest, project_digest or"
             " task_context); drill down only when needed, for example with project_snapshot, whose"
             " first line names the current rules like task_context's rules line; read"
-            " relaybay://rules/<project> (or call rules_get) for the details. Keep the project"
-            " pulse current with project_pulse_set.",
+            " relaybay://rules/<project> (or call rules_get) for the details.",
             "2. Pick the task you work on, or create one with task_create. Pass `session` on"
             " writes: your own desktop session id (local_…) with `session_title` if you know it,"
             " otherwise a human-readable name; add `hook_session` if the session start gave you"
@@ -218,6 +217,13 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         name="relaybay", version=__version__, instructions=instructions(service.global_rules)
     )
 
+    async def log_rule() -> fmt.LogRule:
+        """`require_tracker_log` per task: only in projects that keep a tracker, read now."""
+        if not require_tracker_log:
+            return None
+        await service.tracker_projects()
+        return service.tracker_log_required
+
     def refresh_instructions() -> None:
         # The SDK has no setter: the text it sends on connect is this attribute. Without this a
         # new session would read the report format of config.toml, not of the current version.
@@ -304,7 +310,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         branch, the start of the description and progress, last report, plus recent decisions.
         Call it at the start of a session to see the state of the project before you pick or
         create a task."""
-        return fmt.snapshot(await run(service.snapshot(project, include_done)), require_tracker_log)
+        snap = await run(service.snapshot(project, include_done))
+        return fmt.snapshot(snap, await log_rule())
 
     @write
     async def project_pulse_set(
@@ -317,9 +324,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Write the project's pulse: a short summary of where it stands, shown in the digests
-        and on the board. Update it when the picture changes; it is marked stale after some days
-        (config pulse_stale_days)."""
+        """Write the project's pulse note: a short hand-written summary, shown with its date
+        under the pulse line relaybay derives from the cards (in the digests and on the board).
+        Optional; it is never marked stale."""
         return fmt.pulse_saved(
             await run(
                 service.set_pulse(
@@ -429,7 +436,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 include_done=include_done,
             )
         )
-        return fmt.task_list(tasks, require_tracker_log)
+        return fmt.task_list(tasks, await log_rule())
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def task_get(
@@ -439,7 +446,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         """Full task: fields, description, progress, current version, the latest reports and
         decisions, and the names of the editable fields (for task_patch). Call it before
         task_update to get the version for expected_version."""
-        return fmt.task_detail(await run(service.task_detail(task, reports)), require_tracker_log)
+        detail = await run(service.task_detail(task, reports))
+        return fmt.task_detail(detail, await log_rule())
 
     @write
     async def task_create(
@@ -2278,7 +2286,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     )
     async def project_resource(slug: str) -> str:
         try:
-            return fmt.snapshot(await service.snapshot(slug), require_tracker_log)
+            return fmt.snapshot(await service.snapshot(slug), await log_rule())
         except NotFoundError as exc:
             raise ResourceNotFoundError(str(exc)) from exc
 

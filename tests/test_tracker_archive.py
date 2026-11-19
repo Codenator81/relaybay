@@ -107,9 +107,14 @@ def test_card_tracker_badges(board: TestClient, seeded: str) -> None:
 def test_not_logged_badge_with_require_tracker_log(strict: TestClient) -> None:
     service: Service = strict.app.state.service
     task = run_in_app(strict, service.create_task, "acme-shop", "Ship", stage="done")
+    # No card of the project has a tracker reference: there is no work log to enter.
+    assert "not-logged" not in card(strict, task.key)
+    assert "not-logged" not in strict.get(f"/p/acme-shop/t/{task.key}/view").text
+    other = run_in_app(strict, service.create_task, "acme-shop", "Other", tracker_ref="ENG-1")
     text = card(strict, task.key)
-    assert "badge tracker not-logged" in text  # no tracker key at all: still "not logged"
+    assert "badge tracker not-logged" in text  # the project keeps a tracker now; no key here
     assert "badge tracker not-logged" in strict.get(f"/p/acme-shop/t/{task.key}/view").text
+    assert other.key
 
     run_in_app(strict, service.update_task, task.key, {"tracker_ref": "ENG-12"})
     text = card(strict, task.key)
@@ -239,6 +244,7 @@ def test_done_window_archive_and_search(board: TestClient, seeded: str, monkeypa
 
 def test_unlogged_done_tasks_stay_with_require_tracker_log(strict: TestClient, monkeypatch) -> None:
     service: Service = strict.app.state.service
+    run_in_app(strict, service.create_task, "acme-shop", "Has an issue", tracker_ref="ENG-1")
     logged = run_in_app(strict, service.create_task, "acme-shop", "Old logged", stage="done")
     run_in_app(strict, service.update_task, logged.key, {"tracker_logged": True})
     unlogged = run_in_app(strict, service.create_task, "acme-shop", "Old unlogged", stage="done")
@@ -248,6 +254,16 @@ def test_unlogged_done_tasks_stay_with_require_tracker_log(strict: TestClient, m
     page = strict.get("/p/acme-shop").text
     assert f'id="card-{logged.key}"' not in page
     assert f'id="card-{unlogged.key}"' in page  # not logged: never archived
+    assert "1 in the archive (closed more than 7 days ago or archived by hand)" in page
+
+
+def test_done_cards_age_out_in_a_project_without_a_tracker(strict: TestClient, monkeypatch) -> None:
+    service: Service = strict.app.state.service
+    unlogged = run_in_app(strict, service.create_task, "acme-shop", "Old unlogged", stage="done")
+    later = datetime.now(UTC) + timedelta(days=8)
+    monkeypatch.setattr(routes, "utcnow", lambda: later)
+    page = strict.get("/p/acme-shop").text
+    assert f'id="card-{unlogged.key}"' not in page  # no tracker in the project: ages out
     assert "1 in the archive (closed more than 7 days ago or archived by hand)" in page
 
 

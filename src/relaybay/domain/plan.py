@@ -298,20 +298,31 @@ def todo_label(item: TodoItem) -> str:
 
 
 def reminder_line(
-    task_key: str, stage: str, plan: Plan, todo: list[TodoItem], details: bool = True
+    task_key: str,
+    stage: str,
+    plan: Plan,
+    todo: list[TodoItem],
+    details: bool = True,
+    *,
+    actionable: bool = False,
+    doing: bool = True,
 ) -> str | None:
     """What the agent should keep in mind about one task: its current plan step (N/M, title,
-    what and why) and the todo item in progress; a hint when a task in dev has neither."""
-    now = todo_now(todo)
-    doing = f" Now doing: {todo_label(now)}." if now else ""
+    what and why) and the todo item in progress; a hint when a task in dev has neither.
+    `actionable` (the hook reminder) leaves out a line that asks for nothing: every step done
+    outside dev. `doing=False` leaves out the todo item in progress."""
+    now = todo_now(todo) if doing else None
+    doing_text = f" Now doing: {todo_label(now)}." if now else ""
     if plan.steps:
         state = "accepted" if plan.status == "accepted" else "draft, not accepted yet"
         step = plan.current
         if step is None and stage != "dev":
-            return f"Plan of {task_key} ({state}): all {len(plan.steps)} steps done.{doing}"
+            if actionable:
+                return None
+            return f"Plan of {task_key} ({state}): all {len(plan.steps)} steps done.{doing_text}"
         if step is None:
             closed = CLOSED_PLAN.format(done=plan.done, total=len(plan.steps))
-            return f"Plan of {task_key} ({state}): {closed}.{doing}"
+            return f"Plan of {task_key} ({state}): {closed}.{doing_text}"
         verb = "step" if step.status == "in_progress" else "next step"
         line = (
             f"Plan of {task_key} ({state}): {verb} {step.position}/{len(plan.steps)} '{step.title}'"
@@ -320,12 +331,12 @@ def reminder_line(
             line += " (blocked)"
         if details and step.details_md:
             line += f" — {one_line(step.details_md, REMINDER_DETAILS_MAX)}"
-        return (line if line.endswith(".") else line + ".") + doing
+        return (line if line.endswith(".") else line + ".") + doing_text
     if todo:
         done = sum(1 for i in todo if i.status == "completed")
         return (
             f"{task_key} has no plan; your todo ({done}/{len(todo)} done) is shown as the"
-            f" agent's plan, not accepted.{doing}"
+            f" agent's plan, not accepted.{doing_text}"
         )
     if stage == "dev":
         return f"{task_key} is in dev without a plan: {NO_PLAN_HINT}."

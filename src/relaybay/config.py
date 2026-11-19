@@ -236,7 +236,7 @@ class Settings:
     plan_reminder_every: int = field(
         default=DEFAULT_REMINDER_EVERY,
         metadata=_doc(
-            "Remind a linked agent of its current plan step every this many tool calls"
+            "Remind a linked agent of its plan step on a card in dev every this many tool calls"
             " (PostToolUse events); 0 turns the periodic reminder off (session start and todo"
             " changes still remind).",
             key="plan_reminder_every",
@@ -255,7 +255,7 @@ class Settings:
     pulse_stale_days: int = field(
         default=DEFAULT_PULSE_STALE_DAYS,
         metadata=_doc(
-            "Days after which a project's pulse is marked stale (whole number >= 1).",
+            "Accepted and ignored: the pulse is derived from the cards (whole number >= 1).",
             key="pulse_stale_days",
             env="RELAYBAY_PULSE_STALE_DAYS",
         ),

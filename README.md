@@ -125,7 +125,7 @@ program as its client:
   (`review_steps_set`, `attach_file`); you accept or reject each step in the task's Review tab,
   look at screenshots full screen, draw on them and drop numbered pins for the agent, paste your
   own with Ctrl+V, and each decision reaches the
-  agent as a comment. Tasks waiting for acceptance are in the Inbox's Review queue; an optional
+  agent as a comment. Tasks waiting for acceptance are in the Inbox, marked "to accept"; an optional
   browser notification (Settings → Notifications) says when one arrives, and the desktop program's
   tray says it with no tab open. How agents make
   screenshot files: [Screenshots for review](https://codenator81.github.io/relaybay/how-to/screenshots-for-review/).

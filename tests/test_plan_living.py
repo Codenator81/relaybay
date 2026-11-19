@@ -299,6 +299,9 @@ def test_reminder_says_the_plan_is_closed_only_in_dev() -> None:
     assert reminder_line("acme-shop-1", "review", plan, []) == (
         "Plan of acme-shop-1 (accepted): all 2 steps done."
     )
+    # The hook reminder only sends what asks for something.
+    assert reminder_line("acme-shop-1", "plan", plan, [], actionable=True) is None
+    assert reminder_line("acme-shop-1", "dev", plan, [], actionable=True) is not None
 
 
 async def test_session_start_says_the_plan_is_closed(service: Service) -> None:

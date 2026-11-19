@@ -29,6 +29,7 @@ from starlette.responses import StreamingResponse
 
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
+from relaybay.domain import digest as digests
 from relaybay.domain import environments as env_domain
 from relaybay.domain import guard
 from relaybay.domain import memory as mem
@@ -325,8 +326,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         comment_max=COMMENT_MAX,
         annotation_colours=COLOURS,
         annotation_body_max=ANNOTATION_BODY_MAX,
-        pulse_stale=service.pulse_stale,
-        pulse_stale_days=settings.pulse_stale_days,
         plan_draft_hours=service.plan_draft_hours,
         card_state=service.card_state,
     )
@@ -337,8 +336,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     env.globals["static_url"] = static_url
     env.globals["task_archived"] = lambda t: is_archived(
-        t, utcnow(), settings.done_window_days, settings.require_tracker_log
+        t, utcnow(), settings.done_window_days, service.tracker_log_required(t)
     )
+    env.globals["tracker_log_required"] = service.tracker_log_required
+    env.globals["pulse_text"] = lambda pulse: digests.pulse_line(pulse, utcnow())
     env.filters["age"] = age
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
@@ -393,7 +394,6 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return await service.inbox(
             settings.owner_names,
             require_tracker_log=settings.require_tracker_log,
-            done_window_days=settings.done_window_days,
         )
 
     async def saved_filters_by_project() -> dict[str, list[Any]]:
@@ -419,7 +419,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "active": active,
             "project": nav_project,
             "projects": [item.project for item in await service.list_projects()],
-            "inbox_count": (await inbox()).count,
+            "inbox_count": (await inbox()).badge,
             "saved_filters": await saved_filters_by_project(),
             "backlog_counts": await service.backlog_counts(),
             "filter_active": bool(context.get("filter_query")),
@@ -465,11 +465,12 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         now = utcnow()
         by_stage: dict[str, list[Task]] = {s.value: [] for s in STAGES}
         hidden_archived = 0
+        tracked = await service.tracker_projects() if settings.require_tracker_log else set()
         for task in tasks:
             if needle and needle not in task.key.casefold() and needle not in task.title.casefold():
                 continue
             if not (archived or needle) and is_archived(
-                task, now, settings.done_window_days, settings.require_tracker_log
+                task, now, settings.done_window_days, task.project_id in tracked
             ):
                 hidden_archived += 1
                 continue
@@ -616,12 +617,18 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "projects.html",
             "boards",
             projects=await service.list_projects(),
+            pulses=await service.pulses(),
             last_event_id=last_event_id,
         )
 
     @router.get("/fragments/projects", response_class=HTMLResponse)
     async def projects_fragment(request: Request):
-        return render(request, "_projects.html", projects=await service.list_projects())
+        return render(
+            request,
+            "_projects.html",
+            projects=await service.list_projects(),
+            pulses=await service.pulses(),
+        )
 
     @router.get("/p/{slug}", response_class=HTMLResponse)
     async def board_page(
@@ -757,7 +764,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
     @router.get("/fragments/inbox-badge", response_class=HTMLResponse)
     async def inbox_badge(request: Request):
-        return render(request, "_inbox_badge.html", count=(await inbox()).count)
+        return render(request, "_inbox_badge.html", count=(await inbox()).badge)
 
     @router.get("/sessions", response_class=HTMLResponse)
     async def all_sessions_page(request: Request):
@@ -2020,6 +2027,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         notes = await service.list_notes(project.slug, include_superseded=True)
         return {
             "project": project,
+            "pulse": (await service.pulses()).get(project.id),
             "documents": documents,
             "document_groups": mem.group_documents(documents),
             "decisions": [d for d in decisions if d.current],

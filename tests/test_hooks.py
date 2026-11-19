@@ -301,7 +301,10 @@ async def test_folder_of_two_projects_is_ambiguous(service: Service) -> None:
 
 
 async def test_activity_is_coalesced_per_window(tmp_path: Path) -> None:
-    svc = Service(tmp_path / "db.sqlite", hook_activity_window=0.3)
+    # A window no runner outlasts: nothing is written by the clock while the test runs; the
+    # window's end is then run by hand, so the result does not depend on timing.
+    window = 60.0
+    svc = Service(tmp_path / "db.sqlite", hook_activity_window=window)
     await svc.start()
     try:
         task = await bound_task(svc)
@@ -312,12 +315,12 @@ async def test_activity_is_coalesced_per_window(tmp_path: Path) -> None:
                 await svc.record_hook(hook("PreToolUse", tool_name=tool))
             assert sub.queue.qsize() == 0  # held back inside the window
             assert (await svc.get_task(task.key)).session_activity == "started (startup)"
-            # The window ends at 0.3 s; the flush then writes in the background, which a busy
-            # CI runner may take a while for.
-            for _ in range(100):
-                await asyncio.sleep(0.05)
-                if sub.queue.qsize():
-                    break
+            [(session_id, timer)] = svc._activity_timers.items()
+            loop = asyncio.get_running_loop()
+            assert 0 < timer.when() - loop.time() <= window  # the flush is due at the window's end
+            timer.cancel()
+            svc._flush_activity(session_id)
+            await asyncio.gather(*svc._flushes)
             events = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
         assert [e.payload["activity"] for e in events] == ["Bash"]  # only the latest
         assert (await svc.get_task(task.key)).session_activity == "Bash"

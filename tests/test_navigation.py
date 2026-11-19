@@ -175,6 +175,128 @@ async def test_inbox_unlinked_hook_sessions(service: Service) -> None:
     assert len(inbox.unlinked) == 1 and "several projects" in inbox.unlinked[0].unlinked_reason
 
 
+async def test_inbox_lists_an_open_card_once_with_its_marks(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", stage="dev", waiting_on="owner")
+    await service.set_review_steps(task.key, ["Look at the page"])
+    await service.set_stage(task.key, "test")  # no report since the move: a rule warning
+    await service.add_agent_comment(task.key, "Ready for a look")
+    other = await service.create_task("acme-shop", "Address book", waiting_on="owner")
+    inbox = await service.inbox(["owner"])
+    # Before: one row per list, the same card four times.
+    assert (
+        len(inbox.waiting) + len(inbox.review) + len(inbox.replies) + len(inbox.rule_warnings) == 5
+    )
+    assert [(c.task.key, c.marks) for c in inbox.cards] == [
+        (task.key, ["waiting", "review", "reply", "warning"]),
+        (other.key, ["waiting"]),
+    ]
+    assert inbox.count == inbox.badge == 2
+
+
+async def test_done_cards_leave_the_inbox_and_closing_reads_replies(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task("acme-shop", "Checkout", stage="dev", waiting_on="owner")
+    reply, _ = await service.add_agent_comment(task.key, "Done")
+    assert [c.task.key for c in (await service.inbox(["owner"])).cards] == [task.key]
+    await service.set_stage(task.key, "done")  # warns: done usually needs a report
+    inbox = await service.inbox(["owner"])
+    assert inbox.cards == [] and inbox.rule_warnings == [] and inbox.replies == []
+    assert inbox.count == 0
+    _, unread = await service.list_comments(task.key, unread_only=True)
+    assert reply.id not in [c.id for c in unread]  # read by the close, still on the card
+    [read] = [e for e in await service.activity(kind="comment.read") if e.task_id == task.id]
+    assert read.payload["stage"] == "done"  # the event names the stage the card went to
+
+    # A reply written after the close still needs the owner: the card comes back for it.
+    late, _ = await service.add_agent_comment(task.key, "One more thing")
+    inbox = await service.inbox(["owner"])
+    assert [(c.task.key, c.marks) for c in inbox.cards] == [(task.key, ["reply"])]
+    assert [c.id for c in inbox.cards[0].replies] == [late.id]
+    assert inbox.badge == 1
+
+
+async def test_old_replies_on_done_cards_do_not_crowd_out_open_ones(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    done = await service.create_task("acme-shop", "Closed", stage="dev")
+    first, _ = await service.add_agent_comment(done.key, "Old")
+    await service.set_stage(done.key, "done")
+    # 200 replies older than the close and never marked read (as before 0.14).
+    async with service._tx() as tx:
+        cols = [r[1] for r in await tx.conn.execute_fetchall("PRAGMA table_info(comment)")]
+        copy = ", ".join(c for c in cols if c != "id")
+        for _ in range(200):
+            await tx.conn.execute(
+                f"INSERT INTO comment ({copy}) SELECT {copy} FROM comment WHERE id = ?",
+                (first.id,),
+            )
+        await tx.conn.execute("UPDATE comment SET read_at = NULL WHERE task_id = ?", (done.id,))
+    open_task = await service.create_task("acme-shop", "Open", stage="dev")
+    await service.add_agent_comment(open_task.key, "New")
+    inbox = await service.inbox(["owner"])
+    assert [c.task.key for c in inbox.cards] == [open_task.key]
+
+
+async def test_tracker_rule_warning_at_done_only_with_a_tracker(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", require_tracker_log=True)
+    await svc.start()
+    try:
+        await svc.upsert_project("acme-shop")
+        await svc.upsert_project("demo-api")
+        plain = await svc.create_task("acme-shop", "No tracker", progress="All")
+        saved = await svc.set_stage_checked(plain.key, "done")
+        assert not [w for w in saved.warnings if "work log" in w]
+        await svc.create_task("demo-api", "Has an issue", tracker_ref="API-1")
+        other = await svc.create_task("demo-api", "No key here", progress="All")
+        saved = await svc.set_stage_checked(other.key, "done")
+        assert [w for w in saved.warnings if "work log" in w]
+    finally:
+        await svc.close()
+
+
+async def test_work_log_line_only_for_projects_with_a_tracker(service: Service) -> None:
+    await service.upsert_project("acme-shop")  # no card has a tracker reference
+    await service.upsert_project("demo-api")
+    await service.create_task("acme-shop", "Shipped", stage="done", progress="all")
+    ref = await service.create_task(
+        "demo-api", "With issue", stage="done", progress="all", tracker_ref="API-1"
+    )
+    plain = await service.create_task("demo-api", "Without issue", stage="done", progress="all")
+    inbox = await service.inbox(["owner"], require_tracker_log=True)
+    assert sorted(t.key for t in inbox.not_logged) == sorted([ref.key, plain.key])
+    assert inbox.lines == [("not_logged", 2)]
+    assert inbox.count == 1 and inbox.badge == 0  # one line, not counted in the badge
+    # A tracker reference that was removed still marks the project as keeping a tracker.
+    await service.update_task(ref.key, {"tracker_ref": None})
+    inbox = await service.inbox(["owner"], require_tracker_log=True)
+    assert len(inbox.not_logged) == 2
+
+
+async def test_ended_unlinked_sessions_are_not_listed(service: Service) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    await service.upsert_project("demo-api", repo_path=CWD)
+    await service.record_hook(hook("SessionStart", cc_id=str(uuid.UUID(int=91))))
+    await service.record_hook(hook("SessionStart", cc_id=str(uuid.UUID(int=92))))
+    await service.record_hook(hook("SessionEnd", cc_id=str(uuid.UUID(int=92))))
+    inbox = await service.inbox(["owner"])
+    assert [s.cc_session_id for s in inbox.unlinked] == [str(uuid.UUID(int=91))]
+    assert inbox.lines == [("unlinked", 1)] and inbox.count == 1
+    assert len(await service.unlinked_hook_sessions()) == 2  # Integrations lists both
+
+
+async def test_a_live_unlinked_session_behind_many_ended_ones_is_listed(service: Service) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    await service.upsert_project("demo-api", repo_path=CWD)
+    live = str(uuid.UUID(int=500))
+    await service.record_hook(hook("SessionStart", cc_id=live))
+    for n in range(55):  # more than one page of 50, all seen later than the live one
+        cc_id = str(uuid.UUID(int=600 + n))
+        await service.record_hook(hook("SessionStart", cc_id=cc_id))
+        await service.record_hook(hook("SessionEnd", cc_id=cc_id))
+    inbox = await service.inbox(["owner"])
+    assert [s.cc_session_id for s in inbox.unlinked] == [live]
+
+
 def test_owner_names_from_config_and_environment(tmp_path: Path) -> None:
     assert load_settings(home=tmp_path, environ={}).owner_names == ["owner", "me", "you"]
     (tmp_path / "config.toml").write_text('owner_names = ["Alex", "lead"]\n', encoding="utf-8")
@@ -195,7 +317,7 @@ def test_inbox_page_badge_and_empty_state(board: TestClient, seeded: str) -> Non
 
     run_in_app(board, svc(board).update_task, seeded, {"waiting_on": "you"})
     page = board.get("/inbox")
-    assert "Waiting on you" in page.text and "Nothing needs you" not in page.text
+    assert "waits for you" in page.text and "Nothing needs you" not in page.text
     assert f'href="/p/acme-shop?task={seeded}"' in page.text  # opens the task dialog
     assert 'hx-get="/fragments/inbox"' in page.text
     badge = board.get("/fragments/inbox-badge", headers={"HX-Request": "true"})

@@ -171,6 +171,7 @@ from relaybay.domain.review import (
 from relaybay.domain.rules import (
     DEFAULT_RULES,
     REPORT_SINCE_STAGE_CHANGE,
+    REQUIRE_TRACKER_LOG,
     RULES_MODES,
     TRACKER_LOG_LABEL,
     RuleProposal,
@@ -530,10 +531,41 @@ class TaskDocument:
 
 
 @dataclass(slots=True)
+class InboxCard:
+    """One open card in the Inbox, once, with every reason it is there as a mark."""
+
+    task: Task
+    waiting: bool = False  # its waiting_on names the owner
+    review: bool = False  # in review or test with a checklist: to accept
+    replies: list[Comment] = field(default_factory=list)  # agent replies not marked read
+    undelivered: list[Comment] = field(default_factory=list)  # owner comments waiting > 1 h
+    wait_reason: str | None = None  # why they wait
+    warnings: list[str] = field(default_factory=list)  # rules its last stage move missed
+    asked: bool = False  # it has an open question or approval request, counted as that
+
+    @property
+    def marks(self) -> list[str]:
+        return [
+            name
+            for name, on in (
+                ("waiting", self.waiting),
+                ("review", self.review),
+                ("reply", bool(self.replies)),
+                ("undelivered", bool(self.undelivered)),
+                ("warning", bool(self.warnings)),
+            )
+            if on
+        ]
+
+
+@dataclass(slots=True)
 class Inbox:
-    """What needs the owner: tasks waiting on them, tasks whose last stage move missed a rule,
-    done tasks without the work-log mark (with `require_tracker_log`), unlinked hook sessions,
-    tasks with agent replies the owner has not marked read."""
+    """What needs the owner. Open cards come once each (`cards`), with their reasons as marks:
+    waiting on them, to accept, agent replies unread, owner comments not delivered, rule
+    warnings. A done card is listed only for agent replies written after it was closed.
+    Grouped lines count one row each: done cards without the work-log mark (with
+    `require_tracker_log`, only in projects that keep a tracker), hook sessions that are
+    neither linked nor ended, new backlog items, leftover worktrees."""
 
     waiting: list[Task]
     rule_warnings: list[tuple[Task, list[str]]]
@@ -558,27 +590,62 @@ class Inbox:
     undelivered: list[tuple[Task, list[Comment], str | None]] = field(default_factory=list)
 
     @property
-    def count(self) -> int:
+    def cards(self) -> list[InboxCard]:
+        """The open cards, each once: to accept first (the longest waiting first), then
+        waiting on the owner, then the other reasons."""
         asked = {q.task_id for q in self.questions} | {a.task_id for a in self.approvals}
+        found: dict[int, InboxCard] = {}
+
+        def card(task: Task) -> InboxCard:
+            if task.id not in found:
+                found[task.id] = InboxCard(task, asked=task.id in asked)
+            return found[task.id]
+
+        for task in self.review:
+            card(task).review = True
+        for task in self.waiting:
+            card(task).waiting = True
+        for task, replies in self.replies:
+            card(task).replies = replies
+        for task, comments, reason in self.undelivered:
+            row = card(task)
+            row.undelivered, row.wait_reason = comments, reason
+        for task, warnings in self.rule_warnings:
+            card(task).warnings = warnings
+        # A card that only waits for the answer to its question or request is that row already.
+        return [c for c in found.values() if not (c.asked and c.marks == ["waiting"])]
+
+    @property
+    def lines(self) -> list[tuple[str, int]]:
+        """The grouped lines, one row each: (what, how many)."""
+        found = [
+            ("not_logged", len(self.not_logged)),
+            ("unlinked", len(self.unlinked)),
+            ("backlog", self.backlog_new),
+            ("worktrees", len(self.leftover_worktrees)),
+            ("running", self.running_over or 0),
+        ]
+        return [(kind, n) for kind, n in found if n]
+
+    @property
+    def badge(self) -> int:
+        """What the badge and the digests count: the items that each need the owner (cards,
+        questions, approvals, proposals, rules notices); the grouped lines are not counted."""
         return (
             len(self.questions)
             + len(self.approvals)
-            + (1 if self.backlog_new else 0)
-            # A card waiting on the owner for its open question or request counts once, as that.
-            + len({t.id for t in self.waiting} - asked)
-            + len(self.rule_warnings)
-            + len(self.not_logged)
-            + len(self.unlinked)
-            + len(self.replies)
-            + len(self.undelivered)
+            # A card with an open question or request counts once, as that.
+            + sum(1 for c in self.cards if not c.asked)
             + len(self.proposals)
             + len(self.policy_proposals)
             + len(self.rule_proposals)
             + len(self.rule_notices)
-            + len(self.review)
-            + (1 if self.running_over is not None else 0)
-            + (1 if self.leftover_worktrees else 0)
         )
+
+    @property
+    def count(self) -> int:
+        """Every row of the Inbox page: the items of `badge` and the grouped lines."""
+        return self.badge + len(self.lines)
 
 
 @dataclass(slots=True)
@@ -1170,8 +1237,11 @@ class Service:
             raise ValueError(f"session_context must be one of: {modes}.")
         self.owner_names = owner_names if owner_names is not None else ["owner", "me", "you"]
         self.require_tracker_log = require_tracker_log
+        # Projects that keep a tracker (a card has or had a tracker reference): only there does
+        # `require_tracker_log` apply. Read again on the Inbox, the board, MCP reads, stage moves.
+        self._tracked: set[int] = set()
         self.done_window_days = done_window_days
-        self.pulse_stale_days = pulse_stale_days
+        self.pulse_stale_days = pulse_stale_days  # accepted, unused: the pulse is derived
         self.task_stale_days = task_stale_days
         self.digest_budget_chars = digest_budget_chars
         self.session_context = session_context
@@ -1180,14 +1250,13 @@ class Service:
         # When a message event was last written, per sender and recipient.
         self._message_written: dict[int, dict[str, float]] = {}
         self.update = updates.UpdateStatus()  # the last update check, in memory only
-        # Projects whose missing or stale pulse a stage move already mentioned in this run.
-        self._pulse_noted: set[int] = set()
 
     async def start(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_conn = await connect(self.db_path)
         await migrate(self._write_conn)
         self._read_conn = await connect(self.db_path)
+        await self.tracker_projects()
         self.search_fts = await repo.ensure_search_index(self._write_conn)
         if self.search_fts and await repo.search_index_stale(self._write_conn):
             async with self._tx() as tx:
@@ -1354,6 +1423,8 @@ class Service:
         earlier entries as history."""
         if not any(k.startswith("tracker_") for k in diff):
             return
+        if diff.get("tracker_ref") or diff.get("tracker_url"):
+            self._tracked.add(task.project_id)
         ref = diff.get("tracker_ref", task.tracker_ref)
         if ref is None:
             return
@@ -2282,35 +2353,34 @@ class Service:
         owner_names: list[str],
         *,
         require_tracker_log: bool = False,
-        done_window_days: int = DEFAULT_DONE_WINDOW_DAYS,
     ) -> Inbox:
         owners = {name.strip().casefold() for name in owner_names}
         tasks = await repo.list_tasks(self._r)
         moves = await repo.latest_stage_changes(self._r)
         now = datetime.now(UTC)
+        # A project keeps a tracker once any of its cards had a tracker reference: only there
+        # does `require_tracker_log` ask for the work-log mark.
+        tracked = await self.tracker_projects() if require_tracker_log else set()
         waiting, warned, not_logged = [], [], []
         for task in tasks:
-            unlogged = task.stage == Stage.DONE and require_tracker_log and not task.tracker_logged
-            if unlogged and task.archived_at is not None:
-                # Archived by hand before its work log was marked: it still waits for the mark.
-                not_logged.append(task)
-                continue
-            if is_archived(task, now, done_window_days, require_tracker_log):
-                continue
             if task.stage == Stage.DONE:
-                if require_tracker_log and not task.tracker_logged:
+                # Done cards are listed only for agent replies written after the close (below);
+                # their warnings and older replies stay on the card.
+                # Only the missing work-log mark is listed, archived or not, until it is marked.
+                if task.project_id in tracked and not task.tracker_logged:
                     not_logged.append(task)
-            elif task.waiting_on and task.waiting_on.strip().casefold() in owners:
+                continue
+            if task.waiting_on and task.waiting_on.strip().casefold() in owners:
                 waiting.append(task)
             move = moves.get(task.id)
             # Shown until the task moves again: the warning is about the move into this stage.
             if move and move.payload.get("to") == task.stage:
-                # A done task without the mark is already under "not logged", until it is marked.
                 shown = [w for w in move.payload.get("warnings", []) if TRACKER_LOG_LABEL not in w]
                 if shown:
                     warned.append((task, shown))
         by_id = {t.id: t for t in tasks}
         replies: dict[int, list[Comment]] = {}
+        # A reply written after the card was closed still needs the owner (the query keeps it).
         for reply in await repo.unread_agent_replies(self._r):
             replies.setdefault(reply.task_id, []).append(reply)
         waiting_since = (now - timedelta(hours=COMMENT_WAIT_HOURS)).isoformat(
@@ -2324,7 +2394,8 @@ class Service:
             waiting=waiting,
             rule_warnings=warned,
             not_logged=not_logged,
-            unlinked=await self.unlinked_hook_sessions(),
+            # An ended session cannot link any more: Sessions and Integrations still list it.
+            unlinked=await repo.list_unlinked_hook_sessions(self._r, 50, ended=False),
             replies=[
                 (by_id[task_id], items) for task_id, items in replies.items() if task_id in by_id
             ],
@@ -2540,6 +2611,16 @@ class Service:
         if not found:
             raise NotFoundError(f"Session {ref!r} not found.")
         return [s.id for s in found]
+
+    async def tracker_projects(self, conn: aiosqlite.Connection | None = None) -> set[int]:
+        """The projects that keep a tracker, read again (and kept for `tracker_log_required`)."""
+        self._tracked = await repo.projects_with_tracker(conn or self._r)
+        return self._tracked
+
+    def tracker_log_required(self, task: Task) -> bool:
+        """`require_tracker_log` for this task: only in a project that keeps a tracker, as of
+        the last read of `tracker_projects`."""
+        return self.require_tracker_log and task.project_id in self._tracked
 
     async def unlinked_hook_sessions(self, limit: int = 50) -> list[Session]:
         """Hook sessions that could not be linked to one relaybay session (Settings page)."""
@@ -3363,6 +3444,8 @@ class Service:
             _, fields["area_id"] = await self._area_id(tx, proj.id, proj.slug, clean_area, actor)
             key = f"{proj.slug}-{await repo.next_task_number(tx.conn, proj.id)}"
             task_id = await repo.insert_task(tx.conn, proj.id, key, fields, session_id, tx.now)
+            if fields.get("tracker_ref") or fields.get("tracker_url"):
+                self._tracked.add(proj.id)
             if fields["tracker_ref"]:
                 await repo.insert_tracker_entry(
                     tx.conn,
@@ -3434,6 +3517,13 @@ class Service:
             values=values,
             plan_status=plan_status,
         )
+        if any(r["kind"] == REQUIRE_TRACKER_LOG for r in missing) and not (
+            values.get("tracker_ref")
+            or values.get("tracker_url")
+            or task.project_id in await self.tracker_projects(tx.conn)
+        ):
+            # A project that keeps no tracker has no work log to enter.
+            missing = [r for r in missing if r["kind"] != REQUIRE_TRACKER_LOG]
         if missing and self.rules_mode == "strict":
             raise ValidationError(refusal_text(stage, missing))
         return [warning_text(stage, req, plan_status) for req in missing]
@@ -3626,8 +3716,6 @@ class Service:
             stage = diff.get("stage", task.stage.value)
             ref = writes.get("tracker_ref", task.tracker_ref)
             await self._unlogged(tx, task, actor, session_id, stage, ref, unlog)
-        if "stage" in diff:
-            await self._pulse_note(tx.conn, task)
         return Saved(await self.get_task(task.id, tx.conn), warnings)
 
     async def _write_code_links(
@@ -5091,23 +5179,23 @@ class Service:
 
     # --- pulse and digests -------------------------------------------------
 
-    def pulse_stale(self, project: Project) -> bool:
-        return digests.pulse_stale(project, self.pulse_stale_days, datetime.now(UTC))
-
-    async def _pulse_note(self, conn: aiosqlite.Connection, task: Task) -> None:
-        """One soft line to an MCP caller's stage move, once per project per server run. A board
-        move has nobody to tell, so it does not use up the once."""
-        if _NOTES.get() is None or task.project_id in self._pulse_noted:
-            return
-        project = await self.get_project(task.project_slug, conn)
-        if project.pulse_at and not self.pulse_stale(project):
-            return
-        self._pulse_noted.add(task.project_id)
-        state = f"older than {self.pulse_stale_days} days" if project.pulse_at else "missing"
-        _note(
-            f"Note: the pulse of {project.slug} is {state}; keep it current with"
-            " project_pulse_set (at most 5 lines)."
-        )
+    async def pulses(self) -> dict[int, digests.Pulse]:
+        """The derived pulse of every project with any activity, by project id."""
+        now = datetime.now(UTC)
+        since = (now - timedelta(days=digests.PULSE_DAYS)).isoformat(timespec="milliseconds")
+        activity = await repo.pulse_activity(self._r, since)
+        owners = {name.strip().casefold() for name in self.owner_names}
+        waiting: dict[int, int] = {}
+        open_tasks = await repo.list_tasks(self._r, stages=[s.value for s in OPEN_STAGES])
+        for task in open_tasks:
+            if digests.waits_for_owner(task, owners):
+                waiting[task.project_id] = waiting.get(task.project_id, 0) + 1
+        found = {}
+        for pid in set(activity) | set(waiting):
+            moved, reports, latest = activity.get(pid, (0, 0, None))
+            key, summary, at = latest or (None, None, None)
+            found[pid] = digests.Pulse(moved, reports, waiting.get(pid, 0), key, summary, at)
+        return found
 
     async def set_pulse(
         self,
@@ -5308,17 +5396,16 @@ class Service:
             inbox=await self.inbox(
                 self.owner_names,
                 require_tracker_log=self.require_tracker_log,
-                done_window_days=self.done_window_days,
             ),
             decisions=await repo.list_decisions(self._r, since=since, limit=digests.DECISIONS_MAX),
             decisions_total=await repo.count_current_decisions(self._r, since=since),
             stale_tasks=sorted(stale, key=lambda t: t.updated_at),
             blocks=await repo.list_blocks(self._r, None),
             changes=changes,
-            pulse_stale_days=self.pulse_stale_days,
             task_stale_days=self.task_stale_days,
             now=now,
             rules_line=rules_line(self.global_rules),
+            pulses=await self.pulses(),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.portfolio_text(data, footer, self._budget(budget))
@@ -5359,9 +5446,9 @@ class Service:
             blocks=await repo.list_blocks(self._r, project.id),
             notes=[n for n in notes if n.scope in ("project", "global")],
             changes=changes,
-            pulse_stale_days=self.pulse_stale_days,
             now=datetime.now(UTC),
             rules_line=rules_line(await self._rules(self._r, project)),
+            pulse=(await self.pulses()).get(project.id),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.project_text(data, footer, budget)
@@ -5728,9 +5815,10 @@ class Service:
             await repo.set_archive_mark(tx.conn, task.id, tx.now, actor, task.unarchived_at)
             await tx.event("task.archived", actor, **ids, **payload)
             return
-        if not is_archived(
-            task, datetime.now(UTC), self.done_window_days, self.require_tracker_log
-        ):
+        required = self.require_tracker_log and task.project_id in await self.tracker_projects(
+            tx.conn
+        )
+        if not is_archived(task, datetime.now(UTC), self.done_window_days, required):
             return
         await repo.set_archive_mark(tx.conn, task.id, None, None, tx.now)
         await tx.event(
@@ -7129,7 +7217,11 @@ class Service:
 
     def _reminder_due(self, session: Session, payload: Any) -> str | None:
         """PostToolUse: "todo" after a todo change, "periodic" every `plan_reminder_every`
-        tool events, else None."""
+        tool events, else None. A subagent's tool call (its hook input names an `agent_id`)
+        neither counts nor gets a reminder."""
+        agent_id = payload.get("agent_id") if isinstance(payload, dict) else None
+        if isinstance(agent_id, str) and agent_id.strip():
+            return None
         count = self._tool_events.get(session.id, 0) + 1
         self._tool_events[session.id] = count
         if parse_todo(payload) is not None:
@@ -7138,27 +7230,40 @@ class Service:
         return "periodic" if every > 0 and count % every == 0 else None
 
     async def _plan_reminder(self, session: Session, *, repeat: bool = False) -> str | None:
-        """The current plan step of each open task bound to `session`, with the todo item in
-        progress; None when there is nothing to say or (unless `repeat`, the periodic
-        reminder) it was the last text sent."""
+        """The current plan step of each card bound to `session` in plan or dev (only dev for
+        the periodic `repeat`), with the todo item in progress; only lines that ask for
+        something. None when there is nothing to say, for a session named in `coordinators`,
+        or (unless `repeat`) when the text without the todo item in progress is the last one
+        sent."""
+        stages = (Stage.DEV,) if repeat else (Stage.PLAN, Stage.DEV)
         tasks = [
-            t
-            for t in await repo.open_tasks_of_session(self._r, session.id)
-            if t.stage in OPEN_STAGES
+            t for t in await repo.open_tasks_of_session(self._r, session.id) if t.stage in stages
         ]
         if not tasks:
             return None
+        # A coordinator reads drafts and plans in its digests; the reminder is for the worker.
+        if self.coordinators and await self._is_coordinator(
+            self._r, session.external_id or session.name, session.cc_session_id
+        ):
+            return None
         todo = await repo.list_session_todo(self._r, session.id, session.cc_session_id)
-        lines = []
+        lines, keys = [], []
         for task in tasks:
             plan = await self._load_plan(self._r, task)
-            line = reminder_line(task.key, task.stage.value, plan, todo)
+            line = reminder_line(task.key, task.stage.value, plan, todo, actionable=True)
             if line:
                 lines.append(line)
+                keys.append(
+                    reminder_line(
+                        task.key, task.stage.value, plan, todo, actionable=True, doing=False
+                    )
+                    or ""
+                )
         text = reminder_text(lines)
-        if text is None or (not repeat and text == self._reminded.get(session.id)):
+        key = "\n".join(keys)
+        if text is None or (not repeat and key == self._reminded.get(session.id)):
             return None
-        self._reminded[session.id] = text
+        self._reminded[session.id] = key
         return text
 
     # Files: the bytes are checked and written outside the write transaction; the transaction
@@ -9617,8 +9722,10 @@ class Service:
     async def _close_owner_items(self, tx: _Tx, task: Task, actor: str) -> None:
         """A card that goes to done takes nothing more from the owner: its open questions are
         withdrawn, its open requests and approved, unused approvals expire (each with its
-        event)."""
+        event), and its agent replies are marked read: they stay on the card."""
         reason = "the card went to done"
+        closed = dataclasses.replace(task, stage=Stage.DONE)  # the events name the new stage
+        await self._read(tx, closed, await self._unread(tx, task, False), actor, None)
         for q in await repo.list_questions(tx.conn, task_id=task.id, statuses=("open",)):
             await repo.update_question(
                 tx.conn,

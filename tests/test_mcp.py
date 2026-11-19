@@ -509,3 +509,22 @@ async def test_a_long_waiting_on_gets_a_hint_and_is_saved_as_it_is(
         ]
         for tool, extra in quiet:
             assert hint not in await call(client, tool, task=task, **extra), tool
+
+
+async def test_not_logged_follows_the_project_tracker_rule(
+    tmp_path, live_server: Callable[[], LiveServer]
+) -> None:
+    (tmp_path / "config.toml").write_text("require_tracker_log = true\n", encoding="utf-8")
+    live = live_server()
+    async with connect(live) as client:
+        for slug in ("acme-shop", "demo-api"):
+            await call(client, "project_upsert", slug=slug)
+        await call(client, "task_create", project="acme-shop", title="Shipped", stage="done")
+        await call(client, "task_create", project="demo-api", title="Issue", tracker_ref="API-1")
+        await call(client, "task_create", project="demo-api", title="Shipped", stage="done")
+        # acme-shop keeps no tracker: no work log to enter there.
+        assert "not logged" not in await call(client, "task_get", task="acme-shop-1")
+        assert "not logged" not in await call(client, "project_snapshot", project="acme-shop")
+        assert "tracker: not logged" in await call(client, "task_get", task="demo-api-2")
+        listed = await call(client, "task_list", include_done=True)
+        assert listed.count("tracker: not logged") == 1 and "demo-api-2" in listed

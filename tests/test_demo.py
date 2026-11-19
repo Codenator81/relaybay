@@ -77,25 +77,25 @@ def test_demo_seeds_every_stage(tmp_path: Path) -> None:
     assert [i.status for i in small.todo] == ["completed", "in_progress", "pending"]
 
 
-def test_demo_has_a_current_pulse_and_a_stale_one(tmp_path: Path) -> None:
+def test_demo_has_a_recent_pulse_note_and_an_old_one(tmp_path: Path) -> None:
     db = tmp_path / "relaybay.sqlite"
     create_demo(db)
 
-    async def read() -> tuple[bool, bool, str]:
+    async def read() -> str:
         service = Service(db)
         await service.start()
         try:
             acme = await service.get_project("acme-shop")
             api = await service.get_project("demo-api")
             assert acme.pulse and api.pulse
-            digest = await service.portfolio_digest()
-            return service.pulse_stale(acme), service.pulse_stale(api), digest
+            return await service.portfolio_digest()
         finally:
             await service.close()
 
-    acme_stale, api_stale, digest = asyncio.run(read())
-    assert not acme_stale and api_stale
-    assert "21d ago, stale" in digest and "Checkout is in dev" in digest
+    digest = asyncio.run(read())
+    projects = digest.split("## Projects")[1].split("##")[0]
+    assert "note (21d ago" in projects and "Checkout is in dev" in projects
+    assert "last 7 days:" in projects and "stale" not in projects
 
 
 def test_demo_refuses_a_board_unless_forced(tmp_path: Path) -> None:

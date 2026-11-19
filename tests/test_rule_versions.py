@@ -635,7 +635,10 @@ async def test_require_tracker_log_on_the_way_to_done(tmp_path: Path) -> None:
     db = tmp_path / "relaybay.sqlite"
     service = await started(db, require_tracker_log=True)
     await service.upsert_project("acme-shop")
-    task = await service.create_task("acme-shop", "Checkout", progress="All of it")
+    # A card with a tracker reference: the project keeps a tracker, so the rule applies.
+    task = await service.create_task(
+        "acme-shop", "Checkout", progress="All of it", tracker_ref="ENG-1"
+    )
     saved = await service.set_stage_checked(task.key, "done")
     assert len(saved.warnings) == 1 and "tracker_logged" in saved.warnings[0]
     assert saved.task.stage == "done"
@@ -693,7 +696,8 @@ async def test_a_tracker_warning_gives_one_inbox_row_and_goes_with_the_mark(
     service = await started(tmp_path / "relaybay.sqlite", require_tracker_log=True)
     try:
         await service.upsert_project("acme-shop")
-        task = await service.create_task("acme-shop", "Checkout", progress="All")
+        # A card with a tracker reference: the project keeps a tracker.
+        task = await service.create_task("acme-shop", "Checkout", progress="All", tracker_ref="T-1")
         assert (await service.set_stage_checked(task.key, "done")).warnings
         inbox = await service.inbox(["owner"], require_tracker_log=True)
         assert (inbox.count, len(inbox.rule_warnings), len(inbox.not_logged)) == (1, 0, 1)
@@ -701,12 +705,13 @@ async def test_a_tracker_warning_gives_one_inbox_row_and_goes_with_the_mark(
         inbox = await service.inbox(["owner"], require_tracker_log=True)
         assert (inbox.count, len(inbox.rule_warnings), len(inbox.not_logged)) == (0, 0, 0)
 
-        # Another requirement of the same move still shows.
+        # Another requirement of the same move stays on the done card, not in the Inbox.
         other = await service.create_task("acme-shop", "Payment")
-        await service.set_stage(other.key, "done")
+        assert any(
+            "progress" in w for w in (await service.set_stage_checked(other.key, "done")).warnings
+        )
         inbox = await service.inbox(["owner"], require_tracker_log=True)
-        warned = {t.key: w for t, w in inbox.rule_warnings}
-        assert len(warned[other.key]) == 1 and "progress" in warned[other.key][0]
+        assert inbox.rule_warnings == [] and [t.key for t in inbox.not_logged] == [other.key]
     finally:
         await service.close()
 

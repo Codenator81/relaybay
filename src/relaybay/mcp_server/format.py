@@ -1,6 +1,7 @@
 """Short, model-friendly markdown for tool results."""
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from relaybay.domain import approvals as arules
@@ -116,8 +117,12 @@ def report_line(report: Report) -> str:
     return f"{prefix}{report.summary} ({report.author}, {age(report.created_at)})"
 
 
+# Whether `require_tracker_log` applies to a task (only in a project that keeps a tracker).
+LogRule = Callable[[Task], bool] | None
+
+
 def task_line(
-    task: Task, last: Report | None = None, *, texts: bool = False, require_log: bool = False
+    task: Task, last: Report | None = None, *, texts: bool = False, require_log: LogRule = None
 ) -> str:
     parts = [f"**{task.key}** {task.title}"]
     extras = []
@@ -131,7 +136,7 @@ def task_line(
         extras.append(f"branch `{task.branch}`")
     if task.session_name:
         extras.append(f"session: {session_label(task)}")
-    if tracker := tracker_label(task, require_log):
+    if tracker := tracker_label(task, bool(require_log and require_log(task))):
         extras.append(f"tracker: {tracker}")
     if task.review_total:
         extras.append(f"review {task.review_accepted}/{task.review_total}")
@@ -504,7 +509,7 @@ def waiting_on_hint(value: object) -> list[str]:
     return []
 
 
-def snapshot(snap: Snapshot, require_log: bool = False) -> str:
+def snapshot(snap: Snapshot, require_log: LogRule = None) -> str:
     p = snap.project
     lines = [rules_line(snap.rules), f"# {p.slug} — {p.name}"]
     if p.description:
@@ -846,13 +851,13 @@ def block_saved(b: MemoryBlock) -> str:
     )
 
 
-def task_list(tasks: list[Task], require_log: bool = False) -> str:
+def task_list(tasks: list[Task], require_log: LogRule = None) -> str:
     if not tasks:
         return "No matching tasks."
     return "\n".join(f"{task_line(t, require_log=require_log)} · stage {t.stage}" for t in tasks)
 
 
-def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
+def task_detail(detail: TaskDetail, require_log: LogRule = None) -> str:
     t = detail.task
     lines = [
         f"# {t.key} — {t.title}",
@@ -868,7 +873,7 @@ def task_detail(detail: TaskDetail, require_log: bool = False) -> str:
         ("doc", t.doc_path),
         ("session", session_label(t)),
         ("open in desktop", t.session_link),
-        ("tracker", tracker_label(t, require_log)),
+        ("tracker", tracker_label(t, bool(require_log and require_log(t)))),
         ("size", t.size),
         ("plan", plan_label(t) if t.plan_total else None),
         ("archived", f"{_minute(t.archived_at)} by {t.archived_by}" if t.archived_at else None),

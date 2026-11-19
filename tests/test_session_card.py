@@ -214,7 +214,7 @@ def test_the_inbox_lists_comments_waiting_longer_than_an_hour(board: TestClient)
     task = run_in_app(board, project_task, service)
     run_in_app(board, service.add_owner_comment, task.key, "Old one", actor="owner")
     run_in_app(board, service.add_owner_comment, task.key, "New one", actor="owner")
-    assert "inbox-undelivered" not in board.get("/inbox").text
+    assert "not delivered" not in board.get("/inbox").text
     db: Path = service.db_path
     with sqlite3.connect(db) as raw:
         raw.execute(
@@ -222,6 +222,6 @@ def test_the_inbox_lists_comments_waiting_longer_than_an_hour(board: TestClient)
             ("Old one",),
         )
     inbox = board.get("/inbox").text
-    assert 'id="inbox-undelivered"' in inbox and "Comments not delivered" in inbox
+    assert f'id="inbox-card-{task.key}"' in inbox and "1 comment not delivered" in inbox
     assert ": no session bound." in inbox and "Old one" in inbox and "New one" not in inbox
     assert run_in_app(board, service.inbox, ["owner"]).count >= 1

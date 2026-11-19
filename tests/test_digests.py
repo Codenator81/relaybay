@@ -171,38 +171,45 @@ async def test_pulse_limits_secret_scan_and_event(service: Service) -> None:
     assert event.payload["text"] == "a b c d e"
 
 
-async def test_stage_move_notes_a_missing_or_stale_pulse_once(service: Service) -> None:
+async def test_stage_moves_add_no_pulse_note(service: Service) -> None:
     await service.upsert_project("acme-shop")
     await service.upsert_project("demo-api")
-    await service.set_pulse("demo-api", "Old news.", at=ago(days=8))
-    first = await service.create_task("acme-shop", "One")
-    second = await service.create_task("acme-shop", "Two")
-    third = await service.create_task("demo-api", "Three")
-
-    await service.set_stage(first.key, "dev")  # no MCP caller: the once is not used up
-    with collect_notes() as notes:
-        saved = await service.set_stage_checked(second.key, "dev")
-    pulse = [n for n in notes if "pulse" in n]
-    assert len(pulse) == 1 and pulse[0].startswith("Note: the pulse of acme-shop is missing")
-    assert not any("pulse" in w for w in saved.warnings)
-    with collect_notes() as notes:
-        await service.set_stage_checked(first.key, "review")
-    assert not [n for n in notes if "pulse" in n]  # once per project per run
-    with collect_notes() as notes:
-        await service.update_task(third.key, {"title": "Three again"})
-    assert not [n for n in notes if "pulse" in n]  # only a stage move
-    with collect_notes() as notes:
-        await service.set_stage_checked(third.key, "dev")
-    assert [n for n in notes if "demo-api is older than 7 days" in n]
+    await service.set_pulse("demo-api", "Old news.", at=ago(days=30))
+    for slug in ("acme-shop", "demo-api"):
+        task = await service.create_task(slug, "One")
+        with collect_notes() as notes:
+            saved = await service.set_stage_checked(task.key, "dev")
+        assert not [n for n in notes if "pulse" in n]
+        assert not any("pulse" in w for w in saved.warnings)
 
 
-async def test_stage_move_with_a_fresh_pulse_has_no_note(service: Service) -> None:
+async def test_pulse_is_derived_from_the_cards(service: Service) -> None:
     await service.upsert_project("acme-shop")
-    await service.set_pulse("acme-shop", "On track.", at=ago(days=6))
-    task = await service.create_task("acme-shop", "One")
-    with collect_notes() as notes:
-        await service.set_stage_checked(task.key, "dev")
-    assert not [n for n in notes if "pulse" in n]
+    await service.upsert_project("demo-api")
+    one = await service.create_task("acme-shop", "Checkout", waiting_on="owner")
+    two = await service.create_task("acme-shop", "Address book")
+    await service.set_stage(one.key, "dev")
+    await service.set_stage(two.key, "dev")
+    await service.set_stage(two.key, "review")  # one card, two moves: counted once
+    await service.add_report(one.key, "changed · S · the form\nmore")
+    await service.add_report(two.key, "verified · M · the list")
+    pulses = await service.pulses()
+    acme = (await service.get_project("acme-shop")).id
+    pulse = pulses[acme]
+    assert (pulse.moved, pulse.reports, pulse.waiting) == (2, 2, 1)
+    assert (pulse.latest_key, pulse.latest) == (two.key, "verified · M · the list")
+    line = digest.pulse_line(pulse, datetime.now(UTC))
+    assert line.startswith("last 7 days: 2 cards moved, 2 reports · 1 waits for the owner")
+    assert f"latest: {two.key}, just now: verified · M · the list" in line
+    # A project with no activity has no entry; its line still says so.
+    assert (await service.get_project("demo-api")).id not in pulses
+    assert digest.pulse_line(None, datetime.now(UTC)) == "last 7 days: 0 cards moved, 0 reports"
+    # Older than 7 days: not counted, the newest report is still named.
+    async with service._tx() as tx:
+        await tx.conn.execute("UPDATE event SET ts = ?", (ago(days=8),))
+        await tx.conn.execute("UPDATE report SET created_at = ?", (ago(days=8),))
+    pulse = (await service.pulses())[acme]
+    assert (pulse.moved, pulse.reports, pulse.latest_key) == (0, 0, two.key)
 
 
 # --- digests --------------------------------------------------------------------------------
@@ -216,7 +223,7 @@ async def age_events(service: Service, **delta: int) -> None:
 async def test_portfolio_digest_sections(service: Service) -> None:
     await service.upsert_project("acme-shop", name="Acme Shop")
     await service.upsert_project("demo-api")
-    await service.set_pulse("acme-shop", "Checkout first.\nSecond line.")
+    await service.set_pulse("acme-shop", "Checkout first.\nSecond line.", session="Alex")
     await service.set_pulse("demo-api", "Stable.", at=ago(days=30))
     old = await service.create_task("acme-shop", "Forgotten", stage="dev")
     await service.create_task("acme-shop", "Fresh", stage="review", waiting_on="Owner")
@@ -238,13 +245,55 @@ async def test_portfolio_digest_sections(service: Service) -> None:
     project = next(x for x in lines if x.startswith("- **acme-shop**"))
     assert "dev 1 · review 1 · done 1" in project and "Checkout first." in project
     assert "Second line" not in project and "stale" not in project
-    assert any(x.startswith("- **demo-api**") and "30d ago, stale" in x for x in lines)
-    assert "waits for the owner: [review]" in text
+    assert "last 7 days: 0 cards moved, 0 reports · 1 waits for the owner" in project
+    assert "note (just now, by Alex): Checkout first." in project  # the name keeps its case
+    api = next(x for x in lines if x.startswith("- **demo-api**"))
+    assert "note (30d ago, by mcp): Stable." in api and "stale" not in api
+    assert "1 waiting for the owner" in lines[1]
+    waiting = text.split("## Waiting for the owner")[1].split("##")[0]
+    assert "- [review] " in waiting and "Fresh — waits for the owner" in waiting
     assert "Recent decision" in text and "Old decision" not in text
     stale = text.split("## Tasks without progress for 5 days")[1].split("##")[0]
     assert old.key in stale and "Fresh" not in stale and done.key not in stale
     assert "- **house-rules** (v1): Short reports." in text
     assert "Events up to #" in text and "pass session" in text
+
+
+async def test_portfolio_waiting_section_has_the_inbox_rows(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", require_tracker_log=True)
+    await svc.start()
+    try:
+        await svc.upsert_project("acme-shop", repo_path=CWD)
+        await svc.upsert_project("demo-api", repo_path=CWD)  # one folder, two projects
+        card = await svc.create_task("acme-shop", "Checkout", stage="dev", waiting_on="owner")
+        await svc.set_review_steps(card.key, ["Look at it"])
+        await svc.set_stage(card.key, "review")
+        await svc.add_agent_comment(card.key, "Ready")
+        for n in (1, 2):
+            await svc.create_task("demo-api", f"Shipped {n}", stage="done", tracker_ref=f"A-{n}")
+        await svc.create_task("acme-shop", "No tracker here", stage="done")
+        await svc.record_hook(hook("SessionStart"))  # cannot be placed: unlinked
+        asked = await svc.create_task("acme-shop", "Gateway", stage="dev")
+        await svc.ask_question(asked.key, "Which gateway?", "Stripe", session="gw-agent")
+        await svc.request_approval(
+            asked.key, "push", "feat/gateway", "2 commits", session="gw-agent"
+        )
+        text = await svc.portfolio_digest()
+        waiting = text.split("## Waiting for the owner")[1].split("##")[0]
+        rows = [x for x in waiting.split("\n") if x.startswith("- ")]
+        assert rows[:2] == [
+            f"- question on {asked.key} from gw-agent: Which gateway?",
+            f"- approval request on {asked.key} from gw-agent: push — 2 commits",
+        ]
+        assert rows[2:] == [
+            f"- [review] {card.key} Checkout — waits for the owner · to accept 0/1"
+            " · 1 agent reply unread",
+            "- 2 done cards without the work-log mark (the Inbox on the board lists them)",
+            "- 1 hook session not linked (Sessions on the board)",
+        ]
+        assert "3 waiting for the owner" in text.split("\n")[1]  # card, question, approval
+    finally:
+        await svc.close()
 
 
 async def test_project_digest_sections_and_note_flags(service: Service) -> None:
@@ -595,7 +644,7 @@ async def test_upgrade_from_0013_keeps_data_and_adds_pulse_and_cursors(tmp_path:
         assert (await svc.get_task("acme-shop-1")).title == "Checkout page"
         assert await svc.last_event_id() == 1
         text = await svc.project_digest("acme-shop", session="manager")
-        assert "No pulse yet" in text and "Checkout page" in text
+        assert "Pulse: last 7 days: 0 cards moved, 0 reports" in text and "Checkout page" in text
         rows = await svc._r.execute_fetchall(
             "SELECT reader, level, ref_id, last_event_id FROM reader_cursor"
         )
@@ -617,7 +666,7 @@ async def test_mcp_digest_tools(live_server: Callable[[], LiveServer]) -> None:
         moved = await call(client, "task_set_stage", task=key, stage="plan")
         assert "Note:" not in moved  # nothing moved
         moved = await call(client, "task_set_stage", task=key, stage="dev", session="agent")
-        assert "Note: the pulse of acme-shop is missing" in moved
+        assert "Note: the pulse" not in moved  # the pulse is derived: nothing asks for it
         saved = await call(client, "project_pulse_set", project="acme-shop", text="All\ngood.")
         assert saved == "Pulse of **acme-shop** saved (2 line(s), 9/600 characters)."
         with pytest.raises((MCPError, AssertionError), match="at most 5 lines"):
@@ -631,21 +680,21 @@ async def test_mcp_digest_tools(live_server: Callable[[], LiveServer]) -> None:
         assert text.startswith(f"# {key} — Checkout") and "no cursor moved" in text
 
 
-def test_board_shows_pulse_age_and_stale_mark(board: TestClient) -> None:
+def test_board_shows_the_derived_pulse_and_the_dated_note(board: TestClient) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop")
     run_in_app(board, service.upsert_project, "demo-api", name="Demo API")
-    assert "No pulse yet" in board.get("/p/acme-shop/docs").text
+    empty = board.get("/p/acme-shop/docs").text
+    assert "last 7 days: 0 cards moved, 0 reports" in empty and "<h3>Note</h3>" not in empty
     run_in_app(board, service.set_pulse, "acme-shop", "Fresh <b>news</b>.\nLine two.")
     run_in_app(board, service.set_pulse, "demo-api", "Old news.", at=ago(days=9))
 
     projects = board.get("/").text
     assert "Fresh &lt;b&gt;news&lt;/b&gt;." in projects and "Old news." in projects
-    assert projects.count('class="stale-mark"') == 1 and "9d ago" in projects
-    fresh = board.get("/p/acme-shop/docs").text
-    assert "Fresh &lt;b&gt;news&lt;/b&gt;." in fresh and 'class="stale-mark"' not in fresh
-    stale = board.get("/p/demo-api/docs").text
-    assert "Old news." in stale and 'class="stale-mark"' in stale
+    assert projects.count("last 7 days: 0 cards moved, 0 reports") == 2
+    assert 'class="stale-mark"' not in projects and "9d ago" in projects
+    old = board.get("/p/demo-api/docs").text
+    assert "Old news." in old and "<h3>Note</h3>" in old and 'class="stale-mark"' not in old
 
 
 def test_digest_module_does_no_io() -> None:
@@ -664,7 +713,7 @@ def test_instructions_start_with_the_digest_once() -> None:
     assert "relaybay brake on" not in text and "framed as external" not in text
     assert "Session message from" not in text
     assert "12. A finding outside your task" in text
-    assert "project_snapshot" in text and "project_pulse_set" in text
+    assert "project_snapshot" in text and "project_pulse_set" not in text
     assert "rules line" in text and "relaybay://rules/<project>" in text
 
 

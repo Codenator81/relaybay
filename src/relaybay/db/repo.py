@@ -681,11 +681,63 @@ async def delete_session(conn: aiosqlite.Connection, session_id: int) -> None:
     await conn.execute("DELETE FROM session WHERE id = ?", (session_id,))
 
 
-async def list_unlinked_hook_sessions(conn: aiosqlite.Connection, limit: int) -> list[Session]:
+async def pulse_activity(
+    conn: aiosqlite.Connection, since: str
+) -> dict[int, tuple[int, int, tuple[str, str, str] | None]]:
+    """Per project since `since`: cards moved to another stage, reports written, and the newest
+    report ever (its card key, first line as `state · size · gist`, time)."""
+    found: dict[int, list[Any]] = {}
+    for row in await _all(
+        conn,
+        "SELECT project_id, COUNT(DISTINCT task_id) AS n FROM event"
+        " WHERE kind = 'task.stage_changed' AND ts >= ? AND project_id IS NOT NULL"
+        " GROUP BY project_id",
+        (since,),
+    ):
+        found.setdefault(row["project_id"], [0, 0, None])[0] = row["n"]
+    for row in await _all(
+        conn,
+        "SELECT t.project_id, COUNT(*) AS n FROM report r JOIN task t ON t.id = r.task_id"
+        " WHERE r.created_at >= ? GROUP BY t.project_id",
+        (since,),
+    ):
+        found.setdefault(row["project_id"], [0, 0, None])[1] = row["n"]
+    for row in await _all(
+        conn,
+        "SELECT t.project_id, t.key, r.state, r.size, r.summary, r.created_at FROM report r"
+        " JOIN task t ON t.id = r.task_id"
+        " WHERE r.id IN (SELECT MAX(r2.id) FROM report r2 JOIN task t2 ON t2.id = r2.task_id"
+        " GROUP BY t2.project_id)",
+    ):
+        first = " · ".join(x for x in (row["state"], row["size"], row["summary"]) if x)
+        latest = (row["key"], first, row["created_at"])
+        found.setdefault(row["project_id"], [0, 0, None])[2] = latest
+    return {pid: (v[0], v[1], v[2]) for pid, v in found.items()}
+
+
+async def projects_with_tracker(conn: aiosqlite.Connection) -> set[int]:
+    """Projects any of whose cards has or ever had a tracker reference (its tracker history),
+    or has a tracker link now (a link is not kept in the history)."""
+    rows = await _all(
+        conn,
+        "SELECT DISTINCT project_id FROM task WHERE tracker_ref IS NOT NULL"
+        " OR tracker_url IS NOT NULL"
+        " UNION SELECT DISTINCT t.project_id FROM tracker_entry e JOIN task t ON t.id = e.task_id",
+        (),
+    )
+    return {r["project_id"] for r in rows}
+
+
+async def list_unlinked_hook_sessions(
+    conn: aiosqlite.Connection, limit: int, *, ended: bool = True
+) -> list[Session]:
+    """Hook sessions not linked to one relaybay session; without `ended`, only live ones."""
+    live = "" if ended else " AND (status IS NULL OR status != 'ended')"
     rows = await _all(
         conn,
         "SELECT * FROM session WHERE unlinked_reason IS NOT NULL"
-        " ORDER BY last_seen_at DESC, id DESC LIMIT ?",
+        + live
+        + " ORDER BY last_seen_at DESC, id DESC LIMIT ?",
         (limit,),
     )
     return [_session(r) for r in rows]
@@ -1446,10 +1498,12 @@ async def waiting_owner_comments(
 
 
 async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> list[Comment]:
-    """Agent replies the owner has not marked read, oldest first."""
+    """Agent replies the owner has not marked read, oldest first. On a done card only those
+    written after it was closed: the close marked the older ones read."""
     rows = await _all(
         conn,
         _COMMENT_SELECT + " WHERE c.author_kind = 'agent' AND c.read_at IS NULL"
+        " AND (t.stage != 'done' OR t.closed_at IS NULL OR c.created_at > t.closed_at)"
         " ORDER BY c.id LIMIT ?",
         (limit,),
     )

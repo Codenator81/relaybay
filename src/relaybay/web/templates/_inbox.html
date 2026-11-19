@@ -13,7 +13,7 @@
   {% if not inbox.count %}
   <div class="empty">
     <p>Nothing needs you right now.</p>
-    <p>Agents' questions and approval requests, tasks whose <em>waiting on</em> names you, agent replies to your comments, agents' proposals, rule warnings and unlinked hook sessions show up here.</p>
+    <p>Agents' questions and approval requests, open cards whose <em>waiting on</em> names you or that wait for your acceptance, agent replies, agents' proposals, rule warnings and unlinked hook sessions show up here.</p>
   </div>
   {% endif %}
 
@@ -76,65 +76,32 @@
   </section>
   {% endif %}
 
-  {% if inbox.review %}
-  <section class="panel inbox-group" id="inbox-review">
-    <h2>Review queue <span class="col-count">{{ inbox.review|length }}</span></h2>
-    <p class="muted inbox-hint">Tasks in review or test with a checklist, the longest waiting first. Open one to accept it step by step.</p>
+  {%- set cards = inbox.cards %}
+  {% if cards %}
+  <section class="panel inbox-group" id="inbox-cards">
+    <h2>Cards <span class="col-count">{{ cards|length }}</span></h2>
+    <p class="muted inbox-hint">Open cards that need you, each once with its reasons: to accept first, the longest waiting first, then waiting on you. Done cards are listed only for agent replies written after the close; their warnings and older replies stay on the card.</p>
     <ul class="inbox-list">
-      {% for t in inbox.review %}
-      <li class="inbox-row">
-        <a class="inbox-link" href="/p/{{ t.project_slug }}?task={{ t.key }}&amp;tab=review">
+      {% for c in cards %}
+      {%- set t = c.task %}
+      <li class="inbox-row" id="inbox-card-{{ t.key }}">
+        <a class="inbox-link" href="/p/{{ t.project_slug }}?task={{ t.key }}{% if c.review %}&amp;tab=review{% endif %}">
           <span class="card-key">{{ t.key }}</span>
           {% include "_area_chip.html" %}
           <span class="inbox-title">{{ t.title }}</span>
         </a>
-        <span class="inbox-meta muted"><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span> {{ t.project_slug }} · {{ t.review_accepted }}/{{ t.review_total }} accepted{% if t.review_rejected %} · {{ t.review_rejected }} rejected{% endif %} · since <time datetime="{{ t.stage_changed_at or t.updated_at }}" data-age>{{ (t.stage_changed_at or t.updated_at)|age }}</time></span>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
-  {% if inbox.waiting %}
-  <section class="panel inbox-group" id="inbox-waiting">
-    <h2>Waiting on you <span class="col-count">{{ inbox.waiting|length }}</span></h2>
-    <ul class="inbox-list">
-      {% for t in inbox.waiting %}
-      <li class="inbox-row">
-        {{ task_row(t) }}
+        <span class="inbox-meta muted"><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span> {{ t.project_slug }} · updated <time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time></span>
+        <p class="inbox-marks">
+          {%- if c.waiting %}<span class="inbox-mark">waits for you</span>{% endif %}
+          {%- if c.review %}<span class="inbox-mark">to accept {{ t.review_accepted }}/{{ t.review_total }}{% if t.review_rejected %}, {{ t.review_rejected }} rejected{% endif %}</span>{% endif %}
+          {%- if c.replies %}<span class="inbox-mark">{{ c.replies|length }} repl{{ "ies" if c.replies|length != 1 else "y" }} unread</span>{% endif %}
+          {%- if c.undelivered %}<span class="inbox-mark is-warning">{{ c.undelivered|length }} comment{{ "s" if c.undelivered|length != 1 else "" }} not delivered</span>{% endif %}
+          {%- if c.warnings %}<span class="inbox-mark is-warning">rule warning</span>{% endif %}
+        </p>
         {% if t.next_step %}<p class="inbox-note clamp clamp-2{% if t.next_step_stale %} stale{% endif %}"><span class="muted">Next:</span> {{ t.next_step }}</p>{% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
-  {% if inbox.replies %}
-  <section class="panel inbox-group" id="inbox-replies">
-    <h2>Agent replies <span class="col-count">{{ inbox.replies|length }}</span></h2>
-    <p class="muted inbox-hint">Comments from agents you have not marked read. Open the task to answer or mark them read.</p>
-    <ul class="inbox-list">
-      {% for t, replies in inbox.replies %}
-      {%- set last = replies[-1] %}
-      <li class="inbox-row">
-        {{ task_row(t) }}
-        <p class="inbox-note clamp clamp-2"><span class="muted">{{ last.author }}{% if replies|length > 1 %} (+{{ replies|length - 1 }} more){% endif %}:</span> {{ last.body_md }}</p>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
-  {% if inbox.undelivered %}
-  <section class="panel inbox-group" id="inbox-undelivered">
-    <h2>Comments not delivered <span class="col-count">{{ inbox.undelivered|length }}</span></h2>
-    <p class="muted inbox-hint">Your comments that have waited longer than an hour for the agent, with the reason.</p>
-    <ul class="inbox-list">
-      {% for t, waiting, reason in inbox.undelivered %}
-      {%- set first = waiting[0] %}
-      <li class="inbox-row">
-        {{ task_row(t) }}
-        <p class="inbox-note clamp clamp-2"><span class="muted">{{ waiting|length }} waiting since <time datetime="{{ first.created_at }}" data-age>{{ first.created_at|age }}</time>{% if reason %}: {{ reason }}{% endif %}.</span> {{ first.body_md }}</p>
+        {% if c.replies %}{%- set last = c.replies[-1] %}<p class="inbox-note clamp clamp-2"><span class="muted">{{ last.author }}{% if c.replies|length > 1 %} (+{{ c.replies|length - 1 }} more){% endif %}:</span> {{ last.body_md }}</p>{% endif %}
+        {% if c.undelivered %}{%- set first = c.undelivered[0] %}<p class="inbox-note clamp clamp-2"><span class="muted">Waiting since <time datetime="{{ first.created_at }}" data-age>{{ first.created_at|age }}</time>{% if c.wait_reason %}: {{ c.wait_reason }}{% endif %}.</span> {{ first.body_md }}</p>{% endif %}
+        {% for w in c.warnings %}<p class="form-warning inbox-note">{{ w }}</p>{% endfor %}
       </li>
       {% endfor %}
     </ul>
@@ -209,45 +176,22 @@
   </section>
   {% endif %}
 
-  {% if inbox.rule_warnings %}
-  <section class="panel inbox-group" id="inbox-rules">
-    <h2>Rule warnings <span class="col-count">{{ inbox.rule_warnings|length }}</span></h2>
-    <p class="muted inbox-hint">The last stage move of these tasks missed a working rule.</p>
-    <ul class="inbox-list">
-      {% for t, warnings in inbox.rule_warnings %}
-      <li class="inbox-row">
-        {{ task_row(t) }}
-        {% for w in warnings %}<p class="form-warning inbox-note">{{ w }}</p>{% endfor %}
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-
   {% if inbox.not_logged %}
   <section class="panel inbox-group" id="inbox-not-logged">
-    <h2>Not logged in the tracker <span class="col-count">{{ inbox.not_logged|length }}</span></h2>
-    <p class="muted inbox-hint">Done tasks without the work-log mark.</p>
-    <ul class="inbox-list">
-      {% for t in inbox.not_logged %}
-      <li class="inbox-row">{{ task_row(t) }}{% if t.tracker_ref %} <span class="badge tracker not-logged">{{ t.tracker_name or "" }} {{ t.tracker_ref }}</span>{% endif %}</li>
-      {% endfor %}
-    </ul>
+    <details>
+      <summary class="inbox-note">{{ inbox.not_logged|length }} done card{{ "s" if inbox.not_logged|length != 1 else "" }} without the work-log mark <span class="muted">· only in projects where a card has a tracker reference</span></summary>
+      <ul class="inbox-list">
+        {% for t in inbox.not_logged %}
+        <li class="inbox-row">{{ task_row(t) }}{% if t.tracker_ref %} <span class="badge tracker not-logged">{{ t.tracker_name or "" }} {{ t.tracker_ref }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </details>
   </section>
   {% endif %}
 
   {% if inbox.unlinked %}
   <section class="panel inbox-group" id="inbox-unlinked">
-    <h2>Unlinked hook sessions <span class="col-count">{{ inbox.unlinked|length }}</span></h2>
-    <p class="muted inbox-hint">Hook events that could not be matched to one session. They link once the agent passes its <code>hook_session</code> on a write. <a href="/settings/integrations">Integrations</a></p>
-    <ul class="inbox-list">
-      {% for s in inbox.unlinked %}
-      <li class="inbox-row">
-        <a class="inbox-link" href="/settings/integrations"><span class="inbox-title">{{ s.name }}</span></a>
-        <span class="inbox-meta muted">{{ s.unlinked_reason }} · seen <time datetime="{{ s.last_seen_at }}" data-age>{{ s.last_seen_at|age }}</time></span>
-      </li>
-      {% endfor %}
-    </ul>
+    <p class="inbox-note"><a href="/sessions">{{ inbox.unlinked|length }} hook session{{ "s" if inbox.unlinked|length != 1 else "" }} not linked</a> <span class="muted">· they link once the agent passes its <code>hook_session</code> on a write; ended ones are not listed</span></p>
   </section>
   {% endif %}
 </div>

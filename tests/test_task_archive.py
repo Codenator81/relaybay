@@ -258,7 +258,7 @@ def test_the_window_counts_from_back_from_the_archive(
 async def test_an_unlogged_task_archived_by_hand_stays_in_the_inbox_not_logged(
     svc: Service,
 ) -> None:
-    task = await svc.create_task("acme-shop", "Unlogged", stage="done")
+    task = await svc.create_task("acme-shop", "Unlogged", stage="done", tracker_ref="T-1")
     await svc.set_archived(task.key, True, actor="owner")
     inbox = await svc.inbox([], require_tracker_log=True)
     assert [t.key for t in inbox.not_logged] == [task.key]
