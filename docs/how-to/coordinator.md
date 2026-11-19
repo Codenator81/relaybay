@@ -10,7 +10,15 @@ What it does with the same MCP tools as any session:
   `project_snapshot` and a task with `task_context`.
 - Creates projects and cards with `project_upsert` and `task_create`, and binds a project session to
   a card with `task_bind_session` (or gives you the card to start with
-  [Copy the brief](work-a-card.md)).
+  [Copy the brief](work-a-card.md)). A card it makes for another session takes
+  `task_create(bind=false)`, so the coordinator is not its bound session.
+- Starts a session for a card with the desktop app's start tool: when the start prompt names the
+  card's key (`acme-shop-12`) and no other open card, the new session is bound to it at once and
+  the coordinator's own binding on it ends ([Binding at start](#binding-at-start)).
+- Archives what is finished: `task_archive` on a done or live card (a live one with an open
+  question or approval is refused until it is answered or withdrawn), and
+  `project_upsert(slug, archived=true)` for a project nobody works on (it leaves the digests and the
+  Inbox; `archived=false` brings it back).
 - Reads the chats and e-mails you share with it and updates the cards itself; relaybay takes in no
   messages of its own, and sessions talk to each other in the desktop app, not through relaybay.
 - Sorts the backlog (`backlog_list`, `backlog_update`).
@@ -21,6 +29,30 @@ use the tools kept for coordinators: `rules_update`, `plan_accept`, `task_archiv
 sessions follow the working contract in the MCP instructions
 ([SPEC §3](../SPEC.md#spec-mcp-instructions)). Already keeping this in markdown files?
 [Import them](markdown-import-export.md).
+
+## Binding at start
+
+A session started from the coordinator with the desktop app's start tool needs no
+`task_bind_session` and no `hook_session`:
+
+1. Its first hook names its desktop session, and relaybay creates that session and links its hooks
+   to it, so owner comments reach it from its first turn.
+2. The start tool's input is searched for card keys (only texts of the form
+   `<project>-<number>` of a project on the board; nothing of the input is stored). Exactly one
+   open card: the new session is bound to it and the coordinator's binding ends as handed over.
+   No key, two open cards, a card another session holds, or a started session the board already
+   knew (one with live hooks met over 10 minutes before the launch, or one another session
+   started): nothing is bound, and the `session.launched` event on Activity says why.
+   `task_bind_session` still binds by hand.
+
+A card the coordinator is bound to itself is handed over by a launch that names it: the
+coordinator then no longer holds it. Create cards meant for other sessions with
+`task_create(bind=false)`, and do not name the coordinator's own card in a start prompt unless the
+new session should take it over.
+
+Write the start prompt with the one card's key in it, for example
+`Work the card acme-shop-12: read task_context first.` Plans stay a decision: accept them with
+`plan_accept` or on the board.
 
 ## Move a markdown coordinator over
 

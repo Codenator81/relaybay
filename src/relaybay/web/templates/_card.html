@@ -22,6 +22,7 @@
         <button type="button" data-move="down">Move down</button>
         {% for s in stages if s != t.stage %}<button type="button" data-move-stage="{{ s }}">Move to {{ label(s) }}</button>{% endfor %}
         {% if t.stage.value == "done" %}{% if task_archived(t) %}<button type="button" data-archive="unarchive">Back from the archive</button>{% else %}<button type="button" data-archive="archive">Archive</button>{% endif %}{% endif %}
+        {% if t.stage.value == "live" %}<button type="button" data-archive="archive" data-confirm="Archive {{ t.key }}? It is closed and archived in one step, and Back from the archive returns it to live. A card with an open question or approval is not archived.">Archive</button>{% endif %}
       </div>
     </details>
   </div>

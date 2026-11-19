@@ -192,35 +192,86 @@
   // A fixed menu would stay put while its card scrolls away.
   window.addEventListener("scroll", function () { closeMenus(null); }, true);
 
-  // "Archive" / "Back from the archive" on a done card: the done column is refetched, so the
-  // card leaves it (or stays, with "show archive" on) as the server decides.
-  function archive(card, action) {
-    var board = boardEl();
-    var live = document.getElementById("live");
+  // A board write answering JSON: resolves with the answer, rejects with the server's reason.
+  function post(path, fields) {
     var body = new FormData();
-    body.set("csrf_token", board.dataset.csrf || "");
-    var url = "/p/" + encodeURIComponent(live.dataset.project) + "/t/" +
-      encodeURIComponent(card.dataset.key) + "/" + action;
-    var col = column(card);
-    flash([]);
-    fetch(url, { method: "POST", credentials: "same-origin", body: body }).then(function (response) {
+    body.set("csrf_token", boardEl().dataset.csrf || "");
+    Object.keys(fields).forEach(function (name) { body.set(name, fields[name]); });
+    var url = "/p/" + encodeURIComponent(document.getElementById("live").dataset.project) + path;
+    return fetch(url, { method: "POST", credentials: "same-origin", body: body }).then(function (response) {
       return response.text().then(function (text) {
-        if (response.ok) return;
         var json = (response.headers.get("content-type") || "").indexOf("json") !== -1;
+        if (response.ok) return json ? JSON.parse(text) : {};
         var detail = json ? JSON.parse(text).detail : text;
         throw new Error((typeof detail === "string" && detail) || "HTTP " + response.status);
       });
-    }).catch(function (error) {
+    });
+  }
+
+  // Archiving a live card closes it: the live and the done columns are both refetched.
+  function refreshArchive() {
+    refresh(document.getElementById("col-live"));
+    refresh(document.getElementById("col-done"));
+  }
+
+  // "Archive" / "Back from the archive" on a card: the columns are refetched, so the card
+  // leaves them (or stays, with "show archive" on) as the server decides.
+  function archive(card, action) {
+    flash([]);
+    post("/t/" + encodeURIComponent(card.dataset.key) + "/" + action, {}).catch(function (error) {
       flash([(action === "archive" ? "Not archived: " : "Not brought back: ") + error.message],
         "error");
-    }).finally(function () { refresh(col); });
+    }).finally(refreshArchive);
+  }
+
+  // "Archive all shown": the cards of the column on screen; the notice offers Undo.
+  function archiveShown(col) {
+    var keys = cardsOf(col.querySelector(".cards")).filter(function (card) {
+      return !card.querySelector("[data-archive=unarchive]");
+    }).map(function (card) { return card.dataset.key; });
+    if (!keys.length) return;
+    var name = col.querySelector(".col-title");
+    var where = name ? name.textContent.trim() : col.dataset.stage;
+    if (!window.confirm("Archive the " + keys.length + " cards shown in " + where + "?")) {
+      return;
+    }
+    flash([]);
+    post("/archive", { keys: keys.join(" ") }).then(function (answer) {
+      flash([answer.message], "warning");
+      if (answer.batch && answer.keys.length) undoButton(answer.batch);
+    }).catch(function (error) {
+      flash(["Not archived: " + error.message], "error");
+    }).finally(refreshArchive);
+  }
+
+  function undoButton(batch) {
+    var list = document.getElementById("board-flash-lines");
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "action";
+    button.textContent = "Undo";
+    button.addEventListener("click", function () {
+      button.disabled = true;
+      post("/archive/undo", { batch: batch }).then(function (answer) {
+        flash([answer.message], "warning");
+      }).catch(function (error) {
+        flash(["Not brought back: " + error.message], "error");
+      }).finally(refreshArchive);
+    });
+    list.lastChild.append(" ", button);
   }
 
   document.addEventListener("click", function (event) {
     if (!event.target.closest) return;
+    var shown = event.target.closest("#board [data-archive-shown]");
+    if (shown) {
+      archiveShown(column(shown));
+      return;
+    }
     var choice = event.target.closest(".card-menu [data-archive]");
     if (choice) {
       choice.closest(".card-menu").open = false;
+      if (choice.dataset.confirm && !window.confirm(choice.dataset.confirm)) return;
       archive(choice.closest(".card[data-key]"), choice.dataset.archive);
       return;
     }

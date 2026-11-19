@@ -705,7 +705,7 @@ show the word `relaybay`.
 shows the sidebar on wide screens; the choice is remembered in the browser (`localStorage`, the
 sidebar is shown when storage is unavailable). Below 760 px the sidebar is a drawer opened by the
 same button and closed by Esc, a click outside or following a link. Items whose feature does not
-exist yet are not shown.
+exist yet are not shown. A project in the archive ([§2](#spec-project-archive)) is not listed.
 
 <a id="spec-switcher"></a>
 
@@ -1091,6 +1091,54 @@ else is refused with `<tool> is only for the coordinator sessions named in the s
 Nothing changed. The owner archives done cards on the board.` Both events are on Activity and, with
 "changes", on the Audit page.
 
+<a id="spec-board-archive-live"></a>
+
+**A live card in the archive.** A card in `live` has **Archive** too (card menu and task view, one
+confirmation): it is closed and archived in one step, the owner's own act, so no rule is checked
+(no warning, no refusal in strict mode). The move is an ordinary `task.stage_changed` live → done
+by the same actor, then `task.archived` with `from: live`; `task.archived_from` keeps `live`.
+**Back from the archive** on such a card returns it to `live` (`task.stage_changed` done → live,
+then `task.unarchived` with `to: live`), which clears every archive mark and keeps the work-log
+mark (`tracker_logged`) as it was, so the way back unlogs nothing. A card moved by hand after
+being archived from live forgets where it came from: its next archive is an ordinary done one.
+Nothing is closed for good: a live card with an open question, an open approval request or an
+approved, unused approval is not archived (a move to done would withdraw or expire them) and the
+refusal says `<key> has an open question, an open approval request or an approved, unused
+approval: answer, withdraw or use it first, the archive closes nothing for good. Nothing
+changed.`; the confirmation says so too. `task_archive` / `task_unarchive` do the same for
+coordinators. Only `done` and `live` cards are archived; any other stage is refused with `Only a
+done or live task goes to the archive; <key> is in <stage>. Nothing changed.`
+
+<a id="spec-board-archive-bulk"></a>
+
+**Archive all shown.** Under the cards of the done column, **Archive all shown (n)** (n counts the
+cards on screen not already in the archive, so it follows the board's filters) asks once and
+archives exactly those cards (`POST /p/<project>/archive`, form field `keys`, the keys separated by
+spaces, at most 500; cookie + CSRF; JSON `{batch, keys, message}`). Only done cards are archived in
+bulk: a card that left done meanwhile, is already archived or no longer exists is skipped; a key of
+another project refuses the whole write. A live card is archived one at a time. All of them go in one transaction under one batch id, carried by each
+`task.archived` as `batch`. The board's notice offers **Undo** (`POST /p/<project>/archive/undo`,
+form field `batch`; JSON `{keys, message}`), which brings back exactly the cards of that batch that
+are still archived from it, each `task.unarchived` with the same `batch`; a
+card brought back or archived again since is left as it is.
+
+<a id="spec-project-archive"></a>
+
+**A project in the archive.** The project's Stands & access page has **Archive project** (one
+confirmation) and, while it is archived, **Back from the archive** (`POST
+/p/<project>/project/archive` and `/unarchive`, cookie + CSRF); over MCP,
+`project_upsert(slug, archived=true|false)`, for coordinator sessions only like `task_archive`
+(anyone else: `project_upsert(archived) is only for the coordinator sessions named in the server's
+config; … Nothing changed. The owner archives a project on its Stands & access page.`; the other
+fields of `project_upsert` stay open to every session). Both write `project.updated` with
+`changes: {"archived": true|false}`; a repeat changes nothing and records nothing. `project.archived_at`
+holds when. An archived project leaves the sidebar, All boards and `project_list`; the Inbox (its
+cards, review checklists and new backlog items); `portfolio_digest` (its project line, waiting and
+stale cards, decisions and the changes since the last read). Nothing is deleted: its board, cards
+and history stay, the board says it is in the archive, `project_digest` and `task_*` tools still
+read it, and All boards links to **Archived projects (n)** (`/?archived=1`), which lists them with
+the way back. The hooks do not place a session in an archived project by its folder.
+
 <a id="spec-board-inbox"></a>
 
 **Inbox** ("Needs you") lists, grouped, with a count per group:
@@ -1296,6 +1344,9 @@ Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (
 optional text field, because models cannot always send an empty string. `task_update`,
 `task_patch` accept `expected_version` and fail instead of overwriting a newer version; otherwise the
 last write wins. `task_create`, `task_update` and `task_patch` take `area` ([§1](#spec-areas)),
+`task_create(bind=false)` creates a card without binding the calling session (it stays the event's
+actor and its `hook_session` is linked as on any write; the default binds), and `project_upsert`
+takes `archived` ([§2](#spec-project-archive)).
 `task_list` filters by `area` (any project's area of that name without `project`); `task_get`,
 `task_context`, `task_list` and the digests show a task's area, and `project_snapshot` lists the
 project's areas with how many tasks carry each. `project_upsert` takes `repos`, `task_update` takes
@@ -1425,9 +1476,35 @@ explicit list) records `session.launched`: the calling session
 and the new session's desktop id (`child`), nothing else of the input or the answer. The id is the
 first `local_<uuid>` found in the strings of `tool_response`, which may be a string, an object or a
 list of content blocks (at most 64 KiB of text, 6 levels deep, case folded); an answer without one,
-or naming the caller itself, records nothing. The event is kept for a future agents view (who
-started whom); for now only [Activity](#spec-board-activity) shows it, one line per event. A failure here never stands in the hook's way. The
-`relaybay hook` forwarder retries and spools this event like the todo tools'.
+or naming the caller itself, records nothing. Only [Activity](#spec-board-activity) shows the event,
+one line per event. A failure here never stands in the hook's way. The `relaybay hook` forwarder
+retries and spools this event like the todo tools'.
+
+<a id="spec-hooks-launch-bind"></a>
+
+**Binding at launch** (design 0026). The same hook creates the started desktop session when the
+board does not know it yet (named by its id until it gives a title) and sets its
+`session.launched_by` to the starter, once. It then reads the card keys in the tool's
+`tool_input`: the strings only, whatever the fields are called, with the same bounded walk (64 KiB,
+6 levels); only texts of the form `<slug>-<number>` of a project on the board (not archived) count,
+not inside a longer word or slug (`x-acme-shop-4` and `acme-shop-4b` name nothing; case is folded;
+`acme-shop-012` is `acme-shop-12`). Keys of cards that do not exist or are done are dropped.
+Exactly one open card left, bound to nobody, to the starter or to the started session: the new
+session is bound to it (`task_session.bound_by` `launch`, `task.session_bound` with `how: launch`
+and the starter as actor), and the starter's binding on it ends with `unbound_reason`
+`handed_over`. Nothing is bound when no open card is named, when several are, when the card is
+bound to any other session (live, ended, or one without hooks: it is not the starter's to hand
+over), when the started session is not new to this launch (a desktop session the board met more
+than 10 minutes before the launch that has a live exact hook link, or one another session
+started), or when a replayed hook (spooled) is older than the card's current binding. The
+event gets `card` (the key bound) or `unbound` (why: `no open card named`, `<n> open cards named`,
+`<key> is bound to <session name>`, `<desktop id> was started by <session name>`, `<desktop id> is
+a live session started before this launch`,
+`<key> was bound again after this launch`); no other text of the input is read or stored. A subagent's call carries its parent's Claude Code id, so the
+parent is the starter; a `claude` its tools started (a nested process) is a plain session of its own
+and cannot hand over its window's card. Who started the tool is otherwise not checked:
+`task_bind_session` rebinds by hand. The order of this hook and the new session's own
+`SessionStart` does not matter ([step 0](#spec-hooks-linking)).
 
 <a id="spec-hooks-linking"></a>
 
@@ -1443,13 +1520,21 @@ started whom); for now only [Activity](#spec-board-activity) shows it, one line 
    attended (`"1"`) `resume`, `clear` or `compact` start, e.g. after a restart whose old process
    sent no `SessionEnd`. A `claude -p` started from one of its tools inherits the desktop id but
    runs unattended, and a plain `startup` never moves a live link. An id another session's agent
-   linked itself is never taken. Unknown or malformed ids are ignored.
+   linked itself is never taken. A well-formed desktop id the board does not know yet, from an
+   attended start (`"1"`), creates that desktop session (`session.seen`, named by its id) and links
+   the Claude Code id to it exactly, so no `hook_session` is needed and comments are delivered from
+   the first turn; an unattended or nested start, one that does not say (an empty or missing
+   field, as from older desktop apps), or a Claude Code id another session's agent linked itself
+   creates nothing and goes on with the steps below. Malformed ids are ignored.
 1. Exact: a write passing `hook_session` (with `session`) links that Claude Code session id to the
    calling session; a row the hooks had created for it by guess hands over its status and is
    removed. An id that another live (not ended) session already linked exactly is not moved: the
    write succeeds and its response gets `Warning: hook_session <id> belongs to another session
    (<name>); not relinked.` `task_bind_session` never links a hook id (the caller may be binding
-   another session); it answers with a note when one is passed.
+   another session); it answers with a note when one is passed. A bare Claude Code id passed as
+   `session` that the hooks know (exactly linked, or the hooks' own row) resolves to that session
+   with the note `Note: <id> is the hook session id of <name>; that session was used. …`, instead of
+   creating a session named by the id; an unknown id stays an ordinary name.
 2. Fallback on first sight: the one desktop session (not ended) bound to a task in the project
    whose `repo_path` contains the hook's `cwd`. A `SessionEnd` for an id no session holds is
    dropped.
@@ -2816,6 +2901,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0049_remove_runs` | Data only, no table dropped: lists the worktrees runs created and did not remove for the Inbox (`app_setting` `removed_runs_worktrees`); cancels the waiting turns of runs and marks the running ones lost; ends every open run (status reason "runs inside the program were removed in 0.12", ended by `relaybay`); withdraws the open questions that have a run (the coordinator's questions without a card among them) and relaybay's own open questions about a kept worktree, with that reason; expires the open and the approved, unused approvals that have a run; stops the open schedule runs ("schedules were removed in 0.12") and disables every schedule not deleted or done; clears every task's "answer received" mark. Questions and approvals of desktop sessions stay open ([§1](#spec-run)) |
 | `0050_session_surface` | Additive: `session.surface` (`desktop`, `terminal` or NULL), `session.entrypoint` (the raw `CLAUDE_CODE_ENTRYPOINT`), `session.start_cwd` (the resume folder) and `task_session.unbound_reason` (`session_end` or NULL), [§1](#spec-session-surface) |
 | `0051_backlog_registry` | Additive, all nullable: `backlog_item.kind` (`bug`, `idea`, `question`, `debt`), `location`, `origin_text`, `triage_note`, `duplicate_of` (another item, `ON DELETE SET NULL`, indexed), `found_on` ([§12](#spec-backlog-model)). Existing items have no kind |
+| `0052_archive_and_launch` | Additive, no backfill: `task.archived_from` (`live` or NULL, [§2](#spec-board-archive-live)) and `session.launched_by` (the starter's session id, `ON DELETE SET NULL`, [§4](#spec-hooks-launch-bind)); `task_session.unbound_reason` may now also be `handed_over`. Rollback: an older release ignores both columns, but its stage changes do not clear `archived_from`, so after a downgrade and a new upgrade a card archived from live and moved on in between may keep a stale `live` there; if the done window later archives it, Back from the archive returns it to live (move it by hand) |
 
 The tables and columns of runs, the coordinator run, profiles and schedules (`run`, `run_turn`,
 `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`,

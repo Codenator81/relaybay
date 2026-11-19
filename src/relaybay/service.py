@@ -96,6 +96,7 @@ from relaybay.domain.hooks import (
     DELIVERY_EVENTS,
     HookEvent,
     folder_name,
+    launch_card_keys,
     parse_hook,
     parse_launched_session,
     parse_message_recipient,
@@ -196,6 +197,7 @@ from relaybay.domain.sessions import (
     DEFAULT_DESKTOP_LINK_TEMPLATE,
     SURFACES,
     parse_session_id,
+    resumable_id,
     surface_of_entrypoint,
 )
 from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
@@ -843,6 +845,39 @@ def _task_diff(task: Task, clean: dict[str, Any]) -> dict[str, Any]:
     return diff
 
 
+async def _hook_id_session(conn: aiosqlite.Connection, value: str) -> Session | None:
+    """The session a bare Claude Code id belongs to: its exact link, or the hooks' own row."""
+    cc_id = resumable_id(value)
+    if cc_id is None:
+        return None
+    held = await repo.get_session_by_cc(conn, cc_id)
+    return held if held is not None and (held.cc_exact or held.kind == "hook") else None
+
+
+# A desktop session known before a launch counts as the one it started when the board met it
+# this long before the launch at most (its own first hook may come first).
+LAUNCH_NEW_SECONDS = 600
+
+
+def _new_to_launch(started: Session, starter: Session, moment: str) -> bool:
+    """Is a desktop session the board already knew the one a launch at `moment` started? Yes
+    when it has no live exact hook link, or the board met it shortly before, started by nobody
+    else."""
+    if not started.cc_exact or started.status in (None, "ended"):
+        return started.launched_by in (None, starter.id)
+    since = datetime.fromisoformat(moment) - timedelta(seconds=LAUNCH_NEW_SECONDS)
+    recent = datetime.fromisoformat(started.created_at) >= since
+    return recent and started.launched_by in (None, starter.id)
+
+
+async def _not_new_reason(conn: aiosqlite.Connection, known: Session | None, child: str) -> str:
+    """Why a launch does not bind a desktop session the board already knew."""
+    if known is not None and known.launched_by is not None:
+        by = await repo.get_session_by_id(conn, known.launched_by)
+        return f"{child} was started by {by.name if by else 'another session'}"
+    return f"{child} is a live session started before this launch"
+
+
 def _unlog_reason(task: Task, diff: dict[str, Any]) -> str | None:
     """New work in `diff` that invalidates the task's work-log mark: a move back out of `live` or
     `done` to an earlier stage, or a changed progress summary. Metadata edits do not count."""
@@ -1118,6 +1153,18 @@ def _clean_slug(value: str) -> str:
     return slug
 
 
+# The stages a card is archived from: done, and live (closed by the archive in the same step).
+ARCHIVE_STAGES = (Stage.DONE, Stage.LIVE)
+ARCHIVE_BATCH_MAX = 500
+LIVE_ARCHIVE_OPEN_ITEMS = (
+    "{key} has an open question, an open approval request or an approved, unused approval:"
+    " answer, withdraw or use it first, the archive closes nothing for good. Nothing changed."
+)
+PROJECT_ARCHIVE_NOT_COORDINATOR = (
+    "project_upsert(archived) is only for the coordinator sessions named in the server's config;"
+    " a desktop id also needs that session's own hook_session. Nothing changed. The owner"
+    " archives a project on its Stands & access page."
+)
 ARCHIVE_NOT_COORDINATOR = (
     "{tool} is only for the coordinator sessions named in the server's config; a desktop id also"
     " needs that session's own hook_session. Nothing changed. The owner archives done cards on"
@@ -1357,6 +1404,9 @@ class Service:
             if aliased is not None:
                 await repo.touch_session(tx.conn, aliased.id, tx.now)
                 return aliased
+            held = await self._session_of_hook_id(tx, value)
+            if held is not None:
+                return held
             existing = await repo.get_session_by_name(tx.conn, value)
             if existing is None:
                 new_id = await repo.insert_session(tx.conn, value, tx.now)
@@ -1394,12 +1444,36 @@ class Service:
             found = await repo.get_session_by_external_id(tx.conn, external_id)
         return found
 
-    async def _bind(self, tx: _Tx, task: Task, session: Session, actor: str) -> bool:
-        """Bind `session` to `task`, closing the previous binding. False if already bound."""
+    async def _session_of_hook_id(self, tx: _Tx, value: str) -> Session | None:
+        """A bare Claude Code id passed as `session`: the session its hooks are linked to, with a
+        note, instead of a new session named by it."""
+        held = await _hook_id_session(tx.conn, value)
+        if held is None:
+            return None
+        await repo.touch_session(tx.conn, held.id, tx.now)
+        _note(
+            f"Note: {held.cc_session_id} is the hook session id of {held.name}; that session was"
+            " used. Pass it as hook_session, and your desktop id (local_...) or name as session."
+        )
+        return held
+
+    async def _bind(
+        self,
+        tx: _Tx,
+        task: Task,
+        session: Session,
+        actor: str,
+        *,
+        how: str | None = None,
+        ended: str | None = None,
+    ) -> bool:
+        """Bind `session` to `task`, closing the previous binding (with `ended` as its reason).
+        `how` is stored as `bound_by` instead of `actor` and named in the event. False if already
+        bound."""
         previous = await repo.open_binding(tx.conn, task.id)
         if previous == session.id:
             return False
-        await repo.rebind(tx.conn, task.id, session.id, actor, tx.now)
+        await repo.rebind(tx.conn, task.id, session.id, how or actor, tx.now, ended)
         if task.session_id != session.id:
             await repo.update_task(tx.conn, task.id, {"session_id": session.id}, tx.now)
         await tx.event(
@@ -1414,6 +1488,7 @@ class Service:
             session=session.name,
             session_external_id=session.external_id,
             previous=task.session_name if previous is not None else None,
+            **({"how": how} if how else {}),
         )
         return True
 
@@ -1727,7 +1802,9 @@ class Service:
         if hook.host_session is None or hook.nested:
             return None
         desktop = await repo.get_session_by_external_id(tx.conn, hook.host_session)
-        if desktop is None or (found is not None and found.id == desktop.id and found.cc_exact):
+        if desktop is None:
+            return await self._first_desktop(tx, hook, found)
+        if found is not None and found.id == desktop.id and found.cc_exact:
             return None
         if found is not None and found.id != desktop.id and found.cc_exact:
             return None
@@ -1739,6 +1816,19 @@ class Service:
         if live and (hook.source == "startup" or not hook.attended):
             return None
         return desktop
+
+    async def _first_desktop(
+        self, tx: _Tx, hook: HookEvent, found: Session | None
+    ) -> Session | None:
+        """A desktop id the board does not know yet, from the window itself (attended, so not a
+        `claude` its tools started): that desktop session is created, and the caller links the
+        new Claude Code id to it exactly. An id another session's agent linked itself, or a start
+        that does not say it is attended (an older desktop app), creates nothing."""
+        if hook.host_session is None or hook.attended is not True:
+            return None
+        if found is not None and found.cc_exact:
+            return None
+        return await self._resolve_session(tx, hook.host_session, None)
 
     async def _hook_session(self, tx: _Tx, hook: HookEvent) -> Session:
         """The relaybay session of a hook event. First sight without an exact link: the one
@@ -1806,16 +1896,50 @@ class Service:
         child = parse_launched_session(payload)
         if child is not None and session is not None and child != session.external_id:
             try:
-                await self._record_launch(session, child)
+                await self._record_launch(session, child, payload, hook.spooled_at)
             except Exception:
                 logger.exception("Recording a session launch failed; the hook goes on")
         return session
 
-    async def _record_launch(self, session: Session, child: str) -> None:
+    async def _record_launch(
+        self, session: Session, child: str, payload: Any, spooled_at: str | None
+    ) -> None:
         """A `session.launched` event: the session that started another and the new one's desktop
-        id, nothing else of the tool's input or answer. Recorded for a future agents view; for now
-        only Activity shows it, and a replayed hook adds a second row."""
+        id. The new desktop session exists from here (`launched_by` names the starter). When the
+        start tool's input names exactly one open card, the new session is bound to it
+        (`bound_by` `launch`) and the card's previous binding ends as `handed_over`; the event
+        names the card or why none was bound. Only card keys are read from the input, and nothing
+        of it is kept. A replayed hook adds a second row and binds nothing new."""
         async with self._tx() as tx:
+            slugs = [p.slug for p in await repo.list_projects(tx.conn)]
+            keys = launch_card_keys(payload, slugs)
+            cards = []
+            for key in sorted(keys):
+                task = await repo.get_task_by_key(tx.conn, key)
+                if task is not None and task.stage != Stage.DONE:
+                    cards.append(task)
+            known = await repo.get_session_by_external_id(tx.conn, child)
+            started = await self._resolve_session(tx, child, None)
+            assert started is not None
+            if started.launched_by is None and started.id != session.id:
+                await repo.touch_session(tx.conn, started.id, tx.now, {"launched_by": session.id})
+            outcome: dict[str, Any] = {}
+            older = known is not None and not _new_to_launch(known, session, spooled_at or tx.now)
+            if len(cards) == 1 and older:
+                outcome["unbound"] = await _not_new_reason(tx.conn, known, child)
+            elif len(cards) == 1:
+                why = await self._launch_bind_refusal(tx, cards[0], session, started, spooled_at)
+                if why is None:
+                    await self._bind(
+                        tx, cards[0], started, session.name, how="launch", ended="handed_over"
+                    )
+                    outcome["card"] = cards[0].key
+                else:
+                    outcome["unbound"] = why
+            else:
+                outcome["unbound"] = (
+                    f"{len(cards)} open cards named" if cards else "no open card named"
+                )
             await tx.event(
                 "session.launched",
                 session.name,
@@ -1823,7 +1947,28 @@ class Service:
                 session_id=session.id,
                 session=session.name,
                 child=child,
+                **outcome,
             )
+
+    async def _launch_bind_refusal(
+        self,
+        tx: _Tx,
+        task: Task,
+        starter: Session,
+        started: Session,
+        spooled_at: str | None,
+    ) -> str | None:
+        """Why the launch does not bind its one card, or None: the card is bound to a session
+        other than the starter and the started one, live or not (it is not the starter's to hand
+        over), or a replayed launch is older than the card's current binding."""
+        holder_id = await repo.open_binding(tx.conn, task.id)
+        if holder_id is not None and holder_id not in (starter.id, started.id):
+            holder = await repo.get_session_by_id(tx.conn, holder_id)
+            return f"{task.key} is bound to {holder.name if holder else 'another session'}"
+        bound_at = await repo.open_binding_at(tx.conn, task.id)
+        if spooled_at is not None and bound_at is not None and bound_at > spooled_at:
+            return f"{task.key} was bound again after this launch"
+        return None
 
     async def _record_message(self, session: Session, recipient: str) -> None:
         """A `session.message` event: sender, recipient and time, never the text. At most one per
@@ -2355,7 +2500,9 @@ class Service:
         require_tracker_log: bool = False,
     ) -> Inbox:
         owners = {name.strip().casefold() for name in owner_names}
-        tasks = await repo.list_tasks(self._r)
+        # An archived project's cards, checklists and backlog leave the Inbox.
+        gone = await repo.archived_project_ids(self._r)
+        tasks = [t for t in await repo.list_tasks(self._r) if t.project_id not in gone]
         moves = await repo.latest_stage_changes(self._r)
         now = datetime.now(UTC)
         # A project keeps a tracker once any of its cards had a tracker reference: only there
@@ -2405,10 +2552,12 @@ class Service:
             ],
             proposals=await repo.list_proposals(self._r),
             policy_proposals=await repo.list_policy_proposals(self._r),
-            review=await repo.review_queue(self._r),
+            review=[t for t in await repo.review_queue(self._r) if t.project_id not in gone],
             rule_proposals=await repo.list_rule_proposals(self._r),
             rule_notices=await repo.list_rule_notices(self._r),
-            backlog_new=sum((await repo.backlog_new_counts(self._r)).values()),
+            backlog_new=sum(
+                n for p, n in (await repo.backlog_new_counts(self._r)).items() if p not in gone
+            ),
             update=self.update_notice(),
             leftover_worktrees=await self.leftover_worktrees(),
             running_over=await self._concurrency_over(now),
@@ -2929,6 +3078,7 @@ class Service:
         repo_path: str | None = None,
         description: str | None = None,
         repos: list[dict[str, Any]] | None = None,
+        archived: bool | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
@@ -2936,7 +3086,12 @@ class Service:
     ) -> tuple[Project, bool]:
         """Create or update a project. `repos` replaces its repositories (matched by name, so the
         tasks' links to a kept one stay); `repo_path` alone sets the first one's path (or adds it).
-        `project.repo_path` always ends up as the first repository's path."""
+        `project.repo_path` always ends up as the first repository's path. `archived` sends the
+        project to the archive or brings it back (nothing of it is deleted)."""
+        if archived is not None and not isinstance(archived, bool):
+            raise ValidationError("archived must be true or false.")
+        if archived is not None and not await self._is_coordinator(self._r, session, hook_session):
+            raise ValidationError(PROJECT_ARCHIVE_NOT_COORDINATOR)
         slug = _clean_slug(slug)
         name = _clean_text(name, "name", NAME_MAX)
         given = {
@@ -2968,6 +3123,8 @@ class Service:
                     name=name or slug,
                     **repo_changes,
                 )
+                if archived:
+                    await self._set_project_archived(tx, project_id, slug, True, actor, session_id)
                 created = True
             else:
                 fields = {
@@ -2995,9 +3152,50 @@ class Service:
                         project=slug,
                         changes=changes,
                     )
+                if archived is not None and archived != (existing.archived_at is not None):
+                    await self._set_project_archived(
+                        tx, existing.id, slug, archived, actor, session_id
+                    )
                 created = False
             project = await self.get_project(slug, tx.conn)
         return project, created
+
+    async def set_project_archived(
+        self, slug: str, archived: bool, *, actor: str = "owner"
+    ) -> Project:
+        """The board's "Archive project" / "Back from the archive"; a repeat changes nothing."""
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            if archived != (project.archived_at is not None):
+                await self._set_project_archived(
+                    tx, project.id, project.slug, archived, actor, None
+                )
+            return await self.get_project(slug, tx.conn)
+
+    async def _set_project_archived(
+        self,
+        tx: _Tx,
+        project_id: int,
+        slug: str,
+        archived: bool,
+        actor: str,
+        session_id: int | None,
+    ) -> None:
+        """An archived project leaves the sidebar, All boards, the Inbox and the digests; its
+        board, cards and history stay."""
+        at = tx.now if archived else None
+        await repo.update_project(tx.conn, project_id, {"archived_at": at}, tx.now)
+        await tx.event(
+            "project.updated",
+            actor,
+            project_id=project_id,
+            session_id=session_id,
+            project=slug,
+            changes={"archived": archived},
+        )
+
+    async def archived_projects(self) -> list[Project]:
+        return await repo.list_archived_projects(self._r)
 
     @staticmethod
     def _wanted_repos(
@@ -3415,8 +3613,13 @@ class Service:
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
+        bind: bool = True,
         actor: str = "mcp",
     ) -> Task:
+        """With `bind=False` the calling session creates the card for someone else: it is the
+        event's actor and its hook id is linked as on any write, but the card stays unbound."""
+        if not isinstance(bind, bool):
+            raise ValidationError("bind must be true or false.")
         clean_area = _clean_area(area)
         fields: dict[str, Any] = {
             "title": _clean_title(title),
@@ -3443,7 +3646,8 @@ class Service:
             actor = sess.name if sess else default_actor
             _, fields["area_id"] = await self._area_id(tx, proj.id, proj.slug, clean_area, actor)
             key = f"{proj.slug}-{await repo.next_task_number(tx.conn, proj.id)}"
-            task_id = await repo.insert_task(tx.conn, proj.id, key, fields, session_id, tx.now)
+            bound_id = session_id if bind else None
+            task_id = await repo.insert_task(tx.conn, proj.id, key, fields, bound_id, tx.now)
             if fields.get("tracker_ref") or fields.get("tracker_url"):
                 self._tracked.add(proj.id)
             if fields["tracker_ref"]:
@@ -3468,7 +3672,7 @@ class Service:
                 stage=fields["stage"],
             )
             task = await self.get_task(task_id, tx.conn)
-            if sess is not None:
+            if sess is not None and bind:
                 await self._bind(tx, task, sess, actor)
             return await self.get_task(task_id, tx.conn)
 
@@ -3623,7 +3827,9 @@ class Service:
         session_title: str | None,
         hook_session: str | None,
         actor: str,
+        rules: bool = True,
     ) -> Saved:
+        """`rules=False`: the stage move is the owner's own archive act, checked by no rule."""
         links = links or {}
         unknown = set(changes) - set(FIELD_NAMES)
         if unknown:
@@ -3646,7 +3852,7 @@ class Service:
         diff = _task_diff(task, clean)
         if not diff and not any(links.values()):
             return Saved(task, [])
-        warnings = await self._stage_warnings(tx, task, diff)
+        warnings = await self._stage_warnings(tx, task, diff) if rules else []
         progress_in_dev = "progress" in diff and task.stage == Stage.DEV
         if progress_in_dev and await self._reported_after_plan_closed(tx, task):
             _note_closed_plan(task)
@@ -5180,7 +5386,8 @@ class Service:
     # --- pulse and digests -------------------------------------------------
 
     async def pulses(self) -> dict[int, digests.Pulse]:
-        """The derived pulse of every project with any activity, by project id."""
+        """The derived pulse of every project with any activity, by project id; none for a
+        project in the archive."""
         now = datetime.now(UTC)
         since = (now - timedelta(days=digests.PULSE_DAYS)).isoformat(timespec="milliseconds")
         activity = await repo.pulse_activity(self._r, since)
@@ -5191,7 +5398,8 @@ class Service:
             if digests.waits_for_owner(task, owners):
                 waiting[task.project_id] = waiting.get(task.project_id, 0) + 1
         found = {}
-        for pid in set(activity) | set(waiting):
+        gone = await repo.archived_project_ids(self._r)
+        for pid in (set(activity) | set(waiting)) - gone:
             moved, reports, latest = activity.get(pid, (0, 0, None))
             key, summary, at = latest or (None, None, None)
             found[pid] = digests.Pulse(moved, reports, waiting.get(pid, 0), key, summary, at)
@@ -5296,6 +5504,7 @@ class Service:
             task_id=task_id,
             own_session_id=reader.id if reader is not None and level == "task" else None,
             own_kinds=digests.OWN_HOOK_KINDS,
+            archived_projects=level != "portfolio",
         )
         groups = digests.group_changes(rows)
         news = cursor is None or any(g.last_id > cursor for g in groups)
@@ -5389,15 +5598,17 @@ class Service:
         now = datetime.now(UTC)
         since = (now - timedelta(days=digests.RECENT_DECISION_DAYS)).isoformat(timespec="seconds")
         stale_before = (now - timedelta(days=self.task_stale_days)).isoformat(timespec="seconds")
+        gone = await repo.archived_project_ids(self._r)  # archived projects stay out
         open_tasks = await repo.list_tasks(self._r, stages=[s.value for s in OPEN_STAGES])
-        stale = [t for t in open_tasks if t.updated_at < stale_before]
+        stale = [t for t in open_tasks if t.updated_at < stale_before and t.project_id not in gone]
+        decisions = await repo.list_decisions(self._r, since=since, limit=digests.DECISIONS_MAX)
         data = digests.PortfolioData(
             projects=[(s.project, s.counts) for s in await self.list_projects()],
             inbox=await self.inbox(
                 self.owner_names,
                 require_tracker_log=self.require_tracker_log,
             ),
-            decisions=await repo.list_decisions(self._r, since=since, limit=digests.DECISIONS_MAX),
+            decisions=[d for d in decisions if d.project_id not in gone],
             decisions_total=await repo.count_current_decisions(self._r, since=since),
             stale_tasks=sorted(stale, key=lambda t: t.updated_at),
             blocks=await repo.list_blocks(self._r, None),
@@ -5768,14 +5979,55 @@ class Service:
         task = await self.get_task(ref)
         return task, await repo.list_comments(self._r, task.id, unread_only=unread_only)
 
-    # --- the done card's archive ---------------------------------------------
+    # --- the archive of done and live cards ---------------------------------
 
     async def set_archived(self, ref: str | int, archived: bool, *, actor: str = "owner") -> Task:
-        """The board's "Archive" / "Back from the archive" on a done card."""
+        """The board's "Archive" / "Back from the archive" on a done or live card."""
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
             await self._set_archived_tx(tx, task, archived, actor, None)
             return await self.get_task(task.id, tx.conn)
+
+    async def archive_shown(
+        self, slug: str, keys: list[str], *, actor: str = "owner"
+    ) -> tuple[str, list[str]]:
+        """The board column's "Archive all shown": the cards the owner saw, archived in one
+        transaction under one batch id that Undo brings back. A card that left done and live
+        meanwhile, or is archived already, is skipped. Returns the batch id and the keys."""
+        clean = [k.strip().lower() for k in keys if isinstance(k, str) and k.strip()]
+        if not clean:
+            raise ValidationError("No cards to archive: the column shows none.")
+        if len(clean) > ARCHIVE_BATCH_MAX:
+            raise ValidationError(f"At most {ARCHIVE_BATCH_MAX} cards are archived at once.")
+        batch = secrets.token_hex(6)
+        done: list[str] = []
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            for key in dict.fromkeys(clean):
+                task = await repo.get_task_by_key(tx.conn, key)
+                if task is None:
+                    continue  # deleted meanwhile
+                if task.project_id != project.id:
+                    raise NotFoundError(f"Task {key!r} not found in {project.slug}.")
+                if task.stage != Stage.DONE:
+                    continue
+                if await self._set_archived_tx(tx, task, True, actor, None, batch):
+                    done.append(task.key)
+        return batch, done
+
+    async def undo_archive(self, slug: str, batch: str, *, actor: str = "owner") -> list[str]:
+        """Undo of "Archive all shown": exactly the cards of that batch that are still in the
+        archive from it come back (a live one to live). Returns their keys."""
+        back: list[str] = []
+        async with self._tx() as tx:
+            project = await self.get_project(slug, tx.conn)
+            for task_id, at in await repo.archived_in_batch(tx.conn, project.id, batch.strip()):
+                task = await self.get_task(task_id, tx.conn)
+                if task.archived_at != at:
+                    continue  # brought back or archived again since
+                if await self._set_archived_tx(tx, task, False, actor, None, batch):
+                    back.append(task.key)
+        return back
 
     async def set_archived_mcp(
         self,
@@ -5798,36 +6050,109 @@ class Service:
             return await self.get_task(task.id, tx.conn)
 
     async def _set_archived_tx(
-        self, tx: _Tx, task: Task, archived: bool, actor: str, session_id: int | None
-    ) -> None:
-        """Only a done task is archived. A repeat changes nothing and records nothing. "Back from
-        the archive" also takes a task the done window archived: its window starts again now."""
-        if task.stage != Stage.DONE:
+        self,
+        tx: _Tx,
+        task: Task,
+        archived: bool,
+        actor: str,
+        session_id: int | None,
+        batch: str | None = None,
+    ) -> bool:
+        """Only a done or live task is archived; a live one is closed and archived in one step,
+        with no rule checked (the owner's own act), and "Back from the archive" returns it to
+        live. A repeat changes nothing and records nothing. "Back from the archive" also takes a
+        done task the done window archived: its window starts again now. True when it changed."""
+        if task.stage not in ARCHIVE_STAGES:
             raise ValidationError(
-                f"Only a done task goes to the archive; {task.key} is in {task.stage.value}."
-                " Nothing changed."
+                f"Only a done or live task goes to the archive; {task.key} is in"
+                f" {task.stage.value}. Nothing changed."
             )
         ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
-        payload = {"project": task.project_slug, "key": task.key, "stage": task.stage.value}
+        extra = {"batch": batch} if batch else {}
         if archived:
             if task.archived_at is not None:
-                return
-            await repo.set_archive_mark(tx.conn, task.id, tx.now, actor, task.unarchived_at)
-            await tx.event("task.archived", actor, **ids, **payload)
-            return
+                return False
+            archived_from = None
+            if task.stage == Stage.LIVE and await self._owner_items_open(tx, task):
+                raise ValidationError(LIVE_ARCHIVE_OPEN_ITEMS.format(key=task.key))
+            if task.stage == Stage.LIVE:
+                archived_from = Stage.LIVE.value
+                task = await self._archive_move(tx, task, Stage.DONE, actor, session_id)
+            await repo.set_archive_mark(
+                tx.conn, task.id, tx.now, actor, task.unarchived_at, archived_from
+            )
+            await tx.event(
+                "task.archived",
+                actor,
+                **ids,
+                project=task.project_slug,
+                key=task.key,
+                stage=task.stage.value,
+                **({"from": archived_from} if archived_from else {}),
+                **extra,
+            )
+            return True
         required = self.require_tracker_log and task.project_id in await self.tracker_projects(
             tx.conn
         )
-        if not is_archived(task, datetime.now(UTC), self.done_window_days, required):
-            return
+        if task.stage == Stage.LIVE or not is_archived(
+            task, datetime.now(UTC), self.done_window_days, required
+        ):
+            return False
+        payload = {"project": task.project_slug, "key": task.key}
+        archived_by = task.archived_by  # None: the done window had archived it
+        if task.archived_from == Stage.LIVE.value:
+            task = await self._archive_move(tx, task, Stage.LIVE, actor, session_id)
+            await tx.event(
+                "task.unarchived",
+                actor,
+                **ids,
+                **payload,
+                stage=task.stage.value,
+                to=Stage.LIVE.value,
+                archived_by=archived_by,
+                **extra,
+            )
+            return True
         await repo.set_archive_mark(tx.conn, task.id, None, None, tx.now)
         await tx.event(
             "task.unarchived",
             actor,
             **ids,
             **payload,
-            archived_by=task.archived_by,  # None: the done window had archived it
+            stage=task.stage.value,
+            archived_by=archived_by,
+            **extra,
         )
+        return True
+
+    async def _owner_items_open(self, tx: _Tx, task: Task) -> bool:
+        """What a move to done would close for good: an open question, an open approval request
+        or an approved, unused approval (`_close_owner_items`)."""
+        if task.open_questions:
+            return True
+        found = await repo.list_approvals(tx.conn, task_id=task.id, statuses=("open", "approved"))
+        return bool(found)
+
+    async def _archive_move(
+        self, tx: _Tx, task: Task, stage: Stage, actor: str, session_id: int | None
+    ) -> Task:
+        """The stage move of archiving a live card or bringing it back: an ordinary move with
+        its own `task.stage_changed` (which clears the archive marks), without the rules. The
+        work-log mark is passed as it is, so the way back does not unlog the card."""
+        caller = await repo.get_session_by_id(tx.conn, session_id) if session_id else None
+        saved = await self._update_task_tx(
+            tx,
+            task.id,
+            {"stage": stage.value, "tracker_logged": task.tracker_logged},
+            expected_version=None,
+            session=(caller.external_id or caller.name) if caller else None,
+            session_title=None,
+            hook_session=None,
+            actor=actor,
+            rules=False,
+        )
+        return saved.task
 
     # --- backlog -----------------------------------------------------------------------------
 
@@ -9138,7 +9463,8 @@ class Service:
         if external_id is not None:
             return await repo.get_session_by_external_id(conn, external_id)
         aliased = await repo.get_session_by_alias(conn, value)
-        return aliased or await repo.get_session_by_name(conn, value)
+        held = aliased or await _hook_id_session(conn, value)
+        return held or await repo.get_session_by_name(conn, value)
 
     async def note_rules_update(
         self, session: str | None, project: str | None = None, task: str | None = None

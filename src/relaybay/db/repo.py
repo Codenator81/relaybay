@@ -154,6 +154,7 @@ def _task(row: aiosqlite.Row) -> Task:
         archived_at=row["archived_at"],
         archived_by=row["archived_by"],
         unarchived_at=row["unarchived_at"],
+        archived_from=row["archived_from"],
         area_id=row["area_id"],
         area=row["area_name"],
         area_color=row["area_color"],
@@ -211,6 +212,16 @@ async def get_project(conn: aiosqlite.Connection, slug: str) -> Project | None:
 async def list_projects(conn: aiosqlite.Connection) -> list[Project]:
     rows = await _all(conn, "SELECT * FROM project WHERE archived_at IS NULL ORDER BY slug")
     return [_project(r) for r in rows]
+
+
+async def list_archived_projects(conn: aiosqlite.Connection) -> list[Project]:
+    rows = await _all(conn, "SELECT * FROM project WHERE archived_at IS NOT NULL ORDER BY slug")
+    return [_project(r) for r in rows]
+
+
+async def archived_project_ids(conn: aiosqlite.Connection) -> set[int]:
+    rows = await _all(conn, "SELECT id FROM project WHERE archived_at IS NOT NULL")
+    return {r[0] for r in rows}
 
 
 async def insert_project(
@@ -535,6 +546,7 @@ def _session(row: aiosqlite.Row) -> Session:
         surface=row["surface"],
         entrypoint=row["entrypoint"],
         start_cwd=row["start_cwd"],
+        launched_by=row["launched_by"],
     )
 
 
@@ -773,13 +785,28 @@ async def open_binding(conn: aiosqlite.Connection, task_id: int) -> int | None:
     return row[0] if row else None
 
 
+async def open_binding_at(conn: aiosqlite.Connection, task_id: int) -> str | None:
+    row = await _one(
+        conn,
+        "SELECT bound_at FROM task_session WHERE task_id = ? AND unbound_at IS NULL",
+        (task_id,),
+    )
+    return row[0] if row else None
+
+
 async def rebind(
-    conn: aiosqlite.Connection, task_id: int, session_id: int, actor: str, now: str
+    conn: aiosqlite.Connection,
+    task_id: int,
+    session_id: int,
+    actor: str,
+    now: str,
+    reason: str | None = None,
 ) -> None:
-    """Close the task's open binding (if any) and open one for `session_id`."""
+    """Close the task's open binding (if any, with `reason`) and open one for `session_id`."""
     await conn.execute(
-        "UPDATE task_session SET unbound_at = ? WHERE task_id = ? AND unbound_at IS NULL",
-        (now, task_id),
+        "UPDATE task_session SET unbound_at = ?, unbound_reason = ?"
+        " WHERE task_id = ? AND unbound_at IS NULL",
+        (now, reason, task_id),
     )
     await conn.execute(
         "INSERT INTO task_session (task_id, session_id, bound_at, bound_by) VALUES (?, ?, ?, ?)",
@@ -966,6 +993,7 @@ async def update_task(
         params.append(now)
         # The archive marks belong to this stay in done: any stage change ends it.
         sets += ["archived_at = NULL", "archived_by = NULL", "unarchived_at = NULL"]
+        sets.append("archived_from = NULL")
     if "next_step" in changes:
         sets.append("next_step_at = ?")
         params.append(now)
@@ -2238,10 +2266,12 @@ async def event_counts(
     task_id: int | None = None,
     own_session_id: int | None = None,
     own_kinds: tuple[str, ...] = (),
+    archived_projects: bool = True,
 ) -> list[tuple[int | None, str | None, str | None, str, int, int]]:
     """Events in (after_id, upto_id] counted per task or project and kind: (task id, task key or
     project slug, task title, kind, count, last id). `own_kinds` are left out for one session,
-    and so is every automatic change (`how: auto` in the payload, e.g. a hook's repository link)."""
+    and so is every automatic change (`how: auto` in the payload, e.g. a hook's repository link).
+    `archived_projects=False` leaves out the events of projects in the archive."""
     where = [
         "e.id > ?",
         "e.id <= ?",
@@ -2258,6 +2288,8 @@ async def event_counts(
     if own_session_id is not None and own_kinds:
         where.append(f"NOT (e.session_id IS ? AND e.kind IN ({', '.join('?' for _ in own_kinds)}))")
         params.extend([own_session_id, *own_kinds])
+    if not archived_projects:
+        where.append("p.archived_at IS NULL")
     rows = await _all(
         conn,
         "SELECT e.task_id, COALESCE(t.key, p.slug) AS subject, t.title, e.kind,"
@@ -3706,11 +3738,13 @@ async def set_archive_mark(
     archived_at: str | None,
     archived_by: str | None,
     unarchived_at: str | None,
+    archived_from: str | None = None,
 ) -> None:
     """The hand archive mark of a done task; no version bump, like the answer mark."""
     await conn.execute(
-        "UPDATE task SET archived_at = ?, archived_by = ?, unarchived_at = ? WHERE id = ?",
-        (archived_at, archived_by, unarchived_at, task_id),
+        "UPDATE task SET archived_at = ?, archived_by = ?, unarchived_at = ?, archived_from = ?"
+        " WHERE id = ?",
+        (archived_at, archived_by, unarchived_at, archived_from, task_id),
     )
 
 
@@ -4267,3 +4301,16 @@ async def undelivered_decisions_of_comments(
         tuple(comment_ids),
     )
     return [_approval(r) for r in rows]
+
+
+async def archived_in_batch(
+    conn: aiosqlite.Connection, project_id: int, batch: str
+) -> list[tuple[int, str]]:
+    """(task id, time) of each `task.archived` of one "Archive all shown" batch in a project."""
+    rows = await _all(
+        conn,
+        "SELECT task_id, ts FROM event WHERE kind = 'task.archived' AND project_id = ?"
+        " AND task_id IS NOT NULL AND json_extract(payload, '$.batch') = ? ORDER BY id",
+        (project_id, batch),
+    )
+    return [(r[0], r[1]) for r in rows]

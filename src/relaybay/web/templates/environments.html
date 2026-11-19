@@ -173,6 +173,17 @@
     </details>
   </section>
 
+  <section class="panel" id="archive">
+    <h2>Archive</h2>
+    {% if project.archived_at %}
+    <p class="muted">In the archive since <time datetime="{{ project.archived_at }}" data-age>{{ project.archived_at|age }}</time>: not in the sidebar, All boards, the Inbox or the digests. Nothing of it was deleted.</p>
+    <form method="post" action="/p/{{ project.slug }}/project/unarchive">{{ hidden_csrf() }}<button type="submit" class="btn">Back from the archive</button></form>
+    {% else %}
+    <p class="muted">An archived project leaves the sidebar, All boards, the Inbox and the digests; its board, cards and history are kept and it can be brought back.</p>
+    <form method="post" action="/p/{{ project.slug }}/project/archive" data-confirm="Archive the project {{ project.name }}? It leaves the sidebar, All boards, the Inbox and the digests; nothing is deleted.">{{ hidden_csrf() }}<button type="submit" class="btn">Archive project</button></form>
+    {% endif %}
+  </section>
+
   <section class="panel" id="areas">
     <h2>Areas</h2>
     <p class="muted">What part of the project a card belongs to: one coloured chip per card, a board filter. A name typed on a card or sent by an agent that is not here is added; names match without regard to case. Renaming an area into another one's name merges the two; deleting one clears it from its cards.</p>

@@ -2,8 +2,31 @@
 {% block content %}
 <main class="page" id="live" hx-ext="sse" sse-connect="/events" data-last-event-id="{{ last_event_id }}">
   <h1>All boards</h1>
+  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   <div id="projects" hx-get="/fragments/projects" hx-trigger="rb:refresh" hx-swap="innerHTML">
     {% include "_projects.html" %}
   </div>
+  {% if show_archived %}
+  <section class="panel" id="archived-projects">
+    <h2>Archived projects</h2>
+    {% if archived_projects %}
+    <p class="muted">Not in the sidebar, the Inbox or the digests. Their boards and cards are kept; Back from the archive is on each project's Stands &amp; access page.</p>
+    <ul class="project-list">
+      {% for p in archived_projects %}
+      <li class="project-row">
+        <a class="project-link" href="/p/{{ p.slug }}">
+          <span class="project-name">{{ p.name }}</span>
+          <span class="project-slug">{{ p.slug }}</span>
+        </a>
+        <span class="muted">archived <time datetime="{{ p.archived_at }}" data-age>{{ p.archived_at|age }}</time> ·
+          <a href="/p/{{ p.slug }}/environments#archive">Back from the archive</a></span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No project is in the archive.</p>
+    {% endif %}
+  </section>
+  {% endif %}
 </main>
 {% endblock %}

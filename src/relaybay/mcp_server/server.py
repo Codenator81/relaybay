@@ -270,6 +270,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             Field(description="Path to the repository: the path of the first one in `repos`."),
         ] = None,
         description: Annotated[str | None, Field(description="One-line description.")] = None,
+        archived: Annotated[
+            bool | None,
+            Field(
+                description="Coordinator sessions only. true sends the project to the archive:"
+                " it leaves the project list, the board's sidebar, the Inbox and the digests, and"
+                " nothing is deleted; false brings it back."
+            ),
+        ] = None,
         repos: Annotated[
             list[dict[str, Any]] | None,
             Field(
@@ -284,8 +292,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Create a project, or rename it / set its repositories. Call it once before creating
-        the first task of a project that is not on the board yet (see project_list)."""
+        """Create a project, or rename it / set its repositories / archive it. Call it once
+        before creating the first task of a project that is not on the board yet (see
+        project_list)."""
         project, created = await run(
             service.upsert_project(
                 slug,
@@ -293,6 +302,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 repo_path=repo_path,
                 description=description,
                 repos=repos,
+                archived=archived,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
@@ -472,10 +482,18 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
+        bind: Annotated[
+            bool,
+            Field(
+                description="false: you create the card for someone else; it is not bound to"
+                " your session (a session started for it binds itself, or the launch does)."
+            ),
+        ] = True,
     ) -> str:
         """Create a task when you start work that is not on the board yet. Give it a short
         `description` (what to do and why). Returns its key (e.g. 'acme-shop-12'); use the key in
-        later calls. If `session` is given, the task is bound to that session."""
+        later calls. If `session` is given, the task is bound to that session unless `bind` is
+        false."""
         created = await run(
             service.create_task(
                 project,
@@ -495,6 +513,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
+                bind=bind,
             )
         )
         return fmt.with_warnings(
@@ -668,9 +687,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Send a done task to the archive now, for coordinator sessions only: it leaves the done
-        column (the board's "show archive" and search still find it). Only a task in done; any
-        later stage change takes it out of the archive. Nothing is deleted."""
+        """Send a done or live task to the archive now, for coordinator sessions only: it leaves
+        the board's columns (the board's "show archive" and search still find it). A live task is
+        closed and archived in one step, and task_unarchive returns it to live. Any later stage
+        change takes it out of the archive. Nothing is deleted."""
         saved = await run(
             service.set_archived_mcp(
                 task,
@@ -689,8 +709,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Bring a done task back from the archive, for coordinator sessions only: it shows in
-        the done column again, and the automatic done window starts again from now."""
+        """Bring a task back from the archive, for coordinator sessions only: a done one shows in
+        the done column again (the automatic done window starts again from now), one archived from
+        live goes back to live."""
         saved = await run(
             service.set_archived_mcp(
                 task,

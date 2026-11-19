@@ -371,7 +371,8 @@ def project(p: Project, created: bool, repos: list[ProjectRepo] | None = None) -
         where = " · repos: " + ", ".join(_repo_label(r) for r in repos)
     else:
         where = f" · repo `{p.repo_path}`" if p.repo_path else ""
-    return f"{verb} project **{p.slug}** ({p.name}){where}."
+    archived = f" · in the archive since {_minute(p.archived_at)}" if p.archived_at else ""
+    return f"{verb} project **{p.slug}** ({p.name}){where}{archived}."
 
 
 def code_lines(code: TaskCode, branch: str | None) -> list[str]:
@@ -936,11 +937,12 @@ def _minute(ts: str) -> str:
 
 def task_archive_saved(task: Task) -> str:
     if task.archived_at:
+        closed = " (closed from live; task_unarchive returns it)" if task.archived_from else ""
         return (
             f"**{task.key}** “{task.title}” is in the archive since {_minute(task.archived_at)}"
-            f" (by {task.archived_by}): it is off the done column."
+            f" (by {task.archived_by}){closed}: it is off the done column."
         )
-    return f"**{task.key}** “{task.title}” is in the done column, not in the archive."
+    return f"**{task.key}** “{task.title}” is in the {task.stage.value} column, not in the archive."
 
 
 def comment_marks(c: Comment) -> str:
