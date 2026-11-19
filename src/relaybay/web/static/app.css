@@ -1084,6 +1084,10 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .dialog-close:hover { color: var(--text); border-color: var(--accent); }
 .dialog-body { padding: 16px; }
 .dialog-loading { margin: 0; padding: 24px 16px; }
+.dialog-body[role="tabpanel"] { box-sizing: border-box; min-height: min(60vh, 520px); }
+.tab-empty { max-width: 60ch; }
+.tab-empty-title { margin: 0 0 6px; font-weight: 600; }
+.tab-empty-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .task-title { overflow-wrap: anywhere; }
 
 @media (max-width: 760px) {

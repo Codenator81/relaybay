@@ -1,0 +1,22 @@
+{#- An empty Plan or Review tab, written for the owner: what comes here, who writes it and when,
+    and what the owner can do now. Expects: t (the task), kind ("plan" or "review"). -#}
+<div class="tab-empty">
+  {% if kind == "plan" %}
+  <p class="tab-empty-title">No plan yet</p>
+  <p class="muted">The session that works on this card writes its plan here, 2 to 5 steps, before it starts the code, and you accept it on this tab. A small (S) task may go without a plan.</p>
+  {% else %}
+  <p class="tab-empty-title">Nothing to check yet</p>
+  <p class="muted">Before the card moves to review or test, the session lists here what you should check by eye, with screenshots; you accept or reject each step, and your answer reaches the session.</p>
+  {% endif %}
+  {% if t.session_id %}
+  <form class="tab-empty-ask" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/comments"
+        hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/comments" hx-target="#comments-{{ t.key }}" hx-swap="outerHTML">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="body" value="{% if kind == 'plan' %}Please write the plan for {{ t.key }} (2-5 steps) on the board before you start the code.{% else %}Please write the review steps for {{ t.key }}: what I should check by eye, with screenshots.{% endif %}">
+    <button type="submit" class="btn">{% if kind == "plan" %}Ask for a plan{% else %}Ask for review steps{% endif %}</button>
+    <span class="muted">sends {{ t.session_name or "the bound session" }} a comment</span>
+  </form>
+  {% else %}
+  <p class="muted">No session works on this card yet: start one with Copy the brief on Overview.</p>
+  {% endif %}
+</div>

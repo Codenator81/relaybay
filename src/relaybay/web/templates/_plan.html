@@ -67,7 +67,7 @@
     <span class="muted">{{ t.session_name or "The bound session" }} keeps this todo in Claude Code; it is not the task's plan.</span></div>
   {{ todo_block(todo, true) }}
   {% else %}
-  <p class="muted">No plan yet. The agent writes 2-5 steps with <code>plan_set</code> and marks them with <code>plan_step_update</code>; a small (S) task may go with the agent's todo only.</p>
+  {% with kind = "plan" %}{% include "_tab_empty.html" %}{% endwith %}
   {% endif %}
   {% if history %}
   <details class="plan-history">

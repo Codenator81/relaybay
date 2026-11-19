@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The task dialog keeps its height when you switch between Overview, Plan and Review: a short or empty tab no longer shrinks the window to one line, and every tab has a minimum height. An empty Plan or Review tab now speaks to the owner: what will appear there, who writes it and when, and what to do now: **Ask for a plan** or **Ask for review steps** sends the bound session a comment, and a card without a session points to Copy the brief.
+
 ## [0.14.0] - 2026-11-19
 
 ### Added

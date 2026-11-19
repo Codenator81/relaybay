@@ -61,7 +61,7 @@
     {% endfor %}
   </ol>
   {% else %}
-  <p class="muted">No checklist yet. The agent writes what you should check with <code>review_steps_set</code> and attaches screenshots with <code>attach_file</code>.</p>
+  {% with kind = "review" %}{% include "_tab_empty.html" %}{% endwith %}
   {% endif %}
   {% if review.loose %}
   <h3>Other screenshots</h3>
