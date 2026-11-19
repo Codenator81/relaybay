@@ -197,6 +197,26 @@ def parse_launched_session(payload: Any) -> str | None:
     return None
 
 
+def launch_card_keys(payload: Any, slugs: list[str]) -> set[str]:
+    """The card keys (`<slug>-<number>` of a project in `slugs`, lowercase) named anywhere in the
+    strings of a launch tool's input (`LAUNCH_TOOLS`, `PostToolUse`), whatever its fields are
+    called: the same bounded walk as for the answer. Nothing of the text is kept."""
+    if not slugs or not isinstance(payload, dict):
+        return set()
+    if payload.get("hook_event_name") != "PostToolUse":
+        return set()
+    if payload.get("tool_name") not in LAUNCH_TOOLS:
+        return set()
+    texts: list[str] = []
+    _strings(payload.get("tool_input"), texts, [LAUNCH_TEXT_MAX])
+    names = "|".join(re.escape(s) for s in sorted(set(slugs), key=len, reverse=True))
+    # Not inside a longer word or slug: `x-acme-shop-12` names no card of `acme-shop`.
+    pattern = re.compile(rf"(?<![\w-])({names})-(\d{{1,9}})(?!\w)", re.IGNORECASE)
+    return {
+        f"{m.group(1).lower()}-{int(m.group(2))}" for text in texts for m in pattern.finditer(text)
+    }
+
+
 def parse_hook(payload: Any) -> HookEvent | None:
     """The part of a hook's input JSON relaybay uses, or None for an event it ignores. The
     prompt text and tool input are never kept."""

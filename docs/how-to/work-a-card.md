@@ -35,6 +35,11 @@ Paste the brief as the first prompt. The session binds itself to the card with
 its status, comments and plan to the card. Nothing else to set up: from now on the card shows the
 session.
 
+A session in the Claude desktop app has its hooks linked from its first hook, without
+`hook_session`. One a coordinator starts with the desktop app's start tool, with this card's key in
+its prompt, is bound to the card at once
+([Binding at start](coordinator.md#binding-at-start)).
+
 ## 4. Watch the state line
 
 The state line on the card, and its word on the board, say what the session does:

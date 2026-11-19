@@ -9,6 +9,9 @@
     {% endfor %}
   </div>
   {% if stage == "done" %}
+  {#- Archive all shown: the cards on screen (the filter's), not those already in the archive. #}
+  {%- set ns = namespace(n=0) %}{% for t in tasks %}{% if not task_archived(t) %}{% set ns.n = ns.n + 1 %}{% endif %}{% endfor %}
+  {% if ns.n %}<p class="col-note"><button type="button" class="action" data-archive-shown="{{ ns.n }}">Archive all shown ({{ ns.n }})</button></p>{% endif %}
   {% if done_more %}<p class="col-note muted">{{ done_more }} more not shown; search to find them.</p>{% endif %}
   {% if hidden_archived %}<p class="col-note muted">{{ hidden_archived }} in the archive (closed more than {{ done_window_days }} days ago or archived by hand) ·
     <a href="/p/{{ project.slug }}?{{ archived_qs }}">Show archived</a></p>{% endif %}

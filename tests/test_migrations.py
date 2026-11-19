@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 51
+LATEST = 52
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -415,5 +415,34 @@ async def test_upgrade_from_0029_adds_the_run_tables(tmp_path: Path) -> None:
         async with conn.execute("SELECT COUNT(*) FROM project_run_defaults") as cur:
             assert (await cur.fetchone())[0] == 0  # no backfill
         assert await migrate(conn) == LATEST
+    finally:
+        await conn.close()
+
+
+async def test_upgrade_from_0050_adds_the_archive_and_launch_columns(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    folder = resources.files("relaybay.db").joinpath("migrations")
+    names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0051")
+    sql = "\n".join(folder.joinpath(n).read_text(encoding="utf-8") for n in names)
+    conn = await connect(db)
+    try:
+        await conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = 50;\nCOMMIT;")
+        await conn.execute(
+            "INSERT INTO project (slug, name, task_seq, created_at, updated_at)"
+            " VALUES ('acme-shop', 'Acme Shop', 1, ?, ?)",
+            (NOW, NOW),
+        )
+        await conn.execute(
+            "INSERT INTO task (project_id, key, title, stage, created_at, updated_at)"
+            " VALUES (1, 'acme-shop-1', 'Shipped', 'live', ?, ?)",
+            (NOW, NOW),
+        )
+        await conn.commit()
+        # Every later migration applies on top, whatever numbers are missing in between.
+        assert await migrate(conn) == LATEST
+        async with conn.execute("SELECT archived_from FROM task") as cur:
+            assert [r[0] for r in await cur.fetchall()] == [None]  # no backfill
+        async with conn.execute("PRAGMA table_info(session)") as cur:
+            assert "launched_by" in {r[1] for r in await cur.fetchall()}
     finally:
         await conn.close()

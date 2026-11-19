@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from relaybay.domain.errors import ValidationError
+from relaybay.domain.errors import NotFoundError, ValidationError
 from relaybay.domain.tasks import is_archived
 from relaybay.security import csrf_token
 from relaybay.service import Service
@@ -19,7 +19,7 @@ from tests.test_mcp import call, connect
 
 FORM = {"Origin": BASE}
 HTMX = {"HX-Request": "true", "Origin": BASE}
-NOT_DONE = "Only a done task goes to the archive"
+NOT_DONE = "Only a done or live task goes to the archive"
 
 
 @pytest.fixture
@@ -263,3 +263,239 @@ async def test_an_unlogged_task_archived_by_hand_stays_in_the_inbox_not_logged(
     inbox = await svc.inbox([], require_tracker_log=True)
     assert [t.key for t in inbox.not_logged] == [task.key]
     assert (await svc.inbox([])).not_logged == []
+
+
+# --- a live card, in bulk, and projects (design 0026) ----------------------------------------
+
+
+async def test_a_live_card_is_closed_and_archived_and_comes_back_to_live(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "strict.sqlite", rules_mode="strict")
+    await svc.start()
+    try:
+        await svc.upsert_project("acme-shop")
+        task = await svc.create_task("acme-shop", "Looked at by eye", stage="live")
+        with pytest.raises(ValidationError):
+            await svc.set_stage(task.key, "done")  # strict: done needs its fields
+        archived = await svc.set_archived(task.key, True, actor="owner")
+        # The owner's own act: closed and archived in one step, no rule asked.
+        assert archived.stage.value == "done" and archived.closed_at is not None
+        assert (archived.archived_by, archived.archived_from) == ("owner", "live")
+        assert is_archived(archived, datetime.now(UTC), 7)
+        events = [e for e in await svc.events_since(0) if e.task_id == task.id]
+        moved, marked = events[-2:]
+        assert (moved.kind, moved.payload["from"], moved.payload["to"]) == (
+            "task.stage_changed",
+            "live",
+            "done",
+        )
+        assert "warnings" not in moved.payload
+        assert (marked.kind, marked.payload["from"]) == ("task.archived", "live")
+
+        back = await svc.set_archived(task.key, False, actor="owner")
+        assert back.stage.value == "live" and back.closed_at is None
+        assert (back.archived_at, back.archived_by, back.archived_from) == (None, None, None)
+        last = [e for e in await svc.events_since(0) if e.kind == "task.unarchived"][-1]
+        assert (last.payload["to"], last.payload["archived_by"]) == ("live", "owner")
+        # Back again on a live card is a repeat: nothing changes, nothing is recorded.
+        before = await svc.last_event_id()
+        assert (await svc.set_archived(task.key, False, actor="owner")).stage.value == "live"
+        assert await svc.last_event_id() == before
+    finally:
+        await svc.close()
+
+
+async def test_a_live_card_moved_on_by_hand_forgets_where_it_came_from(svc: Service) -> None:
+    task = await svc.create_task("acme-shop", "Shipped", stage="live")
+    await svc.set_archived(task.key, True, actor="owner")
+    moved = await svc.set_stage(task.key, "test")  # any stage change ends the archive stay
+    assert (moved.archived_at, moved.archived_from) == (None, None)
+    await svc.set_stage(task.key, "done")
+    await svc.set_archived(task.key, True, actor="owner")
+    back = await svc.set_archived(task.key, False, actor="owner")
+    assert back.stage.value == "done"  # archived from done this time
+
+
+async def test_mcp_archive_takes_a_live_card(svc: Service) -> None:
+    task = await svc.create_task("acme-shop", "Live", stage="live")
+    archived = await svc.set_archived_mcp(task.key, True, session="lead")
+    assert (archived.stage.value, archived.archived_from, archived.archived_by) == (
+        "done",
+        "live",
+        "lead",
+    )
+    [moved] = [e for e in await svc.events_since(0) if e.kind == "task.stage_changed"]
+    assert moved.actor == "lead" and moved.session_id is not None
+    back = await svc.set_archived_mcp(task.key, False, session="lead")
+    assert back.stage.value == "live"
+
+
+async def test_archive_all_shown_and_undo(svc: Service) -> None:
+    done = [await svc.create_task("acme-shop", f"Done {n}", stage="done") for n in range(3)]
+    already = await svc.create_task("acme-shop", "Already", stage="done")
+    await svc.set_archived(already.key, True, actor="owner")
+    moved = await svc.create_task("acme-shop", "Moved meanwhile", stage="dev")
+    live = await svc.create_task("acme-shop", "Live", stage="live")  # the done column only
+    keys = [t.key for t in (*done, already, moved, live)]
+    batch, archived = await svc.archive_shown(
+        "acme-shop", [*keys, keys[0], "acme-shop-99"], actor="owner"
+    )
+    assert archived == [t.key for t in done]  # a deleted key is skipped, not refused
+    marked = [e for e in await svc.events_since(0) if e.kind == "task.archived"]
+    assert {e.payload.get("batch") for e in marked[-3:]} == {batch}
+
+    await svc.set_archived(done[1].key, False, actor="owner")  # one came back by hand
+    back = await svc.undo_archive("acme-shop", batch, actor="owner")
+    assert back == [done[0].key, done[2].key]
+    tasks = await svc.list_tasks(include_done=True)
+    states = {t.key: (t.stage.value, t.archived_at) for t in tasks}
+    assert states[done[0].key] == ("done", None) and states[live.key] == ("live", None)
+    assert states[already.key][1] is not None  # not of that batch: stays archived
+    assert await svc.undo_archive("acme-shop", batch, actor="owner") == []  # a repeat
+    assert await svc.undo_archive("acme-shop", "nope", actor="owner") == []
+
+
+async def test_archive_all_shown_refuses_a_card_of_another_project(svc: Service) -> None:
+    await svc.upsert_project("demo-api")
+    other = await svc.create_task("demo-api", "Theirs", stage="done")
+    mine = await svc.create_task("acme-shop", "Mine", stage="done")
+    with pytest.raises(NotFoundError):
+        await svc.archive_shown("acme-shop", [mine.key, other.key], actor="owner")
+    assert (await svc.get_task(mine.key)).archived_at is None  # one transaction
+    with pytest.raises(ValidationError, match="No cards"):
+        await svc.archive_shown("acme-shop", [], actor="owner")
+
+
+def test_board_archive_all_shown_and_undo(board: TestClient, token: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.upsert_project, "acme-shop")
+    live = run_in_app(board, service.create_task, "acme-shop", "Live", stage="live")
+    done = run_in_app(board, service.create_task, "acme-shop", "Done", stage="done")
+    card = board.get(f"/p/acme-shop/t/{live.key}/card").text
+    assert 'data-archive="archive" data-confirm="Archive' in card
+    assert "open question or approval is not archived" in card
+    assert "Archive all shown" not in board.get("/p/acme-shop/col/live").text
+    assert "Archive all shown (1)" in done_column(board)
+    view = board.get(f"/p/acme-shop/t/{live.key}/view").text
+    assert f'hx-post="/p/acme-shop/t/{live.key}/archive"' in view and "hx-confirm=" in view
+
+    data = {"csrf_token": csrf_token(token), "keys": f"{live.key} {done.key}"}
+    answer = board.post("/p/acme-shop/archive", data=data, headers=FORM).json()
+    assert answer["keys"] == [done.key] and answer["message"] == "Archived 1 card."
+    assert "Archive all shown" not in done_column(board)
+    data = {"csrf_token": csrf_token(token), "batch": answer["batch"]}
+    undo = board.post("/p/acme-shop/archive/undo", data=data, headers=FORM).json()
+    assert undo == {"keys": [done.key], "message": "Brought back 1 card."}
+    assert run_in_app(board, service.get_task, live.key).stage.value == "live"
+    wrong = {"csrf_token": "wrong", "keys": live.key}
+    assert board.post("/p/acme-shop/archive", data=wrong, headers=FORM).status_code == 403
+
+
+async def test_an_archived_project_leaves_the_lists_and_comes_back(svc: Service) -> None:
+    await svc.upsert_project("demo-api")
+    waiting = await svc.create_task("demo-api", "Waits", stage="dev", waiting_on="owner")
+    assert [t.key for t in (await svc.inbox(["owner"])).waiting] == [waiting.key]
+
+    project, created = await svc.upsert_project("demo-api", archived=True, session="lead")
+    assert not created and project.archived_at is not None
+    assert [s.project.slug for s in await svc.list_projects()] == ["acme-shop"]
+    assert [p.slug for p in await svc.archived_projects()] == ["demo-api"]
+    assert (await svc.inbox(["owner"])).waiting == []
+    assert "demo-api" not in await svc.portfolio_digest()
+    assert (await svc.get_task(waiting.key)).title == "Waits"  # its cards are kept
+    [event] = [e for e in await svc.events_since(0) if e.kind == "project.updated"]
+    assert event.payload["changes"] == {"archived": True}
+    before = await svc.last_event_id()
+    await svc.upsert_project("demo-api", archived=True, session="lead")  # a repeat: nothing
+    assert await svc.last_event_id() == before
+
+    back = await svc.set_project_archived("demo-api", False, actor="owner")
+    assert back.archived_at is None
+    assert [t.key for t in (await svc.inbox(["owner"])).waiting] == [waiting.key]
+    with pytest.raises(ValidationError, match="archived must be"):
+        await svc.upsert_project("demo-api", archived="yes")  # type: ignore[arg-type]
+
+
+async def test_only_a_coordinator_archives_a_project_over_mcp(svc: Service) -> None:
+    await svc.upsert_project("demo-api")
+    for session in (None, "random-dev"):
+        with pytest.raises(ValidationError, match=r"project_upsert\(archived\) is only for"):
+            await svc.upsert_project("demo-api", archived=True, session=session)
+    assert (await svc.get_project("demo-api")).archived_at is None
+    assert "project.updated" not in await kinds(svc)
+    await svc.upsert_project("demo-api", name="Demo", session="random-dev")  # the rest is open
+
+
+async def test_back_from_the_archive_keeps_the_work_log_mark(svc: Service) -> None:
+    single = await svc.create_task(
+        "acme-shop", "Logged", stage="live", tracker_ref="ACME-1", tracker_logged=True
+    )
+    await svc.set_archived(single.key, True, actor="owner")
+    back = await svc.set_archived(single.key, False, actor="owner")
+    assert (back.stage.value, back.tracker_logged) == ("live", True)
+    assert "task.tracker_unlogged" not in await kinds(svc)
+    batch_card = await svc.create_task(
+        "acme-shop", "Done", stage="done", tracker_ref="ACME-2", tracker_logged=True
+    )
+    batch, _ = await svc.archive_shown("acme-shop", [batch_card.key], actor="owner")
+    await svc.undo_archive("acme-shop", batch, actor="owner")
+    assert (await svc.get_task(batch_card.key)).tracker_logged
+
+
+async def test_a_live_card_with_an_open_question_or_approval_is_not_archived(
+    svc: Service,
+) -> None:
+    asked = await svc.create_task("acme-shop", "Asks", stage="live", session="worker")
+    question, _ = await svc.ask_question(asked.key, "Deploy?", "no", session="worker")
+    with pytest.raises(ValidationError, match="open question, an open approval request"):
+        await svc.set_archived(asked.key, True, actor="owner")
+    assert (await svc.get_task(asked.key)).stage.value == "live"
+    await svc.withdraw_question(question.id, session="worker")
+    assert (await svc.set_archived(asked.key, True, actor="owner")).archived_from == "live"
+
+    approved = await svc.create_task("acme-shop", "Approved", stage="live", session="worker")
+    approval, _, _ = await svc.request_approval(
+        approved.key, "push", "feat/live", "Two commits", session="worker"
+    )
+    with pytest.raises(ValidationError, match="answer, withdraw or use it first"):
+        await svc.set_archived(approved.key, True, actor="owner")
+    await svc.decide_approval(approval.id, True)
+    with pytest.raises(ValidationError, match="approved, unused approval"):
+        await svc.set_archived(approved.key, True, actor="owner")
+    kinds_now = await kinds(svc)
+    assert "approval.expired" not in kinds_now
+    assert kinds_now.count("question.withdrawn") == 1  # only the session's own withdrawal
+
+
+def test_board_archive_project_and_back(board: TestClient, token: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop")
+    run_in_app(board, service.upsert_project, "demo-api", name="Demo API")
+    assert 'action="/p/demo-api/project/archive"' in board.get("/p/demo-api/environments").text
+    data = {"csrf_token": csrf_token(token)}
+    response = board.post(
+        "/p/demo-api/project/archive", data=data, headers=FORM, follow_redirects=False
+    )
+    assert response.status_code == 303 and response.headers["location"] == "/?archived=1"
+    home = board.get("/?archived=1").text
+    assert "Demo API is in the archive" in home and 'id="archived-projects"' in home
+    assert 'href="/?archived=1#archived-projects">Archived projects (1)</a>' in home
+    assert 'href="/p/demo-api"' not in board.get("/fragments/projects").text
+    assert "This project is in the archive" in board.get("/p/demo-api").text
+    response = board.post(
+        "/p/demo-api/project/unarchive", data=data, headers=FORM, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert 'href="/p/demo-api"' in board.get("/fragments/projects").text
+    assert board.post("/p/demo-api/project/delete", data=data, headers=FORM).status_code == 404
+
+
+async def test_a_hook_id_passed_as_session_is_the_same_caller_for_the_coordinator_check(
+    svc: Service,
+) -> None:
+    cc_id = "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11"
+    task = await svc.create_task("acme-shop", "Done", stage="done", session="lead")
+    await svc.create_task("acme-shop", "Link", session="lead", hook_session=cc_id)
+    archived = await svc.set_archived_mcp(task.key, True, session=cc_id)
+    assert archived.archived_by == "lead"
+    with pytest.raises(ValidationError, match="only for the coordinator"):
+        await svc.set_archived_mcp(task.key, False, session="2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7")

@@ -640,3 +640,270 @@ def test_a_notification_waits_only_when_it_asks_the_user(kind: str | None, statu
     payload = hook("Notification") | ({"notification_type": kind} if kind else {})
     parsed = parse_hook(payload)
     assert parsed is not None and parsed.status == status
+
+
+# --- binding at start (design 0026) ---------------------------------------------------------
+
+DESKTOP_C = f"local_{uuid.UUID(int=3)}"
+LAUNCH = "mcp__ccd_session__start_session"
+
+
+def started(cc_id: str, desktop: str, attended: str | None = "1", **extra: Any) -> dict[str, Any]:
+    fields = {"relaybay_host_session": desktop}
+    if attended is not None:
+        fields["relaybay_host_attended"] = attended
+    return hook("SessionStart", cc_id, **fields, **extra)
+
+
+def launch(tool_input: Any, child: str = DESKTOP_B, cc_id: str = CC_A, **extra: Any):
+    return hook(
+        "PostToolUse",
+        cc_id,
+        tool_name=LAUNCH,
+        tool_input=tool_input,
+        tool_response=[{"type": "text", "text": f"Started session {child}"}],
+        **extra,
+    )
+
+
+async def unbound_reasons(service: Service, key: str) -> list[tuple[str, str | None, str | None]]:
+    async with service._r.execute(
+        "SELECT s.name, b.bound_by, b.unbound_reason FROM task_session b"
+        " JOIN session s ON s.id = b.session_id JOIN task t ON t.id = b.task_id"
+        " WHERE t.key = ? ORDER BY b.id",
+        (key,),
+    ) as cur:
+        return [(r[0], r[1], r[2]) for r in await cur.fetchall()]
+
+
+async def launches(service: Service) -> list[dict[str, Any]]:
+    return [e.payload for e in await service.events_since(0) if e.kind == "session.launched"]
+
+
+async def test_a_first_hook_with_an_unknown_desktop_id_creates_and_links_it(
+    service: Service,
+) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    first = await service.record_hook(started(CC_A, DESKTOP_A, source="startup"))
+    assert first is not None and (first.external_id, first.kind) == (DESKTOP_A, "desktop")
+    assert first.cc_session_id == CC_A and first.cc_exact
+    assert [s.name for s in await service.unlinked_hook_sessions()] == []
+    # Comments reach it from its first turn, with no hook_session passed by the agent.
+    task = await service.create_task("acme-shop", "Checkout", session=DESKTOP_A)
+    await service.add_owner_comment(task.key, "Hello from the board")
+    answer = await service.hook_answer(hook("PreToolUse"))
+    assert answer is not None and "Hello from the board" in str(answer)
+
+
+@pytest.mark.parametrize("attended", ["0", "", None])
+async def test_a_first_hook_not_from_the_window_creates_no_desktop_session(
+    service: Service, attended: str | None
+) -> None:
+    """A `claude` a desktop session's tools started ("0"), or an older desktop app that does not
+    say (empty or missing), is never taken for a new window."""
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    found = await service.record_hook(started(CC_A, DESKTOP_A, attended=attended))
+    assert found is not None and found.external_id is None
+    assert all(r.session.external_id is None for r in await service.list_sessions())
+
+
+async def test_a_first_hook_never_takes_an_id_another_session_linked_itself(
+    service: Service,
+) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    await service.create_task("acme-shop", "Theirs", session="worker", hook_session=CC_B)
+    await service.record_hook(hook("SessionStart", CC_B))
+    found = await service.record_hook(started(CC_B, DESKTOP_C, source="resume"))
+    assert found is not None and found.name == "worker" and found.external_id is None
+    assert all(r.session.external_id != DESKTOP_C for r in await service.list_sessions())
+
+
+async def coordinator_with_cards(service: Service, *titles: str) -> list[Any]:
+    """A desktop coordinator (its hooks linked from the first one) that created the cards."""
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    await service.record_hook(started(CC_A, DESKTOP_A))
+    return [
+        await service.create_task("acme-shop", title, stage="dev", session=DESKTOP_A)
+        for title in titles
+    ]
+
+
+async def test_a_launch_naming_one_open_card_binds_the_new_session(service: Service) -> None:
+    [task] = await coordinator_with_cards(service, "Checkout")
+    prompt = f"Work the card {task.key}: read task_context first.\nBranch feat/{task.key}-retry"
+    await service.record_hook(launch({"prompt": prompt, "cwd": CWD}))
+    bound = await service.get_task(task.key)
+    assert bound.session_external_id == DESKTOP_B
+    assert await unbound_reasons(service, task.key) == [
+        (DESKTOP_A, DESKTOP_A, "handed_over"),
+        (DESKTOP_B, "launch", None),
+    ]
+    [event] = await launches(service)
+    assert (event["child"], event["card"]) == (DESKTOP_B, task.key)
+    assert prompt not in json.dumps(event)  # nothing of the input is kept
+    rebound = [e for e in await service.events_since(0) if e.kind == "task.session_bound"][-1]
+    assert (rebound.payload["how"], rebound.payload["previous"]) == ("launch", DESKTOP_A)
+    child = next(
+        r.session for r in await service.list_sessions() if r.session.external_id == DESKTOP_B
+    )
+    starter = next(
+        r.session for r in await service.list_sessions() if r.session.external_id == DESKTOP_A
+    )
+    assert child.launched_by == starter.id and child.cc_session_id is None
+
+    # The new session's own first hook links its Claude Code id to it: the order does not matter.
+    linked = await service.record_hook(started(CC_B, DESKTOP_B))
+    assert linked is not None and linked.id == child.id and linked.cc_exact
+    # A replay of the same launch adds a second row and changes nothing else.
+    await service.record_hook(launch({"prompt": prompt}))
+    assert len(await unbound_reasons(service, task.key)) == 2
+
+
+async def test_the_new_sessions_first_hook_may_come_before_the_launch(service: Service) -> None:
+    [task] = await coordinator_with_cards(service, "Checkout")
+    child = await service.record_hook(started(CC_B, DESKTOP_B))
+    assert child is not None and child.external_id == DESKTOP_B and child.cc_exact
+    await service.record_hook(launch({"message": {"text": [f"Please take {task.key}"]}}))
+    assert (await service.get_task(task.key)).session_external_id == DESKTOP_B
+    found = next(r.session for r in await service.list_sessions() if r.session.id == child.id)
+    assert found.launched_by is not None and found.cc_session_id == CC_B
+
+
+@pytest.mark.parametrize(
+    ("words", "why"),
+    [
+        ("Look around the repository", "no open card named"),
+        ("Take acme-shop-1 and acme-shop-2", "2 open cards named"),
+        ("Close the old acme-shop-3", "no open card named"),  # done
+        ("Not a card: xacme-shop-1, acme-shop-99, demo-api-1", "no open card named"),
+    ],
+)
+async def test_a_launch_binds_nothing_without_exactly_one_open_card(
+    service: Service, words: str, why: str
+) -> None:
+    first, second, closed = await coordinator_with_cards(service, "One", "Two", "Closed")
+    await service.set_stage(closed.key, "done")
+    await service.record_hook(launch({"prompt": words}))
+    for task in (first, second, closed):
+        assert (await service.get_task(task.key)).session_external_id == DESKTOP_A
+    [event] = await launches(service)
+    assert event["unbound"] == why and "card" not in event
+    # The started session exists anyway, with who started it.
+    child = next(
+        r.session for r in await service.list_sessions() if r.session.external_id == DESKTOP_B
+    )
+    assert child.launched_by is not None
+
+
+async def test_a_closed_key_next_to_one_open_card_binds_the_open_one(service: Service) -> None:
+    done, todo = await coordinator_with_cards(service, "Done", "Todo")
+    await service.set_stage(done.key, "done")
+    await service.record_hook(launch({"prompt": f"{done.key} is finished; now {todo.key}"}))
+    assert (await service.get_task(todo.key)).session_external_id == DESKTOP_B
+    assert (await service.get_task(done.key)).session_external_id == DESKTOP_A
+
+
+@pytest.mark.parametrize("holder", ["live", "ended", "no hooks", "plain name"])
+async def test_a_launch_never_takes_a_card_another_session_holds(
+    service: Service, holder: str
+) -> None:
+    """Only the starter's own card (or one nobody holds) is handed over; any other holder keeps
+    it, live or not, and no `handed_over` is recorded."""
+    [task] = await coordinator_with_cards(service, "Held")
+    name = "worker" if holder == "plain name" else DESKTOP_C
+    await service.unbind_session(task.key)  # a plain name would become the holder's alias
+    await service.bind_session(task.key, name)
+    if holder in ("live", "ended"):
+        await service.record_hook(started(CC_B, DESKTOP_C))
+    if holder == "ended":
+        await service.record_hook(hook("SessionEnd", CC_B))
+    await service.record_hook(launch({"prompt": f"Also look at {task.key}"}))
+    current = await service.get_task(task.key)
+    assert current.session_name == name or current.session_external_id == name
+    [event] = await launches(service)
+    assert event["unbound"] == f"{task.key} is bound to {name}"
+    assert all(r[2] != "handed_over" for r in await unbound_reasons(service, task.key))
+
+
+async def test_a_launch_binds_a_card_nobody_holds(service: Service) -> None:
+    await service.upsert_project("acme-shop", repo_path=CWD)
+    await service.record_hook(started(CC_A, DESKTOP_A))
+    task = await service.create_task(
+        "acme-shop", "Free", stage="dev", session=DESKTOP_A, bind=False
+    )
+    await service.record_hook(launch({"prompt": f"Pick up {task.key}"}))
+    assert (await service.get_task(task.key)).session_external_id == DESKTOP_B
+    assert await unbound_reasons(service, task.key) == [(DESKTOP_B, "launch", None)]
+
+
+async def test_a_launch_naming_an_older_live_session_binds_nothing(
+    service: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first desktop id in the answer decides: one the board met long before, live with its
+    own hooks, is not the session this launch started."""
+    from relaybay import service as service_module
+
+    [task] = await coordinator_with_cards(service, "Checkout")
+    await service.record_hook(started(CC_B, DESKTOP_C))  # an older live window
+    monkeypatch.setattr(service_module, "LAUNCH_NEW_SECONDS", -3600)
+    await service.record_hook(launch({"prompt": f"Work {task.key}"}, DESKTOP_C))
+    assert (await service.get_task(task.key)).session_external_id == DESKTOP_A
+    [event] = await launches(service)
+    assert event["unbound"] == f"{DESKTOP_C} is a live session started before this launch"
+
+
+async def test_a_launch_naming_a_session_another_one_started_binds_nothing(
+    service: Service,
+) -> None:
+    [task] = await coordinator_with_cards(service, "Checkout")
+    await service.record_hook(launch({"prompt": "Look around"}, DESKTOP_C))  # started by A
+    await service.record_hook(started(CC_B, DESKTOP_B))  # another window
+    await service.record_hook(launch({"prompt": f"Work {task.key}"}, DESKTOP_C, cc_id=CC_B))
+    assert (await service.get_task(task.key)).session_external_id == DESKTOP_A
+    assert (await launches(service))[-1]["unbound"] == f"{DESKTOP_C} was started by {DESKTOP_A}"
+
+
+async def test_a_launch_from_a_subagent_or_a_nested_claude(service: Service) -> None:
+    """A subagent's tool call carries its parent's session id: the parent hands its card over. A
+    nested `claude` has its own id (a plain session): the card its window holds is not its own."""
+    first, second = await coordinator_with_cards(service, "By a subagent", "By a nested claude")
+    await service.record_hook(
+        launch({"prompt": f"Do {first.key}"}, agent_id="a1b2", agent_type="general-purpose")
+    )
+    assert (await service.get_task(first.key)).session_external_id == DESKTOP_B
+    nested = "3c1e2d4f-0000-4000-8000-000000000009"
+    await service.record_hook(started(nested, DESKTOP_A, attended="0"))
+    await service.record_hook(launch({"prompt": f"Do {second.key}"}, DESKTOP_C, cc_id=nested))
+    assert (await service.get_task(second.key)).session_external_id == DESKTOP_A
+    assert (await launches(service))[-1]["unbound"] == f"{second.key} is bound to {DESKTOP_A}"
+
+
+async def test_a_replayed_launch_older_than_the_cards_binding_binds_nothing(
+    service: Service,
+) -> None:
+    [task] = await coordinator_with_cards(service, "Rebound")
+    await asyncio.sleep(0.01)
+    old = "2020-01-01T00:00:00.000+00:00"
+    await service.record_hook(launch({"prompt": task.key}, relaybay_spooled_at=old))
+    assert (await service.get_task(task.key)).session_external_id == DESKTOP_A
+    [event] = await launches(service)
+    assert event["unbound"] == f"{task.key} was bound again after this launch"
+
+
+def test_launch_card_keys_reads_only_known_keys_in_strings() -> None:
+    from relaybay.domain.hooks import launch_card_keys
+
+    payload = launch(
+        {
+            "prompt": "Take ACME-SHOP-12, then acme-shop-012 and demo-api-3.",
+            "nested": [{"deep": "see acme-shop-12-notes and x-acme-shop-4"}, 7, None],
+            "acme-shop-5": "keys are not read, only values",
+        }
+    )
+    assert launch_card_keys(payload, ["acme-shop", "shop"]) == {"acme-shop-12"}
+    assert launch_card_keys(payload, []) == set()
+    assert launch_card_keys(
+        hook("PostToolUse", tool_input={"p": "acme-shop-1"}), ["acme-shop"]
+    ) == (set())
+    long = {"prompt": "x" * (64 * 1024) + " acme-shop-1"}
+    assert launch_card_keys(launch(long), ["acme-shop"]) == set()  # past the bounded walk

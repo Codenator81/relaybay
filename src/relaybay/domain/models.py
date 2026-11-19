@@ -43,6 +43,7 @@ class Session:
     surface: str | None = None  # desktop or terminal, as the hook or the session told; else None
     entrypoint: str | None = None  # the raw CLAUDE_CODE_ENTRYPOINT the hook sent
     start_cwd: str | None = None  # the folder of its first SessionStart: where a resume starts
+    launched_by: int | None = None  # the session whose desktop start tool started this one
 
 
 @dataclass(slots=True)
@@ -95,6 +96,7 @@ class Task:
     archived_at: str | None = None  # sent to the archive by hand (done only)
     archived_by: str | None = None
     unarchived_at: str | None = None  # the last "Back from the archive"
+    archived_from: str | None = None  # 'live': the archive closed it; Back returns it there
     area_id: int | None = None
     area: str | None = None  # the area's name
     area_color: str | None = None  # its palette key

@@ -39,6 +39,7 @@
       {%- endfor %}
     </span>
   </form>
+  {% if project.archived_at %}<p class="muted">This project is in the archive (not in the sidebar, the Inbox or the digests) · <a href="/p/{{ project.slug }}/environments#archive">Back from the archive</a></p>{% endif %}
   {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   {#- What a drag or a card's menu answered: rule warnings of a stage move, or why nothing moved. #}

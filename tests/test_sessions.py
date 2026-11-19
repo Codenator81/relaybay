@@ -233,3 +233,45 @@ async def test_existing_plain_session_name_is_not_taken_as_an_alias(service: Ser
     # The name still means the plain session, not the desktop one.
     found = await service.list_tasks(project="acme-shop", session="reviewer")
     assert [t.key for t in found] == [other.key]
+
+
+# --- binding at start (design 0026) ---------------------------------------------------------
+
+CC_ID = "8b0c1f6e-3a52-4c1e-9d44-0d6f2a7c9e11"
+
+
+async def test_task_create_without_binding_the_caller(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    task = await service.create_task(
+        "acme-shop", "For a developer", session=DESKTOP_A, hook_session=CC_ID, bind=False
+    )
+    assert task.session_id is None
+    assert (await service.task_detail(task.key)).bindings == []
+    [created] = [e for e in await service.events_since(0) if e.kind == "task.created"]
+    assert created.actor == DESKTOP_A and created.session_id is not None
+    # The caller's hook id is still linked, as on any write.
+    assert any(r.session.cc_session_id == CC_ID for r in await service.list_sessions())
+    bound = await service.create_task("acme-shop", "Mine", session=DESKTOP_A)
+    assert bound.session_external_id == DESKTOP_A  # the default still binds
+    with pytest.raises(ValidationError, match="bind must be"):
+        await service.create_task("acme-shop", "Bad", bind="no")  # type: ignore[arg-type]
+
+
+async def test_a_hook_id_passed_as_session_resolves_to_its_session(service: Service) -> None:
+    from relaybay.service import collect_notes
+
+    await service.upsert_project("acme-shop")
+    await service.create_task("acme-shop", "Linked", session=DESKTOP_A, hook_session=CC_ID)
+    with collect_notes() as notes:
+        task = await service.create_task("acme-shop", "By the hook id", session=CC_ID)
+    assert task.session_external_id == DESKTOP_A
+    assert notes == [
+        f"Note: {CC_ID} is the hook session id of {DESKTOP_A}; that session was used. Pass it"
+        " as hook_session, and your desktop id (local_...) or name as session."
+    ]
+    assert all(r.session.name != CC_ID for r in await service.list_sessions())
+
+    # An id no session's hooks reported is an ordinary name, as before.
+    other = "2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7"
+    named = await service.create_task("acme-shop", "Plain", session=other)
+    assert named.session_name == other and named.session_external_id is None

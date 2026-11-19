@@ -608,18 +608,23 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return signed_in(request, next_path)
 
     @router.get("/", response_class=HTMLResponse)
-    async def projects_page(request: Request):
+    async def projects_page(request: Request, archived: bool = False):
         # Read the event id before the data: an event committed in between is then replayed
         # by the SSE stream instead of being skipped.
         last_event_id = await service.last_event_id()
-        return await page(
+        flash = take_flash(request)
+        response = await page(
             request,
             "projects.html",
             "boards",
             projects=await service.list_projects(),
             pulses=await service.pulses(),
+            archived_projects=await service.archived_projects(),
+            show_archived=archived,
+            message=flash.get("message"),
             last_event_id=last_event_id,
         )
+        return shown_once(request, response)
 
     @router.get("/fragments/projects", response_class=HTMLResponse)
     async def projects_fragment(request: Request):
@@ -628,6 +633,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "_projects.html",
             projects=await service.list_projects(),
             pulses=await service.pulses(),
+            archived_projects=await service.archived_projects(),
         )
 
     @router.get("/p/{slug}", response_class=HTMLResponse)
@@ -2796,6 +2802,56 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ) -> Response:
         return await archive_answer(request, slug, key, False, target, csrf)
+
+    @router.post("/p/{slug}/archive")
+    async def archive_shown(
+        request: Request,
+        slug: str,
+        keys: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        """A column's "Archive all shown" (board.js): the keys of the cards on screen."""
+        board_only(request, csrf)
+        batch, done = await service.archive_shown(slug, keys.split(), actor="owner")
+        count = f"{len(done)} card{'' if len(done) == 1 else 's'}"
+        message = f"Archived {count}." if done else "Nothing to archive: the cards had moved."
+        return JSONResponse({"batch": batch, "keys": done, "message": message})
+
+    @router.post("/p/{slug}/archive/undo")
+    async def archive_undo(
+        request: Request,
+        slug: str,
+        batch: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+        back = await service.undo_archive(slug, batch, actor="owner")
+        count = f"{len(back)} card{'' if len(back) == 1 else 's'}"
+        message = f"Brought back {count}." if back else "Nothing to bring back."
+        return JSONResponse({"keys": back, "message": message})
+
+    @router.post("/p/{slug}/project/{action}")
+    async def archive_project(
+        request: Request,
+        slug: str,
+        action: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        """Stands & access: "Archive project" / "Back from the archive"."""
+        if action not in ("archive", "unarchive"):
+            raise HTTPException(status_code=404)
+        board_only(request, csrf)
+        project = await service.set_project_archived(slug, action == "archive", actor="owner")
+        if action == "archive":
+            return flash_redirect(
+                request,
+                "/?archived=1",
+                message=f"{project.name} is in the archive; Back from the archive on its"
+                " Stands & access page brings it back.",
+            )
+        return flash_redirect(
+            request, f"/p/{project.slug}/environments#archive", message="Back from the archive."
+        )
 
     # --- Backlog -------------------------------------------------------------------------
 

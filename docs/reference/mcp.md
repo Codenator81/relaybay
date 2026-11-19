@@ -91,7 +91,7 @@ No parameters.
 
 ### `project_upsert`
 
-Create a project, or rename it / set its repositories. Call it once before creating the first task of a project that is not on the board yet (see project_list).
+Create a project, or rename it / set its repositories / archive it. Call it once before creating the first task of a project that is not on the board yet (see project_list).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -99,6 +99,7 @@ Create a project, or rename it / set its repositories. Call it once before creat
 | `name` | string or null | no | Display name. |
 | `repo_path` | string or null | no | Path to the repository: the path of the first one in `repos`. |
 | `description` | string or null | no | One-line description. |
+| `archived` | boolean or null | no | Coordinator sessions only. true sends the project to the archive: it leaves the project list, the board's sidebar, the Inbox and the digests, and nothing is deleted; false brings it back. |
 | `repos` | list of object or null | no | The project's repositories, the whole list in order: [{"name": "web", "path": "/code/acme/web", "kind": "web"}]. kind is one of app, web, api, lib, other (optional); without a name the path's last folder names it. Matched by name, so tasks keep their links to a repository that stays; [] removes them all. The path is stored as written. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
@@ -187,7 +188,7 @@ Full task: fields, description, progress, current version, the latest reports an
 
 ### `task_create`
 
-Create a task when you start work that is not on the board yet. Give it a short `description` (what to do and why). Returns its key (e.g. 'acme-shop-12'); use the key in later calls. If `session` is given, the task is bound to that session.
+Create a task when you start work that is not on the board yet. Give it a short `description` (what to do and why). Returns its key (e.g. 'acme-shop-12'); use the key in later calls. If `session` is given, the task is bound to that session unless `bind` is false.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -208,6 +209,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+| `bind` | boolean | no | false: you create the card for someone else; it is not bound to your session (a session started for it binds itself, or the launch does). Default: `True`. |
 
 ### `task_update`
 
@@ -267,7 +269,7 @@ Move a task to another stage (plan, dev, review, test, live, done) when its work
 
 ### `task_archive`
 
-Send a done task to the archive now, for coordinator sessions only: it leaves the done column (the board's "show archive" and search still find it). Only a task in done; any later stage change takes it out of the archive. Nothing is deleted.
+Send a done or live task to the archive now, for coordinator sessions only: it leaves the board's columns (the board's "show archive" and search still find it). A live task is closed and archived in one step, and task_unarchive returns it to live. Any later stage change takes it out of the archive. Nothing is deleted.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -278,7 +280,7 @@ Send a done task to the archive now, for coordinator sessions only: it leaves th
 
 ### `task_unarchive`
 
-Bring a done task back from the archive, for coordinator sessions only: it shows in the done column again, and the automatic done window starts again from now.
+Bring a task back from the archive, for coordinator sessions only: a done one shows in the done column again (the automatic done window starts again from now), one archived from live goes back to live.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
