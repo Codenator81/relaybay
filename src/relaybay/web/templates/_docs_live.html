@@ -4,11 +4,12 @@
 <div id="docs-live" hx-get="/p/{{ project.slug }}/docs-live" hx-trigger="rb:refresh" hx-swap="outerHTML">
   <section class="panel" id="pulse">
     <h2>Pulse</h2>
+    <p class="project-pulse-full">{{ pulse_text(pulse) }}</p>
+    <p class="muted">Derived from the cards: stage moves and reports of the last 7 days, cards waiting on you, the newest report.</p>
     {% if project.pulse %}
+    <h3>Note</h3>
     <p class="project-pulse-full">{{ project.pulse }}</p>
-    <p class="muted"><time datetime="{{ project.pulse_at }}" data-age title="{{ project.pulse_at[:19] }}Z">{{ project.pulse_at|age }}</time>{% if project.pulse_by %} by {{ project.pulse_by }}{% endif %}{% if pulse_stale(project) %} <span class="stale-mark" title="Older than {{ pulse_stale_days }} days">stale</span>{% endif %}</p>
-    {% else %}
-    <p class="muted">No pulse yet. Agents write it with <code>project_pulse_set</code>.</p>
+    <p class="muted"><time datetime="{{ project.pulse_at }}" data-age title="{{ project.pulse_at[:19] }}Z">{{ project.pulse_at|age }}</time>{% if project.pulse_by %} by {{ project.pulse_by }}{% endif %} · written with <code>project_pulse_set</code></p>
     {% endif %}
   </section>
 

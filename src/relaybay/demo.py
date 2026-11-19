@@ -585,7 +585,7 @@ async def seed_memory(service: Service) -> None:
         "Gift cards wait for a refund decision.",
         actor="demo",
     )
-    # Written weeks ago: the board and the digests show it as stale.
+    # Written weeks ago: the board shows the note with its age under the derived pulse line.
     weeks_ago = datetime.now(UTC) - timedelta(days=21)
     await service.set_pulse(
         "demo-api",

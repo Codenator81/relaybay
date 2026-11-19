@@ -1169,6 +1169,16 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .inbox-meta { font-size: 13px; }
 .inbox-note { margin: 0; font-size: 13px; }
 .inbox-note.stale { color: var(--muted); }
+.inbox-marks { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.inbox-mark {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--badge-text);
+  background: var(--badge-bg);
+}
+.inbox-mark.is-warning { color: var(--chip-text); background: transparent; border: 1px dashed var(--chip-text); }
 
 .session-list { display: grid; gap: 10px; }
 .session-row {

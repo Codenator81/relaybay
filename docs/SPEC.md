@@ -839,7 +839,7 @@ refresh their chips.
 
 The task form has an **Area** field next to Branch with the project's areas as suggestions; the
 task dialog shows the chip after the key in its head, and the task view (dialog and task page) an
-**Area** row. Inbox rows and the review queue show the chip after the key.
+**Area** row. Inbox card rows show the chip after the key.
 
 <a id="spec-board-code"></a>
 
@@ -1067,14 +1067,16 @@ changes then refresh the details instead of reloading the page).
 **Done column and archive.** The done column shows tasks closed within `done_window_days` (default
 7), capped at 200 with a note. Older done tasks are archived on the board only: "Show archived"
 (`?archived=1`) and the search box (`?q=`, key or title, also searches the archive) bring them back.
-With `require_tracker_log = true` a done task without the tracker mark is never archived by age.
+With `require_tracker_log = true` a done task without the tracker mark is never archived by age,
+in a project that keeps a tracker (any of its cards has or ever had a tracker reference, or has a tracker link now);
+in other projects done cards leave by age and show no "not logged" badge.
 
 <a id="spec-board-archive"></a>
 
 **Archive by hand.** A done card's menu and its task view have **Archive**: the card leaves the done
 column at once (`task.archived`, the done column refetched live) and stays findable with "Show
 archived" and in search. The mark (`task.archived_at`, `archived_by`) archives the task whatever
-`require_tracker_log` says; an unlogged task archived by hand stays in the Inbox "not logged" list
+`require_tracker_log` says; an unlogged task archived by hand stays in the Inbox work-log line (in a project that keeps a tracker)
 until its work log is marked. On an archived card (by hand or by age) the same places offer **Back
 from the archive** (`task.unarchived`, with `archived_by` of the hand mark, none when the window had
 archived it): the hand mark is cleared and `task.unarchived_at` is set, and the done window counts
@@ -1099,7 +1101,7 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
   and the test account's name, the options and default; a button per option and a text field
   ("Send the text" for a free answer). An answer swaps the Inbox; a refusal shows its reason there.
   Each question counts as one row; a card waiting on the owner for its open question is not
-  counted again under Waiting on you. While an answer is being typed (in the Inbox, the task
+  counted again under Cards. While an answer is being typed (in the Inbox, the task
   page or the task dialog), live refreshes that would swap it away wait until it is sent or
   emptied, then run once.
 - **Approvals:** the open approval requests of all cards, the oldest first
@@ -1107,31 +1109,36 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
   age, what and where (`push of feat/x
   in backend`), the summary, the rollback (a deploy without one says so), a line for the agent and
   **Approve** / **Refuse**. A decision swaps the Inbox. Each request counts as one row; its card is
-  not counted again under Waiting on you. A half-typed line is held like an answer.
+  not counted again under Cards. A half-typed line is held like an answer.
 - **Worktrees left by runs:** after the upgrade to 0.12, the worktrees that runs created and did not
   remove ([§1](#spec-run)), each path with the hint to remove it with `git worktree remove <path>` in
   its repository. **Seen** (`POST /inbox/worktrees/seen`, board only, cookie and CSRF) deletes the
   list (the folders stay) and writes `inbox.worktrees_seen`. It counts as one row.
 - One line "N new backlog items" linking to All backlog ([§12](#spec-backlog-board)); it counts as one
-  row for the badge.
+  row of the page, not in the badge.
 
-- **Review queue:** tasks in `review` or `test` with a checklist, across projects, the longest
-  waiting first (by the last stage change), with accepted / all; a row opens the task dialog on its
-  Review tab.
-- **Waiting on you:** open tasks whose `waiting_on` is one of `owner_names` (config, default
-  `owner`, `me`, `you`; compared case-insensitively after trimming).
-- **Rule warnings:** tasks whose last stage move missed a working rule (the warnings in its
-  `task.stage_changed` event), until the task moves again. The tracker-log warning is left out: the
-  task is already under the next group, until it is marked.
-- **Not logged in the tracker:** done tasks without the work-log mark, only with
-  `require_tracker_log = true`.
-- **Unlinked hook sessions** ([§4](#spec-hooks-linking)), linking to the Integrations page.
+- **Cards:** every open card that needs the owner, **once**, with each reason as a mark on its
+  row: *waits for you* (`waiting_on` is one of `owner_names`, config, default `owner`, `me`,
+  `you`; compared case-insensitively after trimming), *to accept n/m* (in `review` or `test` with
+  a checklist; the row opens the task dialog on its Review tab), *n replies unread* (agent
+  comments the owner has not marked read, with the newest reply's author and text), *n comments
+  not delivered* (owner comments written more than an hour ago and still not delivered, with since
+  when, why they wait as on the thread, and the oldest one's text) and *rule warning* (the
+  warnings of its last `task.stage_changed`, until it moves again; the tracker-log warning is
+  left out). To accept first, the longest waiting first (by the last stage change), then waiting
+  on you, then the other reasons. A card whose only reason is waiting for the answer to its open
+  question or approval request is not listed again here. A done card is listed only for agent
+  replies written after it was closed: its rule warnings and older replies stay on the card, and
+  moving a card to done marks its agent replies read (`comment.read` with stage `done`, by the
+  mover).
+- **Work log:** one line "N done cards without the work-log mark", only with
+  `require_tracker_log = true` and only for projects that keep a tracker: a project keeps one
+  once any of its cards has or ever had a tracker reference (`tracker_ref` or a row of its
+  tracker history), or has a tracker link now (`tracker_url`; a removed link is not remembered). The line unfolds to the cards. An unlogged
+  card archived by hand stays in it until its work log is marked.
+- **Unlinked hook sessions** ([§4](#spec-hooks-linking)): one line "N hook sessions not linked"
+  linking to Sessions; ended sessions are not counted (Sessions and Integrations still list them).
 - **Limits** ([below](#spec-concurrency)): sessions running above the cap.
-- **Agent replies:** tasks with agent comments the owner has not marked read, with the newest
-  reply's author and text.
-- **Comments not delivered:** open tasks with owner comments written more than an hour ago and
-  still not delivered, with how many, since when, why they wait (as on the thread) and the oldest
-  one's text. A task counts as one row.
 - **Proposed by agents:** pending environment proposals ([§7](#spec-proposals)), linking to the
   project's Stands & access page.
 - **Policy proposals:** pending policy proposals ([§7](#spec-policy-proposals)), linking to
@@ -1141,8 +1148,10 @@ Nothing changed. The owner archives done cards on the board.` Both events are on
 - **Rules changed directly:** versions made by `rules_update`, with reason and author, linking to the
   version in Settings → Rules, until the owner presses **Mark read** (event `rules.notice_read`).
 
-Archived done tasks are left out. Task rows open the task dialog (`/p/<slug>?task=<key>`). The
-sidebar badge shows the total number of rows (hidden at zero); badge and list refetch on events that
+Task rows open the task dialog (`/p/<slug>?task=<key>`). The sidebar badge counts the items that
+each need the owner: cards (a card with an open question or approval request counts once, as
+that), questions, approvals, proposals and rules notices; the grouped lines (work log, unlinked
+sessions, backlog, worktrees, limits) are rows of the page but not in the badge (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
 `comment.delivered`, `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
 `policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `backlog.*`, `concurrency.over`, `question.*` except `question.delivered`, `approval.requested`,
@@ -1236,8 +1245,8 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 **Server instructions** (sent on connect) are the working contract, twelve numbered points: start with the digest for your level (`portfolio_digest`,
 `project_digest` or `task_context`), drill down only when needed, for example with
-`project_snapshot` (its first line names the rules, like `task_context`'s rules line), and keep the
-project pulse current with `project_pulse_set`; pick or create a task and pass `session`
+`project_snapshot` (its first line names the rules, like `task_context`'s rules line); pick or
+create a task and pass `session`
 (desktop id with `session_title`, else a name; `hook_session` if the session start gave one; don't
 rebind without your `local_` id); update `next_step`, `waiting_on` (only who acts next: a name or role, no text
 after it; what happens goes to `next_step`) and `progress` on every stage change and report; report at the end of every stage with the configured first line, states and
@@ -1589,21 +1598,25 @@ Claude Code 2.1.309 (desktop and CLI); the env `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`
 
 <a id="spec-plan-reminders"></a>
 
-**Plan reminders.** For an exactly linked session (`cc_exact`), per open task bound to it: the
-current step ("Plan of acme-shop-12 (accepted): step 2/3 'Address book page' — Add, edit and remove
-addresses.", or the next step when none is in progress, or, with every step done, "all N steps
-done" (in `dev`: "the plan is closed (N/N done) while work goes on: add a step with plan_step_add
-or reopen one"); a draft plan says
-"draft, not accepted yet"), plus "Now doing:" and the active form of the todo item in progress;
-without plan steps the todo summary or, for a task
-in dev with neither, the hint to write down what the agent is going to do. At most three tasks,
-then one line on `plan_step_update`. Sent in `additionalContext` on `SessionStart` (after the
-hook session line), on the `PostToolUse` of a todo change and every `plan_reminder_every`
-`PostToolUse` events (default 30, `0` turns this one off; it repeats the current text). A todo
-change never sends the same text twice in a row for a session (`SessionStart` is a new context and
-resets it). Owner comments in the same answer get
-the rest of the 8000-character budget. When the session start adds the task context
-([§8](#spec-digest-session-start)), that holds the plan and the reminder counts as sent.
+**Plan reminders.** For an exactly linked session (`cc_exact`), per card bound to it in `plan` or
+`dev`: the current step ("Plan of acme-shop-12 (accepted): step 2/3 'Address book page' — Add, edit
+and remove addresses.", or the next step when none is in progress; in `dev` with every step done
+"the plan is closed (N/N done) while work goes on: add a step with plan_step_add or reopen one"; a
+draft plan says "draft, not accepted yet"), plus "Now doing:" and the active form of the todo item
+in progress; without plan steps the todo summary or, for a task in dev with neither, the hint to
+write down what the agent is going to do. Only lines that ask for something: a card in `plan`
+whose steps are all done gives none, and cards in `review`, `test` and `live` give none. A session
+named in `coordinators` ([§6](#spec-rules)) never gets one: it reads plans and drafts in its
+digests. At most three tasks, then one line on `plan_step_update`. Sent in `additionalContext` on
+`SessionStart` (after the hook session line), on the `PostToolUse` of a todo change and every
+`plan_reminder_every` `PostToolUse` events (default 30, `0` turns this one off; it repeats the
+current text, only for cards in `dev`). A todo change never sends the same text twice in a row for
+a session, compared without the "Now doing" part, so moving to the next todo item alone sends
+nothing (`SessionStart` is a new context and resets it). A `PostToolUse` whose hook input names an
+`agent_id` (a subagent's tool call; the field is unverified against a real payload) neither counts
+nor gets a reminder. Owner comments in the same answer get the rest of the 8000-character budget.
+When the session start adds the task context ([§8](#spec-digest-session-start)), that holds the
+plan and the reminder counts as sent.
 
 <a id="spec-hooks-wake"></a>
 
@@ -1745,8 +1758,7 @@ session whose hook id `demo-review-hook-session` is linked exactly (so a simulat
 receives the owner's decisions); an M task in dev with an accepted plan (one step done as
 planned with a report link, one done with a deviation, one in progress, one pending) and an S task
 in dev without a plan whose session (`demo-todo-hook-session`, linked exactly) reported a
-three-item todo. `acme-shop` has a current pulse, `demo-api` one written three weeks ago, so it
-shows as stale.
+three-item todo. `acme-shop` has a recent pulse note, `demo-api` one written three weeks ago.
 `--home` is required. A database that already has a project or an event is refused (exit `1`);
 with `--force` it is renamed to `relaybay.sqlite.before-demo-<YYYYMMDD-HHMMSS>` (with its WAL files)
 and a new one is seeded. The token is not created; `relaybay serve --home <dir>` does that.
@@ -1910,6 +1922,9 @@ modes.
 the write. `require_tracker_log = true` in the config adds it to `done` in every scope, on top of the
 document and without a version, and it shows in the rules line and `rules_get` like any requirement:
 in `warn` mode a move to done without the mark carries the warning, in `strict` it is refused.
+In a project that keeps no tracker (no card has or ever had a tracker reference, none has a
+tracker link now, and the write sets neither) the requirement asks nothing: no warning, no
+refusal.
 
 <a id="spec-environments"></a>
 
@@ -2377,8 +2392,8 @@ notes and decisions are left out unless asked for.
 
 <a id="spec-memory-page"></a>
 
-**Docs & rules page** (`/p/<slug>/docs`): a search box over the index; the project's pulse with its
-age and stale mark ([below](#spec-digest-pulse)); the project's documents
+**Docs & rules page** (`/p/<slug>/docs`): a search box over the index; the project's derived pulse
+line and its pulse note with the note's age ([below](#spec-digest-pulse)); the project's documents
 grouped by kind, the well-known kinds first, then the others by name (title, name, version, last
 change, "lives in the repository"), and **New document** ([above](#spec-documents-edit)); decisions (current, superseded ones collapsed with
 "superseded by #n"); memory notes of the project plus global and role notes (superseded ones
@@ -2398,13 +2413,16 @@ Each section ends with the tool that shows more. Tools: [MCP tools](mcp-tools.md
 
 <a id="spec-digest-pulse"></a>
 
-**Pulse.** `project_pulse_set(project, text)` stores a summary of where the project stands on the
-project row (`pulse`, `pulse_at`, `pulse_by`): at most 5 lines and 600 characters (over that a
-`ValidationError` names both counts), secret scan like other memory writes, event
-`project.pulse_set`. It is shown on Docs & rules and on the All boards project cards with its age and,
-after `pulse_stale_days` (default 7), a "stale" mark. A stage move through MCP in a project whose
-pulse is missing or stale adds one `Note:` line to the answer: never a `Warning (rules)`, never a
-refusal, at most once per project per server run. A move on the board does not use that up.
+**Pulse.** The pulse line is derived from the cards, with no model: cards moved to another stage
+and reports written in the last 7 days, how many open cards wait for the owner (`owner_names`), and
+the first line of the project's newest report with its card and age ("last 7 days: 3 cards moved,
+12 reports · 1 waits for the owner · latest: acme-shop-4, 2h ago: verified · M · checkout"). It is
+shown on All boards, on Docs & rules and in `portfolio_digest` and `project_digest`.
+`project_pulse_set(project, text)` writes an optional hand-written **note** on the project row
+(`pulse`, `pulse_at`, `pulse_by`): at most 5 lines and 600 characters (over that a `ValidationError`
+names both counts), secret scan like other memory writes, event `project.pulse_set`. The note is
+shown under the pulse line with its date and author; it has no stale mark, and nothing asks for
+it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignored.
 
 <a id="spec-digest-levels"></a>
 
@@ -2412,8 +2430,8 @@ refusal, at most once per project per server run. A move on the board does not u
 
 | Digest | Sections, most important first |
 |---|---|
-| `portfolio_digest` | identity and counts; one line per project (stage counts, first pulse line, stale mark); what waits for the owner (the Inbox's lists); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
-| `project_digest` | identity, stage counts, description and pulse; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; environments (name, kind, the agents' level); current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
+| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
+| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; environments (name, kind, the agents' level); current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
 | `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's and the project's current decisions; changes; linked document sections; the effective rules line; environments (also the base URL); relevant notes |
 
 **Linked document sections:** any `relaybay://doc/<project>/<doc>#<anchor>` in the task's description

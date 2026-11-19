@@ -8,7 +8,7 @@ whole lines first and say how many are left and where to read them.
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
@@ -20,9 +20,11 @@ from relaybay.domain.plan import Plan, TodoItem, one_line, reminder_line
 from relaybay.domain.stages import STAGES
 
 if TYPE_CHECKING:
-    from relaybay.service import Inbox
+    from relaybay.service import Inbox, InboxCard
 
 RECENT_DECISION_DAYS = 7
+PULSE_DAYS = 7
+PULSE_LATEST_MAX = 120
 FIRST_READ_HOURS = 24
 # A SessionStart source after which the agent remembers nothing it read before.
 NEW_CONTEXT_SOURCES = ("startup", "clear")
@@ -80,11 +82,42 @@ def age(ts: str, now: datetime | None = None) -> str:
     return "just now"
 
 
-def pulse_stale(project: Project, days: int, now: datetime) -> bool:
-    """The pulse exists and is older than `days`."""
-    if not project.pulse_at:
-        return False
-    return now - datetime.fromisoformat(project.pulse_at) > timedelta(days=days)
+@dataclass(frozen=True, slots=True)
+class Pulse:
+    """Where a project stands, derived from its cards: cards moved to another stage and reports
+    written in the last PULSE_DAYS days, open cards waiting on the owner, the newest report."""
+
+    moved: int = 0
+    reports: int = 0
+    waiting: int = 0
+    latest_key: str | None = None
+    latest: str | None = None  # the newest report's first line
+    latest_at: str | None = None
+
+
+def pulse_line(pulse: Pulse | None, now: datetime) -> str:
+    """`last 7 days: 3 cards moved, 12 reports · 1 waits for the owner · latest: acme-shop-4,
+    2h ago: verified · M · checkout`."""
+    p = pulse or Pulse()
+    cards = f"{p.moved} card{'' if p.moved == 1 else 's'} moved"
+    reports = f"{p.reports} report{'' if p.reports == 1 else 's'}"
+    bits = [f"last {PULSE_DAYS} days: {cards}, {reports}"]
+    if p.waiting:
+        bits.append(f"{p.waiting} wait{'s' if p.waiting == 1 else ''} for the owner")
+    if p.latest_key and p.latest_at:
+        bits.append(
+            f"latest: {p.latest_key}, {age(p.latest_at, now)}: {_clip(p.latest, PULSE_LATEST_MAX)}"
+        )
+    return " · ".join(bits)
+
+
+def pulse_note_head(project: Project, now: datetime) -> str | None:
+    """The hand-written note's head (its age and author), None without a note. No stale mark:
+    the derived line says where the project stands."""
+    if not project.pulse or not project.pulse_at:
+        return None
+    by = f", by {_clip(project.pulse_by, 40)}" if project.pulse_by else ""
+    return f"Note ({age(project.pulse_at, now)}{by}):"
 
 
 def check_pulse(text: str) -> None:
@@ -95,13 +128,6 @@ def check_pulse(text: str) -> None:
             f"A pulse takes at most {PULSE_LINES_MAX} lines and {PULSE_CHARS_MAX} characters;"
             f" this text has {lines} line(s) and {chars} character(s). Shorten it."
         )
-
-
-def _pulse_mark(project: Project, stale_days: int, now: datetime) -> str:
-    if not project.pulse_at:
-        return "no pulse yet"
-    mark = ", stale" if pulse_stale(project, stale_days, now) else ""
-    return f"pulse ({age(project.pulse_at, now)}{mark})"
 
 
 # --- sections and the budget ---------------------------------------------------------------
@@ -354,32 +380,71 @@ class PortfolioData:
     stale_tasks: list[Task]
     blocks: list[MemoryBlock]
     changes: Changes
-    pulse_stale_days: int
     task_stale_days: int
     now: datetime
     rules_line: str = ""
+    pulses: dict[int, Pulse] = field(default_factory=dict)  # by project id
 
 
-def _project_line(project: Project, counts: dict[str, int], stale_days: int, now: datetime) -> str:
+def _project_line(
+    project: Project, counts: dict[str, int], pulse: Pulse | None, now: datetime
+) -> str:
     stages = " · ".join(f"{s} {counts[s]}" for s in STAGES if counts.get(s)) or "no tasks"
-    pulse = _pulse_mark(project, stale_days, now)
+    line = f"- **{project.slug}** ({_clip(project.name, 40)}): {stages} — {pulse_line(pulse, now)}"
+    note = pulse_note_head(project, now)
     first = next((x.strip() for x in (project.pulse or "").split("\n") if x.strip()), "")
-    head = f"{pulse}: {_clip(first, 120)}" if first else pulse
-    return f"- **{project.slug}** ({_clip(project.name, 40)}): {stages} — {head}"
+    # Only the word "Note" is lowercased: the author's name stays as written.
+    return f"{line} · n{note[1:]} {_clip(first, 120)}" if note and first else line
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _card_line(card: "InboxCard") -> str:
+    """`- [test] acme-shop-4 Checkout — waits for the owner · to accept 1/3 · next: ...`."""
+    t = card.task
+    marks = []
+    if card.waiting:
+        marks.append("waits for the owner")
+    if card.review:
+        marks.append(f"to accept {t.review_accepted}/{t.review_total}")
+    if card.replies:
+        marks.append(_plural(len(card.replies), "agent reply", "agent replies") + " unread")
+    if card.undelivered:
+        why = f" ({_clip(card.wait_reason, 80)})" if card.wait_reason else ""
+        marks.append(_plural(len(card.undelivered), "comment", "comments") + f" not delivered{why}")
+    if card.warnings:
+        marks.append(f"rule warning: {_clip(card.warnings[0], 120)}")
+    if t.next_step:
+        marks.append(f"next: {_clip(t.next_step, 120)}")
+    return f"- [{t.stage.value}] {_task_ref(t)} — {' · '.join(marks)}"
 
 
 def inbox_lines(inbox: "Inbox") -> list[str]:
-    """One line per thing that waits for the owner, the same list the board's Inbox shows."""
-    lines = [f"- waits for the owner: {_task_line(t)[2:]}" for t in inbox.waiting]
-    lines += [f"- to accept: {_task_ref(t)}" for t in inbox.review]
-    lines += [f"- agent reply: {_task_ref(t)} ({len(c)} unread)" for t, c in inbox.replies]
+    """The rows the board's Inbox shows: open questions and approval requests, each open card
+    once with its marks, then one line per proposal and notice, then the grouped lines."""
+    lines = [
+        f"- question on {q.task_key or 'no card'} from {_clip(q.asked_by, 40)}:"
+        f" {_clip(q.text, 120)}"
+        for q in inbox.questions
+    ]
+    lines += [
+        f"- approval request on {a.task_key} from {_clip(a.requested_by, 40)}: {a.action}"
+        f" — {_clip(a.summary, 120)}"
+        for a in inbox.approvals
+    ]
+    lines += [_card_line(c) for c in inbox.cards]
     lines += [f"- environment proposal #{p.id} in {p.project_slug}" for p in inbox.proposals]
     lines += [f"- policy proposal #{p.id} on {p.scope}" for p in inbox.policy_proposals]
     lines += [f"- rules proposal #{p.id} on {p.scope}" for p in inbox.rule_proposals]
     lines += [f"- rules changed directly: {v.scope} v{v.number}" for v in inbox.rule_notices]
-    lines += [f"- rule warning: {_task_ref(t)}: {_clip(w[0], 120)}" for t, w in inbox.rule_warnings]
-    lines += [f"- work log not entered: {_task_ref(t)}" for t in inbox.not_logged]
-    lines += [f"- unlinked hook session: {_clip(s.name, 60)}" for s in inbox.unlinked]
+    if inbox.not_logged:
+        done = _plural(len(inbox.not_logged), "done card", "done cards")
+        lines.append(f"- {done} without the work-log mark (the Inbox on the board lists them)")
+    if inbox.unlinked:
+        sessions = _plural(len(inbox.unlinked), "hook session", "hook sessions")
+        lines.append(f"- {sessions} not linked (Sessions on the board)")
     if inbox.running_over is not None:
         lines.append(f"- {inbox.running_over} sessions running, cap {inbox.running_cap}")
     return lines
@@ -393,7 +458,7 @@ def portfolio_text(data: PortfolioData, footer: Callable[[bool], str], budget: i
             "# Portfolio",
             [
                 f"{len(data.projects)} project(s) · {open_tasks} open task(s)"
-                f" · {data.inbox.count} waiting for the owner",
+                f" · {data.inbox.badge} waiting for the owner",
                 *([data.rules_line] if data.rules_line else []),
             ],
             "project_digest(project) for one project",
@@ -403,7 +468,7 @@ def portfolio_text(data: PortfolioData, footer: Callable[[bool], str], budget: i
     _section(
         sections,
         "## Projects",
-        [_project_line(p, c, data.pulse_stale_days, now) for p, c in data.projects],
+        [_project_line(p, c, data.pulses.get(p.id), now) for p, c in data.projects],
         "project_digest(project)",
         1,
     )
@@ -453,9 +518,9 @@ class ProjectData:
     blocks: list[MemoryBlock]
     notes: list[MemoryNote]  # current, project and global
     changes: Changes
-    pulse_stale_days: int
     now: datetime
     rules_line: str = ""
+    pulse: Pulse | None = None
 
 
 def waits_for_owner(task: Task, owner_names: set[str]) -> bool:
@@ -469,9 +534,8 @@ def project_text(data: ProjectData, footer: Callable[[bool], str], budget: int) 
     head = [
         f"Tasks: {stages}" if stages else "No tasks yet.",
         *([_clip(p.description, 200)] if p.description else []),
-        _pulse_mark(p, data.pulse_stale_days, now).capitalize()
-        + (f", by {_clip(p.pulse_by, 40)}:" if p.pulse_by else ""),
-        *(p.pulse or "").split("\n"),
+        f"Pulse: {pulse_line(data.pulse, now)}",
+        *([note, *(p.pulse or "").split("\n")] if (note := pulse_note_head(p, now)) else []),
         *([data.rules_line] if data.rules_line else []),
     ]
     sections = [Section(f"# {slug} — {p.name}", head, f'project_snapshot("{slug}")', 0)]

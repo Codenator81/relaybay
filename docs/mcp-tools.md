@@ -10,7 +10,7 @@ with a message that says what to do.
 The server's MCP `instructions` (sent once when a session connects) are a short working contract:
 start with the digest for your level (`portfolio_digest`, `project_digest` or `task_context`),
 drill down only when needed, for example with `project_snapshot` (its first line names the rules,
-like `task_context`'s rules line), and keep the project pulse current with `project_pulse_set`; pick or create a task and pass
+like `task_context`'s rules line); pick or create a task and pass
 `session` (your `local_` id with `session_title` if you know it, plus `hook_session` if the
 session start gave you one; if not, don't rebind — the coordinator binds you); update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and
 report; start a report with the configured first line, states and sizes (taken from the
@@ -187,7 +187,7 @@ Each decision on the board reaches the bound session as an owner comment (like a
 continue with step 2`, `Step 2 'Cart badge' rejected: the badge shows 1`, or a plain comment `On
 step 2 'Cart badge': …`. Acknowledge it with `comment_ack`; after a fix, reopen the step with
 `review_step_update(status="open")` or change its text. The card shows "Review 1/2"; tasks in
-review or test with a checklist are listed in the owner's Inbox (Review queue).
+review or test with a checklist are listed in the owner's Inbox, marked "to accept".
 
 ## Plan
 
@@ -450,10 +450,10 @@ the tool to drill down at the end of each section. Behaviour in detail:
 
 | Tool | Arguments | Returns or does |
 |---|---|---|
-| `portfolio_digest` | `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a coordinator: one line per project (stage counts, first pulse line, stale mark), what waits for the owner, current decisions of the last 7 days, open tasks with no change for `task_stale_days`, global blocks, changes. |
-| `project_digest` | `project`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a manager: pulse, open tasks by stage with next step and waiting on, open questions, recent current decisions, environments (name, kind, level), project blocks, project and global notes flagged `[verify]` or `[never read]`, changes. |
+| `portfolio_digest` | `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a coordinator: one line per project (stage counts, the derived pulse line, the first line of the pulse note), what waits for the owner (open questions and approval requests first, then each open card once with its marks, then grouped lines), current decisions of the last 7 days, open tasks with no change for `task_stale_days`, global blocks, changes. |
+| `project_digest` | `project`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For a manager: the derived pulse and the pulse note, open tasks by stage with next step and waiting on, open questions, recent current decisions, environments (name, kind, level), project blocks, project and global notes flagged `[verify]` or `[never read]`, changes. |
 | `task_context` | `task`, `budget?`, `since_event?`, `session?`, `session_title?`, `hook_session?` | For the session on the task: fields and progress, plan with the current step, the task's and project's decisions, linked document sections (`relaybay://doc/<project>/<doc>#<anchor>` in the description or progress; unresolved ones marked `broken`), environment map with base URLs, the rules line, unread owner comments (count and ids; text only of those already delivered to you; it delivers nothing), relevant notes, changes. |
-| `project_pulse_set` | `project`, `text`, `session?`, `session_title?`, `hook_session?` | Writes the pulse: at most 5 lines and 600 characters, secret scan, event `project.pulse_set`. Over the limit it fails with both counts. Shown on the board with its age, marked stale after `pulse_stale_days` (default 7). A stage move in a project whose pulse is missing or stale says so in one `Note:` line, once per project per server run. |
+| `project_pulse_set` | `project`, `text`, `session?`, `session_title?`, `hook_session?` | Writes the pulse note: at most 5 lines and 600 characters, secret scan, event `project.pulse_set`. Over the limit it fails with both counts. Shown with its date under the pulse line relaybay derives from the cards; never marked stale, and nothing asks for it. |
 
 - **`budget`** — size limit in characters, held between 500 and 40000 (default
   `digest_budget_chars`, 12000). The lowest priority sections lose whole lines first and say

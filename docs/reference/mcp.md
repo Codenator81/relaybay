@@ -115,7 +115,7 @@ Compact markdown snapshot of a project: open tasks by stage with waiting-on, nex
 
 ### `project_pulse_set`
 
-Write the project's pulse: a short summary of where it stands, shown in the digests and on the board. Update it when the picture changes; it is marked stale after some days (config pulse_stale_days).
+Write the project's pulse note: a short hand-written summary, shown with its date under the pulse line relaybay derives from the cards (in the digests and on the board). Optional; it is never marked stale.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

@@ -486,7 +486,8 @@ def test_board_thread_shows_marks_and_escapes(board: TestClient, token: str) -> 
     page = board.get(f"/t/{task.key}")
     assert "comment-form" in page.text and "On it" in page.text
     inbox = board.get("/inbox")
-    assert 'id="inbox-replies"' in inbox.text and "On it" in inbox.text
+    assert f'id="inbox-card-{task.key}"' in inbox.text and "1 reply unread" in inbox.text
+    assert "On it" in inbox.text
 
     read = board.post(f"{url}/read", data={"csrf_token": csrf_token(token)}, headers=HTMX)
     assert read.status_code == 200 and "Mark replies read" not in read.text

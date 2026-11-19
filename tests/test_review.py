@@ -498,12 +498,10 @@ def test_inbox_review_queue(board: TestClient) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.create_task, "acme-shop", "No checklist", stage="test")
     html = board.get("/inbox").text
-    assert 'id="inbox-review"' in html and f"?task={key}&amp;tab=review" in html
-    assert (
-        "0/3 accepted" in html and "No checklist" not in html.split('id="inbox-review"')[1][:2000]
-    )
+    assert f'id="inbox-card-{key}"' in html and f"?task={key}&amp;tab=review" in html
+    assert "to accept 0/3" in html and "No checklist" not in html
     run_in_app(board, service.set_stage, key, "live")
-    assert 'id="inbox-review"' not in board.get("/inbox").text
+    assert "to accept" not in board.get("/inbox").text
 
 
 def test_notification_permission_only_from_the_settings_button(board: TestClient) -> None:

@@ -450,10 +450,9 @@ async def test_reminders_carry_the_current_step_and_the_todo_item(tmp_path: Path
             f"Plan of {task.key} (draft, not accepted yet): step 2/3 'Address book page'"
             " — Add, edit and remove addresses." in start
         )
-        # A todo change reminds again, now with the item in progress.
+        # A todo change that only changes the item in progress says nothing new.
         await fire(svc, "PostToolUse", **todo_create("1", "Build the form", "Building the form"))
-        answer = await fire(svc, "PostToolUse", **todo_update("1", "in_progress"))
-        assert "Now doing: Building the form." in context_of(answer)
+        assert await fire(svc, "PostToolUse", **todo_update("1", "in_progress")) is None
         # Every 3rd tool event repeats it (the todo events counted too); nothing in between.
         answers = [await fire(svc, "PostToolUse", tool_name="Bash") for _ in range(4)]
         assert answers[1:3] == [None, None]
@@ -477,14 +476,50 @@ async def test_reminder_hint_without_plan_and_only_for_exact_sessions(service: S
     task = await linked_task(service)
     start = context_of(await fire(service, "SessionStart"))
     assert f"{task.key} is in dev without a plan: write down what you are going to do" in start
-    await fire(service, "PostToolUse", **todo_create("1", "Fix it"))
-    answer = await fire(service, "PostToolUse", **todo_update("1", "in_progress"))
+    answer = await fire(service, "PostToolUse", **todo_create("1", "Fix it"))
     assert "has no plan; your todo (0/1 done) is shown as the agent's plan" in context_of(answer)
+    # Only the item in progress changed: nothing new to say.
+    assert await fire(service, "PostToolUse", **todo_update("1", "in_progress")) is None
 
     # A session linked by a folder guess (not by the agent) gets no plan text.
     await service.create_task("acme-shop", "Other", stage="dev", session="guessed")
     other = context_of(await fire(service, "SessionStart", cc_id=CC_B))
     assert "relaybay plan reminder" not in other
+
+
+async def test_reminder_only_for_a_card_in_plan_or_dev(service: Service) -> None:
+    task = await linked_task(service)
+    await service.set_plan(task.key, STEPS)
+    first = await fire(service, "PostToolUse", **todo_create("1", "Read the code"))
+    assert f"Plan of {task.key} (draft, not accepted yet): next step 1/3" in context_of(first)
+    for stage in ("review", "test", "live"):
+        await service.set_stage(task.key, stage)
+        assert await fire(service, "PostToolUse", **todo_create(stage, stage)) is None
+    await service.set_stage(task.key, "plan")
+    await service.update_plan_step(task.key, 1, "in_progress")
+    again = await fire(service, "PostToolUse", **todo_create("2", "Plan it"))
+    assert f"Plan of {task.key} (draft, not accepted yet): step 1/3" in context_of(again)
+
+
+async def test_reminder_never_goes_to_a_coordinator(tmp_path: Path) -> None:
+    svc = Service(tmp_path / "relaybay.sqlite", coordinators=[DESKTOP_A])
+    await svc.start()
+    try:
+        task = await linked_task(svc)  # created by the coordinator: it is the bound session
+        await svc.set_plan(task.key, STEPS)
+        assert await fire(svc, "PostToolUse", **todo_create("1", "Hand it over")) is None
+        assert "relaybay plan reminder" not in context_of(await fire(svc, "SessionStart"))
+    finally:
+        await svc.close()
+
+
+async def test_a_subagent_tool_call_gets_no_reminder(service: Service) -> None:
+    task = await linked_task(service)
+    await service.set_plan(task.key, STEPS)
+    sub = await fire(service, "PostToolUse", agent_id="a1b2", **todo_create("1", "Sub"))
+    assert sub is None
+    main = await fire(service, "PostToolUse", **todo_create("2", "Main"))
+    assert f"Plan of {task.key}" in context_of(main)
 
 
 async def test_reminder_shares_the_answer_with_owner_comments(service: Service) -> None:

@@ -61,8 +61,8 @@ Under the state line come the last report, then the comment thread.
 
 Before the card moves to `review` or `test`, the session writes what you should check
 (`review_steps_set`) and attaches screenshots. Accept or reject each step on the card's Review tab;
-each decision reaches the session as a comment. The Inbox's Review queue lists the cards waiting
-for you.
+each decision reaches the session as a comment. The Inbox lists the cards waiting
+for you with the mark "to accept n/m".
 
 ## 7. Open the session again
 
