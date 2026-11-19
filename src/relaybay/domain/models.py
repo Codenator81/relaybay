@@ -229,6 +229,12 @@ class ImportItem:
     content_hash: str  # the file's value at the import
     target_hash: str  # the target's value right after the import
     imported_at: str
+    # What the import's normalisation removed from the file, so export writes its bytes back:
+    # 'lf' or 'crlf', a byte order mark, the whitespace before and after the stored text.
+    eol: str | None = None
+    bom: bool = False
+    lead_blank: str | None = None
+    final_newlines: str | None = None
 
 
 @dataclass(slots=True)

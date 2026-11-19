@@ -2369,9 +2369,22 @@ a conflict whose message holds the current version number and the current text (
 merge. Writing the same text again writes no version. Section anchors come from ATX headings
 (`#` … `######`) outside fenced code: lowercase, punctuation dropped, spaces and dashes collapsed
 (`## Gift cards` → `gift-cards`, empty → `section`), a repeat numbered `-2`, `-3`. A section is
-its heading and everything until the next heading of the same or a higher level. With `section`,
-the new text replaces that section: starting with a heading it replaces the heading too,
-otherwise only the text under it. A diff between any two versions is `difflib.unified_diff`.
+its heading and everything until the next heading of the same or a higher level. An **explicit
+anchor**, `<a id="name"></a>` alone on a line directly above a heading (blank lines between
+allowed), is an alias of that section: `doc_get`, links, search hits and the page accept either
+name, and the alias survives a reworded heading. An alias equal to another section's anchor is
+ignored. With `section`, the new text replaces that section: starting with a heading it replaces
+the heading too, otherwise only the text under it. Only the section's own lines change: the blank
+lines that end it (and, for text without a heading, those right under the heading) stay as they
+were, so a section replaced by its own text leaves the body byte for byte. With `lines` (`a-b`,
+1-based, inclusive) and `expected` (their text as read), only those lines are replaced (`body` `-`
+removes them) when they still read as `expected`, both compared without trailing blank lines;
+otherwise the answer is a conflict with their current text. A replacement keeps the range's
+trailing blank lines; the result is stored without outer blank lines, and a write that would leave
+the document empty is refused. A line write guards itself with `expected`: a stale `base_version` alone is no
+conflict there (decided by default). A database document holds at most 200,000 characters; a
+larger one is a file document ([below](#spec-documents-file)). A diff between any two versions is
+`difflib.unified_diff`.
 
 <a id="spec-documents-kinds"></a>
 
@@ -2392,6 +2405,71 @@ empty version); an unlinked one may not. The board shows "lives in the repositor
 edit, `doc_get` and `doc_list` name the link, export leaves a linked document without text out of the
 layout (with text it is written as usual), and import lists a changed file of a linked document as
 `skipped` ("lives in the repository"), also with `--overwrite`.
+
+<a id="spec-documents-file"></a>
+
+**File documents** (design 0026). `doc_update(base_version=0, source_path=<absolute path>, body="-")`
+or **New document: a file on disk** on Docs & rules adds a document whose text stays in a file on
+the machine relaybay runs on, inside a repository or not; relaybay keeps no second copy and never
+writes the file. The path must be absolute and resolve (links first) to a regular file; over 8 MB
+or not UTF-8 is refused. The resolved path, never the given one, is then checked against a deny
+list (decided by default, the most reversible way): the data folder at any depth except its
+`worktrees/`, the token file and `desktop.toml`, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`,
+`~/.docker`, `/proc`, `/sys`, `/dev`, and file names (any case) `.env*`, `*.pem`, `*.key`,
+`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `*.kdbx`, `credentials*`; a network share or device path is
+refused before the disk is touched and again after resolution (a junction to a share), unless
+`attachment_roots` names that share. The stored path is the resolved one, and every later read
+resolves it again: a file swapped for a link into a denied place is refused ("refused now"), its
+last index kept. The file is read and indexed before the write transaction opens. Every read
+compares the file's size and modification time with the last read, hashes it when
+they differ (SHA-256 of the bytes) and, when the hash differs, rebuilds the section index and writes
+one `document.updated` event (actor `file`, `file: true`, `hash_before`, `hash_after`,
+`sections_changed` and the anchors `added`, `removed`, `changed`, at most 20 each, compared by the
+hash of each section's own text). Nothing watches the disk. The text is not versioned:
+`doc_history` lists those events, `doc_get` names the file and the hash. A missing file keeps its
+document and its last index, marked "file missing since …" (`document.file_missing_at`); reads say
+so and give the pointer only; the file coming back clears the mark. `doc_update` on a file
+document is refused, also with `force`, naming the file and, with `section`, its lines. A secret a
+detector of the project's policy finds is masked in the index on every line it covers: a line that
+matches on its own, and every line of a match only the whole text shows (a private key from its
+BEGIN line to its END line or the end of the text, a flag and its value on two lines). A line
+that matches on its own keeps `redact`'s version only when no detector finds anything in it
+again; every other masked line, and every line only a match across lines covers, becomes a fixed
+mark (a heading `## [masked]`, keeping its level). Titles,
+heading paths, anchors and aliases are taken from the masked lines, so the index, the outline,
+search hits, a card's pointer and `document.updated` anchors never carry the value. The count is
+`document.masked_lines` and the outline names it; the document is not refused, and reads pass the
+file's text through. Finding them is linear in the text (one pass per line, one over the whole
+text). Export leaves file documents out; import lists a
+file of the layout whose document is a file document as `skipped`. The answers name the file as
+`<repo>:<path>` when it is inside a repository of the project, else by its path. Not built: a
+worktree session mapping the path to its own copy.
+
+<a id="spec-documents-index"></a>
+
+**The section index.** `document_section` holds one row per section of a document's current text
+(database documents on every write, file documents on a changed hash; rebuilt at start for
+database documents that have none): position, anchor, alias, level, title, heading path
+(`Spec > Payments > Gift cards`), first and last line (with the subsections), the last line of its
+own text, characters, bytes and the hash of its own text; the text before the first heading, when
+it is not blank, is position 0 with level 0. The searchable text (each section's own text, secrets
+masked, with the heading path) is the FTS5 table `doc_section_index` the service creates, like
+`search_index`, or the plain table `doc_section_text` without FTS5; a count mismatch at start
+rebuilds it. `doc_outline(project, doc, depth?, under?)` lists the headings: level, anchor (and
+alias), title, lines `a-b`, characters and the token estimate (bytes / 3.5). `doc_search(project,
+query, doc?, limit?)` returns hits per section (every word or its stem in the section's own text or
+heading path; FTS5 rank, else in document order): document, anchor, heading path, the best line
+with the non-blank lines next to it, the section's lines and size, and the file. `doc_get` takes
+`lines` (`a-b`) and `max_chars` (2,000 to 1,000,000): a read over the cap returns the first lines
+of the range, the outline of its top two heading levels inside it as far as half the cap allows
+(the rest as `… N more heading(s): doc_outline(..., under=…)`) and `Read on: doc_get(...,
+lines="x-y")` with the next range that fits; a single line longer than the room is cut and said so.
+The whole answer is measured as written and never over the cap: the outline loses headings
+first, then the text loses lines from its end; long names in the header are clipped. Never a
+silent cut. The default cap is 40,000 characters, only for a
+document over 200,000 characters (a file document); a smaller one reads whole unless `max_chars`
+is passed. `memory_search` keeps one hit per document and adds the anchor of the section that holds
+its line.
 
 <a id="spec-documents-edit"></a>
 
@@ -2487,9 +2565,15 @@ description, limit, owner-only; CSRF and the board cookie like other forms, a re
 the typed text); the effective rules (`rules_get` rendered). Documents, decisions and notes
 refresh live on `document.updated`, `decision.added`, `memory.*`, and the pulse on
 `project.pulse_set`; blocks and search results stay as
-the owner left them. A document page renders the markdown safely with heading anchors, a list of
-sections, the history with a link per version and a diff between any two versions (escaped lines,
-added and removed lines marked).
+the owner left them. A document page renders the markdown safely with heading anchors (an explicit
+anchor's line is not shown, its name leads to the heading), a table of contents next to the text
+that stays in view (headings of levels 1 and 2, deeper ones folded under theirs, each with its
+size, the section being read marked), a search box (`?q=`: `doc_search` in this document, one row
+per section, a click goes to the section with the words marked), the history with a link per
+version and a diff between any two versions (escaped lines, added and removed lines marked). A file
+document shows where it lives, when it was read and changed, its hash and masked lines, no edit
+links, and the changes seen in the file instead of versions. A search hit on Docs & rules links to
+its section.
 
 <a id="spec-digest"></a>
 
@@ -2515,13 +2599,17 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 
 | Digest | Sections, most important first |
 |---|---|
-| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
+| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
 | `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; environments (name, kind, the agents' level); current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
 | `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's and the project's current decisions; changes; linked document sections; the effective rules line; environments (also the base URL); relevant notes |
 
-**Linked document sections:** any `relaybay://doc/<project>/<doc>#<anchor>` in the task's description
-or progress resolves to the section's heading and first lines (without an anchor, the document's
-title and start); one that does not resolve is listed as `broken`. At most 5 links.
+**Linked document sections:** the task's document field when it is a `relaybay://doc/...` link,
+then any `relaybay://doc/<project>/<doc>#<anchor>` in the description or progress, each becomes a
+pointer without the document's text: `spec#gift-cards "Gift cards" · lines 2140-2610 · 52k chars
+(~15k tokens) · shop:docs/spec.md · doc_get("shop", "spec", section="gift-cards")` (the file only
+for a file document, the anchor as the card wrote it, an explicit anchor included). A link without
+an anchor names the document's size and `doc_outline`. One that does not resolve is listed as
+`broken`. At most 5 links.
 
 **Unread owner comments** in `task_context`: the count and the ids; the text only of comments the
 existing channels already delivered to the reader's session. Nothing is marked delivered here.
@@ -2683,7 +2771,12 @@ place in the layout; a task document no task links to under `docs/`; a document 
 repository only when it has text), current and superseded decisions
 to `projects/<slug>/decisions.md`, current notes and the registry with a `ref` and a `rank` column. It reads a copy
 of the database. The same data gives the same bytes: sorted, no times but stored ones; an import of an
-export changes nothing. Dry run by default, `--apply` writes. The manifest `.relaybay-export.json`
+export changes nothing. A document's file comes back byte for byte: `import_item` keeps what the
+import's normalisation removed (the line ending `lf` or `crlf`, a UTF-8 byte order mark, the exact
+whitespace before and after the stored text), and export puts it back, so a file imported and not
+changed on the board is written with the same SHA-256. A file with mixed line endings imports with
+a warning and exports with LF; only a changed line ending or outer whitespace updates the
+bookkeeping, nothing on the board. Dry run by default, `--apply` writes. The manifest `.relaybay-export.json`
 holds each file's hash and whether export wrote it. One rule for overwriting: a file export did not
 write (`written: false`, or not in the manifest) is a `conflict` whatever its hash and `--force` takes
 it over; a file export wrote is overwritten only while it matches its hash, else it is a `conflict`

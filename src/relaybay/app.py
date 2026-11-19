@@ -35,6 +35,7 @@ def create_app(settings: Settings) -> FastAPI:
         policy_file=settings.policy_path,
         attachments_dir=settings.attachments_dir,
         attachment_roots=settings.attachment_roots,
+        protected_paths=[settings.token_path],
         attachment_max_bytes=settings.attachments_max_mb * MB,
         attachment_task_max_bytes=settings.attachments_task_max_mb * MB,
         plan_reminder_every=settings.plan_reminder_every,

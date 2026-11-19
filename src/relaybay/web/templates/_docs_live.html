@@ -22,7 +22,7 @@
       {% for d in items %}
       <li class="inbox-row doc-row">
         <a class="inbox-title doc-title" href="/p/{{ project.slug }}/docs/{{ d.slug }}"><strong>{{ d.title }}</strong></a>
-        <span class="muted doc-meta"><code>{{ d.slug }}</code> · version {{ d.version }} · updated <time datetime="{{ d.updated_at }}" data-age title="{{ d.updated_at[:19] }}Z">{{ d.updated_at|age }}</time>{% if d.source_url %} · lives in the repository{% endif %}</span>
+        <span class="muted doc-meta"><code>{{ d.slug }}</code>{% if d.is_file %} · a file on disk{% if d.file_missing_at %}, missing{% endif %}{% else %} · version {{ d.version }}{% endif %} · updated <time datetime="{{ d.updated_at }}" data-age title="{{ d.updated_at[:19] }}Z">{{ d.updated_at|age }}</time>{% if d.source_url %} · lives in the repository{% endif %}</span>
       </li>
       {% endfor %}
     </ul>

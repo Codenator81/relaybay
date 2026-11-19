@@ -20,6 +20,7 @@ you click **Update to X.Y.Z** in the program, the download of that release's ins
 - **How-to guides** — [work a card with a session](how-to/work-a-card.md),
   [coordinate many projects](how-to/coordinator.md),
   [import and export markdown](how-to/markdown-import-export.md),
+  [read a large spec in parts](how-to/large-documents.md),
   [phone and LAN access](how-to/lan-access.md),
   [screenshots for review](how-to/screenshots-for-review.md),
   [troubleshooting](how-to/troubleshooting.md),

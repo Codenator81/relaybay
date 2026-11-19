@@ -3,6 +3,7 @@
 item never stops the others. Layout and mapping: docs/how-to/markdown-import-export.md."""
 
 import asyncio
+import codecs
 import contextlib
 import difflib
 import hashlib
@@ -32,11 +33,13 @@ from relaybay.domain.markdown_layout import (
     RETRO,
     Aliases,
     BacklogRow,
+    FileStyle,
     ParsedNote,
     RegistryRow,
     decision_bullets,
     doc_kind,
     escapes_root,
+    file_style,
     first_heading,
     folder_from_document,
     load_aliases,
@@ -170,6 +173,7 @@ class SourceFile:
     rel: str
     text: str
     mtime: float = 0.0  # a registry date without a year resolves against it
+    bom: bool = False  # the file started with a UTF-8 byte order mark (not in `text`)
 
 
 def _read(path: Path, rel: str) -> SourceFile | Item:
@@ -183,7 +187,10 @@ def _read(path: Path, rel: str) -> SourceFile | Item:
             f"the file has {size} bytes; the limit is {FILE_MAX_BYTES}",
         )
     try:
-        return SourceFile(rel, path.read_bytes().decode("utf-8-sig"), path.stat().st_mtime)
+        data = path.read_bytes()
+        return SourceFile(
+            rel, data.decode("utf-8-sig"), path.stat().st_mtime, data.startswith(codecs.BOM_UTF8)
+        )
     except UnicodeDecodeError as exc:
         return Item("file", rel, rel, "error", f"not valid UTF-8 (byte {exc.start})")
 
@@ -408,6 +415,15 @@ class _Planner:
         if project in self.projects:
             with contextlib.suppress(NotFoundError):  # not created yet: an add
                 current, text = await self.service.get_document(project, doc)
+        if current is not None and current.is_file:
+            detail = f"lives in the file {current.source_path}; relaybay only reads it"
+            self.add("document", name, file.rel, "skipped", detail)
+            return
+        style, mixed = file_style(file.text, file.bom)
+        if mixed:
+            self.warnings.append(
+                f"{file.rel}: mixed line endings (CRLF and LF); its export will use LF"
+            )
         target_hash = text_hash(text) if current else ""
         tracked = self.tracked.get(("document", name))
         action, detail, record = _decide(
@@ -418,6 +434,8 @@ class _Planner:
             same=current is not None and text == body,
             overwrite=self.overwrite,
         )
+        if action == "unchanged" and tracked is not None and tracked_style(tracked) != style:
+            record = True  # only the file's bytes changed (line endings, outer blank lines)
         if current is not None and current.source_url and action in ("update", "conflict"):
             detail = f"lives in the repository ({current.source_url}); change it there"
             self.add("document", name, file.rel, "skipped", detail)
@@ -442,6 +460,7 @@ class _Planner:
                 "kind": kind,
                 "base": current.version if current else 0,
                 "target_id": current.id if current else 0,
+                "style": style,
             },
         )
 
@@ -1500,8 +1519,21 @@ async def make_plan(
 
 async def _record(service: Service, item: Item, target_id: int, target_hash: str) -> None:
     await service.record_import_item(
-        item.kind, item.item, item.source, target_id, item.content_hash, target_hash
+        item.kind,
+        item.item,
+        item.source,
+        target_id,
+        item.content_hash,
+        target_hash,
+        style=item.payload.get("style"),
     )
+
+
+def tracked_style(item: ImportItem) -> FileStyle | None:
+    """How the file of an imported document looked; None for an import before 0053."""
+    if item.eol is None:
+        return None
+    return FileStyle(item.eol, item.bom, item.lead_blank or "", item.final_newlines or "")
 
 
 async def _apply_document(service: Service, item: Item) -> None:

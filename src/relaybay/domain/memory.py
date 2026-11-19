@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import snowballstemmer
 
-from relaybay.domain.errors import ValidationError
+from relaybay.domain.errors import ConflictError, ValidationError
 
 NOTE_SCOPES = ("global", "role", "project")
 NOTE_KINDS = ("user", "feedback", "project", "reference")
@@ -56,6 +56,23 @@ class Document:
     body: str = ""  # the text of the version that was loaded (current unless asked otherwise)
     shown_version: int = 0
     author: str | None = None  # of the shown version
+    # A file document: the text lives in this file (absolute path) and is read on demand; the
+    # file_* fields are what the last read saw.
+    source_path: str | None = None
+    file_hash: str | None = None
+    file_size: int | None = None
+    file_mtime: float | None = None
+    file_seen_at: str | None = None
+    file_missing_at: str | None = None
+    masked_lines: int = 0
+    # Set by a read of a file document: why its text is not there (missing, unreadable), and
+    # where it is in words (`<repo>:<path>` inside a repository of the project, else the path).
+    file_problem: str | None = None
+    place: str | None = None
+
+    @property
+    def is_file(self) -> bool:
+        return self.source_path is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,12 +184,21 @@ class SearchHit:
     title: str
     line: int  # 1-based line of the body the snippet comes from
     snippet: str
+    anchor: str | None = None  # a document's section that holds the line
+
+
+def anchor_at(body: str, line: int) -> str | None:
+    """The anchor of the innermost section whose own text holds 1-based `line`."""
+    return next((s.anchor for s in sections(body) if s.start < line <= s.own_end), None)
 
 
 # --- sections ------------------------------------------------------------------------------
 
 _HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# `<a id="name"></a>` alone on a line above a heading (blank lines between allowed): a name for
+# that section that survives a reworded heading.
+_ALIAS_RE = re.compile(r"""^ {0,3}<a\s+id=["']([\w-]+)["']\s*>\s*</a>\s*$""")
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +208,17 @@ class Section:
     title: str
     start: int  # line index of the heading
     end: int  # line index after the section (next heading of the same or a higher level)
+    alias: str | None = None  # the explicit `<a id>` above the heading
+    own_end: int = 0  # line index after the section's own text (the next heading of any level)
+
+    def names(self) -> tuple[str, ...]:
+        return (self.anchor, self.alias) if self.alias else (self.anchor,)
+
+
+def parse_heading(line: str) -> tuple[int, str] | None:
+    """(level, title) of an ATX heading line, None for any other line."""
+    m = _HEADING_RE.match(line)
+    return (len(m.group(1)), (m.group(2) or "").strip()) if m else None
 
 
 def heading_anchor(text: str) -> str:
@@ -193,26 +230,31 @@ def heading_anchor(text: str) -> str:
 def unique_anchors(titles: list[str]) -> list[str]:
     """Anchors for headings in order; a repeated one gets `-2`, `-3`…"""
     seen: set[str] = set()
+    tried: dict[str, int] = {}  # per base: the last number tried, so a repeat does not recount
     out = []
     for title in titles:
         base = anchor = heading_anchor(title)
-        n = 1
+        n = tried.get(base, 1)
         while anchor in seen:
             n += 1
             anchor = f"{base}-{n}"
+        tried[base] = n
         seen.add(anchor)
         out.append(anchor)
     return out
 
 
-def sections(body: str) -> list[Section]:
-    """The ATX headings (`#` … `######`) outside fenced code, with their line ranges."""
-    lines = body.split("\n")
-    found: list[tuple[int, int, str]] = []
+def _scan_headings(lines: list[str]) -> tuple[list[tuple[int, int, str, str | None]], set[int]]:
+    """(line, level, title, alias) of each ATX heading outside fenced code, and the indexes of
+    the `<a id>` lines that named one."""
+    found: list[tuple[int, int, str, str | None]] = []
+    used: set[int] = set()
     fence: str | None = None
+    alias: tuple[int, str] | None = None
     for i, line in enumerate(lines):
         mark = _FENCE_RE.match(line)
         if mark:
+            alias = None
             token = mark.group(1)
             if fence is None:
                 fence = token
@@ -223,21 +265,56 @@ def sections(body: str) -> list[Section]:
             continue
         heading = _HEADING_RE.match(line)
         if heading:
-            found.append((i, len(heading.group(1)), (heading.group(2) or "").strip()))
-    anchors = unique_anchors([title for _, _, title in found])
+            title = (heading.group(2) or "").strip()
+            found.append((i, len(heading.group(1)), title, alias[1] if alias else None))
+            if alias:
+                used.add(alias[0])
+            alias = None
+            continue
+        named = _ALIAS_RE.match(line)
+        if named:
+            alias = (i, named.group(1).casefold())
+        elif line.strip():
+            alias = None
+    return found, used
+
+
+def alias_lines(body: str) -> set[int]:
+    """Line indexes of the `<a id>` lines that name a section (the page does not show them)."""
+    return _scan_headings(body.split("\n"))[1]
+
+
+def sections(body: str) -> list[Section]:
+    """The ATX headings (`#` … `######`) outside fenced code, with their line ranges and the
+    explicit anchor above each one."""
+    lines = body.split("\n")
+    found, _ = _scan_headings(lines)
+    anchors = unique_anchors([title for _, _, title, _ in found])
+    taken = set(anchors)
     out = []
-    for n, ((start, level, title), anchor) in enumerate(zip(found, anchors, strict=True)):
-        end = next((s for s, lvl, _ in found[n + 1 :] if lvl <= level), len(lines))
-        out.append(Section(anchor, level, title, start, end))
+    for n, ((start, level, title, name), anchor) in enumerate(zip(found, anchors, strict=True)):
+        end = next((s for s, lvl, _, _ in found[n + 1 :] if lvl <= level), len(lines))
+        own_end = found[n + 1][0] if n + 1 < len(found) else len(lines)
+        # An alias equal to another section's anchor would make one name point at two places.
+        alias = name if name and name != anchor and name not in taken else None
+        if alias:
+            taken.add(alias)
+        out.append(Section(anchor, level, title, start, end, alias, own_end))
     return out
 
 
-def find_section(body: str, anchor: str) -> Section:
+def section_named(found: list[Section], anchor: str) -> Section | None:
+    """The section whose anchor or explicit anchor is `anchor` (a leading `#` and case do not
+    matter)."""
     wanted = anchor.strip().lstrip("#").casefold()
+    return next((s for s in found if wanted in s.names()), None)
+
+
+def find_section(body: str, anchor: str) -> Section:
     found = sections(body)
-    for section in found:
-        if section.anchor == wanted:
-            return section
+    section = section_named(found, anchor)
+    if section is not None:
+        return section
     known = ", ".join(s.anchor for s in found) or "none (the document has no headings)"
     raise ValidationError(f"No section {anchor!r}; sections: {known}.")
 
@@ -248,17 +325,73 @@ def section_text(body: str, anchor: str) -> str:
     return "\n".join(body.split("\n")[section.start : section.end]).rstrip("\n")
 
 
+def _trailing_blank(lines: list[str]) -> int:
+    n = 0
+    while n < len(lines) and not lines[len(lines) - 1 - n].strip():
+        n += 1
+    return n
+
+
 def replace_section(body: str, anchor: str, text: str) -> str:
     """`text` replaces the section, heading included; text that does not start with a heading
-    replaces only what is under the heading (which stays)."""
+    replaces only what is under the heading (which stays). Only the section's own lines change:
+    the blank lines that end it stay as they were (and, for text without a heading, those right
+    under the heading), so a section replaced by its own text leaves the body byte for byte."""
     section = find_section(body, anchor)
     lines = body.split("\n")
-    new = text.strip("\n").split("\n")
-    if not _HEADING_RE.match(new[0]):
-        new = [lines[section.start], *new]
-    if section.end < len(lines) and new[-1].strip():
-        new.append("")
-    return "\n".join([*lines[: section.start], *new, *lines[section.end :]])
+    old = lines[section.start : section.end]
+    tail_size = _trailing_blank(old[1:])
+    tail = old[len(old) - tail_size :] if tail_size else []
+    new = text.split("\n")
+    while new and not new[0].strip():
+        new.pop(0)
+    new = new[: len(new) - _trailing_blank(new)]
+    if not new or not _HEADING_RE.match(new[0]):
+        under = old[1 : len(old) - tail_size]
+        gap = 0
+        while gap < len(under) and not under[gap].strip():
+            gap += 1
+        new = [old[0], *(under[:gap] if new else []), *new]
+    return "\n".join([*lines[: section.start], *new, *tail, *lines[section.end :]])
+
+
+def parse_lines(value: str, total: int) -> tuple[int, int]:
+    """`a-b` (or `a`) as 1-based inclusive line numbers of a text of `total` lines; a range past
+    the end stops at the last line."""
+    text = str(value or "").strip()
+    m = re.fullmatch(r"(\d+)(?:\s*-\s*(\d+))?", text)
+    if not m:
+        raise ValidationError(f"lines must look like '120-180', got {value!r}.")
+    first = int(m.group(1))
+    last = int(m.group(2)) if m.group(2) else first
+    if first < 1 or last < first:
+        raise ValidationError(f"lines {text}: lines start at 1 and the range goes forward.")
+    if first > total:
+        raise ValidationError(f"lines {text}: the document has {total} lines.")
+    return first, min(last, total)
+
+
+def replace_lines(body: str, first: int, last: int, expected: str, text: str | None) -> str:
+    """Lines `first`-`last` (1-based) replaced by `text` (None removes them) when they read
+    `expected` now, both compared without their trailing blank lines; a ConflictError with their
+    current text otherwise. A replacement keeps the range's trailing blank lines, as
+    `replace_section` keeps a section's."""
+    lines = body.split("\n")
+    old = lines[first - 1 : last]
+    blank = _trailing_blank(old)
+    wanted = expected.replace("\r\n", "\n").split("\n")
+    if old[: len(old) - blank] != wanted[: len(wanted) - _trailing_blank(wanted)]:
+        current = "\n".join(old)
+        raise ConflictError(
+            f"Lines {first}-{last} no longer read as `expected`: the document changed since you"
+            " read them. Their current text is below; send the change again with it as"
+            f" expected.\n\n{current}"
+        )
+    new: list[str] = []
+    if text is not None:
+        given = text.replace("\r\n", "\n").split("\n")
+        new = [*given[: len(given) - _trailing_blank(given)], *old[len(old) - blank :]]
+    return "\n".join([*lines[: first - 1], *new, *lines[last:]])
 
 
 def diff_lines(old: str, new: str, old_label: str, new_label: str) -> list[str]:

@@ -12,6 +12,8 @@ from mcp.client.streamable_http import streamable_http_client
 from tests.conftest import LiveServer
 
 EXPECTED_TOOLS = {
+    "doc_outline",
+    "doc_search",
     "project_list",
     "project_upsert",
     "project_snapshot",

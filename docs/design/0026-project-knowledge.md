@@ -439,9 +439,13 @@ and CHANGELOG change in the pull request that changes the behaviour. Tests per p
   names how it was bound, and `task_bind_session` still rebinds.
 - **A first hook creates a session for an id nobody announced.** Only a well-formed id from an
   attended, not nested start does; the request comes through the same token as every hook.
-- **relaybay reads files of a repository.** Only a path under a repository the project names, no
-  link out of it, a size limit, read only. The index stores text: the secret detectors mask
-  matching values in it.
+- **relaybay reads files on the machine.** Any absolute path, read only, at most 8 MB, but never a
+  denied place, checked on the resolved path at the add and again at every read: the data folder
+  (except `worktrees/`), the token and `desktop.toml`, `~/.ssh`, `~/.aws`, `~/.gnupg`,
+  `~/.config/gh`, `~/.docker`, `/proc`, `/sys`, `/dev`, names `.env*`, `*.pem`, `*.key`, `id_rsa*`,
+  `id_ed25519*`, `id_ecdsa*`, `*.kdbx`, `credentials*`, and a network share unless
+  `attachment_roots` names it (decided by default in review, 2026-11-19). The index stores text:
+  the secret detectors mask every line a match covers, headings included.
 - **The file on disk is one branch.** The read names the branch and the content hash; the pointer
   is repository-relative, so a session reads its own tree.
 - **A reworded heading breaks a card's link.** Explicit anchors; a broken link is marked on the

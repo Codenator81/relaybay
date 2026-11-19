@@ -51,6 +51,8 @@ Deprecations: none.
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
 | [`doc_get`](#doc_get) | read |
+| [`doc_outline`](#doc_outline) | read |
+| [`doc_search`](#doc_search) | read |
 | [`doc_update`](#doc_update) | write |
 | [`doc_history`](#doc_history) | read |
 | [`block_get`](#block_get) | read |
@@ -500,7 +502,7 @@ The documents of a project (spec, status, brief, runbooks, ADRs) with versions.
 
 ### `doc_get`
 
-A project document as markdown (or one section of it), with its current version to pass as base_version to doc_update.
+A project document as markdown (or one section, or a line range), with its current version to pass as base_version to doc_update; a file document names its file and hash. A read over the cap returns the first lines, the outline of the rest and the call that reads on, never a silent cut. For a large document: doc_outline first.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -508,10 +510,34 @@ A project document as markdown (or one section of it), with its current version 
 | `doc` | string | yes | Document name, e.g. 'spec'. |
 | `section` | string or null | no | Section anchor from a heading ('## Gift cards' → gift-cards): returns that heading and its text only. |
 | `version` | integer or null | no | An older version. |
+| `lines` | string or null | no | A line range 'a-b' (doc_outline and doc_search name the lines). |
+| `max_chars` | integer or null | no | Cap of the answer in characters. Default: no cap, except 40000 for a document over 200000 characters (a file document). |
+
+### `doc_outline`
+
+The headings of a document, one line each: level, anchor (and explicit anchor), title, lines a-b, characters and the token estimate. Read a part with doc_get(section) or doc_get(lines).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `doc` | string | yes | Document name, e.g. 'spec'. |
+| `depth` | integer or null | no | At most this many heading levels. |
+| `under` | string or null | no | Only the headings inside this section (its anchor). |
+
+### `doc_search`
+
+Search a project's documents per section: each hit names the document, the section's anchor and heading path, the matching line with one line around it and the section's lines and size, so doc_get reads just that part.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project` | string | yes | Project slug such as 'acme-shop'. |
+| `query` | string | yes | Words to look for (word forms match). |
+| `doc` | string or null | no | Only this document. |
+| `limit` | integer | no | How many sections. Default: `10`. |
 
 ### `doc_update`
 
-Write a new version of a project document (base_version 0 creates it). If it changed since you read it, nothing is saved and the current text comes back to merge. A task's document is `task-<ref>`; point the task at it with task_update(doc_path= 'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body '-' (no text of its own).
+Write a new version of a project document (base_version 0 creates it). If it changed since you read it, nothing is saved and the current text comes back to merge. With lines + expected only those lines change, as long as they still read as expected. A task's document is `task-<ref>`; point the task at it with task_update(doc_path= 'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body '-' (no text of its own). A file document (source_path) is refused here: edit the file.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -525,13 +551,16 @@ Write a new version of a project document (base_version 0 creates it). If it cha
 | `kind` | string or null | no | spec, status, task, brief, runbook, adr, retro or your own (default doc). |
 | `source_url` | string or null | no | http(s) link when the document lives in a repository: the board links there and later writes need force; '-' unlinks. |
 | `force` | boolean | no | Write a document that lives in a repository anyway. Default: `False`. |
+| `source_path` | string or null | no | Absolute path of a file on this machine: with base_version 0 and body '-' it becomes a file document that relaybay indexes and never writes. |
+| `lines` | string or null | no | Replace only these lines 'a-b' (with expected); body '-' removes. |
+| `expected` | string or null | no | The current text of `lines` as you read it; else a conflict. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `doc_history`
 
-The versions of a document (author, reason, section, size), newest first; with from_version and to_version also the unified diff between those two.
+The versions of a document (author, reason, section, size), newest first; with from_version and to_version also the unified diff between those two. A file document lists the changes relaybay saw in its file (sections, hash before and after).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

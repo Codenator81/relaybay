@@ -352,7 +352,8 @@ async def test_task_context_links_comments_and_notes(service: Service) -> None:
 
     text = await service.task_context(task.key, session=DESKTOP_A)
     assert "Done so far: Half done" in text
-    assert "**Gift cards** — First. Second. Third." in text and "Fourth" not in text
+    assert '- spec#gift-cards "Gift cards" · lines 3-8 · 44 chars (~13 tokens)' in text
+    assert 'doc_get("acme-shop", "spec", section="gift-cards")' in text and "First." not in text
     assert "broken: relaybay://doc/acme-shop/spec#nope (no such section)" in text
     assert "broken: relaybay://doc/acme-shop/gone#x (no such document)" in text
     assert "Task only" in text and "Project wide" in text and "Of another task" not in text

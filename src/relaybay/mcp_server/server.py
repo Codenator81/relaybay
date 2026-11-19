@@ -37,7 +37,9 @@ def instructions(rules: Rules) -> str:
             "1. Start with the digest for your level (portfolio_digest, project_digest or"
             " task_context); drill down only when needed, for example with project_snapshot, whose"
             " first line names the current rules like task_context's rules line; read"
-            " relaybay://rules/<project> (or call rules_get) for the details.",
+            " relaybay://rules/<project> (or call rules_get) for the details. Read a large"
+            " document by its outline: doc_outline, then doc_get of a section or lines"
+            " (doc_search finds the place).",
             "2. Pick the task you work on, or create one with task_create. Pass `session` on"
             " writes: your own desktop session id (local_…) with `session_title` if you know it,"
             " otherwise a human-readable name; add `hook_session` if the session start gave you"
@@ -1304,13 +1306,67 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             ),
         ] = None,
         version: Annotated[int | None, Field(description="An older version.")] = None,
+        lines: Annotated[
+            str | None,
+            Field(description="A line range 'a-b' (doc_outline and doc_search name the lines)."),
+        ] = None,
+        max_chars: Annotated[
+            int | None,
+            Field(
+                description="Cap of the answer in characters. Default: no cap, except 40000 for"
+                " a document over 200000 characters (a file document)."
+            ),
+        ] = None,
     ) -> str:
-        """A project document as markdown (or one section of it), with its current version to
-        pass as base_version to doc_update."""
-        found, text = await run(
-            service.get_document(project, doc, version=version, section=section or None)
+        """A project document as markdown (or one section, or a line range), with its current
+        version to pass as base_version to doc_update; a file document names its file and hash.
+        A read over the cap returns the first lines, the outline of the rest and the call that
+        reads on, never a silent cut. For a large document: doc_outline first."""
+        found = await run(
+            service.read_document(
+                project,
+                doc,
+                section=section or None,
+                lines=lines or None,
+                max_chars=max_chars,
+                version=version,
+            )
         )
-        return fmt.document(found, text, section or None)
+        return fmt.document_read(found)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def doc_outline(
+        project: ProjectSlug,
+        doc: Annotated[str, Field(description="Document name, e.g. 'spec'.")],
+        depth: Annotated[
+            int | None, Field(ge=1, le=6, description="At most this many heading levels.")
+        ] = None,
+        under: Annotated[
+            str | None, Field(description="Only the headings inside this section (its anchor).")
+        ] = None,
+    ) -> str:
+        """The headings of a document, one line each: level, anchor (and explicit anchor),
+        title, lines a-b, characters and the token estimate. Read a part with doc_get(section)
+        or doc_get(lines)."""
+        found, rows, parent = await run(
+            service.document_outline(project, doc, depth=depth, under=under or None)
+        )
+        return fmt.document_outline(found, rows, parent, len(rows))
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def doc_search(
+        project: ProjectSlug,
+        query: Annotated[str, Field(description="Words to look for (word forms match).")],
+        doc: Annotated[str | None, Field(description="Only this document.")] = None,
+        limit: Annotated[int, Field(ge=1, le=50, description="How many sections.")] = 10,
+    ) -> str:
+        """Search a project's documents per section: each hit names the document, the section's
+        anchor and heading path, the matching line with one line around it and the section's
+        lines and size, so doc_get reads just that part."""
+        proj, hits = await run(
+            service.search_documents(project, query, doc=doc or None, limit=limit)
+        )
+        return fmt.document_hits(proj, hits, query)
 
     @write
     async def doc_update(
@@ -1351,15 +1407,31 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         force: Annotated[
             bool, Field(description="Write a document that lives in a repository anyway.")
         ] = False,
+        source_path: Annotated[
+            str | None,
+            Field(
+                description="Absolute path of a file on this machine: with base_version 0 and"
+                " body '-' it becomes a file document that relaybay indexes and never writes."
+            ),
+        ] = None,
+        lines: Annotated[
+            str | None,
+            Field(description="Replace only these lines 'a-b' (with expected); body '-' removes."),
+        ] = None,
+        expected: Annotated[
+            str | None,
+            Field(description="The current text of `lines` as you read it; else a conflict."),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
         """Write a new version of a project document (base_version 0 creates it). If it changed
-        since you read it, nothing is saved and the current text comes back to merge. A task's
-        document is `task-<ref>`; point the task at it with task_update(doc_path=
+        since you read it, nothing is saved and the current text comes back to merge. With
+        lines + expected only those lines change, as long as they still read as expected. A
+        task's document is `task-<ref>`; point the task at it with task_update(doc_path=
         'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body
-        '-' (no text of its own)."""
+        '-' (no text of its own). A file document (source_path) is refused here: edit the file."""
         saved = await run(
             service.update_document(
                 project,
@@ -1371,12 +1443,18 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 title=title or None,
                 kind=kind or None,
                 source_url=source_url or None,
+                source_path=source_path or None,
+                lines=lines or None,
+                expected=expected,
                 force=force,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
             )
         )
+        if saved.is_file:
+            _, rows, _ = await run(service.document_outline(project, saved.slug))
+            return fmt.file_document_saved(saved, len(rows))
         return fmt.document_saved(saved)
 
     @mcp.tool(annotations=READ, structured_output=False)
@@ -1389,8 +1467,12 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         to_version: Annotated[int | None, Field(description="See from_version.")] = None,
     ) -> str:
         """The versions of a document (author, reason, section, size), newest first; with
-        from_version and to_version also the unified diff between those two."""
+        from_version and to_version also the unified diff between those two. A file document
+        lists the changes relaybay saw in its file (sections, hash before and after)."""
         found, versions = await run(service.document_history(project, doc))
+        if found.is_file:
+            found, events = await run(service.file_history(project, doc))
+            return fmt.file_history(found, events)
         diff: list[str] = []
         if from_version is not None and to_version is not None:
             _, diff = await run(service.document_diff(project, doc, from_version, to_version))

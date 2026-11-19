@@ -13,6 +13,7 @@ from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import NO_KIND, UNASSIGNED, BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
+from relaybay.domain.doc_index import IndexedSection
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -3145,6 +3146,13 @@ def _document(row: aiosqlite.Row) -> Document:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         source_url=row["source_url"],
+        source_path=row["source_path"],
+        file_hash=row["file_hash"],
+        file_size=row["file_size"],
+        file_mtime=row["file_mtime"],
+        file_seen_at=row["file_seen_at"],
+        file_missing_at=row["file_missing_at"],
+        masked_lines=row["masked_lines"],
     )
 
 
@@ -3208,14 +3216,52 @@ async def insert_document(
     kind: str,
     now: str,
     source_url: str | None = None,
+    source_path: str | None = None,
 ) -> int:
-    """A document without versions yet (version 0); `add_document_version` gives it text."""
+    """A document without versions yet (version 0); `add_document_version` gives it text. A
+    file document (`source_path`) never has versions."""
     cur = await conn.execute(
         "INSERT INTO document (project_id, slug, title, kind, version, created_at, updated_at,"
-        " source_url) VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
-        (project_id, slug, title, kind, now, now, source_url),
+        " source_url, source_path) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
+        (project_id, slug, title, kind, now, now, source_url, source_path),
     )
     return int(cur.lastrowid or 0)
+
+
+async def set_file_state(
+    conn: aiosqlite.Connection,
+    document_id: int,
+    *,
+    file_hash: str | None,
+    size: int | None,
+    mtime: float | None,
+    seen_at: str,
+    masked_lines: int | None = None,
+    changed: bool = False,
+) -> None:
+    """What a read of a file document saw; the file is there again if it was missing."""
+    await conn.execute(
+        "UPDATE document SET file_hash = ?, file_size = ?, file_mtime = ?, file_seen_at = ?,"
+        " file_missing_at = NULL, masked_lines = coalesce(?, masked_lines),"
+        " updated_at = CASE WHEN ? THEN ? ELSE updated_at END WHERE id = ?",
+        (file_hash, size, mtime, seen_at, masked_lines, int(changed), seen_at, document_id),
+    )
+
+
+async def set_file_missing(conn: aiosqlite.Connection, document_id: int, now: str) -> None:
+    await conn.execute(
+        "UPDATE document SET file_missing_at = coalesce(file_missing_at, ?) WHERE id = ?",
+        (now, document_id),
+    )
+
+
+async def set_document_meta(
+    conn: aiosqlite.Connection, document_id: int, title: str, kind: str, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE document SET title = ?, kind = ?, updated_at = ? WHERE id = ?",
+        (title, kind, now, document_id),
+    )
 
 
 async def add_document_version(
@@ -3387,13 +3433,14 @@ async def list_all_notes(conn: aiosqlite.Connection) -> list[MemoryNote]:
 
 async def list_import_items(conn: aiosqlite.Connection) -> list[ImportItem]:
     rows = await _all(conn, "SELECT * FROM import_item ORDER BY kind, item")
-    return [ImportItem(**dict(r)) for r in rows]
+    return [ImportItem(**{**dict(r), "bom": bool(r["bom"])}) for r in rows]
 
 
 async def save_import_item(conn: aiosqlite.Connection, item: ImportItem) -> None:
     await conn.execute(
         "INSERT OR REPLACE INTO import_item (kind, item, source_path, target_id, content_hash,"
-        " target_hash, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        " target_hash, imported_at, eol, bom, lead_blank, final_newlines)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             item.kind,
             item.item,
@@ -3402,6 +3449,10 @@ async def save_import_item(conn: aiosqlite.Connection, item: ImportItem) -> None
             item.content_hash,
             item.target_hash,
             item.imported_at,
+            item.eol,
+            int(item.bom),
+            item.lead_blank,
+            item.final_newlines,
         ),
     )
 
@@ -3698,6 +3749,212 @@ async def like_search(
             scored.append((hits, r["id"], r["kind"]))
     scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
     return [(kind, item_id) for _, item_id, kind in scored[:limit]]
+
+
+# --- the section index of documents (design 0026) ----------------------------------------
+
+_SECTION_FTS = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS doc_section_index USING fts5(document_id UNINDEXED,"
+    " position UNINDEXED, project_id UNINDEXED, title, body, stems,"
+    " tokenize = 'unicode61 remove_diacritics 2')"
+)
+# Without FTS5 the same rows go to a plain table that the LIKE fallback reads.
+_SECTION_PLAIN = (
+    "CREATE TABLE IF NOT EXISTS doc_section_text (id INTEGER PRIMARY KEY, document_id INTEGER,"
+    " position INTEGER, project_id INTEGER, title TEXT, body TEXT, stems TEXT)"
+)
+# bm25 weights per column (document_id, position, project_id, title, body, stems).
+_SECTION_RANK = "bm25(doc_section_index, 0, 0, 0, 10.0, 1.0, 0.5)"
+
+
+def _section_table(fts: bool) -> str:
+    return "doc_section_index" if fts else "doc_section_text"
+
+
+async def ensure_section_index(conn: aiosqlite.Connection, fts: bool) -> None:
+    """The searchable text of the sections: FTS5 when search has it, a plain table otherwise."""
+    if fts:
+        await conn.execute(_SECTION_FTS)
+        await conn.execute("SELECT 1 FROM doc_section_index LIMIT 0")
+        return
+    await conn.execute(_SECTION_PLAIN)
+
+
+def _indexed(row: aiosqlite.Row) -> IndexedSection:
+    return IndexedSection(
+        position=row["position"],
+        anchor=row["anchor"],
+        alias=row["alias"],
+        level=row["level"],
+        title=row["title"],
+        heading_path=row["heading_path"],
+        first_line=row["first_line"],
+        last_line=row["last_line"],
+        own_last=row["own_last"],
+        chars=row["chars"],
+        bytes=row["bytes"],
+        hash=row["hash"],
+    )
+
+
+async def list_sections(conn: aiosqlite.Connection, document_id: int) -> list[IndexedSection]:
+    rows = await _all(
+        conn,
+        "SELECT * FROM document_section WHERE document_id = ? ORDER BY position",
+        (document_id,),
+    )
+    return [_indexed(r) for r in rows]
+
+
+async def replace_sections(
+    conn: aiosqlite.Connection,
+    document_id: int,
+    project_id: int,
+    title: str,
+    rows: list[IndexedSection],
+    fts: bool,
+) -> None:
+    """The document's index rows and their searchable text, in the caller's transaction."""
+    table = _section_table(fts)
+    key = "rowid" if fts else "id"
+    await conn.execute(
+        f"DELETE FROM {table} WHERE {key} IN"
+        " (SELECT id FROM document_section WHERE document_id = ?)",
+        (document_id,),
+    )
+    await conn.execute("DELETE FROM document_section WHERE document_id = ?", (document_id,))
+    for r in rows:
+        cur = await conn.execute(
+            "INSERT INTO document_section (document_id, position, anchor, alias, level, title,"
+            " heading_path, first_line, last_line, own_last, chars, bytes, hash)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                document_id,
+                r.position,
+                r.anchor,
+                r.alias,
+                r.level,
+                r.title,
+                r.heading_path,
+                r.first_line,
+                r.last_line,
+                r.own_last,
+                r.chars,
+                r.bytes,
+                r.hash,
+            ),
+        )
+        heading = r.heading_path or title
+        await conn.execute(
+            f"INSERT INTO {table} ({key}, document_id, position, project_id, title, body, stems)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                cur.lastrowid,
+                document_id,
+                r.position,
+                project_id,
+                heading,
+                r.text,
+                stem_text(f"{heading} {r.text}"),
+            ),
+        )
+
+
+async def section_index_stale(conn: aiosqlite.Connection, fts: bool) -> bool:
+    """The searchable rows do not match the index rows, or a database document with text has
+    no index rows (an upgrade from before the index)."""
+    rows = (await _one(conn, "SELECT count(*) FROM document_section", ()))[0]
+    text = (await _one(conn, f"SELECT count(*) FROM {_section_table(fts)}", ()))[0]
+    missing = await _one(
+        conn,
+        "SELECT count(*) FROM document d WHERE d.source_path IS NULL AND d.version > 0"
+        " AND NOT EXISTS (SELECT 1 FROM document_section s WHERE s.document_id = d.id)",
+        (),
+    )
+    return bool(rows != text or missing[0])
+
+
+async def clear_section_index(conn: aiosqlite.Connection, fts: bool) -> None:
+    """Empty the index; file documents are read and indexed again at their next read, which
+    finds their hash unchanged and records no change."""
+    await conn.execute(f"DELETE FROM {_section_table(fts)}")
+    await conn.execute("DELETE FROM document_section")
+    await conn.execute("UPDATE document SET file_size = NULL WHERE source_path IS NOT NULL")
+
+
+async def count_sections(conn: aiosqlite.Connection, document_id: int) -> int:
+    row = await _one(
+        conn, "SELECT count(*) FROM document_section WHERE document_id = ?", (document_id,)
+    )
+    return int(row[0])
+
+
+async def database_documents_with_text(
+    conn: aiosqlite.Connection,
+) -> list[tuple[int, int, str, str]]:
+    """(id, project_id, title, current text) of every database document that has a version."""
+    rows = await _all(
+        conn,
+        "SELECT d.id, d.project_id, d.title, v.body FROM document d"
+        " JOIN document_version v ON v.document_id = d.id AND v.version = d.version"
+        " WHERE d.source_path IS NULL ORDER BY d.id",
+    )
+    return [(r["id"], r["project_id"], r["title"], r["body"]) for r in rows]
+
+
+@dataclass(frozen=True, slots=True)
+class SectionHit:
+    document_id: int
+    position: int
+    body: str  # the section's own text as indexed
+
+
+async def search_sections(
+    conn: aiosqlite.Connection,
+    words: list[str],
+    match: str | None,
+    project_id: int,
+    document_id: int | None,
+    limit: int,
+) -> list[SectionHit]:
+    """The best sections for the words, best first: by FTS5 rank with `match`, else every word
+    (or its stem) as a substring of the heading path or the text, in document order."""
+    where = " AND project_id = ?"
+    params: list[Any] = [project_id]
+    if document_id is not None:
+        where += " AND document_id = ?"
+        params.append(document_id)
+    if match is not None:
+        rows = await _all(
+            conn,
+            "SELECT document_id, position, body FROM doc_section_index"
+            f" WHERE doc_section_index MATCH ?{where} ORDER BY {_SECTION_RANK} LIMIT ?",
+            (match, *params, limit),
+        )
+    else:
+        one = "(title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')"
+        cond = " AND ".join(f"({one} OR {one})" for _ in words)
+        likes = [p for w in words for n in (w, stem(w)) for p in (_like(n), _like(n))]
+        rows = await _all(
+            conn,
+            f"SELECT document_id, position, body FROM doc_section_text WHERE ({cond}){where}"
+            " ORDER BY document_id, position LIMIT ?",
+            (*likes, *params, limit),
+        )
+    return [SectionHit(r["document_id"], r["position"], r["body"]) for r in rows]
+
+
+async def document_events(
+    conn: aiosqlite.Connection, project_id: int, slug: str, limit: int = 200
+) -> list[Event]:
+    """`document.updated` events of one document, newest first."""
+    rows = await _all(
+        conn,
+        "SELECT * FROM event WHERE kind = 'document.updated' AND project_id = ?"
+        " AND json_extract(payload, '$.doc') = ? ORDER BY id DESC LIMIT ?",
+        (project_id, slug, limit),
+    )
+    return [_event(r) for r in rows]
 
 
 # --- sessions at once ---------------------------------------------------------

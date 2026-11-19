@@ -17,6 +17,7 @@ from relaybay.domain.markdown_layout import (
     REGISTRY,
     TASK_FILE,
     Aliases,
+    FileStyle,
     backlog_meaning,
     normalize,
     note_file_stem,
@@ -34,7 +35,7 @@ from relaybay.domain.markdown_layout import (
 )
 from relaybay.domain.memory import MemoryNote, diff_lines
 from relaybay.domain.models import ImportItem, Task
-from relaybay.markdown_import import DIFF_ITEM_LINES, DIFF_TOTAL_LINES, open_copy
+from relaybay.markdown_import import DIFF_ITEM_LINES, DIFF_TOTAL_LINES, open_copy, tracked_style
 from relaybay.service import Service
 
 MANIFEST_VERSION = 1
@@ -145,6 +146,8 @@ async def gather(service: Service) -> tuple[dict[str, Wanted], list[FileAction]]
                 linked.add(f"{TASK_DOC_PREFIX}{task.doc_path[len(prefix) :]}")
         _, documents = await service.list_documents(project.slug)
         for document in sorted(documents, key=lambda d: d.slug):
+            if document.is_file:
+                continue  # lives in a file of its own, which relaybay never writes
             _, body = await service.get_document(project.slug, document.slug)
             if document.source_url and not body.strip():
                 continue  # lives in a repository with no text here: nothing to write
@@ -152,7 +155,9 @@ async def gather(service: Service) -> tuple[dict[str, Wanted], list[FileAction]]
             path = _doc_path(project.slug, document.slug, mark, linked)
             places = [path, f"projects/{project.slug}/docs/{document.slug}.md"]
             label = f"document {project.slug}/{document.slug}"
-            _claim(wanted, places, Wanted(body + "\n"), label, problems)
+            # The file's own bytes come back: its line ending, BOM and outer whitespace.
+            style = (tracked_style(mark) if mark else None) or FileStyle()
+            _claim(wanted, places, Wanted(style.apply(body)), label, problems)
         _, repos = await service.project_repos(project.slug)
         if repos or code_rows:
             listed = [(r.name, r.kind, r.path) for r in repos]
