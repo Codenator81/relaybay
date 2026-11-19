@@ -4,7 +4,7 @@
 {%- macro todo_items(items) -%}
 <ol class="todo-list">
   {% for i in items %}
-  <li class="todo-item status-{{ i.status }}"><span class="todo-mark" aria-hidden="true">{% if i.status == "completed" %}&#10003;{% elif i.status == "in_progress" %}&#9656;{% else %}&#9675;{% endif %}</span> <span class="todo-subject">{{ i.subject }}</span> <span class="muted">{{ i.status|replace("_", " ") }}</span></li>
+  <li class="todo-item status-{{ i.status }}"><span class="todo-mark" aria-hidden="true">{% if i.status == "completed" %}&#10003;{% elif i.status == "in_progress" %}&#9656;{% else %}&#9675;{% endif %}</span> <span class="todo-subject">{{ i.subject }}</span> <span class="muted">{{ i.status|replace("_", " ") }}{% if i.updated_at %} · <time datetime="{{ i.updated_at }}" data-age>{{ i.updated_at|age }}</time>{% endif %}</span></li>
   {% endfor %}
 </ol>
 {%- endmacro -%}
@@ -13,7 +13,7 @@
 <div class="todo">
   {% if now %}<p class="todo-now"><span class="muted">Now doing:</span> {{ now.active_form or now.subject }}</p>{% endif %}
   <details class="todo-details"{% if open %} open{% endif %}>
-    <summary>Agent's todo {{ items|selectattr("status", "equalto", "completed")|list|length }}/{{ items|length }}</summary>
+    <summary>Agent's todo {{ items|selectattr("status", "equalto", "completed")|list|length }}/{{ items|length }} <span class="muted">· the session's own task list in Claude Code, beside the plan</span></summary>
     {{ todo_items(items) }}
   </details>
 </div>
@@ -57,14 +57,13 @@
         {%- if s.done_at %} · <time datetime="{{ s.done_at }}" data-age>{{ s.done_at|age }}</time>{% endif %}
       </p>
       {% elif s.outcome %}<p class="plan-checkpoint muted">{{ s.outcome }}</p>{% endif %}
-      {% if is_current and todo %}{{ todo_block(todo, false) }}{% endif %}
     </li>
     {% endfor %}
   </ol>
-  {% if todo and current is none %}{{ todo_block(todo, false) }}{% endif %}
+  {% if todo %}{{ todo_block(todo, true) }}{% endif %}
   {% elif todo %}
-  <div class="plan-head"><span class="plan-state state-agent">Agent's plan, not accepted</span>
-    <span class="muted">{{ t.session_name or "The bound session" }} keeps this todo in Claude Code; it is not the task's plan.</span></div>
+  <div class="plan-head"><span class="plan-state state-agent">No plan yet</span>
+    <span class="muted">{{ t.session_name or "The bound session" }} works by its own todo below; the plan you accept comes on this tab when the session writes it.</span></div>
   {{ todo_block(todo, true) }}
   {% else %}
   {% with kind = "plan" %}{% include "_tab_empty.html" %}{% endwith %}

@@ -10,6 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - The task dialog keeps its height when you switch between Overview, Plan and Review: a short or empty tab no longer shrinks the window to one line, and every tab has a minimum height. An empty Plan or Review tab now speaks to the owner: what will appear there, who writes it and when, and what to do now: **Ask for a plan** or **Ask for review steps** sends the bound session a comment, and a card without a session points to Copy the brief.
+- The Plan tab shows the bound session's own todo (its Claude Code task list) open under the plan, each item with its status and when it last changed; with no plan, the todo stands alone under "No plan yet".
 
 ## [0.14.0] - 2026-11-19
 
