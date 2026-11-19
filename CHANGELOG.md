@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-19
+
 ### Added
 
 - The backlog as a bug registry (design 0026). An item has a kind (`bug`, `idea`, `question`, `debt`; none for older items), a code location (`repo:path:line`, `path:line` or a link), the source in words, a triage note, the item it duplicates and the day it was found (migration 0051, additive). `backlog_add` takes `kind` and `location` and names open items with a similar title (`Note: similar open items: #12 (0.71) …`). `backlog_update` and `backlog_patch` take `kind`, `location`, `triage_note`, `duplicate_of` (declined as "duplicate of #N") and `task` (links an existing card: the item becomes planned); the last three are for coordinator sessions only. `backlog_list` takes `query`, `kind`, `since`, `task` and `has_location`. Backlog items join the search index as kind `backlog` (`memory_search`, the Docs & rules search). The Backlog page has a search box, a kind filter and shows the kind, the location, the triage note and a link to the item a duplicate repeats.
@@ -1080,7 +1082,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.14.0
 [0.13.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.13.0
 [0.12.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.12.0
 [0.11.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.11.0

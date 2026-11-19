@@ -31,7 +31,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0023 | [Coordinator, schedules and profiles](0023-coordinator-and-schedules.md) | Superseded by 0025 (reminders stay) | 0.11 |
 | 0024 | [Card modes, the run as a thread, areas](0024-card-modes-thread-and-areas.md) | Superseded by 0025; areas implemented | 0.12 |
 | 0025 | [The board with the desktop](0025-board-with-the-desktop.md) | Accepted | 0.12 |
-| 0026 | [Project knowledge and a quieter board](0026-project-knowledge.md) | Accepted | 0.14 |
+| 0026 | [Project knowledge and a quieter board](0026-project-knowledge.md) | Implemented in 0.14.0 | 0.14 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md),
 [ADR-0002 Desktop shell](../adr/0002-desktop-shell.md).
