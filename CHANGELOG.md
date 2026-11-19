@@ -20,6 +20,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Where a session runs: the command hook sends `CLAUDE_CODE_ENTRYPOINT` with `SessionStart` (`relaybay_entrypoint`), and the session is recorded as desktop or terminal; when the hook cannot tell (an older hook client, an http hook, another entrypoint) the session start asks the session once to say it with `task_patch(task, fields={"session_surface": ...}, hook_session=...)`. MCP (additive, contract v1): the field `session_surface` in `task_patch` and `relaybay://schema/task`, stored on the calling session (event `session.surface_set`).
 - "Not delivered yet" on an owner comment names why it waits: no session bound, the session ended, the session has not linked its hooks yet, or the session is idle and the wake-up hook is off. The Inbox has a group "Comments not delivered" for comments waiting longer than an hour.
 - A terminal session resumed with `claude --resume` (a `SessionStart` with `source: resume` of the same Claude Code session) is bound again to the tasks its own end unbound; a task unbound by hand or bound to another session since stays as it is.
+- Docs: the how-to "Work a card with a session" (Copy the brief, a desktop or terminal session that binds itself, the state line, answers and comments, review, Open).
 - Migration 0050: `session.surface`, `session.entrypoint`, `session.start_cwd` (the folder a resume starts in) and `task_session.unbound_reason`, additive only.
 
 ### Changed
@@ -59,6 +60,7 @@ relaybay is the board next to the Claude desktop app, which shows and drives an 
 - The Usage page and its sidebar item, the background reader of Claude Code transcripts and the transcript paths kept only for it.
 - Intake from chats and e-mail: the Inbox groups Intake and Answers, the "answer received" mark, source trust and autonomy (Settings → Intake), Forward to the agent, the task's Intake block, intake wake-ups and notifications, `examples/intake/` and its how-to. Without a coordinator inside the program nothing can tie a customer's message to a task; the coordinator session reads the chats and updates the cards. The backlog stays.
 - Messages between sessions: the Messages page and its sidebar item, the task's Messages block, delivery through hooks, their limits, notifications and Inbox lines; sessions in the desktop app message each other through the desktop app.
+- Docs: `docs/PLAN.md`, the pointer page to the former plan; its successors are the roadmap, the specification and the architecture page.
 
 ## [0.11.0] - 2026-11-16
 

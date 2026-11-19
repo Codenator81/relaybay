@@ -2685,9 +2685,8 @@ class Service:
         return undelivered_reason(task, bound, bound is not None and bound.id in self._waiters)
 
     async def task_brief(self, task: Task) -> str:
-        """What a new session needs to take the card over: the task's digest (the text a run's
-        first turn had before 0.12), the whole description, attachments by path, how to bind
-        itself and how to report."""
+        """What a new session needs to take the card over: the task's digest, the whole
+        description, attachments by path, how to bind itself and how to report."""
         text, _ = await self._task_context(task, None, None, self.digest_budget_chars)
         parts = [
             f"relaybay card {task.key} ({task.project_slug}): {task.title}",

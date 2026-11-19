@@ -5,19 +5,24 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Docs](https://github.com/Codenator81/relaybay/actions/workflows/docs.yml/badge.svg)](https://codenator81.github.io/relaybay/)
 
-A live board and MCP server for people who run many Claude Code sessions across many repositories.
-Sessions report their work through MCP tools; you watch **projects → tasks → stages → reports** update
-in the browser, on the desktop or on your phone.
+A live board and MCP server for people who run many Claude Code sessions across many
+repositories. The sessions work in the Claude desktop app or a terminal and report through MCP
+tools; you see **projects → tasks → stages → reports**, who waits for whom and what is left to
+accept, in the browser, on the desktop or on your phone.
 
-> **Status: 0.9, early.** relaybay is built for my own workflow first and changes quickly; Windows is
-> what it runs on every day, macOS and Linux are beta. Expect rough edges; issues and ideas are welcome.
+> **Status: 0.12, early.** relaybay is built for my own workflow first and changes quickly; Windows
+> is what it runs on every day, macOS and Linux are beta. Expect rough edges; issues and ideas are
+> welcome.
 
 ![The relaybay board updating live while sessions report their work](https://raw.githubusercontent.com/Codenator81/relaybay/main/docs/assets/board.gif)
 
 ## Why relaybay
 
 - **One board for every session.** Ten repositories, ten Claude Code sessions: the board shows
-  which one is working, which one waits for you and what it did, without opening each terminal.
+  which one is working, which one waits for you and what it did, without opening each chat.
+- **The desktop app talks, the board keeps the record.** Your agents run where they run best,
+  in the Claude desktop app or a terminal; relaybay holds what they asked, were told and were
+  allowed to do, and one click takes you from a card to its session.
 - **Accept the work by eye.** Agents write a checklist of what to check and attach screenshots;
   you accept or reject step by step, and your comments reach the agent in its next turn.
 - **Local and plain.** One process, SQLite, bound to `127.0.0.1`, token-protected, no telemetry;
@@ -35,9 +40,10 @@ The suspects: too many chats, too few witnesses. The desktop app is a fine room 
 conversation; Projects keep the files of one job together. Neither keeps the record of what
 eleven agents asked, were told and were allowed to do.
 
-relaybay is that record. Every task is a card, every question has a default and an owner's answer,
-every push waits for a button on the board, and every turn's report lands in full. Case closed —
-and the next one starts on the card, not in a chat you have to find first.
+relaybay is that record, kept next to the desktop app rather than instead of it. Every task is
+a card that says who it waits on, every question has a default and lands in one Inbox, a push
+can wait for a button on the board, and every report lands in full. The talk with the agent
+stays in its chat, one click away from its card. Case closed.
 
 ## Quick start
 
@@ -90,7 +96,7 @@ program as its client:
 ## Features
 
 - **Board** — projects with per-stage counts; per project, columns `plan → dev → review → test → live → done` on two pages
-  with cards showing only the essentials: key, tracker badge, an "open in desktop" icon when a
+  with cards showing only the essentials: key, area, tracker badge, an "open in desktop" icon when a
   desktop session works on the task, title, waiting-on person, branch and the next step (a
   Compact toggle leaves key, tracker, title and who it waits on, with a chevron per card). Drag
   cards to set their order in a column or to move them to another stage (or use the card's ⋯ menu
@@ -99,12 +105,21 @@ program as its client:
   session history, "Open in desktop", unbinding the session and editing the task. Each task also has
   a page of its own (`/t/<key>`). Live updates over Server-Sent Events, catch-up after sleep or a
   dropped connection, a stage tab bar on narrow screens; ← / → switch the two board pages.
+- **The card and its session** — a card worked by a desktop or terminal session shows the
+  session's state in large letters (working, idle, waits for you, ended) with **Open** as its main
+  button: a desktop session opens in the desktop app, an ended terminal session resumes in a new
+  terminal window on this machine, a live terminal session is not opened. Then come the last
+  report and the comment thread. A card without a session gives **Copy the brief**: the text to
+  paste into a new session, which then binds itself to the card. The everyday loop:
+  [Work a card with a session](https://codenator81.github.io/relaybay/how-to/work-a-card/).
+- **Areas** — a card can name the part of its project it belongs to ("web shop", "api"), from a
+  list per project that grows from use; the area shows as a coloured chip and filters the board.
 - **Repositories and "Open in VS Code"** — a project lists its repositories (Stands & access, or
   `project_upsert(repos=…)`); each card shows the ones the task touches with its pull requests and
   an "Open in VS Code" link, linked by agents (`task_update(repos=…, prs=…)`) or by the hooks from
   the folder a bound session works in.
 - **Quick switcher and saved filters** — Ctrl+K (Cmd+K on macOS) finds any task, project or
-  session by a few letters; board filters by stage, waiting-on and session stay in the URL and can
+  session by a few letters; board filters by stage, area, waiting-on and session stay in the URL and can
   be saved as chips on the board and items in the sidebar.
 - **Review** — agents write what you should check by eye as a checklist and attach screenshots
   (`review_steps_set`, `attach_file`); you accept or reject each step in the task's Review tab,
@@ -132,14 +147,13 @@ program as its client:
 - **Comments to agents** — write a comment on a task (dialog or task page) and the agent of the
   bound session gets it through its hooks with its next prompt or tool call; the thread shows
   "sent / delivered / read" live, `Stop` reminds the agent (at most twice) until it acknowledges,
-  and agents answer with `comment_add` (their replies land in your Inbox). An opt-in
+  and agents answer with `comment_add` (their replies land in your Inbox). A comment not
+  delivered yet says why (no session bound, the session ended, its hooks not linked yet, or the
+  session idle with the wake-up hook off), and the Inbox lists those waiting over an hour. An opt-in
   wake-up hook (`relaybay setup --apply --wake`, Claude Code 2.1.309+) wakes an idle session for a new
   comment or your acceptance of its plan.
-- **Intake and backlog** — a watcher you run (Telegram and e-mail examples in `examples/intake/`)
-  posts chat and mail messages; relaybay ties them to the waiting task and marks it "answer
-  received", and only a trusted source on a task with autonomy on lets the agent go on by itself.
-  Findings and ideas wait on the backlog until you plan them
-  ([guide](https://codenator81.github.io/relaybay/how-to/intake/)).
+- **Backlog** — findings and ideas of sessions and reviews wait on the backlog until you plan
+  them; **To plan** turns an item into a task.
 - **Stands & access** — per project, the local, test and live environments with their base URL and
   how agents reach them (ssh alias, kube context, database host, GitOps repository, log links),
   stored as references only, never secrets; agents' permission level per environment (`none`,
@@ -164,9 +178,6 @@ program as its client:
   step. By default a move to `dev` needs an accepted plan unless the task is size `S`. The plan
   stays alive: work added after a report is a new step (`plan_step_add`, the acceptance kept) and
   takes the task back to `dev`.
-- **Usage** — tokens by session and model, per day and week and per project, read locally from the
-  Claude Code transcripts the hooks report: only `usage` numbers and the model name are kept, never
-  prompt or output text, and no prices or quotas. Turn it off with `usage_enabled = false`.
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
@@ -182,33 +193,16 @@ program as its client:
   rules version. Rules are versioned: agents change them with `rules_propose` and the owner accepts or
   rolls back in Settings → Rules. A stage move that misses a rule succeeds with a warning (or is refused with
   `rules_mode = "strict"`), in MCP responses and on the board.
-- **Runs on a card** — relaybay can start your own unmodified `claude` on a card, on your
-  machine only, under your own subscription sign-in; it never signs in for you or reads
-  credentials, and refuses API-key sign-ins unless you allow them in Settings. The card's Agent
-  block starts the first turn in the project folder or one of its repositories, each repository in
-  a new git worktree (with its untracked `CLAUDE.md` and `.claude/` copied in, never added to git)
-  or used in place, with a brief built from the card; then each Continue resumes the same Claude
-  Code session (`--resume`); a text sent during a turn waits for it, Stop kills the turn's whole
-  process tree, and the card shows the status, the Claude session id and each turn's tokens. The
-  run's hooks report to its own session row on the card; when `relaybay setup` did not install
-  them, the run passes them itself. Between turns you can open the session in the Claude desktop
-  app (on Windows; elsewhere the card shows the `claude --resume` command) and hand it back, or,
-  once you switch it on in Settings → Agents, in a Terminal tab on the board (the same session
-  in a terminal on this machine; no turn starts while it is open), and
-  change the permission mode, model and effort for the next turns. Coordinator sessions may start
-  runs with `run_start` and lower a run's mode with `run_settings`; project
-  defaults (model, effort, permission mode, allowed tools, project folder) are on Stands & access,
-  the sign-in switch in Settings → Agents. relaybay runs `git worktree add`, never a commit or push.
 - **Questions to you** — an agent asks with `question_ask`, always with a default; the question
   shows in your Inbox and on the card (a blocking one also in the tray), and only your answer on
-  the board closes it. A run waits on a blocking question and your answer starts its next turn,
-  verbatim; a desktop session gets it as an owner comment. A non-blocking question closes with its
+  the board closes it. Your answer reaches the session as an owner comment through its hooks.
+  A non-blocking question closes with its
   default at its deadline. "Look at this" questions carry the URL of a screen the agent brought up
   and the test account's name, never a password.
-- **Approvals** — a run's push, PR merge or change on a stand waits for your **Approve** on the
+- **Approvals** — a session's push, PR merge or change on a stand waits for your **Approve** on the
   board: the guard denies the call and opens a request (or the agent asks with
   `approval_request`), the request shows in your Inbox, on the card and in the tray, and your
-  decision reaches the agent as its next turn or an owner comment. One approval allows one
+  decision reaches the agent as an owner comment. One approval allows one
   matching call, run alone, and a push approval names its branch. What needs one is policy data
   per project (`approvals`; desktop sessions only with `approvals.desktop`); a change on live
   always does.
@@ -361,18 +355,15 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.2.0** — sidebar navigation and Inbox, comments to agents, project environments and access,
   policy as data.
 - **0.3.0** — review checklist with screenshots, memory and documents.
-- **0.4.0** — map and usage, rules versioning, screenshot annotations, documents on the board.
-- **0.5.0** — intake from chats and e-mail with an autonomy switch, the backlog.
+- **0.4.0** — rules versioning, screenshot annotations, documents on the board.
+- **0.5.0** — the backlog.
 - **0.6.0** — the desktop program: installers, tray, window, autostart, updates.
 - **0.6.1** — desktop fixes: the program follows the machine's theme, the window keeps its state.
-- **0.9.0, agents inside** — runs on a card with your own `claude` turn by turn, worktrees per
-  repository, the session handed to the desktop app and back, full turn reports with `verified`
-  marks, questions and approvals on the board, slots and memory limits, card close and retention;
-  the Terminal tab on a run came in 0.10.
-- **0.11.0, the coordinator** — one coordinator run for all projects, woken by board events,
-  compacting itself, with its own budget; schedules (coordinator turns, read-only checks,
-  reminders); permission profiles edited on the board; the Coordinator and Schedules pages.
-- **0.7+, workers** — scheduled workers per project.
+- **0.9 to 0.11, agents inside** — runs of your own `claude` on a card, a terminal tab and a
+  coordinator run were tried and removed in 0.12: the desktop app is the better place to talk
+  to an agent. Questions, approvals and `verified` marks stayed.
+- **0.12.0, the board with the desktop** — areas on cards, the card and its session, Copy the
+  brief.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
 

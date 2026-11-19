@@ -1,5 +1,5 @@
 {#- One question to the owner, on the card (place "card") and in the Inbox (place "inbox", with
-    its card, or "Coordinator" for one of 0.11's coordinator run). The owner answers with an option, a text, or both; a look question with "fine" or
+    its card). The owner answers with an option, a text, or both; a look question with "fine" or
     its remarks. The look URL opens in the owner's own browser. -#}
 {%- macro question_item(q, place) -%}
 <li class="question-row question-{{ q.status }}" id="question-{{ q.id }}" data-question="{{ q.id }}">

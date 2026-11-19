@@ -408,8 +408,8 @@ async def seed(service: Service) -> int:
 
 
 async def seed_environments(service: Service) -> None:
-    """Two environments and a few messages between sessions for Activity, all through the real
-    paths."""
+    """Two environments and a few desktop messages between sessions for Activity, all through
+    the real paths."""
     await service.save_environment("acme-shop", {"name": "test", "kind": "test"}, actor="demo")
     await service.save_environment(
         "acme-shop", {"name": "live", "kind": "live"}, confirm_live=True, actor="demo"

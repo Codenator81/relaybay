@@ -76,8 +76,9 @@ This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
 ## 3. Live session status (hooks)
 
 With Claude Code hooks the board shows whether a session is working, waiting for you, idle or
-gone, without the agent's help: a dot on the card's "open in desktop" icon and a "last activity"
-line in the task dialog. `relaybay setup` writes the hooks into your user settings
+gone, without the agent's help: the card's state line and its dot, the session's last activity,
+and where the session runs, which decides what the card's **Open** does
+([§4](#4-watch-the-board)). `relaybay setup` writes the hooks into your user settings
 (`~/.claude/settings.json`, which the CLI and the desktop app's local sessions both read). It only
 writes when you ask:
 
@@ -211,7 +212,49 @@ For tests or a second machine profile, `--claude-home <folder>` (and `relaybay s
 ## 4. Watch the board
 
 Open the board from the desktop program's tray (Open board), or open the login link printed by
-`relaybay serve` (or by `relaybay token`). Cards appear and move as
-sessions call the tools; no reload needed. For a session bound by its desktop session id, the card's
-"Open in desktop" button opens it in the Claude desktop app; if nothing opens, use "Copy link" and
-paste the link into the app.
+`relaybay serve` (or by `relaybay token`). Cards appear and move as sessions call the tools; no
+reload needed. The everyday loop of a card and its session is in
+[Work a card with a session](how-to/work-a-card.md).
+
+**The state line.** The task dialog and the task page start with the card's state, derived from the
+hooks and the card, never set by hand; the same word shows on the board card next to the session's
+dot:
+
+- **Waits for you**: an open question or approval request, a review in `review` or `test`, "waiting
+  on" naming you, or the session asking for its user; each reason is listed under the word.
+- **Working** or **Idle**: by the bound session's hook status, with its last activity.
+- **Ended**: the session of the latest binding has ended.
+- **No session**: nothing is bound.
+
+**One Open.** The button in the state line follows where the session runs:
+
+- a desktop session opens in the Claude desktop app (its link is also under the **Session** fold:
+  if nothing opens, copy it and paste it into the app);
+- an ended terminal session opens a new terminal window running `claude --resume <id>` in the
+  folder the session started in. relaybay does this only when the board is opened on the machine
+  itself (a phone or a board behind a reverse proxy is refused), once until the session starts or
+  60 seconds pass;
+- a live terminal session is not opened: the button is disabled with "running in a terminal". The
+  board cannot find that window, and a second process on a live session is unsafe.
+
+When Open is disabled or missing, the line says why (for example "runs in the desktop app; its
+desktop id is not known yet"). While no session works on the card, **Copy the brief** gives the
+text a new session needs.
+
+**How relaybay knows where a session runs.** The command hook sends Claude Code's
+`CLAUDE_CODE_ENTRYPOINT` with `SessionStart`: `claude-desktop…` is the desktop app, `cli` is a
+terminal; a session with a desktop id (`local_…`) is a desktop one in any case. When the hook cannot
+tell (an older hook client, an http hook, an IDE or SDK entrypoint), the session start asks the
+session once to say it with its next relaybay write:
+
+```text
+task_patch(task="ACME-12", fields={"session_surface": "terminal"},
+           session="<its name>", hook_session="<id>")
+```
+
+**Why a comment has not arrived.** Each owner comment shows `delivered` or `not delivered yet`
+with its reason: no session bound; the session ended; the session has not linked its hooks yet
+(it passed no `hook_session`); the session waits for its user, so the comment arrives with its next
+tool call; the session is idle and the wake-up hook is not waiting
+([§3](#3-live-session-status-hooks)). The Inbox lists comments waiting longer than an hour under
+"Comments not delivered".

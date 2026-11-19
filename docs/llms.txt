@@ -1,6 +1,6 @@
 # relaybay
 
-> relaybay is a local, open-source live board and MCP server for people who run many Claude Code sessions across many repositories. Sessions create and update tasks through MCP tools (Streamable HTTP at http://127.0.0.1:8765/mcp, Bearer token) and Claude Code hooks report session status; the owner watches projects, tasks, stages and reports update in the desktop program's window or the browser. Installers for Windows, macOS and Linux (no Python needed), or the Python package (Python 3.12+) and a Docker image; FastAPI, SQLite, MIT license, no telemetry.
+> relaybay is a local, open-source live board and MCP server for people who run many Claude Code sessions across many repositories. The sessions work in the Claude desktop app or a terminal and report through MCP tools (Streamable HTTP at http://127.0.0.1:8765/mcp, Bearer token); the owner sees projects, tasks, stages and reports, who waits for whom and what is left to accept, in the browser, on the desktop or on a phone. relaybay starts no agent: Claude Code hooks report each session's state, and one click takes the owner from a card to its session. Installers for Windows, macOS and Linux (no Python needed), or the Python package (Python 3.12+) and a Docker image; FastAPI, SQLite, MIT license, no telemetry.
 
 Stages are plan, dev, review, test, live, done. Every session should read `project_snapshot` first, pass its session on writes, keep `next_step`, `waiting_on` and `progress` current, and end every stage with `report_add` whose first line is `state · size · gist`.
 
@@ -11,6 +11,7 @@ Stages are plan, dev, review, test, live, done. Every session should read `proje
 - [MCP tools guide](https://codenator81.github.io/relaybay/mcp-tools/): how the tools and resources work together, with results and examples
 - [MCP reference](https://codenator81.github.io/relaybay/reference/mcp/): every tool and resource with its parameters, generated from the live registry
 - [Connect Claude Code](https://codenator81.github.io/relaybay/connect-claude-code/): MCP registration, the instruction snippet for CLAUDE.md / AGENTS.md, hooks with `relaybay setup`
+- [Work a card with a session](https://codenator81.github.io/relaybay/how-to/work-a-card/): the everyday loop: Copy the brief, paste it into a desktop or terminal session that binds itself, the state line, answers and comments, review, Open to get back to the session
 - [Install and run](https://codenator81.github.io/relaybay/getting-started/install/): the desktop program's installers (Windows, macOS, Linux), or `uv tool install relaybay`, `uvx`, `pipx` or Docker; first run and the token
 - [CLI reference](https://codenator81.github.io/relaybay/reference/cli/): `serve`, `token`, `setup`, `doctor`, `demo`, `import`, `export`, `desktop`, `hook`; entry points `relaybay`, `relaybay-hook` (the hook forwarder) and `relaybay-desktop` (the program)
 - [Configuration reference](https://codenator81.github.io/relaybay/reference/configuration/): `config.toml` keys, environment variables, flags; the desktop program's `desktop.toml`
@@ -21,7 +22,7 @@ Stages are plan, dev, review, test, live, done. Every session should read `proje
 - [Architecture](https://codenator81.github.io/relaybay/architecture/): processes, modules, data model, transports, security layers
 - [Roadmap](https://codenator81.github.io/relaybay/ROADMAP/): versions and status
 - [Design documents](https://codenator81.github.io/relaybay/design/): upcoming steps
-- [Coordinate many projects](https://codenator81.github.io/relaybay/how-to/coordinator/): one coordinator session over many projects and their sessions
+- [Coordinate many projects](https://codenator81.github.io/relaybay/how-to/coordinator/): one coordinator session, in the desktop app or a terminal, over many projects and their cards
 - [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/): `relaybay doctor --json` and what each failing item means
 - [Import and export markdown](https://codenator81.github.io/relaybay/how-to/markdown-import-export/): `relaybay import` and `export`, layout, dry run, conflicts
 - [Move to the desktop program](https://codenator81.github.io/relaybay/how-to/desktop-from-source-server/): from a server run in a source checkout to the installed program, same data folder, hooks via `relaybay-hook`, roll back
