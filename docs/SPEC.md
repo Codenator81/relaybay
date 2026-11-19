@@ -343,8 +343,9 @@ names, the surface, the entrypoint and the start folder the hooks recorded go al
 session already has them.
 
 **Start folder** (`session.start_cwd`): the folder of a Claude Code session's first
-`SessionStart`, where `claude --resume` finds the conversation again; a `resume` or `compact`
-start keeps it, any other start sets it. `session.cwd` follows every hook for display.
+`SessionStart`, where `claude --resume` finds the conversation again; a `resume`, `compact` or
+`clear` start keeps it (the hook's folder may be a subfolder the session moved into), any other
+start sets it. `session.cwd` follows every hook for display.
 
 **Resume binds again.** A terminal session's `SessionEnd` unbinds its tasks and marks those
 bindings as ended by the session's end (`task_session.unbound_reason = 'session_end'`). A later
@@ -371,9 +372,8 @@ bound to it, and the Claude desktop app shows and drives that session. What is l
 - **Worktrees on disk.** relaybay touches nothing on disk (worktrees, Claude Code's transcripts, a
   coordinator folder). The Inbox lists the worktrees runs created and did not remove, with their
   paths, to be removed with `git worktree remove` when not needed ([§2](#spec-board-inbox)).
-- **MCP.** Twenty tools and the resource `relaybay://intake/{source}` stay registered with their
-  parameters as deprecated stubs that do nothing
-  ([§3](#spec-mcp-compat)).
+- **MCP.** Twenty tools and the resource `relaybay://intake/{source}` stayed registered in 0.12 as
+  deprecated stubs that did nothing; MCP contract 2 removed them ([§3](#spec-mcp-compat)).
 - **Pages.** `/coordinator`, `/schedules`, `/settings/agents`, `/settings/profiles`,
   `/settings/intake`, `/usage`, `/messages` and the run and terminal routes answer 404. Settings has
   the tabs Integrations, Policy, Rules and Notifications.
@@ -672,7 +672,7 @@ their threads ([§12](#spec-intake)).
 **Session messages: removed in 0.12** ([design 0025](design/0025-board-with-the-desktop.md)).
 Sessions in the desktop app message each other through the desktop app itself. The Messages page and
 its sidebar item, the task's Messages block, delivery through hooks, the limits, the notifications
-and the Inbox lines are gone; `message_send`, `messages_list` and `message_ack` are deprecated stubs
+and the Inbox lines are gone; their MCP tools were removed with MCP contract 2
 ([§3](#spec-mcp-compat)) and the `session_message` table stays in the file, unread
 ([§11](#spec-data)).
 
@@ -923,19 +923,35 @@ word with the session's dot:
 
 Under the word: the session's name and last activity with its age. The line refreshes live on the
 card's events and on `session.status_changed` of its session (not while an answer is being typed).
-One **Open** follows where the session runs ([§1](#spec-session-surface)): a desktop session opens
-its `desktop_link_template` link; an ended terminal session posts to
-`/sessions/<id>/open-terminal`, which opens a new terminal window on this machine running `claude
---resume <its Claude Code id>` in its start folder; a live terminal session gets the button disabled with
-"running in a terminal" (the board cannot find that window, and a second process on a live session
-is unsafe); an unknown surface gets no button, only the reason. Every disabled or missing Open says
-why in one line, and a refusal of the terminal endpoint (409) is shown in the state line.
+**Open** is a menu with two items whenever the card has a session (the bound one, or the ended one
+of the latest binding); a disabled item stays in the menu, greyed, with its reason in one line:
+
+- **In desktop** opens the session's `desktop_link_template` link, for a desktop session
+  ([§1](#spec-session-surface)) live or ended. Disabled for a terminal session ("started in a
+  terminal: the desktop app cannot open it") and for a desktop session without a known desktop id
+  ("its desktop id is not known yet"). A session of unknown surface follows its desktop link when it
+  has one. A live desktop session whose last start came from a terminal (resumed there with In
+  terminal) gets both items disabled with "running in a terminal".
+- **In terminal** posts to `/sessions/<id>/open-terminal`, which opens a new terminal window on this
+  machine running `claude --resume <its Claude Code id>` in its start folder. Enabled for any ended
+  session, desktop, terminal or unknown, with a resumable Claude Code id and a known folder.
+  Disabled for any live session ("running in the desktop app", "running in a terminal", "still
+  running": a second process on a live session is unsafe), without a Claude Code id ("no Claude
+  Code session id to resume"), without a folder ("its folder is not known"), and while a terminal
+  opened for it has not started yet. The endpoint refuses a live session with the same reason, and
+  a refusal (409) is shown in the state line.
 
 The terminal endpoint takes only the session's internal id, from a signed-in browser (cookie and
 CSRF; refused with a Bearer token) on the machine itself: the client address and the request's
 `Host` must both be loopback (`localhost`, `127.0.0.1`, `[::1]`), else 409. So the board on a
 phone, and a board published through a reverse proxy (whose clients come from 127.0.0.1 but ask
-for the published name), never open a terminal. The command is fixed, the id must be a lowercase
+for the published name), never open a terminal. With a published name (`external_url`,
+`allowed_hosts`) the same holds on the machine itself, because a tunnel running there forwards a
+phone's request from 127.0.0.1 with that name: the 409 says to open the board at
+`http://127.0.0.1:<port>` on this machine. Opens are serialized: a second Open is refused until
+the opened terminal's `SessionStart` arrives (or a short hold runs out), and the session is read and
+checked under the same lock as the start, so a click queued behind another sees the session already
+running and cannot start a second process. The command is fixed, the id must be a lowercase
 UUID read from the database, the start folder must exist, and every command is an argument list:
 Windows Terminal (`wt -d <folder> claude --resume <id>`, unless the folder holds a `;`), else
 `claude` in a console window of its own; on macOS `osascript` runs a fixed script that gets the
@@ -947,7 +963,7 @@ reads them otherwise); elsewhere the first of `x-terminal-emulator`, `gnome-term
 
 One Open at a time per session: after an Open, another one is refused (409, "has not started
 yet") until that session's next `SessionStart` arrives or 60 s pass, and the check and the start
-run under one lock; meanwhile the button stays disabled with "a terminal is opening". Each opening
+run under one lock; meanwhile **In terminal** stays disabled with "a terminal is opening". Each opening
 writes `session.terminal_opened` (session, folder, program, the keys of its cards; the card
 refreshes on it; on the Audit page with "Changes"). relaybay never starts a session otherwise.
 
@@ -1181,7 +1197,7 @@ reader of Claude Code transcripts and the transcript paths kept for it, token bu
 block, the task's budget row, budget lines through the hooks, budget notifications) and the brake
 (Stop all, the banner, `relaybay brake on` refusals through the hooks) were built for agents on
 cards; the desktop app shows the plan limits. Their tables stay in the file, unread
-([§11](#spec-data)); their MCP tools are deprecated stubs ([§3](#spec-mcp-compat)). The
+([§11](#spec-data)); their MCP tools were removed with MCP contract 2 ([§3](#spec-mcp-compat)). The
 per-session **No live now** switch and the guard stay ([§7](#spec-no-live)).
 
 <a id="spec-concurrency"></a>
@@ -1263,7 +1279,6 @@ report.
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Backlog | `backlog_add`, `backlog_list`, `backlog_update`, `backlog_patch` ([§12](#spec-backlog-mcp)) |
-| Deprecated, do nothing since 0.12 | `run_start`, `run_status`, `run_events`, `run_settings`, `schedule_add`, `schedule_list`, `schedule_cancel`, `usage_summary`, `budget_get`, `brake_set`, `brake_status`, `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources`, `message_send`, `messages_list`, `message_ack` ([below](#spec-mcp-compat)) |
 
 Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay. The
 digests are annotated as writes: `session` moves the caller's read position and can create or link
@@ -1285,7 +1300,7 @@ client whose cached schema lacks them, and `relaybay://schema/task` lists them a
 `relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`),
 `relaybay://doc/{project}/{doc}` (a document's current markdown),
 `relaybay://attachments/{attachment_id}/annotated` (a flattened PNG),
-`relaybay://intake/{source}` (deprecated since 0.12 with intake, [§12](#spec-intake)), `relaybay://schema/task`
+`relaybay://schema/task`
 (the editable task fields as a table: name, type, description, how to clear), `relaybay://contract`
 (the contract version, the rule below and the deprecations, [below](#spec-mcp-compat)).
 
@@ -1309,7 +1324,7 @@ known rules version is older, a write tool's result also ends with one line, onc
 
 <a id="spec-mcp-compat"></a>
 
-**Compatibility policy (MCP contract v1).** MCP clients keep the parameter schema of a tool they
+**Compatibility policy (MCP contract v2).** MCP clients keep the parameter schema of a tool they
 already loaded, even across server restarts, so a release only adds: new optional parameters, new
 tools, resources and prompts, a wider type, more enum values. Breaking, and allowed only when an
 expired deprecation covers it: removing a tool, a parameter, a resource (URI or template), a prompt or
@@ -1330,25 +1345,19 @@ the signature and adds the line
 (for a parameter ``Deprecated: parameter `<name>` of <tool> is …``) to the tool's description and to
 its result (for a parameter, only when the call passed it). `relaybay://contract` and the
 [MCP reference](reference/mcp.md#contract) list the version, this rule and the deprecations
-(`Deprecations: none.` in 0.8.0). The release that removes an expired item raises `CONTRACT_VERSION`
-(1 in 0.8.0); additions keep it.
+(`Deprecations: none.` in 0.8.0 and again under contract 2). The release that removes an expired
+item raises `CONTRACT_VERSION` (1 in 0.8.0, 2 since 0.13); additions keep it.
 
-**Deprecated in 0.12.** Twenty tools and one resource stay registered with their parameters and
-annotations, so a session with a cached schema keeps working, but do nothing ([§1](#spec-run),
-[§2](#spec-usage), [§12](#spec-intake)). Each answers `Nothing done: this tool does nothing since
-0.12.` followed by its notice line, and its description ends with that notice (the resource
-answers the same two lines):
-
-| Tools | Notice |
-|---|---|
-| `run_start`, `run_status`, `run_events`, `run_settings`, `schedule_add`, `schedule_list`, `schedule_cancel` | `Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.` |
-| `brake_status`, `brake_set` | `Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app.` |
-| `usage_summary`, `budget_get` | `Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits.` |
-| `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources`, the resource `relaybay://intake/{source}` | `Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.` |
-| `message_send`, `messages_list`, `message_ack` | `Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.` |
-
-All of them are listed under the contract's deprecations, removable not before 2026-12-17 in a
-later minor release; that release raises the contract version to 2.
+**Contract 2: the 0.12 stubs removed.** 0.12 kept twenty tools and one resource of removed
+features registered as deprecated stubs that did nothing ([§1](#spec-run), [§2](#spec-usage),
+[§12](#spec-intake)): `run_start`, `run_status`, `run_events`, `run_settings`, `schedule_add`,
+`schedule_list`, `schedule_cancel`, `usage_summary`, `budget_get`, `brake_set`, `brake_status`,
+`intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources`,
+`message_send`, `messages_list`, `message_ack` and `relaybay://intake/{source}`. They were announced
+as removable not before 2026-12-17; by the maintainer's decision contract 2 removes them earlier,
+since they did nothing. A client with a cached schema that still calls one gets the tool error
+`Unknown tool: <name>`. The baseline was rewritten for contract 2 outside `--rebaseline`, which refuses a
+removal no expired deprecation covers.
 
 `tests/fixtures/mcp_contract_baseline.json` holds the surface clients cache: tool names, input
 schemas without descriptions, titles and defaults, annotations, resource URIs and templates, prompt
@@ -2808,7 +2817,7 @@ keys, one chat holds many tasks); the coordinator session reads the chats and up
 itself. Gone: posting messages from watchers, the Inbox groups Intake and Answers, the "answer
 received" mark (cleared by migration 0049), source trust and task and project autonomy
 (Settings → Intake), Forward to the agent, the task's Intake block, wake-ups through hooks and the
-intake notifications. The `intake_*` tools are deprecated stubs ([§3](#spec-mcp-compat)) and the
+intake notifications. The `intake_*` tools were removed with MCP contract 2 ([§3](#spec-mcp-compat)) and the
 intake tables stay in the file, unread ([§11](#spec-data)). Backlog items whose origin was intake
 stay, their origin shown as plain text.
 

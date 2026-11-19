@@ -1814,8 +1814,43 @@ summary { cursor: pointer; }
 .state-line.state-ended .state-word, .state-line.state-none .state-word { color: var(--muted); }
 .state-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .state-actions form { margin: 0; }
-.state-actions .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
-a.btn.open-desktop { text-decoration: none; }
+.open-menu { position: relative; }
+.open-menu > summary { list-style: none; }
+.open-menu > summary::-webkit-details-marker { display: none; }
+.open-menu > summary::after { content: " \25BE"; }
+.open-menu-items {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 32px));
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.open-menu-items li { display: grid; padding: 2px 0; }
+.open-menu-items :is(a, button, .open-off) {
+  padding: 6px 10px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.open-menu-items :is(a, button:not(:disabled)):is(:hover, :focus-visible) { background: var(--surface-2); }
+.open-menu-items :is(button:disabled, .open-off) { color: var(--muted); cursor: not-allowed; }
+.open-note { padding: 0 10px 4px; font-size: 12px; overflow-wrap: anywhere; }
 .state-line p { margin: 6px 0 0; }
 .state-reasons { font-weight: 600; }
 .state-result.is-error { color: var(--bad); }

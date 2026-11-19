@@ -158,5 +158,5 @@ async def test_a_named_session_takes_the_surface_of_its_hook_row(service: Servic
     await service.record_hook(hook("SessionEnd"))
     current = await service.get_task(task.key)
     detail = await service.task_detail(current.key)
-    assert detail.state.label == "Ended" and detail.open.kind == "terminal"
-    assert not detail.open.disabled
+    assert detail.state.label == "Ended" and detail.open is not None
+    assert detail.open.terminal.enabled and not detail.open.desktop.enabled

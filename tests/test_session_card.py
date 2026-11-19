@@ -1,6 +1,6 @@
-"""The session card on the board (design 0025): the state line with one Open, Copy the brief, the
-card's order with the comment box outside every refetched fragment, the state word on the board
-card, and why a comment has not arrived."""
+"""The session card on the board (design 0025): the state line with the Open menu, Copy the
+brief, the card's order with the comment box outside every refetched fragment, the state word on
+the board card, and why a comment has not arrived."""
 
 import base64
 import sqlite3
@@ -114,7 +114,10 @@ def test_a_working_desktop_session_opens_in_the_desktop_app(board: TestClient) -
     run_in_app(board, service.record_hook, hook("SessionStart"))
     html = dialog(board, task.key)
     assert ">Working</h2>" in html and "Copy the brief" not in html
-    assert f'class="btn primary open-desktop" href="claude://claude.ai/epitaxy/{DESKTOP_A}"' in html
+    assert f'<a class="open-desktop" href="claude://claude.ai/epitaxy/{DESKTOP_A}"' in html
+    # A second process on a live session is unsafe: In terminal waits for the session to end.
+    assert '<button type="submit" disabled aria-describedby="open-terminal-note-' in html
+    assert '">running in the desktop app</span>' in html
     assert "started (startup)" in html  # the session's last activity
     board_page = board.get("/p/acme-shop").text
     assert 'class="card-state state-working"' in board_page and ">Working</span>" in board_page
@@ -140,8 +143,11 @@ def test_a_live_terminal_session_is_not_opened(board: TestClient) -> None:
     task = run_in_app(board, terminal_task(service, ended=False))
     html = dialog(board, task.key)
     assert ">Working</h2>" in html
-    assert 'disabled title="running in a terminal">Open</button>' in html
-    assert '<p class="state-note muted">running in a terminal</p>' in html
+    assert '<summary class="btn primary">Open</summary>' in html
+    assert '<span class="open-off">In desktop</span>' in html
+    assert "started in a terminal: the desktop app cannot open it" in html
+    assert '<button type="submit" disabled aria-describedby="open-terminal-note-' in html
+    assert '">running in a terminal</span>' in html
 
 
 def test_an_ended_terminal_session_is_resumed_and_gets_the_brief(board: TestClient) -> None:
@@ -153,18 +159,21 @@ def test_an_ended_terminal_session_is_resumed_and_gets_the_brief(board: TestClie
     assert ">Ended</h2>" in html and "Copy the brief" in html
     [row] = [r.session for r in run_in_app(board, service.list_sessions)]
     assert f'action="/sessions/{row.id}/open-terminal"' in html
+    assert '<button type="submit" aria-describedby="open-terminal-note-' in html
     assert "resumes it in a new terminal" in html
     card = board.get(f"/p/acme-shop/t/{task.key}/card").text
     assert 'class="card-state state-ended"' in card and "dot-ended" in card
 
 
-def test_an_unknown_surface_has_no_open_only_the_reason(board: TestClient) -> None:
+def test_an_unknown_surface_names_why_both_items_are_disabled(board: TestClient) -> None:
     service: Service = board.app.state.service
     task = run_in_app(board, project_task, service, session="acme-shop")
     run_in_app(board, service.record_hook, hook("SessionStart"))
     html = dialog(board, task.key)
-    assert "Open</" not in html
+    assert '<span class="open-off">In desktop</span>' in html
     assert "not known whether it runs in the desktop app or a terminal" in html
+    assert '<button type="submit" disabled aria-describedby="open-terminal-note-' in html
+    assert "still running" in html
 
 
 def test_waits_for_you_names_the_reasons_on_the_dialog_and_the_card(board: TestClient) -> None:

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 RULE = (
     "Within a contract version a release never removes a tool, a parameter, a resource or a"
@@ -56,53 +56,7 @@ class Deprecation:
         return today >= self.remove_not_before and _minor(version) > _minor(self.since)
 
 
-# Tools of features removed in 0.12 (design 0025): registered with their parameters, they do
-# nothing; the first later minor release past the date removes them and raises the version.
-REMOVED_SINCE = "0.12"
-REMOVED_NOT_BEFORE = date(2026, 12, 17)
-STUB_RESULT = "Nothing done: this tool does nothing since 0.12."
-BRAKE_GONE = "Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app."
-LIMITS_GONE = (
-    "Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app"
-    " shows the plan limits."
-)
-INTAKE_GONE = (
-    "Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates"
-    " the cards itself."
-)
-MESSAGES_GONE = (
-    "Deprecated: messages between sessions were removed in 0.12; sessions message each other"
-    " through the Claude desktop app."
-)
-RUNS_GONE = (
-    "Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by"
-    " a desktop session bound to it."
-)
-
-
-def _gone(tools: tuple[str, ...], note: str) -> list[Deprecation]:
-    return [Deprecation(t, None, REMOVED_SINCE, REMOVED_NOT_BEFORE, None, note) for t in tools]
-
-
-DEPRECATIONS: list[Deprecation] = [
-    *_gone(("run_start", "run_status", "run_events", "run_settings"), RUNS_GONE),
-    *_gone(("schedule_add", "schedule_list", "schedule_cancel"), RUNS_GONE),
-    *_gone(("brake_status", "brake_set"), BRAKE_GONE),
-    *_gone(("usage_summary", "budget_get"), LIMITS_GONE),
-    *_gone(
-        (
-            "intake_post",
-            "intake_list",
-            "intake_tie",
-            "intake_dismiss",
-            "intake_propose",
-            "intake_sources",
-            "relaybay://intake/{source}",
-        ),
-        INTAKE_GONE,
-    ),
-    *_gone(("message_send", "messages_list", "message_ack"), MESSAGES_GONE),
-]
+DEPRECATIONS: list[Deprecation] = []
 
 
 def _minor(version: str) -> tuple[int, int]:

@@ -195,11 +195,12 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | Agents inside removed: runs, the terminal, the coordinator run, profiles, schedules (reminders included), the brake, budgets, the Usage page, intake and messages between sessions; questions and approvals stay for desktop and terminal sessions | done | [0025](design/0025-board-with-the-desktop.md) |
 | The session card: the state line, one Open that follows where the session runs, Copy the brief, one order of the task view, why a comment is not delivered yet | done | [0025](design/0025-board-with-the-desktop.md) |
 
-## After 0.12
+## 0.13 — MCP contract 2
 
 | Item | Status | Design |
 |---|---|---|
-| Opening a new desktop session with the brief already in it (a probe of the desktop app's link first) | later | [0025](design/0025-board-with-the-desktop.md#what-gets-stronger) |
+| MCP contract 2: the twenty tools and the resource kept as deprecated stubs in 0.12 removed (announced for not before 2026-12-17, shortened by the maintainer's decision) | in progress | [0025](design/0025-board-with-the-desktop.md#mcp-contract) |
+| The card's Open: a menu of In desktop and In terminal (any ended session resumes in a terminal); one Open at a time re-reads the session under the lock, the 409 on a published name points to `http://127.0.0.1:<port>`, a `/clear` keeps the start folder | in progress | [0025](design/0025-board-with-the-desktop.md) |
 
 Not planned: project managers and a Managers page (the owner, 2026-11-16).
 

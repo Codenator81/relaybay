@@ -226,19 +226,20 @@ dot:
 - **Ended**: the session of the latest binding has ended.
 - **No session**: nothing is bound.
 
-**One Open.** The button in the state line follows where the session runs:
+**Open.** The state line's Open is a menu with two items:
 
-- a desktop session opens in the Claude desktop app (its link is also under the **Session** fold:
-  if nothing opens, copy it and paste it into the app);
-- an ended terminal session opens a new terminal window running `claude --resume <id>` in the
-  folder the session started in. relaybay does this only when the board is opened on the machine
-  itself (a phone or a board behind a reverse proxy is refused), once until the session starts or
-  60 seconds pass;
-- a live terminal session is not opened: the button is disabled with "running in a terminal". The
-  board cannot find that window, and a second process on a live session is unsafe.
+- **In desktop** opens a desktop session in the Claude desktop app, live or ended (its link is
+  also under the **Session** fold: if nothing opens, copy it and paste it into the app). It is
+  disabled for a session started in a terminal;
+- **In terminal** opens a new terminal window running `claude --resume <id>` in the folder the
+  session started in, for any ended session, from the desktop app or a terminal. relaybay does
+  this only when the board is opened on the machine itself (a phone or a board behind a reverse
+  proxy is refused), once until the session starts or 60 seconds pass. It is disabled while the
+  session is live ("running in the desktop app", "running in a terminal"): a second process on a
+  live session is unsafe.
 
-When Open is disabled or missing, the line says why (for example "runs in the desktop app; its
-desktop id is not known yet"). While no session works on the card, **Copy the brief** gives the
+A disabled item stays in the menu with its reason (for example "its desktop id is not known
+yet"). While no session works on the card, **Copy the brief** gives the
 text a new session needs.
 
 **How relaybay knows where a session runs.** The command hook sends Claude Code's

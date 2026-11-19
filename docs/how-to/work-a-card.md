@@ -66,12 +66,16 @@ for you.
 
 ## 7. Open the session again
 
-**Open** in the state line takes you back to the session:
+**Open** in the state line is a menu that takes you back to the session:
 
-- a desktop session opens in the Claude desktop app;
-- an ended terminal session resumes with `claude --resume` in a new terminal window, in the folder
-  it started in; only when the board is opened on the same machine;
-- a live terminal session is not opened ("running in a terminal"): switch to its window yourself.
+- **In desktop** opens a desktop session in the Claude desktop app, live or ended. A session
+  started in a terminal cannot be opened there.
+- **In terminal** resumes an ended session, from the desktop app or a terminal, with `claude
+  --resume` in a new terminal window, in the folder it started in; only when the board is opened on
+  the same machine. While the session is live it is disabled ("running in the desktop app",
+  "running in a terminal"): switch to its window yourself.
+
+A disabled item stays in the menu with its reason.
 
 A resumed terminal session is bound again to the cards its end unbound. Details:
 [Connect Claude Code → Watch the board](../connect-claude-code.md#4-watch-the-board).

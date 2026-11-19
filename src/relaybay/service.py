@@ -44,10 +44,12 @@ from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.card import (
     NO_SESSION,
+    RUNNING_IN,
     CardState,
-    OpenAction,
+    OpenItem,
+    OpenMenu,
     card_state,
-    open_action,
+    open_menu,
     session_surface,
     undelivered_reason,
 )
@@ -192,7 +194,6 @@ from relaybay.domain.rules import (
 from relaybay.domain.sessions import (
     DEFAULT_DESKTOP_LINK_TEMPLATE,
     SURFACES,
-    TERMINAL,
     parse_session_id,
     surface_of_entrypoint,
 )
@@ -501,11 +502,11 @@ class TaskDetail:
     checks: dict[int, list[ReportCheck]] = field(default_factory=dict)  # `verified:` marks
     marks_from: int = 0  # reports with a smaller id were written before marks existed
     # The session card (design 0025): its state line, the session it is about (the bound one,
-    # or the ended one of the latest binding), what Open does, the brief for a new session
-    # (only while no session works on the card) and why owner comments wait.
+    # or the ended one of the latest binding), its Open menu (None without a session), the brief
+    # for a new session (only while no session works on the card) and why owner comments wait.
     state: CardState = field(default_factory=lambda: CardState(NO_SESSION))
     card_session: Session | None = None
-    open: OpenAction = field(default_factory=OpenAction)
+    open: OpenMenu | None = None
     brief: str | None = None
     undelivered: str | None = None
 
@@ -1854,9 +1855,9 @@ class Service:
                 changes["cwd"] = hook.cwd
             if hook.event == "SessionStart":
                 self._terminal_opened.pop(session.id, None)  # the opened terminal has started
-                # A resume or a compaction goes on in the conversation's own folder; any other
-                # start begins a conversation where it starts.
-                goes_on = hook.source in ("resume", "compact") and session.start_cwd
+                # A resume, a compaction or a /clear goes on in the session's launch folder (the
+                # hook's cwd may be a subfolder it cd'ed into); a new start begins where it starts.
+                goes_on = hook.source in ("resume", "compact", "clear") and session.start_cwd
                 if hook.cwd and not goes_on and hook.cwd != session.start_cwd:
                     changes["start_cwd"] = hook.cwd
             if hook.entrypoint:
@@ -2493,20 +2494,18 @@ class Service:
             return found
 
     async def open_terminal(self, session_id: int, *, actor: str = "owner") -> Session:
-        """Open a new terminal window running `claude --resume` for an ended terminal session,
-        in its folder (the card's Open). A live one is refused: the board cannot find its window,
-        and a second process on a live session is unsafe."""
-        session = await repo.get_session_by_id(self._r, session_id)
-        if session is None:
-            raise NotFoundError(f"Session {session_id} not found.")
-        if session_surface(session) != TERMINAL:
-            raise ConflictError(f"{session.name} does not run in a terminal.")
-        if session.status != "ended":
-            raise ConflictError(
-                f"{session.name} is running in a terminal: relaybay cannot find its window."
-            )
-        # One Open at a time: the check and the start must not interleave with another click.
+        """Open a new terminal window running `claude --resume` for an ended session, in its
+        folder (the card's Open, In terminal), whether it ran in the desktop app or a terminal.
+        A live one is refused: a second process on a live session is unsafe."""
+        # One Open at a time: the read, the checks and the start must not interleave with another
+        # click, or a click that read "ended" starts a second process after SessionStart.
         async with self._terminal_lock:
+            session = await repo.get_session_by_id(self._r, session_id)
+            if session is None:
+                raise NotFoundError(f"Session {session_id} not found.")
+            if session.status != "ended":
+                where = RUNNING_IN.get(session_surface(session), "still running")
+                raise ConflictError(f"{session.name} is {where}: a second process on it is unsafe.")
             opened = self._terminal_opened.get(session.id)
             if opened is not None and time.monotonic() - opened < self.terminal_hold:
                 raise ConflictError(
@@ -2667,15 +2666,16 @@ class Service:
         latest = await repo.list_bindings(self._r, task.id, limit=1)
         return await repo.get_session_by_id(self._r, latest[0].session_id) if latest else None
 
-    def _open_action(self, session: Session | None) -> OpenAction:
-        """`open_action`, held while a terminal opened for the session has not started."""
-        if session is not None:
+    def _open_menu(self, session: Session | None) -> OpenMenu | None:
+        """`open_menu`, with In terminal held while a terminal opened for the session has not
+        started."""
+        menu = open_menu(session)
+        if menu is not None and session is not None:
             opened = self._terminal_opened.get(session.id)
             if opened is not None and time.monotonic() - opened < self.terminal_hold:
-                return OpenAction(
-                    "terminal", disabled=True, note="a terminal is opening; waiting for it to start"
-                )
-        return open_action(session)
+                held = OpenItem(note="a terminal is opening; waiting for it to start")
+                return dataclasses.replace(menu, terminal=held)
+        return menu
 
     async def comment_wait_reason(self, task: Task, session: Session | None = None) -> str | None:
         """Why the task's undelivered owner comments wait (None: they go with the next hook)."""
@@ -2716,7 +2716,7 @@ class Service:
         return TaskDetail(
             state=state,
             card_session=session,
-            open=self._open_action(session),
+            open=self._open_menu(session),
             brief=None if state.live else await self.task_brief(task),
             undelivered=await self.comment_wait_reason(task, session),
             task=task,

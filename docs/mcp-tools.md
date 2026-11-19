@@ -481,7 +481,7 @@ as described. Claude Code is documented to list MCP prompts as slash commands
 ## Backlog
 
 Findings for later go on the backlog. Behaviour: [SPEC §12](SPEC.md#spec-intake). Intake from
-chats and e-mail was removed in 0.12; its tools are deprecated stubs (see
+chats and e-mail was removed in 0.12; its tools were removed with contract 2 (see
 [Contract](#contract-and-deprecations)).
 
 | Tool | Arguments | Effect |
@@ -598,8 +598,8 @@ looks unavailable. Two ways out:
 
 ## Contract and deprecations
 
-The tools, resources and prompts follow a versioned contract (version 1 in 0.8.0): a release only
-adds. It never removes a tool, a parameter, a resource or a prompt, never narrows what a parameter
+The tools, resources and prompts follow a versioned contract (version 1 in 0.8.0, 2 since 0.13): a
+release only adds. It never removes a tool, a parameter, a resource or a prompt, never narrows what a parameter
 accepts, never adds a required parameter to an existing tool and never makes a read-only tool write,
 unless the item was deprecated first for at least one minor version and 30 days. A deprecated tool
 or parameter says so in its description and in its result:
@@ -610,24 +610,17 @@ Deprecated: task_foo is deprecated since 0.9.0 and may be removed in a later min
 
 Switch to the replacement when you see it. `relaybay://contract` and the
 [MCP reference](reference/mcp.md#contract) list the version, the rule and the current deprecations
-(none in 0.8.0). Escape hatches for a stale schema exist only where fields grow: `task_patch` and
-`backlog_patch`. The rule in full: [SPEC](SPEC.md#spec-mcp-compat).
+(none under contract 2). Escape hatches for a stale schema exist only where fields grow:
+`task_patch` and `backlog_patch`. The rule in full: [SPEC](SPEC.md#spec-mcp-compat).
 
-Deprecated in 0.12 ([design 0025](design/0025-board-with-the-desktop.md)): twenty tools and the
-resource `relaybay://intake/{source}` keep their parameters, so a cached schema still works, but do
-nothing. Each answers `Nothing done: this tool does nothing since 0.12.` and its notice line; the
-description ends with the notice:
-
-| Tools | Notice |
-|---|---|
-| `run_start`, `run_status`, `run_events`, `run_settings`, `schedule_add`, `schedule_list`, `schedule_cancel` | `Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.` |
-| `brake_status`, `brake_set` | `Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app.` |
-| `usage_summary`, `budget_get` | `Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits.` |
-| `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources`, the resource `relaybay://intake/{source}` | `Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.` |
-| `message_send`, `messages_list`, `message_ack` | `Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.` |
-
-They may be removed not before 2026-12-17, in a later minor release that raises the contract to
-version 2.
+Contract 2 (0.13) removed the twenty tools and the resource that 0.12 kept as deprecated stubs
+doing nothing ([design 0025](design/0025-board-with-the-desktop.md)): `run_start`, `run_status`,
+`run_events`, `run_settings`, `schedule_add`, `schedule_list`, `schedule_cancel`, `usage_summary`,
+`budget_get`, `brake_set`, `brake_status`, `intake_post`, `intake_list`, `intake_tie`,
+`intake_dismiss`, `intake_propose`, `intake_sources`, `message_send`, `messages_list`,
+`message_ack` and `relaybay://intake/{source}`. They had been announced as removable not before
+2026-12-17; the maintainer shortened that notice. A call from a stale schema answers
+`Unknown tool: <name>`: start a new session (or reconnect the MCP server) to load the current list.
 
 ## Example
 
