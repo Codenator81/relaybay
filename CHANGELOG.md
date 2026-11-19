@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-19
+
 ### Changed
 
 - The card's Open is a menu of two items. **In desktop** opens the desktop link of a desktop session, live or ended; it is disabled for a session started in a terminal or a desktop session without a known desktop id. **In terminal** resumes any ended session with `claude --resume` in a new terminal window in its start folder, a desktop session's included (`POST /sessions/<id>/open-terminal` no longer refuses a session that did not run in a terminal); it is disabled for every live session ("running in the desktop app", "running in a terminal"). A disabled item stays in the menu with its reason.
@@ -1046,7 +1048,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.13.0
 [0.12.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.12.0
 [0.11.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.11.0
 [0.10.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.10.0
