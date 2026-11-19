@@ -470,14 +470,14 @@ Approval requests and the owner's decisions, newest first: open ones of all card
 
 ### `memory_search`
 
-Search memory notes, decisions, documents, reports and comments. Each hit has its id and the matching line; open a note with memory_get and a document with doc_get.
+Search memory notes, decisions, documents, reports, comments and backlog items. Each hit has its id and the matching line; open a note with memory_get, a document with doc_get and a backlog item with backlog_list.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Words to look for (word forms match). |
 | `scope` | string or null | no | Only notes of this scope: global, role or project. |
 | `project` | string or null | no | Only this project's items plus global and role notes. |
-| `kinds` | list of string or null | no | What to search: note, decision, doc, report, comment (default all; only notes when scope is given). |
+| `kinds` | list of string or null | no | What to search: note, decision, doc, report, comment, backlog (default all; only notes when scope is given). |
 | `limit` | integer | no | How many hits. Default: `10`. |
 
 ### `memory_get`
@@ -599,7 +599,7 @@ Reply to the owner on a task's comment thread (shown on the board and in the own
 
 ### `backlog_add`
 
-Put a finding outside your task (a bug, a missing feature, a question for later) on the project's backlog instead of a comment or a report. It starts as new; the owner decides on the board ("To plan" creates the task).
+Put a finding outside your task (a bug, a missing feature, a question for later) on the project's backlog instead of a comment or a report. It starts as new; the owner decides on the board ("To plan" creates the task). It is always added; open items with a similar title are named so that a duplicate can be closed.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -610,6 +610,8 @@ Put a finding outside your task (a bug, a missing feature, a question for later)
 | `task` | string or null | no | The task you found it in. Optional. |
 | `priority` | integer or null | no | -9 to 9, higher first; 0 is the default and resets it. |
 | `assignee` | string or null | no | Who it is for, a name or a role: To plan makes it waiting_on. '-' or '' clears it. |
+| `kind` | string or null | no | What it is: bug, idea, question, debt. Optional. '-' or '' clears it. |
+| `location` | string or null | no | Where in the code: 'repo:path:line', 'path:line' or a link, up to 300 characters. Optional. '-' or '' clears it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -624,11 +626,16 @@ Backlog items: new first, the highest priority first within a status, then newes
 | `status` | string or null | no | new, later, planned, done or declined. Optional. |
 | `area` | string or null | no | Area. Optional. |
 | `assignee` | string or null | no | Who it is for; '-' lists the items for nobody. Optional. |
+| `query` | string or null | no | Words that must all be in the title, the text, the location, the source or the decision (word forms match). Optional. |
+| `kind` | string or null | no | bug, idea, question, debt; '-' lists the items without a kind. Optional. |
+| `since` | string or null | no | A day like 2026-11-05: items found on it or later. Optional. |
+| `task` | string or null | no | A task key: items found in it or linked to it. Optional. |
+| `has_location` | boolean or null | no | true: only items with a code location; false: only without. |
 | `limit` | integer | no | At most this many. Default: `50`. |
 
 ### `backlog_update`
 
-Change a backlog item. Its title, body, area, priority and assignee: the session that added it, while it is new. Its status: coordinator sessions named in the server's config only; everyone else leaves that to the owner on the board.
+Change a backlog item. Its title, body, area, priority, assignee, kind and location: the session that added it, while it is new. Its status, triage note, duplicate and linked card: coordinator sessions named in the server's config only; everyone else leaves that to the owner on the board.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -641,6 +648,11 @@ Change a backlog item. Its title, body, area, priority and assignee: the session
 | `area` | string or null | no | New area. '-' or '' clears it. |
 | `priority` | integer or null | no | -9 to 9, higher first; 0 is the default and resets it. |
 | `assignee` | string or null | no | Who it is for, a name or a role: To plan makes it waiting_on. '-' or '' clears it. |
+| `kind` | string or null | no | What it is: bug, idea, question, debt. Optional. '-' or '' clears it. |
+| `location` | string or null | no | Where in the code: 'repo:path:line', 'path:line' or a link, up to 300 characters. Optional. '-' or '' clears it. |
+| `triage_note` | string or null | no | The decision in words, up to 500 characters; coordinator sessions only. '-' or '' clears it. |
+| `duplicate_of` | integer or null | no | Close it as a duplicate of this item of the same project (status declined, reason 'duplicate of #N'); coordinator sessions only. |
+| `task` | string or null | no | Link an existing card of the same project (status planned); coordinator sessions only. 'To plan' on the board creates a new one. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -652,7 +664,7 @@ Change any backlog item fields given as one JSON object, with the same rules as 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `item` | integer | yes | The item's number, e.g. 7. |
-| `fields` | object | yes | Item fields to change as one JSON object, e.g. {"priority": 2}. Allowed: status, reason, link, title, body, area, priority, assignee. '-', '' or null clears body, area and assignee, and resets priority to 0. |
+| `fields` | object | yes | Item fields to change as one JSON object, e.g. {"priority": 2}. Allowed: status, reason, link, title, body, area, priority, assignee, kind, location, triage_note, duplicate_of, task. '-', '' or null clears body, area, assignee, kind, location and triage_note, and resets priority to 0. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

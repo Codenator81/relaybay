@@ -80,6 +80,7 @@
           {% if h.kind == "doc" %}<a href="/p/{{ h.project_slug }}/docs/{{ h.name }}">{{ h.title }}</a>
           {% elif h.kind == "decision" %}<a href="#decision-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
           {% elif h.kind == "note" %}<a href="#note-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
+          {% elif h.kind == "backlog" %}<a href="/p/{{ h.project_slug }}/backlog?history=1#backlog-{{ h.id }}">#{{ h.id }}</a> {{ h.title }}
           {% elif h.task_key %}<a href="/t/{{ h.task_key }}">{{ h.task_key }}</a> {{ h.title }}
           {% else %}{{ h.title }}{% endif %}</span>
         <span class="muted hit-line">line {{ h.line }}: {{ h.snippet }}</span>

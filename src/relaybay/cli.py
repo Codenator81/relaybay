@@ -141,7 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bring a markdown setup (project briefs, task registry, task notes, memory notes)"
         " into relaybay. Prints the plan; writes nothing without --apply.",
     )
-    importer.add_argument("root", type=Path, help="The folder holding the layout.")
+    importer.add_argument(
+        "root",
+        type=Path,
+        nargs="?",
+        help="The folder holding the layout (optional with --backlog).",
+    )
     importer.add_argument(
         "--apply", action="store_true", help="Write the plan (default: a dry run, nothing written)."
     )
@@ -161,12 +166,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--aliases",
         type=Path,
         metavar="FILE",
-        help="JSON file with more column, stage and heading names, in any language.",
+        help="JSON file with more column, stage, heading and backlog decision names, in any"
+        " language.",
     )
     importer.add_argument(
         "--retro-project",
         metavar="SLUG",
         help="The project whose document 'retro' receives retro.md (skipped without it).",
+    )
+    importer.add_argument(
+        "--backlog",
+        type=Path,
+        metavar="FILE",
+        help="A backlog or bug registry under another name, read in place of backlog.md.",
     )
     importer.add_argument("--home", type=Path, help="relaybay data directory.")
 
@@ -383,8 +395,12 @@ def cmd_import(settings: Settings, args: argparse.Namespace) -> int:
     if args.expect and not args.apply:
         print("relaybay import: --expect goes with --apply.", file=sys.stderr)
         return 2
+    if args.root is None and args.backlog is None:
+        print("relaybay import: name the folder, or a registry with --backlog.", file=sys.stderr)
+        return 2
     try:
-        root = importer.resolve_root(args.root)
+        root = importer.resolve_root(args.root) if args.root is not None else None
+        registry = importer.resolve_backlog_file(args.backlog) if args.backlog else None
         aliases = importer.read_aliases(args.aliases)
     except importer.ImportProblem as exc:
         print(f"relaybay import: {exc}", file=sys.stderr)
@@ -399,6 +415,7 @@ def cmd_import(settings: Settings, args: argparse.Namespace) -> int:
                 overwrite=args.overwrite,
                 apply=args.apply,
                 expect=args.expect,
+                backlog_file=registry,
             )
         )
     except (DomainError, ValueError, OSError, sqlite3.Error) as exc:

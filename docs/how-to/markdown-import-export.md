@@ -37,7 +37,43 @@ at.
 | `projects/<slug>/memory/<name>.md` | The same, as a note of that project. |
 | `retro.md` | Document `retro` of the project named by `--retro-project`; skipped with a warning without it. |
 | `projects/<slug>/code.md` | The project's repositories (a table with `name`, `kind`, `path`, in order) and its tasks' links (a table with `task`, `repos`, `prs`: the registry ref, repository names separated by commas, pull request links one per line, each optionally after a repository name). A repository missing on the board is added; one with another path or kind is a conflict unless `--overwrite`. A task's links are only added, never removed. Export writes the file for a project with repositories or links. |
-| `backlog.md` | Backlog items. Columns: date (`2026-11-05`), project, area, what (the title), origin (`session`, `review`, `intake`, `owner`; anything else is `owner`), decision (`planned`, `later`, `declined: <reason>`, empty for new), priority (-9 to 9, higher first) and assignee (who it is for). A file without the last two keeps the stored values. An item is the same item again when project, date and title slug match. `planned` only records history: import creates no task. An unknown project is an error line. Other column names map through `--aliases` under `"backlog"`. Export writes every item, oldest first. |
+| `backlog.md` | Backlog items, or a bug registry under any name with `--backlog <file>` ([below](#a-bug-registry)). Columns: date, project, area, what, origin, decision (`planned`, `later`, `done`, `done: <link>`, `declined: <reason>`, empty for new), priority (-9 to 9, higher first), assignee (who it is for), kind (`bug`, `idea`, `question`, `debt`), location (where in the code) and note (the triage note). A file without one of the last five keeps the stored values; an empty cell clears it (an empty note still takes a decision outside the vocabulary, below). An item is the same item again when project, date and title slug match. `planned` only records history: import creates no task. Other column names map through `--aliases` under `"backlog"`. Export writes every item, oldest first, with all eleven columns. |
+
+### A bug registry
+
+A hand-kept registry rarely fits the vocabulary, so the import takes its rows as they are and says
+what it did, never dropping one:
+
+- **What.** Up to 200 characters it is the title. A longer cell is the item's body, whole, and its
+  title is the first sentence when that fits 120 characters, else a cut at a word within 120 with
+  `…`. Export writes the whole cell back.
+- **Date.** `2026-11-05`, `05.11.2026`, or `05.11` without a year: the latest such day not after the
+  file's modification time. It is the day the item was found. Such a date belongs to the file's
+  time: a file edited more than a year later reads `05.11` as a later year, so its rows become new
+  items; write the year once a registry outlives one.
+- **Project.** Its slug, or its name (`Acme Shop` finds `acme-shop`). An unknown project is an error
+  line.
+- **Origin.** `session`, `review`, `intake` or `owner`; any other text is kept as the source in words
+  (up to 200 characters) and the item's origin is `owner`. Export writes the text back.
+- **Location.** The location column as written (an empty cell is no location). Without that
+  column, the first `path:line` (`src/cart.ts:42`, `web:src/cart.ts:42-44`) in the what cell; a
+  link, an address (`user@host:22`) or a host and port (`www.example.com:8080`) is never taken
+  for one.
+- **Decision.** The vocabulary above, or the leading words your `--aliases` map under `"decisions"`
+  (`{"wontfix": "declined"}`: `wontfix: too old` is declined with the reason `too old`). Anything
+  else leaves the item new with the text as its triage note, and a warning.
+- **Too long.** An area over 60, a source over 200, a note over 500 characters is cut at a word with
+  `…` and a warning.
+- **Damaged rows.** When a row is cut short (no closing pipe, or too few cells), the next line
+  without a leading pipe continues its last cell (a line break typed into a cell); after a complete
+  row such a line is a row of its own. After a blank line, lines with the header's cells (or one fewer) and a project cell, a row typed as a
+  list item (`- 2026-11-05 | …`) included, stay rows of the table above; other table-like lines
+  there (a legend) are left out with a warning, and such a line the import cannot place is skipped,
+  never an error.
+
+The plan ends with one line per registry file, `findings.md: 40 rows read: add 38, error 2`, so every
+row is accounted for. Without a folder, `relaybay import --backlog findings.md --aliases aliases.json`
+reads only that file; with one, the file stands in for the folder's `backlog.md`.
 
 **Which row is which task folder.** A row finds its folder through its `ref` cell, then a `document`
 cell holding a path through `tasks/<ref>/` or a `relaybay://` link, then the title as a slug
@@ -54,12 +90,16 @@ which you keep outside any repository if it says something private:
 {
   "columns": {"Aufgabe": "task", "Phase": "stage"},
   "stages": {"Entwicklung": "dev"},
-  "headings": {"Entscheidungen": "decisions", "Aufgabe": "task"}
+  "headings": {"Entscheidungen": "decisions", "Aufgabe": "task"},
+  "backlog": {"Datum": "date", "Projekt": "project", "Was": "what", "Quelle": "origin"},
+  "decisions": {"erledigt": "done", "abgelehnt": "declined"}
 }
 ```
 
 Columns map to `project`, `ref`, `task`, `area`, `stage`, `waiting_on`, `next_step`, `document`, `rank`; stages to the
-six stage keys; headings to `decisions` or `task`.
+six stage keys; headings to `decisions` or `task`; backlog columns to `date`, `project`, `area`,
+`what`, `origin`, `decision`, `priority`, `assignee`, `kind`, `location`, `note`; decision words to
+`new`, `later`, `planned`, `done`, `declined`.
 
 ## Dry run, then apply
 

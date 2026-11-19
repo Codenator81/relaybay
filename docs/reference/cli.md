@@ -84,12 +84,13 @@ Bring a markdown setup (project briefs, task registry, task notes, memory notes)
 
 | Option | Value | Meaning |
 |---|---|---|
-| `root` | `ROOT` | The folder holding the layout. Required. |
+| `root` | `ROOT` | The folder holding the layout (optional with --backlog). |
 | `--apply` |  | Write the plan (default: a dry run, nothing written). |
 | `--expect` | `HASH` | With --apply: write only if the plan still has this hash (printed by the dry run). Without it, you write whatever the plan is at that moment. |
 | `--overwrite` |  | Take the file's text over a target changed on the board since its import (as a new version; old versions stay). |
-| `--aliases` | `FILE` | JSON file with more column, stage and heading names, in any language. |
+| `--aliases` | `FILE` | JSON file with more column, stage, heading and backlog decision names, in any language. |
 | `--retro-project` | `SLUG` | The project whose document 'retro' receives retro.md (skipped without it). |
+| `--backlog` | `FILE` | A backlog or bug registry under another name, read in place of backlog.md. |
 | `--home` | `HOME` | relaybay data directory. |
 
 ## `export`

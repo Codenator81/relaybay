@@ -23,6 +23,7 @@ from relaybay.domain.markdown_layout import (
 )
 from relaybay.markdown_export import gather
 from relaybay.markdown_import import _decision_detail, apply_plan, backlog_hash, make_plan
+from relaybay.mcp_server import format as fmt
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from tests.conftest import BASE, LiveServer, run_in_app
@@ -828,3 +829,229 @@ def test_older_backlog_files_still_parse_through_aliases() -> None:
     plain = "| date | project | what |\n|---|---|---|\n| 2026-10-02 | acme-shop | Slot |\n"
     [old], _ = parse_backlog(plain, Aliases())
     assert (old.priority, old.assignee) == (None, None)
+
+
+# --- the backlog as a registry (design 0026) --------------------------------------------------
+
+
+async def test_kind_location_and_the_registry_filters(svc: Service) -> None:
+    card = await svc.create_task("acme-shop", "Checkout")
+    bug = await svc.add_backlog_item(
+        "acme-shop", "Badge keeps the old count", body="After a refund.", kind="Bug",
+        location="web:src/cart/badge.ts:42", task=card.key, session="dev",
+    )  # fmt: skip
+    idea = await svc.add_backlog_item("acme-shop", "Saved carts", kind="idea", by_owner=True)
+    plain = await svc.add_backlog_item("demo-api", "Old item", by_owner=True)
+    assert (bug.kind, bug.location, plain.kind) == ("bug", "web:src/cart/badge.ts:42", None)
+    with pytest.raises(ValidationError, match="kind must be one of"):
+        await svc.add_backlog_item("acme-shop", "X", kind="chore", by_owner=True)
+    with pytest.raises(ValidationError, match="secret"):
+        await svc.add_backlog_item("acme-shop", "X", location="ghp_" + "Ab12" * 8, by_owner=True)
+
+    def ids(items: list) -> list[int]:
+        return [b.id for b in items]
+
+    assert ids(await svc.list_backlog(kind="bug")) == [bug.id]
+    assert ids(await svc.list_backlog(kind="-")) == [plain.id]
+    assert ids(await svc.list_backlog(has_location=True)) == [bug.id]
+    assert set(ids(await svc.list_backlog(has_location=False))) == {idea.id, plain.id}
+    assert ids(await svc.list_backlog(task=card.key)) == [bug.id]
+    assert ids(await svc.list_backlog(query="badge refund")) == [bug.id]
+    assert ids(await svc.list_backlog(query="cart badge.ts")) == [bug.id]
+    assert ids(await svc.list_backlog(query="badge", project="demo-api")) == []
+    assert len(await svc.list_backlog(since="2000-01-01")) == 3
+    assert await svc.list_backlog(since="2999-01-01") == []
+    with pytest.raises(ValidationError, match="since must be a day"):
+        await svc.list_backlog(since="yesterday")
+    with pytest.raises(ValidationError, match="kind must be one of"):
+        await svc.list_backlog(kind="chore")
+    with pytest.raises(ValidationError, match="no words"):
+        await svc.list_backlog(query="!!!")
+    # A backlog item is a search hit of its own kind.
+    [hit] = await svc.search("badge", kinds=["backlog"])
+    assert (hit.kind, hit.id, hit.task_key) == ("backlog", bug.id, card.key)
+
+
+async def test_similar_open_items_are_named(svc: Service) -> None:
+    first = await svc.add_backlog_item("acme-shop", "Cart badge keeps old count", by_owner=True)
+    await svc.add_backlog_item("acme-shop", "Saved carts", by_owner=True)
+    other = await svc.add_backlog_item("demo-api", "Cart badge keeps old count", by_owner=True)
+    second = await svc.add_backlog_item(
+        "acme-shop", "Cart badge keeps the old count", by_owner=True
+    )
+    assert [(b.id, round(score, 2)) for b, score in await svc.similar_backlog(second)] == [
+        (first.id, 1.0)
+    ]
+    assert await svc.similar_backlog(other) == []
+    await svc.decide_backlog(first.id, "decline", "not now")
+    assert await svc.similar_backlog(second) == []  # only open items count
+
+
+async def test_triage_duplicates_and_links_are_for_coordinators(svc: Service) -> None:
+    card = await svc.create_task("acme-shop", "Badge")
+    original = await svc.add_backlog_item("acme-shop", "Badge count", session="dev")
+    copy = await svc.add_backlog_item("acme-shop", "Badge count again", session="dev")
+    foreign = await svc.add_backlog_item("demo-api", "Elsewhere", session="dev")
+    for change in ({"triage_note": "soon"}, {"duplicate_of": original.id}, {"task": card.key}):
+        with pytest.raises(ValidationError, match="coordinator"):
+            await svc.update_backlog_item(copy.id, session="dev", **change)
+    # The adder edits kind and location while the item is new.
+    edited = await svc.update_backlog_item(copy.id, kind="bug", location="a.py:1", session="dev")
+    assert (edited.kind, edited.location) == ("bug", "a.py:1")
+
+    noted = await svc.update_backlog_item(copy.id, triage_note="Check with QA", session="lead")
+    assert (noted.triage_note, noted.status) == ("Check with QA", "new")
+    with pytest.raises(ValidationError, match="not a duplicate of itself"):
+        await svc.update_backlog_item(copy.id, duplicate_of=copy.id, session="lead")
+    with pytest.raises(ValidationError, match="belongs to demo-api"):
+        await svc.update_backlog_item(copy.id, duplicate_of=foreign.id, session="lead")
+    with pytest.raises(ValidationError, match="Pass one of"):
+        await svc.update_backlog_item(
+            copy.id, status="later", duplicate_of=original.id, session="lead"
+        )
+    closed = await svc.update_backlog_item(copy.id, duplicate_of=original.id, session="lead")
+    assert (closed.status, closed.decline_reason, closed.duplicate_of) == (
+        "declined",
+        f"duplicate of #{original.id}",
+        original.id,
+    )
+    with pytest.raises(ValidationError, match="is declined"):
+        await svc.update_backlog_item(original.id, duplicate_of=copy.id, session="lead")
+    reopened = await svc.update_backlog_item(copy.id, status="new", session="lead")
+    assert (reopened.status, reopened.duplicate_of) == ("new", None)
+
+    with svc.bus.subscribe() as sub:
+        linked = await svc.update_backlog_item(original.id, task=card.key, session="lead")
+        kinds = [sub.queue.get_nowait().kind for _ in range(sub.queue.qsize())]
+    assert (linked.status, linked.task_key) == ("planned", card.key)
+    assert "backlog.planned" in kinds
+    assert len(await svc.list_tasks(project="acme-shop")) == 1  # no new card
+    with pytest.raises(ValidationError, match="is planned as"):
+        await svc.update_backlog_item(original.id, task=card.key, session="lead")
+    other_card = await svc.create_task("demo-api", "Elsewhere")
+    with pytest.raises(ValidationError, match="another project"):
+        await svc.update_backlog_item(copy.id, task=other_card.key, session="lead")
+
+
+async def test_mcp_backlog_registry_tools(
+    live_server: Callable[[], LiveServer], tmp_path: Path
+) -> None:
+    (tmp_path / "config.toml").write_text('coordinators = ["lead"]\n', encoding="utf-8")
+    live = live_server()
+    async with mcp_connect(live) as client:
+        await call(client, "project_upsert", slug="acme-shop")
+        first = await call(
+            client, "backlog_add", project="acme-shop", title="Cart badge keeps old count",
+            kind="bug", location="src/badge.ts:4", session="dev",
+        )  # fmt: skip
+        assert "Added backlog item #1 in acme-shop: Cart badge keeps old count (new, bug)." in first
+        assert "Note:" not in first
+        second = await call(
+            client, "backlog_add", project="acme-shop", title="Cart badge keeps the old count",
+            session="dev",
+        )  # fmt: skip
+        assert "Note: similar open items: #1 (1.00) Cart badge keeps old count" in second
+        assert "backlog_update(item=2, duplicate_of=1)" in second
+        listed = await call(client, "backlog_list", query="badge", kind="bug")
+        assert "#1 acme-shop (bug) Cart badge keeps old count" in listed
+        assert "at src/badge.ts:4" in listed and "#2 " not in listed
+        assert "#2 " in await call(client, "backlog_list", has_location=False)
+        refused = await client.call_tool(
+            "backlog_update", {"item": 2, "duplicate_of": 1, "session": "dev"}
+        )
+        assert refused.is_error and "coordinator" in refused.content[0].text
+        closed = await call(client, "backlog_update", item=2, duplicate_of=1, session="lead")
+        assert "(declined)" in closed
+        patched = await call(
+            client, "backlog_patch", item=1,
+            fields={"triage_note": "Fix with the refund work", "kind": "-"}, session="lead",
+        )  # fmt: skip
+        assert "(new)" in patched
+        listed = await call(client, "backlog_list", status="new")
+        assert "note: Fix with the refund work" in listed and "(bug)" not in listed
+        assert "declined: duplicate of #1" in await call(client, "backlog_list", status="declined")
+
+
+def test_board_backlog_kind_search_and_duplicates(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.upsert_project, "acme-shop")
+    bug = run_in_app(
+        board, service.add_backlog_item, "acme-shop", "Badge count", by_owner=True, kind="bug",
+        location="src/<b>badge</b>.ts:4",
+    )  # fmt: skip
+    copy = run_in_app(board, service.add_backlog_item, "acme-shop", "Saved carts", by_owner=True)
+    page = board.get("/p/acme-shop/backlog").text
+    assert 'name="q"' in page and 'name="kind"' in page and '<option value="bug">' in page
+    assert "src/&lt;b&gt;badge&lt;/b&gt;.ts:4" in page and "<b>badge</b>" not in page
+    only_bugs = board.get("/p/acme-shop/backlog?kind=bug").text
+    assert f'id="backlog-{bug.id}"' in only_bugs and f'id="backlog-{copy.id}"' not in only_bugs
+    found = board.get("/fragments/backlog?project=acme-shop&q=saved").text
+    assert f'id="backlog-{copy.id}"' in found and f'id="backlog-{bug.id}"' not in found
+    assert "no words" in board.get("/p/acme-shop/backlog?q=%21%21").text
+    service.coordinators = ["lead"]
+    run_in_app(board, service.update_backlog_item, copy.id, duplicate_of=bug.id, session="lead")
+    history = board.get("/fragments/backlog?project=acme-shop&history=1").text
+    assert f'href="/p/acme-shop/backlog?history=1#backlog-{bug.id}">#{bug.id}</a>' in history
+
+
+async def test_upgrade_adds_the_registry_fields(tmp_path: Path) -> None:
+    db = tmp_path / "relaybay.sqlite"
+    folder = resources.files("relaybay.db").joinpath("migrations")
+    names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0051")
+    conn = await connect(db)
+    try:
+        for name in names:
+            script = folder.joinpath(name).read_text(encoding="utf-8")
+            await conn.executescript(script)
+        await conn.execute("PRAGMA user_version = 50")
+        await conn.execute(
+            "INSERT INTO project (slug, name, task_seq, created_at, updated_at)"
+            " VALUES ('acme-shop', 'Acme Shop', 0, ?, ?)",
+            (NOW, NOW),
+        )
+        await conn.execute(
+            "INSERT INTO backlog_item (project_id, title, origin, status, created_at, created_by,"
+            " priority, assignee) VALUES (1, 'Kept', 'owner', 'later', ?, 'owner', 2, 'qa')",
+            (NOW,),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+    service = Service(db)
+    await service.start()
+    try:
+        [kept] = await service.list_backlog()
+        assert (kept.title, kept.status, kept.priority, kept.assignee) == ("Kept", "later", 2, "qa")
+        assert (kept.kind, kept.location, kept.triage_note, kept.duplicate_of) == (None,) * 4
+        assert (kept.origin_text, kept.found_on) == (None, None)
+        assert [b.id for b in await service.list_backlog(query="kept")] == [kept.id]
+    finally:
+        await service.close()
+
+
+async def test_a_duplicate_points_to_an_item_that_is_not_declined(svc: Service) -> None:
+    a, b, c = [await svc.add_backlog_item("acme-shop", t, by_owner=True) for t in "ABC"]
+    await svc.update_backlog_item(c.id, duplicate_of=a.id, session="lead")
+    with pytest.raises(ValidationError, match="is declined"):
+        await svc.update_backlog_item(b.id, duplicate_of=c.id, session="lead")
+    with pytest.raises(ValidationError, match="is declined"):
+        await svc.update_backlog_item(a.id, duplicate_of=c.id, session="lead")
+    done = await svc.decide_backlog(b.id, "done")
+    closed = await svc.update_backlog_item(a.id, duplicate_of=done.id, session="lead")
+    assert (closed.status, closed.duplicate_of) == ("declined", b.id)
+
+
+async def test_closing_a_duplicates_original_moves_its_duplicates(svc: Service) -> None:
+    a, b, c = [await svc.add_backlog_item("acme-shop", t, by_owner=True) for t in "ABC"]
+    await svc.update_backlog_item(a.id, duplicate_of=b.id, session="lead")
+    with svc.bus.subscribe() as sub:
+        closed = await svc.update_backlog_item(b.id, duplicate_of=c.id, session="lead")
+        events = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
+    assert (closed.duplicate_of, closed.moved_duplicates) == (c.id, (a.id,))
+    moved = await svc.backlog_item(a.id)
+    assert (moved.duplicate_of, moved.decline_reason) == (c.id, f"duplicate of #{c.id}")
+    assert any(e.payload.get("backlog_id") == a.id for e in events)
+    assert f"#{a.id}, duplicate of #{b.id}, now duplicate of #{c.id} as well." in fmt.backlog_saved(
+        closed, "Updated"
+    )
+    assert (await svc.backlog_item(b.id)).moved_duplicates == ()  # never stored

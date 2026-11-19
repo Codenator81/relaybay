@@ -2364,7 +2364,8 @@ with the field and the detector id, never the value.
 
 **Search.** One FTS5 table `search_index` (columns kind, ref, project, title, body and a stemmed
 shadow column; tokenizer `unicode61 remove_diacritics 2`) covers current document versions,
-decisions, notes, reports and comments. The service creates it at start when SQLite has FTS5 and
+decisions, notes, reports, comments and backlog items (title; body, location, source in words,
+triage note and decline reason as the body; [§12](#spec-backlog-model)). The service creates it at start when SQLite has FTS5 and
 keeps it in step in the same transaction as each write; at start it is rebuilt when its row count
 differs from the items it covers (a new index, an upgrade). Query words become quoted prefix terms
 OR'ed with their Snowball stem (English, or Russian for words with Cyrillic letters), all words
@@ -2796,6 +2797,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0046_coordinator_wake` | `coordinator_wake` (`run_id`, `turn_id`, `first_event_id`, `last_event_id`, `count`, `created_at`): each wake of the coordinator and the events it carried. `question.overdue_at` (the `question.overdue` event written). `coordinator_wake.returned_at` (a wake given back). `run_turn.compact_pre_tokens`, `compact_post_tokens` (a turn's `compact_boundary`), `context_tokens` (its last assistant message's context). `token_budget` rebuilt with foreign keys off: scope `session` and `session_id` (a CHECK ties them; one budget per session); every budget keeps its id, marks and brakes |
 | `0049_remove_runs` | Data only, no table dropped: lists the worktrees runs created and did not remove for the Inbox (`app_setting` `removed_runs_worktrees`); cancels the waiting turns of runs and marks the running ones lost; ends every open run (status reason "runs inside the program were removed in 0.12", ended by `relaybay`); withdraws the open questions that have a run (the coordinator's questions without a card among them) and relaybay's own open questions about a kept worktree, with that reason; expires the open and the approved, unused approvals that have a run; stops the open schedule runs ("schedules were removed in 0.12") and disables every schedule not deleted or done; clears every task's "answer received" mark. Questions and approvals of desktop sessions stay open ([§1](#spec-run)) |
 | `0050_session_surface` | Additive: `session.surface` (`desktop`, `terminal` or NULL), `session.entrypoint` (the raw `CLAUDE_CODE_ENTRYPOINT`), `session.start_cwd` (the resume folder) and `task_session.unbound_reason` (`session_end` or NULL), [§1](#spec-session-surface) |
+| `0051_backlog_registry` | Additive, all nullable: `backlog_item.kind` (`bug`, `idea`, `question`, `debt`), `location`, `origin_text`, `triage_note`, `duplicate_of` (another item, `ON DELETE SET NULL`, indexed), `found_on` ([§12](#spec-backlog-model)). Existing items have no kind |
 
 The tables and columns of runs, the coordinator run, profiles and schedules (`run`, `run_turn`,
 `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`,
@@ -2834,7 +2836,16 @@ up to 20000), area (free text, lowercased, e.g. `checkout`; not migrated into th
 task of its own, a pull request or a commit; cleared by any other status), a priority (a whole number
 from -9 to 9, default 0, higher first within a status), an assignee (who it is for, a name or a role,
 up to 100), the task "To plan" created, decided at / by, created at / by. Title, body, area, assignee,
-a decline reason and a link (MCP and board) are scanned for secret values. The body of an item
+a decline reason and a link (MCP and board) are scanned for secret values.
+
+As a registry (migration 0051, [design 0026](design/0026-project-knowledge.md)) an item also has a
+kind (`bug`, `idea`, `question`, `debt`; none for items made before 0.14), a location (where in the
+code: `repo:path:line`, `path:line` or a link, up to 300), the source in words (up to 200, when it
+is not one of the origins; the origin is then `owner`), a triage note (the decision in words, up to
+500), the item it duplicates (same project; such an item is `declined` with the reason
+"duplicate of #N", and any later status clears it) and the day it was found (an imported row's
+date). Location, source and triage note are scanned for secret values too. The item joins the
+search index as kind `backlog` ([§8](#spec-memory-search)). The body of an item
 with origin `intake` is external text: the board shows it, and its origin, as plain text, never as
 markdown. Events `backlog.added`, `backlog.updated` (status and
 reason, or the edited fields), `backlog.planned`.
@@ -2843,11 +2854,14 @@ reason, or the edited fields), `backlog.planned`.
 
 **Board.** **Backlog** under each project in the sidebar (with the count of new items) and **All
 backlog** at the top (`/p/<slug>/backlog`, `/backlog`): a list of cards, one per item, with the
-number and title, a line of date, project (on All backlog), area, a "priority N" badge unless it is
-0, a "for <who>" badge, origin (links to the origin task
-with its stage and the session) and status, the body to expand, and the actions at the right edge
-(below on a phone); filters by status, area and who it is for (**For nobody yet** lists the
-unassigned), new first, then the highest priority, then the newest. Open items have a priority select and a **For** input with **Save** (event
+number and title, a line of date (the day it was found when known), its kind, project (on All
+backlog), area, a "priority N" badge unless it is 0, a "for <who>" badge, origin or the source in
+words (links to the origin task with its stage and the session) and status ("duplicate of #N" links
+to that item), the location and the triage note on lines of their own, the body to expand, and the
+actions at the right edge (below on a phone); a search box (the words of the search index's
+backlog rows, [§8](#spec-memory-search); a query without a word shows the error and no items) and
+filters by kind (**No kind** lists the items without one), status, area and who it is for (**For
+nobody yet** lists the unassigned), new first, then the highest priority, then the newest. Open items have a priority select and a **For** input with **Save** (event
 `backlog.updated` with the changed fields, none when nothing changed), **To plan** (confirmed: creates the task
 in `plan` with the item's title, its priority, its assignee as `waiting_on`, its area as the task's
 [area](#spec-areas) (added to the project's list when new; a text over 32 characters, or a new one
@@ -2864,36 +2878,77 @@ list. The task dialog shows "From backlog #N" when the task came from the backlo
 
 <a id="spec-backlog-mcp"></a>
 
-**MCP.** `backlog_add(project, title, body?, area?, task?, priority?, assignee?, session…)`: status
-`new`, origin `session` with the origin task when `task` is passed.
-`backlog_list(project?, status?, area?, assignee?, limit)`: `assignee` `-` lists the items for nobody.
-`backlog_update(item, status?, reason?, link?, title?, body?, area?, priority?, assignee?, session…)`: a status change
-(`new`, `later`, `done` with an optional `link` and `reason` as a note, `declined` with a reason;
-`link` with another status is refused) only for the coordinator sessions named in the config (the
-`rules_update` check, [§6](#spec-rules-versions)); anyone else may edit title, body, area, priority and
-assignee of an item that is still new and that the same session added. `planned` is never set over MCP: only **To plan**
-on the board creates the task. `backlog_patch(item, fields, session…)` takes the same fields as one
-JSON object under the same rules (an unknown field is refused), for a client whose `backlog_update`
-schema is older than the server; `-`, an empty string or null clears body, area and assignee and
-resets priority to 0.
+**MCP.** `backlog_add(project, title, body?, area?, task?, priority?, assignee?, kind?, location?,
+session…)`: status `new`, origin `session` with the origin task when `task` is passed. It always
+writes; when open items (`new`, `later`) of the project have a title similarity (the one of
+`memory_add`) of 0.6 or more, the answer ends with `Note: similar open items: #12 (0.71) <item title>;
+if it is the same, backlog_update(item=<new>, duplicate_of=12).` (at most three, most similar first).
+`backlog_list(project?, status?, area?, assignee?, query?, kind?, since?, task?, has_location?,
+limit)`: `assignee` `-` lists the items for nobody, `kind` `-` the items without a kind; `query`
+needs every word in the search index's backlog row; `since` is a day, items found (else created) on
+it or later; `task` lists the items found in that card or linked to it; `has_location` true or false.
+`backlog_update(item, status?, reason?, link?, title?, body?, area?, priority?, assignee?, kind?,
+location?, triage_note?, duplicate_of?, task?, session…)`: a status change (`new`, `later`, `done`
+with an optional `link` and `reason` as a note, `declined` with a reason; `link` with another status
+is refused), the triage note, `duplicate_of` (closes the item as a duplicate of another item of the
+same project, not itself and not a declined item; the items that were duplicates of this one
+now point to the same original, with the same reason and a `backlog.updated` event each, and the
+answer names them) and `task` (links an
+existing card of the same project: the item becomes `planned` with that task, event
+`backlog.planned`, no card is created) only for the coordinator sessions named in the config (the
+`rules_update` check, [§6](#spec-rules-versions)); one of status, `duplicate_of` and `task` per call,
+none of them on a planned item. Anyone else may edit title, body, area, priority, assignee, kind and
+location of an item that is still new and that the same session added. `planned` is never a status
+over MCP: **To plan** on the board creates a task, `task` links one. `backlog_patch(item, fields,
+session…)` takes the same fields as one JSON object under the same rules (an unknown field is
+refused), for a client whose `backlog_update` schema is older than the server; `-`, an empty string
+or null clears body, area, assignee, kind, location and triage note and resets priority to 0.
 
 <a id="spec-backlog-import"></a>
 
-**Import and export.** `backlog.md` at the root: one table with the columns date, project, area,
-what, origin, decision (`planned`, `later`, `done`, `done: <link>`, `declined: <reason>`, empty
-for new; a done item's note is not in the file, and an import that updates a done row keeps it),
-priority and assignee (also read as `prio`, `for`, `assigned`). A file without these two columns keeps
-the stored values, and an old file exports as unchanged while they are at their defaults; an empty cell under
-such a column resets the value; a priority that is not a whole number from -9 to 9 is an `error` line. Other column
-names through `--aliases` under `backlog`. Import: one item per row, identity project + date + title
-slug (tracked in `import_item`), the decision as the status (`planned` records history only, no task
-is created), an unknown origin as `owner`; an unknown project, a bad date or decision is an `error`
-line, a secret value `refused`; a row changed on the board since its import is a `conflict` like other
+**Import and export.** `backlog.md` at the root, or a registry under any name with
+`relaybay import --backlog <file>` (then the folder is optional, and the file stands in for the
+folder's `backlog.md`; its name is checked for secret values like the folder's names): one table
+with the columns date, project, area, what, origin, decision (`planned`, `later`, `done`,
+`done: <link>`, `declined: <reason>`, empty for new; a done item's note is not in the file, and an
+import that updates a done row keeps it), priority and assignee (also read as `prio`, `for`,
+`assigned`), kind, location (also `place`, `where`, `code`, `place in code`) and note (the triage
+note; also `notes`, `triage`). A file without one of the last five columns keeps the stored values,
+and an old file exports as unchanged while they are at their defaults; an empty cell under such a
+column resets the value (a note still takes a decision outside the vocabulary);
+a priority that is not a whole number from -9 to 9, or a kind outside the four, is an `error` line.
+Other column names through `--aliases` under `backlog`, the leading words of a decision under
+`decisions` (to `new`, `later`, `planned`, `done`, `declined`: a declined one takes the rest of the
+cell as its reason, a done one a link, the others keep the cell as the triage note). A registry's
+rows are taken as written: a what over 200 characters is the body, whole, and the title its first
+sentence (of 20 characters or more) when that fits 120 characters, else a cut at a word within 120
+ending in `…`; a date `dd.mm` without a year is the latest such day not after the file's
+modification time (also `dd.mm.yyyy`), and it is the item's `found_on` (a file edited more than a
+year later reads it as a later year, so such rows become new items); a project matches by slug or
+by name; an origin outside the four is `owner` with the text as the source in words; the location
+column as written (empty: none), and only without that column the first `path:line` of the what
+cell (never a link, an address after `@` or a host with a domain ending and a port), is the
+location; a decision
+outside the vocabulary and the aliases leaves the item `new` with the cell as its triage note and a
+warning; an area over 60, a source over 200 or a note over 500 characters is cut at a word with a
+warning. Damaged tables lose no row: after a row cut short (no closing pipe, or fewer cells than
+the header less one), a line without a leading pipe continues its last cell, and after a complete
+row such a line is a row of its own; reading rows after a blank line stops at the header of a
+table of its own; after a
+blank line, lines with the header's cells (or one fewer) and a project cell (a row typed as a list
+item `- …` included) stay rows of the table above, and one the import cannot place (unknown
+project, bad date) is `skipped`, other table-like lines (a legend) are left out; each with
+a warning, never an error. The plan ends with one line per file, `<file>: N rows read: add
+a, …`, counting every row. Import: one item per row, identity project + date + title slug (tracked
+in `import_item`), the decision as the status (`planned` records history only, no task is created);
+an unknown project, a bad date, a what over 20000 characters is an `error` line, a secret value
+`refused`; a row changed on the board since its import is a `conflict` like other
 items. An item no import wrote (made on the board) is matched by the same identity: the same text is
 `unchanged` with bookkeeping, a different one a `conflict` (or an update with `--overwrite`), never a
 second item. An item planned on the board (it has a task) is never moved back by an import, also with
-`--overwrite` (`skipped`). Export writes the same table with every item, uncapped, oldest first; an
-import of the export changes nothing.
+`--overwrite` (`skipped`). Export writes the same table with every item, uncapped, oldest first, in
+eleven columns: the what cell is the whole body when the title was made from it, the origin the
+source in words when there is one; an import of the export changes nothing.
 
 <a id="spec-desktop"></a>
 

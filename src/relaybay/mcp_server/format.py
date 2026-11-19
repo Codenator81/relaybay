@@ -1287,7 +1287,8 @@ def _backlog_queue(b: BacklogItem) -> list[str]:
 
 def backlog_line(b: BacklogItem) -> str:
     area = f" [{b.area}]" if b.area else ""
-    origin = b.origin
+    kind = f" ({b.kind})" if b.kind else ""
+    origin = b.origin_text or b.origin
     if b.origin_task_key:
         origin += f" from {b.origin_task_key}"
     if b.origin_session_name:
@@ -1300,9 +1301,17 @@ def backlog_line(b: BacklogItem) -> str:
     if b.task_key:
         status += f" as {b.task_key}"
     queue = "".join(f"{part} · " for part in _backlog_queue(b))
+    extra = "".join(
+        f" · {part}"
+        for part in (
+            f"at {b.location}" if b.location else "",
+            f"note: {b.triage_note}" if b.triage_note else "",
+        )
+        if part
+    )
     return (
-        f"#{b.id} {b.project_slug}{area} {b.title} · {queue}{origin} · {status}"
-        f" · {b.created_at[:10]}"
+        f"#{b.id} {b.project_slug}{area}{kind} {b.title} · {queue}{origin} · {status}"
+        f" · {(b.found_on or b.created_at)[:10]}{extra}"
     )
 
 
@@ -1315,8 +1324,23 @@ def backlog_items(items: list[BacklogItem]) -> str:
 
 
 def backlog_saved(item: BacklogItem, verb: str) -> str:
-    state = ", ".join([item.status, *_backlog_queue(item)])
-    return f"{verb} backlog item #{item.id} in {item.project_slug}: {item.title} ({state})."
+    state = ", ".join([item.status, *([item.kind] if item.kind else []), *_backlog_queue(item)])
+    text = f"{verb} backlog item #{item.id} in {item.project_slug}: {item.title} ({state})."
+    if item.moved_duplicates:
+        names = ", ".join(f"#{n}" for n in item.moved_duplicates)
+        text += f" {names}, duplicate of #{item.id}, now duplicate of #{item.duplicate_of} as well."
+    return text
+
+
+def backlog_similar(item: BacklogItem, similar: list[tuple[BacklogItem, float]]) -> str:
+    """The line backlog_add appends when open items have a similar title; empty without."""
+    if not similar:
+        return ""
+    names = ", ".join(f"#{b.id} ({score:.2f}) {b.title}" for b, score in similar)
+    return (
+        f"\nNote: similar open items: {names}; if it is the same,"
+        f" backlog_update(item={item.id}, duplicate_of={similar[0][0].id})."
+    )
 
 
 def _question_state(q: Question) -> str:

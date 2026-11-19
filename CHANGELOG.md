@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The backlog as a bug registry (design 0026). An item has a kind (`bug`, `idea`, `question`, `debt`; none for older items), a code location (`repo:path:line`, `path:line` or a link), the source in words, a triage note, the item it duplicates and the day it was found (migration 0051, additive). `backlog_add` takes `kind` and `location` and names open items with a similar title (`Note: similar open items: #12 (0.71) …`). `backlog_update` and `backlog_patch` take `kind`, `location`, `triage_note`, `duplicate_of` (declined as "duplicate of #N") and `task` (links an existing card: the item becomes planned); the last three are for coordinator sessions only. `backlog_list` takes `query`, `kind`, `since`, `task` and `has_location`. Backlog items join the search index as kind `backlog` (`memory_search`, the Docs & rules search). The Backlog page has a search box, a kind filter and shows the kind, the location, the triage note and a link to the item a duplicate repeats.
+- `relaybay import --backlog <file>` reads a bug registry under any name, without a folder or in place of its `backlog.md`, and stops refusing real rows: a long what is the body with a title made from its first sentence, a `dd.mm` date without a year is the latest such day not after the file's modification time, a project matches by name too, a source outside the four origins is kept as text, the first `path:line` of the what is the location, a decision outside the vocabulary (and the new `decisions` aliases) leaves the item new with the text as its triage note, a too long area, source or note is cut with a warning, and a line break typed into a cell or rows after a blank line keep their rows. The plan counts the rows read per file. `backlog.md` gains the columns kind, location and note; export writes them and an import of the export changes nothing.
+
 ## [0.13.0] - 2026-11-19
 
 ### Changed
