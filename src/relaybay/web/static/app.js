@@ -476,7 +476,7 @@
     }
   }
 
-  // Open for an ended terminal session: the answer (or the refusal, a 409 with its reason) is
+  // Open, In terminal, for an ended session: the answer (or the refusal, a 409 with its reason) is
   // shown in the state line. After a success the button stays disabled: the server refuses a
   // second Open until the session starts, and the card refreshes on `session.terminal_opened`.
   document.addEventListener("submit", function (event) {

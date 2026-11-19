@@ -69,7 +69,11 @@ the desktop app:
    the desktop app (the link the card has today, made the main button), an ended terminal session
    is resumed with `claude --resume` in a new terminal window on the machine itself, a live
    terminal session is not opened. A disabled or missing Open says why in one line. The same word
-   shows on the board card next to the session's dot.
+   shows on the board card next to the session's dot. In 0.13 Open became a menu of two items:
+   **In desktop** (the desktop link, for a desktop session live or ended) and **In terminal**
+   (`claude --resume` in a new terminal window, for any ended session with a Claude Code id and a
+   folder, the desktop's included; disabled for every live session), each disabled item with its
+   reason.
 2. **Start or continue from the card.** A card without a live session gets **Copy the brief**: the
    text a new session needs (the card's key, description, decisions, plan and its current step,
    done so far, next step, attachments by path, and the line that tells the session to bind
@@ -83,8 +87,8 @@ the desktop app:
    session ended, the session is idle and the wake-up hook is off. The Inbox lists comments
    waiting longer than an hour.
 
-Not in 0.12: opening a new desktop session with the brief already in it (whether the desktop app's
-link can carry a prompt is not known; a probe, later), a view of who started whom.
+The board starts no new session: a new session is started from a desktop session, and it picks up
+the card with Copy the brief; Open only reopens or resumes a session the card already had. Not in 0.12: a view of who started whom.
 
 ## Data
 
@@ -137,6 +141,8 @@ session with a cached schema keeps working.
   They are listed under "Deprecations" of the contract. They are removed, and the contract becomes version
   2, in the first release that is both a later minor version and 30 days after 0.12, as the
   contract's own rule says.
+  Changed for 0.13 by the maintainer: contract 2 removes them in 0.13, before the 30 days ran out,
+  since they did nothing.
 - `question_ask`, `question_list`, `question_withdraw`, `approval_request`, `approval_list` and
   the other tools are unchanged. The MCP instructions lose their points about the brake and about
   session messages. `area` of PR 1 stays.

@@ -1,11 +1,18 @@
-"""The session card's derived parts (design 0025): the state line, the Open button and why an
+"""The session card's derived parts (design 0025): the state line, the Open menu and why an
 owner comment has not arrived."""
 
 from dataclasses import replace
 
 import pytest
 
-from relaybay.domain.card import card_state, open_action, session_surface, undelivered_reason
+from relaybay.domain.card import (
+    OpenItem,
+    OpenMenu,
+    card_state,
+    open_menu,
+    session_surface,
+    undelivered_reason,
+)
 from relaybay.domain.models import Session, Task
 from relaybay.domain.sessions import DESKTOP, TERMINAL, resumable_id, surface_of_entrypoint
 from relaybay.domain.stages import Stage
@@ -144,26 +151,72 @@ def test_resumable_id_takes_only_a_lowercase_uuid() -> None:
         assert resumable_id(bad) is None
 
 
-def test_open_follows_the_surface() -> None:
-    assert open_action(None).kind is None
-    desktop = session(external_id="local_x", desktop_link="claude://claude.ai/epitaxy/local_x")
-    assert open_action(desktop).kind == "link"
-    assert open_action(desktop).href == "claude://claude.ai/epitaxy/local_x"
-    no_link = open_action(session(surface=DESKTOP))
-    assert (no_link.kind, bool(no_link.note)) == (None, True)
+def test_no_session_has_no_open_menu() -> None:
+    assert open_menu(None) is None
 
-    live = open_action(session(surface=TERMINAL, status="working"))
-    assert (live.kind, live.disabled, live.note) == ("terminal", True, "running in a terminal")
-    ended = open_action(session(surface=TERMINAL, status="ended"))
-    assert (ended.kind, ended.disabled) == ("terminal", False)
-    resumed_in = open_action(session(surface=TERMINAL, status="ended", start_cwd="/work"))
-    assert resumed_in.note == "resumes it in a new terminal in /work"
-    assert open_action(session(surface=TERMINAL, status="ended", cc_session_id="x")).kind is None
-    assert open_action(session(surface=TERMINAL, status="ended", cwd=None)).kind is None
 
-    unknown = open_action(session(status="ended"))
-    assert unknown.kind is None
-    assert unknown.note == "not known whether it runs in the desktop app or a terminal"
+def test_in_desktop_opens_a_desktop_session_live_or_ended() -> None:
+    link = "claude://claude.ai/epitaxy/local_x"
+    for status in ("working", "ended"):
+        menu = open_menu(session(external_id="local_x", desktop_link=link, status=status))
+        assert menu is not None and menu.desktop == OpenItem(True, href=link)
+    no_id = open_menu(session(surface=DESKTOP))
+    assert no_id is not None
+    assert no_id.desktop == OpenItem(note="its desktop id is not known yet")
+    terminal = open_menu(session(surface=TERMINAL, status="ended"))
+    assert terminal is not None
+    assert terminal.desktop == OpenItem(
+        note="started in a terminal: the desktop app cannot open it"
+    )
+
+
+@pytest.mark.parametrize(
+    ("surface", "note"),
+    [
+        (DESKTOP, "running in the desktop app"),
+        (TERMINAL, "running in a terminal"),
+        (None, "still running"),
+    ],
+)
+def test_in_terminal_is_disabled_for_any_live_session(surface: str | None, note: str) -> None:
+    menu = open_menu(session(surface=surface, status="working"))
+    assert menu is not None and menu.terminal == OpenItem(note=note)
+
+
+@pytest.mark.parametrize("surface", [DESKTOP, TERMINAL, None])
+def test_in_terminal_resumes_any_ended_session(surface: str | None) -> None:
+    menu = open_menu(session(surface=surface, status="ended", start_cwd="/work"))
+    assert menu is not None
+    assert menu.terminal == OpenItem(True, note="resumes it in a new terminal in /work")
+    no_id = open_menu(session(surface=surface, status="ended", cc_session_id="x"))
+    assert no_id is not None
+    assert no_id.terminal == OpenItem(note="no Claude Code session id to resume")
+    no_folder = open_menu(session(surface=surface, status="ended", cwd=None))
+    assert no_folder is not None and no_folder.terminal == OpenItem(note="its folder is not known")
+
+
+def test_a_desktop_session_resumed_in_a_terminal_is_not_opened_in_the_desktop() -> None:
+    link = "claude://claude.ai/epitaxy/local_x"
+    resumed = open_menu(
+        session(external_id="local_x", desktop_link=link, surface=TERMINAL, status="working")
+    )
+    running = OpenItem(note="running in a terminal")
+    assert resumed == OpenMenu(running, running)
+    ended = open_menu(
+        session(external_id="local_x", desktop_link=link, surface=TERMINAL, status="ended")
+    )
+    assert ended is not None and ended.desktop == OpenItem(True, href=link)
+
+
+def test_an_unknown_surface_follows_the_desktop_link() -> None:
+    unknown = open_menu(session(status="ended"))
+    assert unknown is not None
+    assert unknown.desktop == OpenItem(
+        note="not known whether it runs in the desktop app or a terminal"
+    )
+    linked = open_menu(session(status="ended", desktop_link="claude://x"))
+    assert linked is not None and linked.desktop == OpenItem(True, href="claude://x")
+    assert linked.terminal.enabled
 
 
 def test_undelivered_reason() -> None:

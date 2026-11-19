@@ -12,9 +12,6 @@ from mcp.client.streamable_http import streamable_http_client
 from tests.conftest import LiveServer
 
 EXPECTED_TOOLS = {
-    "brake_set",
-    "brake_status",
-    "budget_get",
     "project_list",
     "project_upsert",
     "project_snapshot",
@@ -41,10 +38,9 @@ EXPECTED_TOOLS = {
     "audit_list",
     "rules_get",
     "backlog_patch",
-    "message_send",
-    "messages_list",
-    "message_ack",
 }
+# Removed with MCP contract 2.
+REMOVED_TOOLS = {"brake_set", "brake_status", "budget_get", "message_send", "run_start"}
 
 
 def connect(live: LiveServer, mode: str = "legacy") -> Client:
@@ -64,6 +60,7 @@ async def test_full_flow(live_server: Callable[[], LiveServer]) -> None:
     async with connect(live) as client:
         tools = {t.name for t in (await client.list_tools()).tools}
         assert tools >= EXPECTED_TOOLS
+        assert not tools & REMOVED_TOOLS
 
         assert "Created project **acme-shop**" in await call(
             client, "project_upsert", slug="acme-shop", name="Acme Shop", session="checkout-dev"

@@ -9,35 +9,11 @@ descriptions clients receive. How to use them together: [MCP tools](../mcp-tools
 
 Clients read the same text from the resource `relaybay://contract`.
 
-Contract version 1.
+Contract version 2.
 
 Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_patch` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
 
-Deprecations:
-
-| Item | Parameter | Since | Removed not before | Use instead |
-|---|---|---|---|---|
-| `run_start` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
-| `run_status` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
-| `run_events` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
-| `run_settings` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
-| `schedule_add` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
-| `schedule_list` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
-| `schedule_cancel` | — | 0.12 | 2026-12-17 | runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it. |
-| `brake_status` | — | 0.12 | 2026-12-17 | the brake was removed in 0.12; stop a session in the Claude desktop app. |
-| `brake_set` | — | 0.12 | 2026-12-17 | the brake was removed in 0.12; stop a session in the Claude desktop app. |
-| `usage_summary` | — | 0.12 | 2026-12-17 | token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits. |
-| `budget_get` | — | 0.12 | 2026-12-17 | token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits. |
-| `intake_post` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
-| `intake_list` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
-| `intake_tie` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
-| `intake_dismiss` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
-| `intake_propose` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
-| `intake_sources` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
-| `relaybay://intake/{source}` | — | 0.12 | 2026-12-17 | intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
-| `message_send` | — | 0.12 | 2026-12-17 | messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app. |
-| `messages_list` | — | 0.12 | 2026-12-17 | messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app. |
-| `message_ack` | — | 0.12 | 2026-12-17 | messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app. |
+Deprecations: none.
 
 ## Tools
 
@@ -65,18 +41,7 @@ Deprecations:
 | [`decision_list`](#decision_list) | read |
 | [`memory_add`](#memory_add) | write |
 | [`memory_update`](#memory_update) | write |
-| [`usage_summary`](#usage_summary) | read |
 | [`audit_list`](#audit_list) | read |
-| [`budget_get`](#budget_get) | read |
-| [`brake_status`](#brake_status) | read |
-| [`brake_set`](#brake_set) | write |
-| [`run_start`](#run_start) | write |
-| [`run_status`](#run_status) | read |
-| [`run_events`](#run_events) | read |
-| [`run_settings`](#run_settings) | write |
-| [`schedule_add`](#schedule_add) | write |
-| [`schedule_list`](#schedule_list) | read |
-| [`schedule_cancel`](#schedule_cancel) | write |
 | [`question_ask`](#question_ask) | write |
 | [`question_list`](#question_list) | read |
 | [`question_withdraw`](#question_withdraw) | write |
@@ -93,15 +58,6 @@ Deprecations:
 | [`comments_list`](#comments_list) | read |
 | [`comment_ack`](#comment_ack) | write |
 | [`comment_add`](#comment_add) | write |
-| [`message_send`](#message_send) | write |
-| [`messages_list`](#messages_list) | read |
-| [`message_ack`](#message_ack) | write |
-| [`intake_post`](#intake_post) | write |
-| [`intake_list`](#intake_list) | read |
-| [`intake_tie`](#intake_tie) | write |
-| [`intake_dismiss`](#intake_dismiss) | write |
-| [`intake_propose`](#intake_propose) | write |
-| [`intake_sources`](#intake_sources) | read |
 | [`backlog_add`](#backlog_add) | write |
 | [`backlog_list`](#backlog_list) | read |
 | [`backlog_update`](#backlog_update) | write |
@@ -436,16 +392,6 @@ Change a memory note. If someone changed it after you read it, nothing is saved 
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
-### `usage_summary`
-
-Removed in 0.12 with the usage reader: shows nothing. Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `project` | string or null | no | Only sessions of this project (slug). |
-| `session` | string or null | no | Only this session: its name, desktop id or hook session id. |
-| `days` | integer | no | How many days back, today included. Default: `7`. |
-
 ### `audit_list`
 
 Agents' tool calls that touched a live stand, newest first: who, where, the redacted command, the guard's decision, level and rule, the task. Read-only: the "no live now" switch of a session is the owner's, on the board.
@@ -458,126 +404,6 @@ Agents' tool calls that touched a live stand, newest first: who, where, the reda
 | `decision` | string or null | no | Only this decision: allow, log, warn, ask or deny. |
 | `days` | integer | no | How many days back. Default: `7`. |
 | `limit` | integer | no | Default: `50`. |
-
-### `budget_get`
-
-Removed in 0.12 with token budgets: shows nothing. Deprecated: token budgets and the usage reader were removed in 0.12; the Claude desktop app shows the plan limits.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `project` | string or null | no | Only the budgets that count this project (slug). |
-| `task` | string or null | no | Only the budgets that count this task: its own, its project's. |
-
-### `brake_status`
-
-Removed in 0.12 with the brake: shows nothing. Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `project` | string or null | no | Only brakes on this project (slug) and those on all agents. |
-
-### `brake_set`
-
-Removed in 0.12 with the brake: stops nothing. Deprecated: the brake was removed in 0.12; stop a session in the Claude desktop app.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `scope` | string | yes | What stops: all, project, session or task. |
-| `reason` | string | yes | Why, in one line. Every stopped agent reads it. |
-| `project` | string or null | no | With scope project: its slug. |
-| `target_session` | string or null | no | With scope session: the session to stop (name, desktop id or hook session id). It must exist. |
-| `task` | string or null | no | With scope task: the task whose bound session stops. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `run_start`
-
-Removed in 0.12 with runs inside the program: starts nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
-| `repos` | list of string or null | no | Names of the project's repositories the run works in (case ignored), each in a new git worktree. Default: the repositories linked to the card, else the project's first. |
-| `cwd` | string or null | no | The run's working folder: 'folder' (the project folder of the agent defaults) or a repository name (case ignored). Default: the project folder when set, else the first of the run's repositories (the first one linked to the card, else the project's first). |
-| `model` | string or null | no | opus, sonnet or haiku. Default: the project's. |
-| `effort` | string or null | no | low, medium, high, xhigh or max. Default: the project's. |
-| `brief` | string or null | no | The first turn's text. Default: the card's digest and report line. |
-| `permission_mode` | string or null | no | Not accepted: a run started here uses the project's permission mode and allowed tools, which only the owner sets. Leave it out. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `run_status`
-
-Removed in 0.12 with runs inside the program: shows nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id; 'coordinator' for the coordinator run. |
-
-### `run_events`
-
-Removed in 0.12 with runs inside the program: shows nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `run` | integer | yes | The run's number, as run_status shows it. |
-| `turn` | integer or null | no | The turn's number. Default: the latest that started. |
-| `limit` | integer | no | How many lines, at most 200. Default 50. Default: `50`. |
-| `from_seq` | integer or null | no | Lines from this number on. Default: the last `limit`. |
-
-### `run_settings`
-
-Removed in 0.12 with runs inside the program: changes nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
-| `permission_mode` | string or null | no | A mode that does not raise the run's current one: plan, then manual / default / dontAsk, then acceptEdits, then auto. Raising it and bypassPermissions are the owner's, on the card. Default: unchanged. |
-| `model` | string or null | no | opus, sonnet or haiku. Default: unchanged. |
-| `effort` | string or null | no | low, medium, high, xhigh or max. Default: unchanged. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `schedule_add`
-
-Removed in 0.12 with every kind of schedule: adds nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `kind` | string | yes | check (a one-shot read-only claude -p in the card's worktree or the project's folder; its answer becomes a report on the card) or reminder (a tray notice and an Inbox line for the owner, no model). |
-| `text` | string | yes | What the check looks at and answers, or the reminder's words. |
-| `project` | string or null | no | Project slug: where a check reads. A check needs it or task. |
-| `task` | string or null | no | Task key such as 'acme-shop-12': the card a check reports on. |
-| `at` | string or null | no | Once at this date and time, 'YYYY-MM-DD HH:MM' in this machine's local time (or ISO 8601 with an offset). Give at or in_minutes. |
-| `in_minutes` | integer or null | no | Once, this many minutes from now (1 to 10080). |
-| `every_minutes` | integer or null | no | A check only: every N minutes (at least 5), the first one N minutes from now, until its answer starts with 'done' or max_times. |
-| `max_times` | integer or null | no | With every_minutes: at most this many times (1 to 24, default 24). |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `schedule_list`
-
-Removed in 0.12 with every kind of schedule: lists nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `schedule_cancel`
-
-Removed in 0.12 with every kind of schedule: cancels nothing. Deprecated: runs and schedules inside the program were removed in 0.12; a card is worked by a desktop session bound to it.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `schedule_id` | integer | yes | The schedule's number from schedule_list. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `question_ask`
 
@@ -770,103 +596,6 @@ Reply to the owner on a task's comment thread (shown on the board and in the own
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `message_send`
-
-Removed in 0.12 with messages between sessions: sends nothing. Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `body` | string | yes | The text, up to 4000 characters. |
-| `to` | string or null | no | The recipient: its name, desktop id, alias or hook session id. Without it: the other side of `in_reply_to`, or the session bound to `task`. |
-| `task` | string or null | no | Task key the message is about; shown with it. |
-| `in_reply_to` | integer or null | no | The message you answer, e.g. 7 for '#7'; it is marked read. Replies have a depth limit. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `messages_list`
-
-Removed in 0.12 with messages between sessions: lists nothing. Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `session` | string | yes | Whose messages: its name, desktop id or hook session id. |
-| `box` | string | no | inbox (to the session) or sent (from it). Default: `inbox`. |
-| `unread_only` | boolean | no | Only messages not acknowledged yet. Default: `False`. |
-| `task` | string or null | no | Only about this task. |
-| `limit` | integer | no | Default: `50`. |
-
-### `message_ack`
-
-Removed in 0.12 with messages between sessions: acknowledges nothing. Deprecated: messages between sessions were removed in 0.12; sessions message each other through the Claude desktop app.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `message_id` | integer or null | no | The message to mark read; without it, all unread ones. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `intake_post`
-
-Removed in 0.12 with intake: stores nothing. Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `source` | string | yes | Source slug such as 'support-chat' or 'team-mail'. |
-| `external_id` | string | yes | The message's id in its source (up to 200 characters); posting the same id again changes nothing. |
-| `text` | string | yes | The message text; longer than 4000 is cut. |
-| `author` | string or null | no | The author's display name only. Optional. |
-| `thread` | string or null | no | Chat id or mail thread root; a thread once tied to a task matches it again. Optional. |
-| `received_at` | string or null | no | ISO time the source received it. Optional. |
-| `task` | string or null | no | Task key, when the watcher knows it. Optional. |
-| `kind` | string or null | no | Source kind on its first message: telegram, email, chat, other. |
-
-### `intake_list`
-
-Removed in 0.12 with intake: lists nothing. Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `source` | string or null | no | Source slug. Optional. |
-| `status` | string or null | no | new, tied, proposed, dismissed or refused. Optional. |
-| `task` | string or null | no | Task key. Optional. |
-| `limit` | integer | no | At most this many. Default: `20`. |
-
-### `intake_tie`
-
-Removed in 0.12 with intake: ties nothing. Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `message` | integer | yes | The message's number, e.g. 12. |
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
-
-### `intake_dismiss`
-
-Removed in 0.12 with intake: dismisses nothing. Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `message` | integer | yes | The message's number, e.g. 12. |
-
-### `intake_propose`
-
-Removed in 0.12 with intake: proposes nothing; backlog_add adds an item. Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `message` | integer | yes | The message's number, e.g. 12. |
-| `project` | string | yes | Project slug such as 'acme-shop'. |
-| `title` | string | yes | Title of the task to propose. |
-| `description` | string or null | no | What and why, markdown. Optional: the message text by default. |
-
-### `intake_sources`
-
-Removed in 0.12 with intake: lists nothing. Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself.
-
-No parameters.
 
 ### `backlog_add`
 
@@ -1168,7 +897,6 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 | `relaybay://attachments/{attachment_id}/annotated` | annotated-screenshot | image/png | The flattened PNG of a screenshot with the owner's markup (same as attachment_get with annotated=true). |
 | `relaybay://contract` | contract | text/markdown | The MCP contract: its version, the compatibility rule and the deprecations. |
 | `relaybay://doc/{project}/{doc}` | project-document | text/markdown | A project document's current markdown (same as doc_get). |
-| `relaybay://intake/{source}` | intake-source | text/markdown | Removed in 0.12 with intake. Deprecated: intake was removed in 0.12; the coordinator session reads the chats and updates the cards itself. |
 | `relaybay://project/{slug}` | project-snapshot | text/markdown | Markdown snapshot of a project (same as project_snapshot). |
 | `relaybay://project/{slug}/environments` | project-environments | text/markdown | A project's environments, access map (no secrets) and permission levels. |
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |

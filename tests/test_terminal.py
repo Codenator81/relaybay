@@ -166,7 +166,7 @@ async def test_service_opens_an_ended_terminal_session_and_audits_it(
     )
 
 
-async def test_service_refuses_a_live_or_unknown_session(service: Service, folder: Path) -> None:
+async def test_service_refuses_a_live_session(service: Service, folder: Path) -> None:
     started = Recorder()
     service.terminal = launcher(started)
     live = await terminal_session(service, folder, ended=False)
@@ -174,15 +174,37 @@ async def test_service_refuses_a_live_or_unknown_session(service: Service, folde
         await service.open_terminal(live)
     with pytest.raises(NotFoundError):
         await service.open_terminal(live + 1000)
-    # A session that never said where it runs is not opened in a terminal either.
-    await service.record_hook(hook("SessionStart", "2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7"))
-    await service.record_hook(hook("SessionEnd", "2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7"))
+    # A live desktop session is refused too: a second process on it is unsafe.
+    desktop_cc = "2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7"
+    await service.record_hook(
+        hook("SessionStart", desktop_cc, cwd=str(folder), relaybay_entrypoint="claude-desktop")
+    )
     rows = {r.session.cc_session_id: r.session for r in await service.list_sessions()}
-    unknown = rows["2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7"]
-    with pytest.raises(ConflictError, match="does not run in a terminal"):
-        await service.open_terminal(unknown.id)
+    with pytest.raises(ConflictError, match="running in the desktop app"):
+        await service.open_terminal(rows[desktop_cc].id)
     assert started.started == []
     assert not [e for e in await service.audit(changes=True) if e.kind == "session.terminal_opened"]
+
+
+async def test_service_resumes_an_ended_session_wherever_it_ran(
+    service: Service, folder: Path
+) -> None:
+    """An ended desktop session, or one that never said where it ran, resumes in a terminal."""
+    started = Recorder()
+    service.terminal = launcher(started)
+    desktop_cc = "2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7"
+    unknown_cc = "3a8e6b21-4c2d-4f9b-b2e3-88d4f5a6b7c8"
+    await service.record_hook(
+        hook("SessionStart", desktop_cc, cwd=str(folder), relaybay_entrypoint="claude-desktop")
+    )
+    await service.record_hook(hook("SessionStart", unknown_cc, cwd=str(folder)))
+    for cc in (desktop_cc, unknown_cc):
+        await service.record_hook(hook("SessionEnd", cc, cwd=str(folder)))
+    rows = {r.session.cc_session_id: r.session for r in await service.list_sessions()}
+    assert rows[desktop_cc].surface == "desktop" and rows[unknown_cc].surface is None
+    for cc in (desktop_cc, unknown_cc):
+        await service.open_terminal(rows[cc].id)
+    assert [s.argv[-1] for s in started.started] == [desktop_cc, unknown_cc]
 
 
 @pytest.fixture
@@ -287,6 +309,24 @@ async def test_two_clicks_at_once_start_one_terminal(service: Service, folder: P
     assert len(started.started) == 1
 
 
+async def test_a_click_waiting_for_the_lock_reads_the_session_again(
+    service: Service, folder: Path
+) -> None:
+    """A click queued behind another must not act on a status read before SessionStart."""
+    started = Recorder()
+    service.terminal = launcher(started)
+    session_id = await terminal_session(service, folder)
+    await service.open_terminal(session_id)
+    async with service._terminal_lock:
+        second = asyncio.create_task(service.open_terminal(session_id))
+        await asyncio.sleep(0)
+        # The opened terminal starts: the hold is cleared and the session runs.
+        await service.record_hook(hook("SessionStart", CC_ID, cwd=str(folder), source="resume"))
+    with pytest.raises(ConflictError, match="running in a terminal"):
+        await second
+    assert len(started.started) == 1
+
+
 async def test_resume_starts_in_the_folder_of_the_first_session_start(
     service: Service, folder: Path
 ) -> None:
@@ -303,10 +343,11 @@ async def test_resume_starts_in_the_folder_of_the_first_session_start(
     assert (row.cwd, row.start_cwd) == (str(deeper), str(folder))
     await service.open_terminal(row.id)
     assert started.started[0].cwd == folder
-    # A resume keeps the start folder even when it reports from a subfolder.
-    await service.record_hook(hook("SessionStart", CC_ID, cwd=str(deeper), source="resume"))
-    [row] = [r.session for r in await service.list_sessions()]
-    assert row.start_cwd == str(folder)
+    # A resume or a /clear keeps the start folder even when it reports from a subfolder.
+    for source in ("resume", "clear"):
+        await service.record_hook(hook("SessionStart", CC_ID, cwd=str(deeper), source=source))
+        [row] = [r.session for r in await service.list_sessions()]
+        assert row.start_cwd == str(folder), source
 
 
 async def test_a_resume_binds_again_what_its_own_end_unbound(
@@ -356,4 +397,5 @@ def test_endpoint_refuses_a_board_published_through_a_proxy(
             f"/sessions/{session_id}/open-terminal", data={"csrf_token": csrf_token(token)}
         )
     assert answer.status_code == 409 and "only on the machine relaybay runs on" in answer.text
+    assert f"open the board there at http://127.0.0.1:{settings.port}." in answer.text
     assert started.started == []

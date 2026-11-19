@@ -1,5 +1,5 @@
 {#- The card's state line (design 0025), derived and never set by hand: the state word, why it
-    waits for you, the session's last activity, one Open that follows where the session runs, and
+    waits for you, the session's last activity, the Open menu (In desktop, In terminal), and
     Copy the brief while no session works on the card. Expects: detail. -#}
 {%- set st = detail.state %}
 {%- set s = detail.card_session %}
@@ -9,13 +9,21 @@
     <span class="status-dot{% if s and s.status %} dot-{{ s.status }}{% endif %}" aria-hidden="true"></span>
     <h2 class="state-word" id="state-{{ t.key }}">{{ st.label }}</h2>
     <span class="state-actions">
-      {% if o.kind == "link" %}
-      <a class="btn primary open-desktop" href="{{ o.href }}" title="Opens the session in the Claude desktop app. If nothing opens, copy its link under Session.">Open</a>
-      {% elif o.kind == "terminal" %}
-      <form class="open-terminal" method="post" action="/sessions/{{ s.id }}/open-terminal">
-        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-        <button type="submit" class="btn primary"{% if o.disabled %} disabled title="{{ o.note }}"{% endif %}>Open</button>
-      </form>
+      {% if o %}
+      <details class="open-menu">
+        <summary class="btn primary">Open</summary>
+        <ul class="open-menu-items">
+          <li>
+            {%- if o.desktop.enabled %}<a class="open-desktop" href="{{ o.desktop.href }}" title="If nothing opens, copy its link under Session.">In desktop</a>
+            {%- else %}<span class="open-off">In desktop</span><span class="open-note muted">{{ o.desktop.note }}</span>{% endif %}</li>
+          <li>
+            <form class="open-terminal" method="post" action="/sessions/{{ s.id }}/open-terminal">
+              <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+              <button type="submit"{% if not o.terminal.enabled %} disabled{% endif %}{% if o.terminal.note %} aria-describedby="open-terminal-note-{{ t.key }}"{% endif %}>In terminal</button>
+            </form>
+            {%- if o.terminal.note %}<span class="open-note muted" id="open-terminal-note-{{ t.key }}">{{ o.terminal.note }}</span>{% endif %}</li>
+        </ul>
+      </details>
       {% endif %}
       {% if detail.brief %}<button type="button" class="btn copy-brief">Copy the brief</button>{% endif %}
     </span>
@@ -25,7 +33,6 @@
     {%- if s.activity_at %} · {{ s.activity or "—" }} · <time datetime="{{ s.activity_at }}" data-age>{{ s.activity_at|age }}</time>{% endif %}</p>
   {% endif %}
   {% if st.reasons %}<p class="state-reasons">{{ st.reasons|join(" · ") }}</p>{% endif %}
-  {% if o.note %}<p class="state-note muted">{{ o.note }}</p>{% endif %}
   <p class="state-result" role="status" hidden></p>
   {% if detail.brief %}
   <details class="brief-fold">

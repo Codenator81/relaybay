@@ -826,13 +826,16 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         session_id: int,
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ) -> PlainTextResponse:
-        """The card's Open for an ended terminal session: a new terminal window on this machine
+        """The card's Open, In terminal, for an ended session: a new terminal window on this machine
         runs `claude --resume`. Only the session's id comes in; everything else is read from
         the database. A refusal is a 409 with the reason the card shows."""
         board_only(request, csrf)
         if not from_this_machine(request):
+            # A published name is refused even on this machine: a tunnel here forwards a phone's
+            # request from 127.0.0.1 with that Host.
             return PlainTextResponse(
-                "A terminal opens only on the machine relaybay runs on: open the board there.",
+                "A terminal opens only on the machine relaybay runs on: open the board there at"
+                f" http://127.0.0.1:{settings.port}.",
                 status_code=409,
             )
         try:

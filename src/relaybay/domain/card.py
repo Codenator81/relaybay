@@ -1,4 +1,4 @@
-"""The session card (design 0025): its state line, its Open button and why an owner comment has
+"""The session card (design 0025): its state line, its Open menu and why an owner comment has
 not arrived, all derived from what the board already holds."""
 
 from dataclasses import dataclass
@@ -77,41 +77,63 @@ def card_state(task: Task, owner_names: set[str]) -> CardState:
     return CardState(NO_SESSION)
 
 
-# --- the Open button --------------------------------------------------------------------------
+# --- the Open menu ----------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class OpenAction:
-    """`kind`: "link" (the desktop link in `href`), "terminal" (resume in a new terminal window)
-    or None (no button). `note` says in one line why the button is disabled or missing."""
+class OpenItem:
+    """One item of the Open menu: `href` is the desktop link of "In desktop"; `note` says why a
+    disabled item is disabled, or what an enabled "In terminal" does."""
 
-    kind: str | None = None
+    enabled: bool = False
     href: str | None = None
-    disabled: bool = False
     note: str | None = None
 
 
-def open_action(session: Session | None) -> OpenAction:
-    """What Open does for the card's session (the bound one, or the ended one of the latest
-    binding). A live terminal session is never opened: the board cannot find its window, and a
-    second process on a live session is unsafe."""
-    if session is None:
-        return OpenAction()
-    surface = session_surface(session)
+@dataclass(frozen=True, slots=True)
+class OpenMenu:
+    desktop: OpenItem  # the session's desktop link
+    terminal: OpenItem  # `claude --resume` in a new terminal window in the session's folder
+
+
+RUNNING_IN = {DESKTOP: "running in the desktop app", TERMINAL: "running in a terminal"}
+
+
+def _desktop_item(session: Session, surface: str | None) -> OpenItem:
+    if session.desktop_link and surface != TERMINAL:
+        return OpenItem(True, href=session.desktop_link)
     if surface == DESKTOP:
-        if session.desktop_link:
-            return OpenAction("link", href=session.desktop_link)
-        return OpenAction(note="runs in the desktop app; its desktop id is not known yet")
+        return OpenItem(note="its desktop id is not known yet")
     if surface == TERMINAL:
-        if session.status != "ended":
-            return OpenAction("terminal", disabled=True, note="running in a terminal")
-        if resumable_id(session.cc_session_id) is None:
-            return OpenAction(note="ended in a terminal; no Claude Code session id to resume")
-        folder = session.start_cwd or session.cwd
-        if not folder:
-            return OpenAction(note="ended in a terminal; its folder is not known")
-        return OpenAction("terminal", note=f"resumes it in a new terminal in {folder}")
-    return OpenAction(note="not known whether it runs in the desktop app or a terminal")
+        return OpenItem(note="started in a terminal: the desktop app cannot open it")
+    return OpenItem(note="not known whether it runs in the desktop app or a terminal")
+
+
+def _terminal_item(session: Session, surface: str | None) -> OpenItem:
+    if session.status != "ended":
+        # A second process on a live session is unsafe, wherever it runs.
+        return OpenItem(note=RUNNING_IN.get(surface, "still running"))
+    if resumable_id(session.cc_session_id) is None:
+        return OpenItem(note="no Claude Code session id to resume")
+    folder = session.start_cwd or session.cwd
+    if not folder:
+        return OpenItem(note="its folder is not known")
+    return OpenItem(True, note=f"resumes it in a new terminal in {folder}")
+
+
+def open_menu(session: Session | None) -> OpenMenu | None:
+    """The card's Open menu for its session (the bound one, or the ended one of the latest
+    binding); None without a session. "In desktop" opens a desktop session, live or ended;
+    "In terminal" resumes any ended session that has a Claude Code id and a folder."""
+    if session is None:
+        return None
+    surface = session_surface(session)
+    if surface == DESKTOP and session.surface == TERMINAL and session.status != "ended":
+        # A desktop session resumed in a terminal (In terminal): the desktop app must not open
+        # it next to that process.
+        running = OpenItem(note=RUNNING_IN[TERMINAL])
+        return OpenMenu(running, running)
+    return OpenMenu(_desktop_item(session, surface), _terminal_item(session, surface))
 
 
 # --- why an owner comment has not arrived -----------------------------------------------------

@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The card's Open is a menu of two items. **In desktop** opens the desktop link of a desktop session, live or ended; it is disabled for a session started in a terminal or a desktop session without a known desktop id. **In terminal** resumes any ended session with `claude --resume` in a new terminal window in its start folder, a desktop session's included (`POST /sessions/<id>/open-terminal` no longer refuses a session that did not run in a terminal); it is disabled for every live session ("running in the desktop app", "running in a terminal"). A disabled item stays in the menu with its reason.
+
+### Removed
+
+- MCP contract 2: the tools `run_start`, `run_status`, `run_events`, `run_settings`, `schedule_add`, `schedule_list`, `schedule_cancel`, `usage_summary`, `budget_get`, `brake_set`, `brake_status`, `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources`, `message_send`, `messages_list`, `message_ack` and the resource `relaybay://intake/{source}` are removed; `relaybay://contract` reports version 2 and no deprecations. They did nothing since 0.12. 0.12 announced them as removable not before 2026-12-17 (at least 30 days); the maintainer shortened that notice and removes them now. A session with a cached schema that still calls one gets `Unknown tool: <name>`; reconnecting the MCP server or a new session loads the current list.
+
+### Fixed
+
+- The card's Open for a terminal session reads and checks the session under the same lock as the start, so a click queued behind another cannot start a second `claude --resume` after the first terminal has started.
+- Open on a board reached through a published name (`external_url`, `allowed_hosts`) is still refused on the machine itself, since a tunnel there forwards a phone's request from 127.0.0.1; the refusal now says to open the board at `http://127.0.0.1:<port>`.
+- A `SessionStart` after `/clear` keeps the session's start folder, as a resume and a compaction do, so Open resumes in the launch folder and not in a subfolder the session moved into.
+
 ## [0.12.0] - 2026-11-19
 
 ### Added
