@@ -5758,6 +5758,11 @@ class Service:
         intake_message_id: int | None = None,
         priority: Any = 0,
         assignee: Any = None,
+        kind: Any = None,
+        location: Any = None,
+        origin_text: Any = None,
+        triage_note: Any = None,
+        found_on: str | None = None,
     ) -> BacklogItem:
         clean_title = _clean_text(title, "title", backlog.TITLE_MAX)
         if not clean_title:
@@ -5765,8 +5770,23 @@ class Service:
         clean_body = _clean_text(body, "body", backlog.BODY_MAX)
         clean_area = _clean_text(area, "area", backlog.AREA_MAX)
         clean_assignee = _clean_text(assignee, "assignee", backlog.ASSIGNEE_MAX)
+        registry = {
+            "kind": self._backlog_kind(kind),
+            "location": _clean_text(location, "location", backlog.LOCATION_MAX),
+            "origin_text": _clean_text(origin_text, "origin_text", backlog.ORIGIN_TEXT_MAX),
+            "triage_note": _clean_text(triage_note, "triage_note", backlog.TRIAGE_MAX),
+        }
         rules = await self._secret_rules(tx.conn, project)
-        _scan(rules, title=clean_title, body=clean_body, area=clean_area, assignee=clean_assignee)
+        _scan(
+            rules,
+            title=clean_title,
+            body=clean_body,
+            area=clean_area,
+            assignee=clean_assignee,
+            location=registry["location"],
+            origin_text=registry["origin_text"],
+            triage_note=registry["triage_note"],
+        )
         item_id = await repo.insert_backlog_item(
             tx.conn,
             {
@@ -5782,8 +5802,11 @@ class Service:
                 "intake_message_id": intake_message_id,
                 "created_at": tx.now,
                 "created_by": created_by,
+                "found_on": found_on,
+                **registry,
             },
         )
+        await self._index(tx, "backlog", item_id)
         await tx.event(
             "backlog.added",
             created_by,
@@ -5813,6 +5836,8 @@ class Service:
         by_owner: bool = False,
         priority: Any = 0,
         assignee: str | None = None,
+        kind: str | None = None,
+        location: str | None = None,
     ) -> BacklogItem:
         """A finding for later: from a session (origin `session`, with the task it came from
         when `task` is passed) or written by the owner on the board (origin `owner`)."""
@@ -5835,7 +5860,22 @@ class Service:
                 origin_session_id=sess.id if sess else None,
                 priority=priority,
                 assignee=assignee,
+                kind=kind,
+                location=location,
             )
+
+    async def similar_backlog(self, item: BacklogItem) -> list[tuple[BacklogItem, float]]:
+        """Other open items of the item's project whose title is like its title, most similar
+        first: what backlog_add names so that a duplicate can be closed."""
+        found = await repo.list_backlog(self._r, project_id=item.project_id, limit=-1)
+        scored = [
+            (b, mem.title_similarity(item.title, b.title))
+            for b in found
+            if b.id != item.id and b.status in backlog.OPEN_STATUSES
+        ]
+        close = [pair for pair in scored if pair[1] >= backlog.SIMILAR_MIN]
+        close.sort(key=lambda pair: (-pair[1], -pair[0].id))
+        return close[: backlog.SIMILAR_SHOWN]
 
     async def backlog_item(self, ref: Any) -> BacklogItem:
         return await self._backlog(self._r, ref)
@@ -5854,18 +5894,50 @@ class Service:
         status: str | None = None,
         area: str | None = None,
         assignee: str | None = None,
+        query: str | None = None,
+        kind: str | None = None,
+        since: str | None = None,
+        task: str | None = None,
+        has_location: bool | None = None,
         limit: int = 200,
     ) -> list[BacklogItem]:
-        """`assignee` "-" means items that are for nobody."""
+        """`assignee` "-" means items that are for nobody, `kind` "-" items without a kind.
+        `query`: every word in the title, the text, the location, the source or the decision
+        (word forms match). `since`: a day, items found on it or later. `task`: items found in
+        that card or linked to it."""
         project_id = (await self.get_project(project)).id if project else None
         if status and status not in backlog.STATUSES:
             raise ValidationError(f"status must be one of {', '.join(backlog.STATUSES)}.")
+        wanted_kind = (kind or "").strip().lower() or None
+        if wanted_kind not in (None, backlog.NO_KIND, *backlog.KINDS):
+            raise ValidationError(f"kind must be one of {', '.join(backlog.KINDS)} or '-'.")
+        day = None
+        if since and since.strip():
+            try:
+                day = date.fromisoformat(since.strip()).isoformat()
+            except ValueError as exc:
+                raise ValidationError(
+                    f"since must be a day like 2026-11-05, got {since!r}."
+                ) from exc
+        task_id = (await self.get_task(task)).id if task else None
+        ids = None
+        text = _clean_text(query, "query", backlog.QUERY_MAX)
+        if text:
+            found = await self._search_ids(
+                self._r, mem.query_words(text), ("backlog",), project_id, backlog.LIST_MAX * 4
+            )
+            ids = [item_id for _, item_id in found]
         return await repo.list_backlog(
             self._r,
             project_id=project_id,
             status=status or None,
             area=_clean_text(area, "area", backlog.AREA_MAX),
             assignee=_clean_text(assignee, "assignee", backlog.ASSIGNEE_MAX),
+            kind=wanted_kind,
+            since=day,
+            either_task_id=task_id,
+            has_location=has_location,
+            ids=ids,
             limit=max(1, min(int(limit), backlog.LIST_MAX)),
         )
 
@@ -5908,15 +5980,18 @@ class Service:
         reason: str | None,
         actor: str,
         link: str | None = None,
+        duplicate_of: int | None = None,
     ) -> None:
         changes: dict[str, Any] = {
             "status": status,
             "decline_reason": reason if status in ("declined", "done") else None,
             "link": link if status == "done" else None,
+            "duplicate_of": duplicate_of if status == "declined" else None,
             "decided_at": tx.now,
             "decided_by": actor,
         }
         await repo.update_backlog_item(tx.conn, item.id, changes)
+        await self._index(tx, "backlog", item.id)
         await tx.event(
             "backlog.updated",
             actor,
@@ -5942,6 +6017,15 @@ class Service:
         return link
 
     @staticmethod
+    def _backlog_kind(value: Any) -> str | None:
+        text = _clean_text(value, "kind", 20)
+        if text is None:
+            return None
+        if text.lower() not in backlog.KINDS:
+            raise ValidationError(f"kind must be one of {', '.join(backlog.KINDS)}, got {text!r}.")
+        return text.lower()
+
+    @staticmethod
     def _backlog_priority(value: Any) -> int:
         try:
             return backlog.parse_priority(value)
@@ -5960,14 +6044,21 @@ class Service:
         area: str | None = None,
         priority: Any = None,
         assignee: str | None = None,
+        kind: str | None = None,
+        location: str | None = None,
+        triage_note: str | None = None,
+        duplicate_of: Any = None,
+        task: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
     ) -> BacklogItem:
-        """MCP: a status change (new, later, done with an optional link, declined with a reason)
-        only for a configured coordinator; `planned` never (only "To plan" on the board creates
-        the task). Anyone else may edit title, body, area, priority and assignee of an item that
-        is still new and that the same session added."""
+        """MCP: a status change (new, later, done with an optional link, declined with a reason),
+        the triage note, closing as a duplicate and linking an existing card only for a
+        configured coordinator; `planned` never as a status (only "To plan" on the board creates
+        a task, `task` links one that exists). Anyone else may edit title, body, area, priority,
+        assignee, kind and location of an item that is still new and that the same session
+        added."""
         async with self._tx() as tx:
             item = await self._backlog(tx.conn, ref)
             coordinator = await self._is_coordinator(tx.conn, session, hook_session)
@@ -5979,26 +6070,45 @@ class Service:
                 "area": area,
                 "priority": priority,
                 "assignee": assignee,
+                "kind": kind,
+                "location": location,
             }
             edits = {k: v for k, v in edits.items() if v is not None}
+            decisions = [
+                name
+                for name, value in (
+                    ("status", status),
+                    ("triage_note", triage_note),
+                    ("duplicate_of", duplicate_of),
+                    ("task", task),
+                )
+                if value is not None
+            ]
+            if decisions and not coordinator:
+                raise ValidationError(
+                    f"Only a coordinator session named in the server's config sets"
+                    f" {', '.join(decisions)} of a backlog item; the owner decides on the board."
+                    " Nothing changed."
+                )
+            closing = [n for n in ("status", "duplicate_of", "task") if n in decisions]
+            if len(closing) > 1:
+                raise ValidationError(
+                    f"Pass one of status, duplicate_of and task, not {' and '.join(closing)}."
+                    " Nothing changed."
+                )
             if status is not None:
                 wanted = status.strip().lower()
                 if wanted == "planned":
                     raise ValidationError(
-                        "planned is set only by 'To plan' on the board, which creates the task."
-                        " Nothing changed."
+                        "planned is set only by 'To plan' on the board, which creates the task,"
+                        " or by task, which links an existing one. Nothing changed."
                     )
                 if wanted not in backlog.MCP_STATUSES:
                     raise ValidationError(
                         f"status must be one of {', '.join(backlog.MCP_STATUSES)}."
                     )
-                if not coordinator:
-                    raise ValidationError(
-                        "Only a coordinator session named in the server's config changes a"
-                        " backlog item's status; the owner decides on the board. Nothing changed."
-                    )
-                if item.status == "planned":
-                    raise ValidationError(f"Backlog item #{item.id} is planned as {item.task_key}.")
+            if closing and item.status == "planned":
+                raise ValidationError(f"Backlog item #{item.id} is planned as {item.task_key}.")
             if link is not None and (status or "").strip().lower() != "done":
                 raise ValidationError("link goes with status done. Nothing changed.")
             if edits and not coordinator:
@@ -6008,8 +6118,15 @@ class Service:
                         "Only the session that added a backlog item edits it, and only while it is"
                         " new. Nothing changed."
                     )
-            if not edits and status is None:
-                raise ValidationError("Pass status, title, body, area, priority or assignee.")
+            if not edits and not decisions:
+                raise ValidationError(
+                    "Pass status, title, body, area, priority, assignee, kind, location,"
+                    " triage_note, duplicate_of or task."
+                )
+            project = await self.get_project(item.project_slug, tx.conn)
+            moved: list[int] = []
+            if triage_note is not None:
+                edits["triage_note"] = triage_note
             if edits:
                 changes: dict[str, Any] = {}
                 if "title" in edits:
@@ -6028,15 +6145,27 @@ class Service:
                     changes["assignee"] = _clean_text(
                         edits["assignee"], "assignee", backlog.ASSIGNEE_MAX
                     )
-                project = await self.get_project(item.project_slug, tx.conn)
+                if "kind" in edits:
+                    changes["kind"] = self._backlog_kind(edits["kind"])
+                if "location" in edits:
+                    changes["location"] = _clean_text(
+                        edits["location"], "location", backlog.LOCATION_MAX
+                    )
+                if "triage_note" in edits:
+                    changes["triage_note"] = _clean_text(
+                        edits["triage_note"], "triage_note", backlog.TRIAGE_MAX
+                    )
                 _scan(
                     await self._secret_rules(tx.conn, project),
                     title=changes.get("title"),
                     body=changes.get("body_md"),
                     area=changes.get("area"),
                     assignee=changes.get("assignee"),
+                    location=changes.get("location"),
+                    triage_note=changes.get("triage_note"),
                 )
                 await repo.update_backlog_item(tx.conn, item.id, changes)
+                await self._index(tx, "backlog", item.id)
                 await tx.event(
                     "backlog.updated",
                     actor,
@@ -6045,6 +6174,72 @@ class Service:
                     backlog_id=item.id,
                     title=changes.get("title", item.title),
                     changes=sorted(changes),
+                )
+            if duplicate_of is not None:
+                original = await self._backlog(tx.conn, _clean_id(duplicate_of, "duplicate_of"))
+                if original.id == item.id:
+                    raise ValidationError("An item is not a duplicate of itself.")
+                if original.project_id != item.project_id:
+                    raise ValidationError(
+                        f"#{original.id} belongs to {original.project_slug}, not to"
+                        f" {item.project_slug}."
+                    )
+                if original.status == "declined":
+                    # A declined item (a duplicate itself among them) would let duplicates
+                    # chain, and close into a circle.
+                    raise ValidationError(
+                        f"#{original.id} is declined; an item is a duplicate of one that is not."
+                    )
+                why = backlog.DUPLICATE_REASON.format(id=original.id)
+                await self._set_backlog_status(
+                    tx, item, "declined", why, actor, duplicate_of=original.id
+                )
+                # Items that repeated this one now repeat the original: no chain is left.
+                for other in await repo.backlog_duplicates_of(tx.conn, item.id):
+                    await repo.update_backlog_item(
+                        tx.conn, other.id, {"duplicate_of": original.id, "decline_reason": why}
+                    )
+                    await self._index(tx, "backlog", other.id)
+                    await tx.event(
+                        "backlog.updated",
+                        actor,
+                        project_id=other.project_id,
+                        project=other.project_slug,
+                        backlog_id=other.id,
+                        title=other.title,
+                        changes=["decline_reason", "duplicate_of"],
+                    )
+                    moved.append(other.id)
+            if task is not None:
+                card = await self.get_task(task, tx.conn)
+                if card.project_id != item.project_id:
+                    raise ValidationError(
+                        f"{card.key} belongs to another project than {item.project_slug}."
+                    )
+                await repo.update_backlog_item(
+                    tx.conn,
+                    item.id,
+                    {
+                        "status": "planned",
+                        "task_id": card.id,
+                        "decline_reason": None,
+                        "link": None,
+                        "duplicate_of": None,
+                        "decided_at": tx.now,
+                        "decided_by": actor,
+                    },
+                )
+                await self._index(tx, "backlog", item.id)
+                await tx.event(
+                    "backlog.planned",
+                    actor,
+                    project_id=item.project_id,
+                    task_id=card.id,
+                    project=item.project_slug,
+                    key=card.key,
+                    stage=card.stage.value,
+                    backlog_id=item.id,
+                    title=item.title,
                 )
             if status is not None:
                 wanted = status.strip().lower()
@@ -6057,7 +6252,9 @@ class Service:
                 if where:
                     envs.check_secret("link", where)
                 await self._set_backlog_status(tx, item, wanted, why, actor, where)
-            return await self._backlog(tx.conn, item.id)
+            saved = await self._backlog(tx.conn, item.id)
+            saved.moved_duplicates = tuple(moved)
+            return saved
 
     async def set_backlog_queue(
         self, ref: Any, priority: Any, assignee: Any, *, actor: str = "owner"
@@ -6098,12 +6295,17 @@ class Service:
                 tx,
                 proj,
                 values["title"],
-                None,
+                values.get("body"),
                 values.get("area"),
                 origin=values["origin"],
                 created_by=actor,
                 priority=values["priority"],
                 assignee=values["assignee"],
+                kind=values.get("kind"),
+                location=values.get("location"),
+                origin_text=values.get("origin_text"),
+                triage_note=values.get("triage_note"),
+                found_on=day,
             )
             changes: dict[str, Any] = {"created_at": f"{day}T00:00:00.000+00:00"}
             if values["status"] != "new":
@@ -6115,6 +6317,7 @@ class Service:
                     "decided_by": actor,
                 }
             await repo.update_backlog_item(tx.conn, item.id, changes)
+            await self._index(tx, "backlog", item.id)
             return await self._backlog(tx.conn, item.id)
 
     async def import_backlog_update(
@@ -6126,7 +6329,11 @@ class Service:
             _scan(
                 await self._secret_rules(tx.conn, project),
                 title=values["title"],
+                body=values.get("body"),
                 assignee=values["assignee"],
+                location=values.get("location"),
+                origin_text=values.get("origin_text"),
+                triage_note=values.get("triage_note"),
             )
             changes = {
                 "title": values["title"],
@@ -6137,10 +6344,24 @@ class Service:
                 "link": values.get("link"),
                 "priority": values["priority"],
                 "assignee": values["assignee"],
+                "kind": values.get("kind"),
+                "location": values.get("location"),
+                "origin_text": values.get("origin_text"),
+                "triage_note": values.get("triage_note"),
             }
+            if item.duplicate_of is not None and (
+                values["status"] != "declined"
+                or values.get("reason") != backlog.DUPLICATE_REASON.format(id=item.duplicate_of)
+            ):
+                changes["duplicate_of"] = None  # the file no longer says it is that duplicate
+            if values.get("body") is not None:
+                changes["body_md"] = values["body"]
+            if values.get("found_on"):
+                changes["found_on"] = values["found_on"]
             if values["status"] == "done" == item.status:
                 changes["decline_reason"] = item.decline_reason  # the note is not in backlog.md
             await repo.update_backlog_item(tx.conn, item.id, changes)
+            await self._index(tx, "backlog", item.id)
             await tx.event(
                 "backlog.updated",
                 actor,

@@ -211,7 +211,9 @@ import_item   kind (document|task|task_note|decision|note|backlog), item, source
 backlog_item  id, project_id, title, body_md, area, origin (session|review|intake|owner),
               origin_task_id, origin_session_id, intake_message_id, status
               (new|later|planned|done|declined), decline_reason, link, priority, assignee,
-              task_id, decided_at, decided_by, created_at, created_by
+              task_id, decided_at, decided_by, created_at, created_by, kind
+              (bug|idea|question|debt), location, origin_text, triage_note, duplicate_of,
+              found_on
 reader_cursor reader, level (portfolio|project|task), ref_id (0 = portfolio), last_event_id,
               read_at   -- PRIMARY KEY (reader, level, ref_id)
 ```

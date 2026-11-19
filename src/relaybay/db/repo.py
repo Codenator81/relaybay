@@ -11,7 +11,7 @@ import aiosqlite
 from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
-from relaybay.domain.backlog import UNASSIGNED, BacklogItem
+from relaybay.domain.backlog import NO_KIND, UNASSIGNED, BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
 from relaybay.domain.environments import (
     AccessEntry,
@@ -3450,6 +3450,17 @@ _SEARCH_SOURCES = {
         " c.body_md AS body, NULL AS superseded_at, NULL AS note_scope, NULL AS note_kind"
         " FROM comment c JOIN task t ON t.id = c.task_id JOIN project p ON p.id = t.project_id"
     ),
+    # The words of a registry row: its text, where in the code, the source and the decision.
+    "backlog": (
+        "SELECT 'backlog' AS kind, b.id AS id, b.project_id AS project_id,"
+        " p.slug AS project_slug, t.key AS task_key, NULL AS name, b.title AS title,"
+        " trim(coalesce(b.body_md, '') || char(10) || coalesce(b.location, '') || char(10)"
+        " || coalesce(b.origin_text, '') || char(10) || coalesce(b.triage_note, '') || char(10)"
+        " || coalesce(b.decline_reason, ''), char(10)) AS body,"
+        " NULL AS superseded_at, NULL AS note_scope, NULL AS note_kind"
+        " FROM backlog_item b JOIN project p ON p.id = b.project_id"
+        " LEFT JOIN task t ON t.id = coalesce(b.task_id, b.origin_task_id)"
+    ),
 }
 _KIND_CODE = {kind: n for n, kind in enumerate(_SEARCH_SOURCES, 1)}
 _SEARCH_TABLE = (
@@ -3686,6 +3697,12 @@ def _backlog(row: aiosqlite.Row) -> BacklogItem:
         created_by=row["created_by"],
         priority=row["priority"],
         assignee=row["assignee"],
+        kind=row["kind"],
+        location=row["location"],
+        origin_text=row["origin_text"],
+        triage_note=row["triage_note"],
+        duplicate_of=row["duplicate_of"],
+        found_on=row["found_on"],
     )
 
 
@@ -3704,6 +3721,11 @@ async def get_backlog_item(conn: aiosqlite.Connection, item_id: int) -> BacklogI
     return _backlog(row) if row else None
 
 
+async def backlog_duplicates_of(conn: aiosqlite.Connection, item_id: int) -> list[BacklogItem]:
+    rows = await _all(conn, _BACKLOG_SELECT + " WHERE b.duplicate_of = ? ORDER BY b.id", (item_id,))
+    return [_backlog(r) for r in rows]
+
+
 async def update_backlog_item(
     conn: aiosqlite.Connection, item_id: int, changes: dict[str, Any]
 ) -> None:
@@ -3720,11 +3742,19 @@ async def list_backlog(
     assignee: str | None = None,
     origin_task_id: int | None = None,
     task_id: int | None = None,
+    kind: str | None = None,
+    since: str | None = None,
+    either_task_id: int | None = None,
+    has_location: bool | None = None,
+    ids: list[int] | None = None,
     limit: int = 200,
 ) -> list[BacklogItem]:
     """`new` first, then later, planned and done, declined; within a status the highest priority
-    first, then the newest. `assignee` "-" means items that are for nobody."""
-    where, params = [], []
+    first, then the newest. `assignee` "-" means items that are for nobody, `kind` "-" items
+    without a kind. `since` is a day: items found (or else created) on it or later.
+    `either_task_id`: items found in that task or planned as it."""
+    where: list[str] = []
+    params: list[Any] = []
     for column, value in (
         ("b.project_id", project_id),
         ("b.status", status),
@@ -3734,6 +3764,22 @@ async def list_backlog(
         if value is not None:
             where.append(f"{column} = ?")
             params.append(value)
+    if kind == NO_KIND:
+        where.append("b.kind IS NULL")
+    elif kind is not None:
+        where.append("b.kind = ?")
+        params.append(kind)
+    if since is not None:
+        where.append("substr(coalesce(b.found_on, b.created_at), 1, 10) >= ?")
+        params.append(since)
+    if either_task_id is not None:
+        where.append("(b.task_id = ? OR b.origin_task_id = ?)")
+        params.extend((either_task_id, either_task_id))
+    if has_location is not None:
+        where.append("b.location IS NOT NULL" if has_location else "b.location IS NULL")
+    if ids is not None:
+        where.append(f"b.id IN ({', '.join('?' for _ in ids) or 'NULL'})")
+        params.extend(ids)
     if area is not None:
         where.append("b.area = ? COLLATE NOCASE")
         params.append(area)

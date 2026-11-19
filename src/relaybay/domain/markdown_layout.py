@@ -93,28 +93,58 @@ STAGE_ALIASES = {
     "archived": "done",
 }
 BACKLOG = "backlog.md"
-BACKLOG_COLUMNS = ("date", "project", "area", "what", "origin", "decision", "priority", "assignee")
+BACKLOG_COLUMNS = (
+    "date",
+    "project",
+    "area",
+    "what",
+    "origin",
+    "decision",
+    "priority",
+    "assignee",
+    "kind",
+    "location",
+    "note",
+)
 BACKLOG_ALIASES = {
     **{c: c for c in BACKLOG_COLUMNS},
     "created": "date",
     "when": "date",
+    "found": "date",
     "component": "area",
     "title": "what",
     "item": "what",
     "finding": "what",
+    "text": "what",
+    "description": "what",
     "source": "origin",
     "from": "origin",
     "status": "decision",
+    "resolution": "decision",
     "prio": "priority",
     "for": "assignee",
     "assigned": "assignee",
+    "type": "kind",
+    "place": "location",
+    "where": "location",
+    "code": "location",
+    "place in code": "location",
+    "code location": "location",
+    "notes": "note",
+    "triage": "note",
+    "triage note": "note",
 }
+DECISION_STATUSES = ("new", "later", "planned", "done", "declined")
 HEADING_NAMES = ("decisions", "task")
 _STAGE_WORDS_MAX = 3
 _DASHES = "-" + chr(0x2013) + chr(0x2014)
 _SEPARATOR_RE = re.compile(rf"^\s*[{_DASHES}:{chr(0xB7)},]\s*")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 _BULLET_RE = re.compile(r"^[-*+][ \t]+(.*)$")
+_LIST_MARK_RE = re.compile(r"^\s*[-*+][ \t]+")
+_PROJECT_CELL_RE = re.compile(r"[^\W_][\w .-]{0,79}")
+# A table row without its table: starts with a pipe (or a list mark) and has two pipes or more.
+_ROW_LIKE_RE = re.compile(r"^\s*(?:\||[-*+][ \t]+[^|]*\|).*\|")
 _H1_RE = re.compile(r"^#[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _ANY_HEADING_RE = re.compile(r"^ {0,3}#{1,6}([ \t]|$)")
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
@@ -225,24 +255,26 @@ class Aliases:
     stages: dict[str, str] = field(default_factory=lambda: dict(STAGE_ALIASES))
     headings: dict[str, str] = field(default_factory=lambda: {n: n for n in HEADING_NAMES})
     backlog: dict[str, str] = field(default_factory=lambda: dict(BACKLOG_ALIASES))
+    # The leading words of a backlog decision cell in another language, to a status.
+    decisions: dict[str, str] = field(default_factory=dict)
 
 
 def load_aliases(data: Any) -> Aliases:
     """The built-in aliases plus an `--aliases` file: `{"columns": {"their name": "column"},
     "stages": {"their word": "stage"}, "headings": {"their heading": "decisions" or "task"},
-    "backlog": {"their name": "backlog column"}}`."""
+    "backlog": {"their name": "backlog column"}, "decisions": {"their words": "status"}}`."""
     if not isinstance(data, dict):
         raise ValueError("the aliases file must hold a JSON object")
-    unknown = sorted(set(data) - {"columns", "stages", "headings", "backlog"})
+    sections = ("columns", "stages", "headings", "backlog", "decisions")
+    unknown = sorted(set(data) - set(sections))
     if unknown:
-        raise ValueError(
-            f"unknown key(s) {', '.join(unknown)}; use columns, stages, headings, backlog"
-        )
+        raise ValueError(f"unknown key(s) {', '.join(unknown)}; use {', '.join(sections)}")
     allowed = {
         "columns": COLUMNS,
         "stages": tuple(s.value for s in Stage),
         "headings": HEADING_NAMES,
         "backlog": BACKLOG_COLUMNS,
+        "decisions": DECISION_STATUSES,
     }
     base = Aliases()
     for section, known in allowed.items():
@@ -543,6 +575,44 @@ class BacklogRow:
     # None: the file has no such column, so the stored value stays. An empty cell resets it.
     priority: str | None = None
     assignee: str | None = None
+    kind: str | None = None
+    location: str | None = None
+    note: str | None = None
+    # The cell as written (the date and the origin above are trimmed and the origin lowercased).
+    origin_cell: str | None = None
+    project_cell: str = ""
+    # Read after a blank line: a row the import cannot place is skipped, never an error.
+    detached: bool = False
+
+
+def _column(values: dict[str, str], name: str) -> str | None:
+    return values[name].strip() if name in values else None
+
+
+def _row_shaped(cells: list[str], header: list[str | None], project_at: int | None) -> bool:
+    """A line with the header's cell count (a last cell may be left out) and a project cell that
+    reads as a slug or a name. A line it lets through that is not a row after all is skipped by
+    the import, never an error (BacklogRow.detached)."""
+    if not len(header) - 1 <= len(cells) <= len(header):
+        return False
+    if project_at is None:
+        return True
+    cell = cells[project_at] if project_at < len(cells) else ""
+    return bool(_PROJECT_CELL_RE.fullmatch(cell.strip("*` ")))
+
+
+def _join_line(
+    table: list[tuple[int, list[str]]], line: str, number: int, warnings: list[str]
+) -> None:
+    """A line break typed into a cell: the line goes on with the last cell of the row above."""
+    cells = _split_row(line)
+    if not table:
+        table.append((number, cells))
+        return
+    first, before = table[-1]
+    joined = [*before[:-1], f"{before[-1]}\n{cells[0]}"] if before else cells[:1]
+    table[-1] = (first, joined + cells[1:])
+    warnings.append(f"line {number}: a line without a leading pipe continues line {first}")
 
 
 def parse_backlog(text: str, aliases: Aliases) -> tuple[list[BacklogRow], list[str]]:
@@ -559,9 +629,59 @@ def parse_backlog(text: str, aliases: Aliases) -> tuple[list[BacklogRow], list[s
         start = i + 1
         i += 2
         table: list[tuple[int, list[str]]] = []
-        while i < len(lines) and _is_table_line(lines[i]):
-            table.append((i + 1, _split_row(lines[i])))
+        piped = lines[start - 1].lstrip().startswith("|")
+        open_row = False  # the last row was cut short: no closing pipe, or too few cells
+        while i < len(lines) and (
+            _is_table_line(lines[i]) or (piped and open_row and lines[i].strip())
+        ):
+            cells = _split_row(lines[i])
+            # A line break typed into a cell leaves the row above open and this line without a
+            # leading pipe; any other line without one is a row (valid GFM).
+            if (
+                piped
+                and open_row
+                and not lines[i].lstrip().startswith("|")
+                and len(cells) < len(header)
+            ):
+                _join_line(table, lines[i], i + 1, warnings)
+            else:
+                table.append((i + 1, cells))
+            open_row = not lines[i].rstrip().endswith("|") or len(table[-1][1]) < len(header) - 1
             i += 1
+        # Rows a blank line cut off from their table (no header of their own): a hand-kept
+        # registry loses none of them, and a row typed as a list item still counts. Only a line
+        # shaped like a row of this table is taken; anything else (a legend) is left alone.
+        project_at = header.index("project") if "project" in header else None
+        detached: set[int] = set()
+        while True:
+            after = i
+            while after < len(lines) and not lines[after].strip():
+                after += 1
+            if after == i or after >= len(lines) or not _ROW_LIKE_RE.match(lines[after]):
+                break
+            if after + 1 < len(lines) and _TABLE_RULE_RE.match(lines[after + 1]):
+                break
+            i = after
+            taken = 0
+            while i < len(lines) and _ROW_LIKE_RE.match(lines[i]):
+                if i + 1 < len(lines) and _TABLE_RULE_RE.match(lines[i + 1]):
+                    break  # the header of a table of its own
+                cells = _split_row(_LIST_MARK_RE.sub("", lines[i], count=1))
+                if _row_shaped(cells, header, project_at):
+                    table.append((i + 1, cells))
+                    detached.add(i + 1)
+                    taken += 1
+                else:
+                    warnings.append(
+                        f"line {i + 1}: not read: after a blank line, and not shaped like a row"
+                        f" of the table at line {start}"
+                    )
+                i += 1
+            if taken:
+                warnings.append(
+                    f"line {after + 1}: rows after a blank line are read as rows of the table at"
+                    f" line {start}"
+                )
         if "project" not in header or "what" not in header:
             warnings.append(
                 f"line {start}: a table without project and what columns was skipped"
@@ -585,31 +705,42 @@ def parse_backlog(text: str, aliases: Aliases) -> tuple[list[BacklogRow], list[s
                     title=values["what"].strip(),
                     origin=values.get("origin", "").strip().lower() or None,
                     decision=values.get("decision", "").strip(),
-                    priority=values["priority"].strip() if "priority" in values else None,
-                    assignee=values["assignee"].strip() if "assignee" in values else None,
+                    priority=_column(values, "priority"),
+                    assignee=_column(values, "assignee"),
+                    kind=_column(values, "kind"),
+                    location=_column(values, "location"),
+                    note=_column(values, "note"),
+                    origin_cell=values.get("origin", "").strip() or None,
+                    project_cell=values["project"].strip("*` "),
+                    detached=number in detached,
                 )
             )
     return rows, warnings
 
 
 def render_backlog(items: list[Any]) -> str:
-    """Backlog items (domain.backlog.BacklogItem), oldest first, as backlog.md."""
+    """Backlog items (domain.backlog.BacklogItem), oldest first, as backlog.md. A source in
+    words stands in the origin column, a triage note in the note column."""
     lines = [
         "# Backlog",
         "",
-        "| date | project | area | what | origin | decision | priority | assignee |",
-        "|---|---|---|---|---|---|---|---|",
+        "| date | project | area | what | origin | decision | priority | assignee | kind"
+        " | location | note |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for b in sorted(items, key=lambda b: (b.created_at, b.id)):
         cells = (
             b.created_at[:10],
             b.project_slug,
             b.area,
-            b.title,
-            b.origin,
+            b.what,
+            b.origin_text or b.origin,
             b.decision,
             str(b.priority),
             b.assignee,
+            b.kind,
+            b.location,
+            b.triage_note,
         )
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
     return "\n".join(lines) + "\n"
@@ -627,6 +758,9 @@ def backlog_meaning(text: str, aliases: Aliases) -> set[tuple[Any, ...]]:
             r.decision,
             r.priority or "0",
             r.assignee or None,
+            (r.kind or "").lower() or None,
+            r.location or None,
+            r.note or None,
         )
         for r in rows
     }

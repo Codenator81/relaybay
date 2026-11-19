@@ -10,21 +10,25 @@
     <h3 class="backlog-title">{{ b.title }}</h3>
   </div>
   <div class="card-meta backlog-meta">
-    <time class="muted" datetime="{{ b.created_at }}">{{ b.created_at[:10] }}</time>
+    <time class="muted" datetime="{{ b.found_on or b.created_at }}">{{ (b.found_on or b.created_at)[:10] }}</time>
+    {% if b.kind %}<span class="backlog-status backlog-kind kind-{{ b.kind }}">{{ b.kind }}</span>{% endif %}
     {% if not backlog_project %}<a class="backlog-project" href="/p/{{ b.project_slug }}/backlog">{{ b.project_slug }}</a>{% endif %}
     {% if b.area %}<span class="chip backlog-area">{{ b.area }}</span>{% endif %}
     {% if b.priority %}<span class="backlog-status backlog-priority">priority {{ b.priority }}</span>{% endif %}
     {% if b.assignee %}<span class="backlog-status backlog-for">for {{ b.assignee }}</span>{% endif %}
-    <span class="backlog-origin muted">{{ b.origin }}
+    <span class="backlog-origin muted">{{ b.origin_text or b.origin }}
       {%- if b.origin_task_key %} · <a href="/p/{{ b.project_slug }}?task={{ b.origin_task_key }}">{{ b.origin_task_key }}</a>{% if b.origin_task_stage %} <span class="stage-pill stage-{{ b.origin_task_stage }}">{{ label(b.origin_task_stage) }}</span>{% endif %}{% endif %}
       {%- if b.origin_session_name %} · <a href="/sessions">{{ b.origin_session_name }}</a>{% endif %}
       {%- if b.intake_message_id %} · message #{{ b.intake_message_id }}{% endif -%}
     </span>
     <span class="backlog-status status-{{ b.status }}">{{ b.status }}</span>
     {%- if b.task_key %} <a href="/p/{{ b.project_slug }}?task={{ b.task_key }}">{{ b.task_key }}</a>{% endif %}
-    {%- if b.status in ("declined", "done") and b.decline_reason %} <span class="muted backlog-reason">{{ b.decline_reason }}</span>{% endif %}
+    {%- if b.duplicate_of %} <span class="muted backlog-reason">duplicate of <a href="{{ base }}?history=1#backlog-{{ b.duplicate_of }}">#{{ b.duplicate_of }}</a></span>
+    {%- elif b.status in ("declined", "done") and b.decline_reason %} <span class="muted backlog-reason">{{ b.decline_reason }}</span>{% endif %}
     {%- if b.status == "done" and b.link %} <a class="backlog-link" href="{{ b.link }}" rel="noopener noreferrer" target="_blank">{{ b.link }}</a>{% endif %}
   </div>
+  {% if b.location %}<p class="backlog-location muted">at <code>{{ b.location }}</code></p>{% endif %}
+  {% if b.triage_note %}<p class="backlog-note"><span class="muted">note:</span> {{ b.triage_note }}</p>{% endif %}
   {#- The body of an item from 0.11's intake is external text: plain text, never markdown. #}
   {% if b.body_md %}<details class="backlog-body"><summary class="muted">what</summary>{% if b.origin == "intake" %}<p class="intake-text">{{ b.body_md }}</p>{% else %}<div class="markdown">{{ b.body_md|markdown }}</div>{% endif %}</details>{% endif %}
   {% if actions %}

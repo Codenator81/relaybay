@@ -8,12 +8,13 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import tempfile
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,8 @@ CHANGED_ON_BOARD = (
     " (with --force for a file it did not write), --overwrite takes the file's text"
 )
 NOT_IMPORTED = "already on the board and not from an import; --overwrite takes the file's text"
+SEPARATORS = ":,.;-" + chr(0x2013) + chr(0x2014)
+_DAY_RE = re.compile(r"(?P<day>\d{1,2})\.(?P<month>\d{1,2})(?:\.(?P<year>\d{4})?)?")
 
 
 class ImportProblem(Exception):
@@ -139,6 +142,8 @@ class Item:
 class Plan:
     items: list[Item]
     warnings: list[str]
+    summary: list[str] = field(default_factory=list)  # e.g. rows read per backlog file
+    name_hidden: bool = False  # the folder's or the registry's path holds a secret value
 
     @property
     def hash(self) -> str:
@@ -164,6 +169,7 @@ class Plan:
 class SourceFile:
     rel: str
     text: str
+    mtime: float = 0.0  # a registry date without a year resolves against it
 
 
 def _read(path: Path, rel: str) -> SourceFile | Item:
@@ -177,7 +183,7 @@ def _read(path: Path, rel: str) -> SourceFile | Item:
             f"the file has {size} bytes; the limit is {FILE_MAX_BYTES}",
         )
     try:
-        return SourceFile(rel, path.read_bytes().decode("utf-8-sig"))
+        return SourceFile(rel, path.read_bytes().decode("utf-8-sig"), path.stat().st_mtime)
     except UnicodeDecodeError as exc:
         return Item("file", rel, rel, "error", f"not valid UTF-8 (byte {exc.start})")
 
@@ -330,6 +336,8 @@ class _Planner:
         self.title_claims: Counter[tuple[str, str | None]] = Counter()
         self.notes: list[MemoryNote] = []  # current ones
         self.tracked_notes: dict[int, MemoryNote] = {}  # by id, superseded ones too
+        self.summary: list[str] = []
+        self.name_hidden = False
 
     def add(self, *args: Any, **kwargs: Any) -> Item:
         item = Item(*args, **kwargs)
@@ -971,18 +979,51 @@ class _Planner:
 
     # The whole folder
 
-    async def build(self, root: Path) -> Plan:
-        files, problems = scan(root, await self._secret_rules(None))
+    async def build(self, root: Path | None, backlog_file: Path | None = None) -> Plan:
+        rules = await self._secret_rules(None)
+        self.name_hidden = any(
+            find_secrets(str(path), rules) for path in (root, backlog_file) if path is not None
+        )
+        files, problems = scan(root, rules) if root is not None else ([], [])
         self.items.extend(problems)
+        registry = None
+        if backlog_file is not None:
+            # The named registry stands in for the folder's backlog.md.
+            if any(f.rel == BACKLOG for f in files):
+                files = [f for f in files if f.rel != BACKLOG]
+                self.warnings.append(f"{BACKLOG}: skipped; --backlog names the registry")
+            registry = self._registry_file(backlog_file, rules)
         self.tracked = {(t.kind, t.item): t for t in await self.service.import_items()}
         self.notes = await self.service.all_notes()
         ids = [t.target_id for t in self.tracked.values() if t.kind == "note"]
         self.tracked_notes = {n.id: n for n in await self.service.notes_by_id(ids)}
         await self._tasks(files)
         await self._rest(files)
+        if registry is not None:
+            await self._backlog_file(registry)
         for slug, name in sorted(self.new_projects.items()):
             self.add("project", slug, "", "add", payload={"name": name})
-        return Plan(sorted(self.items, key=lambda i: i.order), self.warnings)
+        return Plan(
+            sorted(self.items, key=lambda i: i.order), self.warnings, self.summary, self.name_hidden
+        )
+
+    def _registry_file(self, path: Path, rules: SecretRules) -> SourceFile | None:
+        """`--backlog <file>`: read like a file of the layout, shown by its name only."""
+        name = path.name
+        found = find_secrets(name, rules)
+        if found:
+            detail = f"a name here holds a secret value ({found[0][1]}); rename it"
+            self.add("file", HIDDEN_NAME, HIDDEN_NAME, "refused", detail)
+            return None
+        try:
+            read = _read(path, name)
+        except OSError as exc:
+            self.add("file", name, name, "error", f"cannot read: {exc.strerror}")
+            return None
+        if isinstance(read, Item):
+            self.items.append(read)
+            return None
+        return read
 
     async def _rest(self, files: list[SourceFile]) -> None:
         for file in files:
@@ -1085,9 +1126,12 @@ class _Planner:
 
     async def _backlog_file(self, file: SourceFile) -> None:
         """One item per row; identity project + date + title slug. A row's decision is the status
-        (planned only records history: no task is created by an import)."""
+        (planned only records history: no task is created by an import). A registry's real rows
+        are never refused for their length or their wording: a long what becomes a title plus
+        the whole text as the body, a decision outside the vocabulary the triage note of a new
+        item. Every row ends as exactly one plan item, and the summary counts them."""
         rows, warnings = parse_backlog(file.text, self.aliases)
-        self.warnings.extend(f"{BACKLOG}: {w}" for w in warnings)
+        self.warnings.extend(f"{file.rel}: {w}" for w in warnings)
         by_target = {t.target_id: t for t in self.tracked.values() if t.kind == "backlog"}
         items = await self.service.all_backlog()
         current = {b.id: b for b in items}
@@ -1104,44 +1148,81 @@ class _Planner:
                 untracked.setdefault(key, b)
             elif tracked_before.item != key:
                 renamed.setdefault(key, tracked_before)
+        summaries = await self.service.list_projects()
+        names = {p.project.name.casefold(): p.project.slug for p in summaries}
+        names |= {n.casefold(): s for s, n in self.new_projects.items() if n}
+        modified = datetime.fromtimestamp(file.mtime).date() if file.mtime else date.today()
         seen: set[str] = set()
+        first = len(self.items)
         for row in rows:
-            source = f"{BACKLOG}:{row.line}"
-            name = f"{row.project}/{row.date}/{backlog.title_slug(row.title)}"
-            if not SLUG_RE.match(row.project):
-                self.add("backlog", name, source, "error", f"invalid project name {row.project!r}")
+            source = f"{file.rel}:{row.line}"
+            day = registry_day(row.date, modified)
+            title, body = backlog.registry_title(row.title)
+            project = await self._backlog_project(row, names)
+            name = f"{project or row.project}/{day or row.date}/{backlog.title_slug(title)}"
+            if project is None:
+                problem = (
+                    f"invalid project name {row.project_cell!r}"
+                    if not SLUG_RE.match(row.project)
+                    else f"unknown project {row.project_cell!r}"
+                )
+                self.add("backlog", name, source, "skipped" if row.detached else "error", problem)
                 continue
-            # Known: on the board, or created by this import (projects come first).
-            if row.project not in self.projects and row.project not in self.new_projects:
-                try:
-                    self.projects[row.project] = await self.service.get_project(row.project)
-                except NotFoundError:
-                    self.add("backlog", name, source, "error", f"unknown project {row.project!r}")
-                    continue
-            problem = _backlog_problem(row)
+            problem = _backlog_problem(row, day, body)
+            if problem and row.detached:
+                # A line after a blank line that is not a row of the table (a legend).
+                self.add("backlog", name, source, "skipped", f"after a blank line: {problem}")
+                continue
             if problem:
                 self.add("backlog", name, source, "error", problem)
                 continue
+            assert day is not None
             if name in seen:
                 self.add("backlog", name, source, "skipped", "the same row again")
                 continue
             seen.add(name)
-            text = " ".join(filter(None, (row.title, row.area, row.decision, row.assignee)))
-            secret = await self._secret(text, row.project)
+            text = " ".join(
+                filter(
+                    None,
+                    (
+                        row.title,
+                        row.area,
+                        row.decision,
+                        row.assignee,
+                        row.origin_cell,
+                        row.kind,
+                        row.location,
+                        row.note,
+                    ),
+                )
+            )
+            secret = await self._secret(text, project)
             if secret:
                 self.add("backlog", name, source, "refused", secret)
                 continue
-            status, detail = backlog.parse_decision(row.decision)
-            origin = row.origin if row.origin in backlog.ORIGINS else "owner"
-            values = {"title": row.title, "area": (row.area or "").lower() or None}
-            values |= {"origin": origin, "status": status}
-            done = status == "done"
-            values |= {"reason": None if done else detail, "link": detail if done else None}
             tracked = self.tracked.get(("backlog", name)) or renamed.get(name)
             target = current.get(tracked.target_id) if tracked else None
             if tracked is None:
                 target = untracked.get(name)
             target_hash = backlog_hash(target) if target else ""
+            status, detail, decided_note = self._backlog_decision(row.decision, source)
+            done = status == "done"
+            origin = row.origin if row.origin in backlog.ORIGINS else "owner"
+            origin_text = None
+            if row.origin not in backlog.ORIGINS and row.origin_cell:
+                origin_text = self._fit(row.origin_cell, backlog.ORIGIN_TEXT_MAX, "origin", source)
+            area = self._fit(row.area, backlog.AREA_MAX, "area", source)
+            values: dict[str, Any] = {
+                "title": title,
+                "body": body,
+                "area": (area or "").lower() or None,
+                "origin": origin,
+                "origin_text": origin_text,
+                "status": status,
+                "reason": None if done else detail,
+                "link": detail if done else None,
+                "found_on": day,
+            }
             if row.priority is not None:
                 values["priority"] = backlog.parse_priority(row.priority)
             else:
@@ -1150,14 +1231,40 @@ class _Planner:
                 values["assignee"] = row.assignee or None
             else:
                 values["assignee"] = target.assignee if target else None
+            if row.kind is not None:
+                values["kind"] = row.kind.lower() or None
+            else:
+                values["kind"] = target.kind if target else None
+            # A location column says it (an empty cell clears); without one, the first
+            # `path:line` of the what, else the stored value.
+            if row.location is not None:
+                values["location"] = self._fit(
+                    row.location, backlog.LOCATION_MAX, "location", source
+                )
+            else:
+                found = backlog.find_location(row.title)
+                values["location"] = found or (target.location if target else None)
+            if row.note:
+                note = row.note
+            elif decided_note:
+                note = decided_note
+            elif row.note is not None:
+                note = None  # an empty note column clears it
+            else:
+                note = target.triage_note if target else None
+            values["triage_note"] = self._fit(note, backlog.TRIAGE_MAX, "note", source)
             content = _backlog_hash(
-                values["title"],
+                body or title,
                 values["area"],
                 origin,
                 status,
                 _decision_detail(status, values["reason"], values["link"]),
                 values["priority"],
                 values["assignee"],
+                values["kind"],
+                values["location"],
+                origin_text,
+                values["triage_note"],
             )
             if target is not None and target.task_id is not None and status != "planned":
                 detail = f"planned on the board as {target.task_key}; an import never moves it back"
@@ -1172,14 +1279,70 @@ class _Planner:
                 overwrite=self.overwrite,
             )
             payload = {
-                "project": row.project,
-                "date": row.date,
+                "project": project,
+                "date": day,
                 "values": values,
                 "target_id": target.id if target else 0,
             }
             self.add(
                 "backlog", name, source, action, detail, content, target_hash, record, [], payload
             )
+        made = Counter(i.action for i in self.items[first:])
+        counts = ", ".join(f"{a} {made[a]}" for a in ACTIONS if made[a])
+        self.summary.append(f"{file.rel}: {len(rows)} rows read: {counts or 'none'}")
+
+    async def _backlog_project(self, row: BacklogRow, names: dict[str, str]) -> str | None:
+        """The project of a registry row: by its slug, else by its name; None when neither is
+        on the board or created by this import."""
+        if SLUG_RE.match(row.project):
+            if row.project in self.projects or row.project in self.new_projects:
+                return row.project
+            try:
+                self.projects[row.project] = await self.service.get_project(row.project)
+                return row.project
+            except NotFoundError:
+                pass
+        return names.get(row.project_cell.casefold())
+
+    def _backlog_decision(self, text: str, source: str) -> tuple[str, str | None, str | None]:
+        """(status, detail, note) of a decision cell: the vocabulary, else the leading words of
+        the aliases' `decisions`, else a new item with the whole text as its triage note."""
+        try:
+            status, detail = backlog.parse_decision(text)
+            return status, detail, None
+        except ValueError:
+            pass
+        words = list(re.finditer(r"\S+", text))
+        for count in range(min(3, len(words)), 0, -1):
+            said = " ".join(m.group(0) for m in words[:count]).casefold().rstrip(SEPARATORS)
+            status = self.aliases.decisions.get(said)
+            if status is None:
+                continue
+            rest = text[words[count - 1].end() :].strip().lstrip(SEPARATORS).strip()
+            if status == "declined":
+                return status, self._fit(rest or text, backlog.REASON_MAX, "decision", source), None
+            if status == "done":
+                if rest and len(rest) <= backlog.LINK_MAX and backlog.LINK_RE.fullmatch(rest):
+                    return status, rest, None
+                return status, None, text if rest else None
+            return status, None, text if rest else None
+        self.warnings.append(
+            f"{source}: the decision is not one of new, later, planned, done, declined (or an"
+            " alias of them): the item stays new and the text becomes its triage note"
+        )
+        return "new", None, text
+
+    def _fit(self, text: str | None, limit: int, what: str, source: str) -> str | None:
+        """A cell cut at a word to `limit` characters, with a warning: a real row is never
+        refused for a long side cell."""
+        if not text:
+            return None
+        if len(text) <= limit:
+            return text
+        self.warnings.append(f"{source}: {what} cut to {limit} characters")
+        cut = text[: limit - 1]
+        space = cut.rfind(" ")
+        return (cut[:space] if space >= limit // 2 else cut).rstrip() + "…"
 
     async def _doc_file(self, file: SourceFile, project: str, name: str) -> None:
         slug = self._valid_project(project, file.rel)
@@ -1228,48 +1391,86 @@ def _decision_detail(status: str, reason: str | None, link: str | None) -> str |
 
 
 def _backlog_hash(
-    title: str,
+    what: str,
     area: str | None,
     origin: str,
     status: str,
     detail: str | None,
     priority: int,
     assignee: str | None,
+    kind: str | None = None,
+    location: str | None = None,
+    origin_text: str | None = None,
+    triage_note: str | None = None,
 ) -> str:
     # Default values hash as they did before these fields, or every item an older import tracked
     # would turn into a conflict.
-    queue = (priority, assignee) if priority or assignee else ()
-    return text_hash(title, area, origin, status, detail, *queue)
+    registry = (kind, location, origin_text, triage_note)
+    if not any(registry):
+        registry = ()
+    queue = (priority, assignee) if priority or assignee or registry else ()
+    return text_hash(what, area, origin, status, detail, *queue, *registry)
 
 
 def backlog_hash(item: BacklogItem) -> str:
     detail = _decision_detail(item.status, item.decline_reason, item.link)
     return _backlog_hash(
-        item.title, item.area, item.origin, item.status, detail, item.priority, item.assignee
+        item.what,
+        item.area,
+        item.origin,
+        item.status,
+        detail,
+        item.priority,
+        item.assignee,
+        item.kind,
+        item.location,
+        item.origin_text,
+        item.triage_note,
     )
 
 
-def _backlog_problem(row: BacklogRow) -> str | None:
+def registry_day(cell: str, modified: date) -> str | None:
+    """The ISO day of a registry's date cell: `2026-11-05`, `05.11.2026`, or `05.11` without a
+    year, which is the latest such day not after `modified` (the file's modification day)."""
+    text = cell.strip()
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        pass
+    found = _DAY_RE.fullmatch(text)
+    if found is None:
+        return None
+    day, month, year = int(found["day"]), int(found["month"]), found["year"]
+    if year is not None:
+        try:
+            return date(int(year), month, day).isoformat()
+        except ValueError:
+            return None
+    for back in range(9):  # 29.02 waits up to eight years for a leap year
+        try:
+            candidate = date(modified.year - back, month, day)
+        except ValueError:
+            continue
+        if candidate <= modified:
+            return candidate.isoformat()
+    return None
+
+
+def _backlog_problem(row: BacklogRow, day: str | None, body: str | None) -> str | None:
     if not row.title:
         return "the row has no what"
-    if len(row.title) > backlog.TITLE_MAX:
-        return f"what is longer than {backlog.TITLE_MAX} characters"
-    if row.area and len(row.area) > backlog.AREA_MAX:
-        return f"area is longer than {backlog.AREA_MAX} characters"
+    if body is not None and len(body) > backlog.BODY_MAX:
+        return f"what is longer than {backlog.BODY_MAX} characters"
     if row.assignee and len(row.assignee) > backlog.ASSIGNEE_MAX:
         return f"assignee is longer than {backlog.ASSIGNEE_MAX} characters"
+    if row.kind and row.kind.lower() not in backlog.KINDS:
+        return f"kind must be one of {', '.join(backlog.KINDS)} or empty, got {row.kind!r}"
     try:
         backlog.parse_priority(row.priority)
     except ValueError as exc:
         return str(exc)
-    try:
-        date.fromisoformat(row.date)
-    except ValueError:
-        return f"date must be like 2026-11-05, got {row.date!r}"
-    try:
-        backlog.parse_decision(row.decision)
-    except ValueError as exc:
-        return str(exc)
+    if day is None:
+        return f"date must be like 2026-11-05, 05.11.2026 or 05.11, got {row.date!r}"
     return None
 
 
@@ -1283,14 +1484,15 @@ def _decision_item(scope: str, text: str) -> str:
 
 async def make_plan(
     service: Service,
-    root: Path,
+    root: Path | None,
     *,
     aliases: Aliases | None = None,
     retro_project: str | None = None,
     overwrite: bool = False,
+    backlog_file: Path | None = None,
 ) -> Plan:
     planner = _Planner(service, aliases or Aliases(), retro_project, overwrite)
-    return await planner.build(root)
+    return await planner.build(root, backlog_file)
 
 
 # --- applying --------------------------------------------------------------------------------
@@ -1493,6 +1695,9 @@ def format_plan(plan: Plan) -> list[str]:
         if len(item.diff) > cut:
             lines.append(f"    ... {len(item.diff) - cut} more diff lines")
         budget -= cut
+    if plan.summary:
+        lines.append("")
+        lines.extend(f"  {line}" for line in plan.summary)
     if plan.warnings:
         lines.append("")
         lines.extend(f"  Warning: {w}" for w in plan.warnings)
@@ -1573,46 +1778,76 @@ def resolve_root(root: Path) -> Path:
     return resolved
 
 
+def resolve_backlog_file(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ImportProblem(f"{path} is not a file")
+    return resolved
+
+
 async def run_import(
     settings: Settings,
-    root: Path,
+    root: Path | None,
     *,
     aliases: Aliases,
     retro_project: str | None,
     overwrite: bool,
     apply: bool,
     expect: str | None,
+    backlog_file: Path | None = None,
 ) -> tuple[int, list[str]]:
     """(exit code, output lines): 1 when something was refused, in conflict or failed."""
-    head = f"relaybay import: {root}"
+
+    def head(plan: Plan) -> str:
+        # By the board's secret rules, as the plan judged the names: never print such a path.
+        shown = HIDDEN_NAME if plan.name_hidden else (root if root is not None else backlog_file)
+        return f"relaybay import: {shown}"
+
+    def stale(plan: Plan) -> list[str]:
+        return [
+            f"{head(plan)}: the plan is not the one you approved (expected {expect}): the files"
+            " or the board changed. Review the new plan and apply again. Nothing written."
+        ]
+
     if not apply:
         async with open_copy(settings) as service:
             plan = await make_plan(
-                service, root, aliases=aliases, retro_project=retro_project, overwrite=overwrite
+                service,
+                root,
+                aliases=aliases,
+                retro_project=retro_project,
+                overwrite=overwrite,
+                backlog_file=backlog_file,
             )
-        lines = [f"{head} (dry run)", *format_plan(plan), ""]
+        lines = [f"{head(plan)} (dry run)", *format_plan(plan), ""]
         lines.append(
             f"Plan hash: {plan.hash} (write exactly this plan: add --apply --expect {plan.hash}"
             " to this command)"
         )
         lines.append("Nothing written.")
         return (1 if plan.failed else 0), lines
-    stale = [
-        f"{head}: the plan is not the one you approved (expected {expect}): the files or the board"
-        " changed. Review the new plan and apply again. Nothing written."
-    ]
     if expect is not None:  # on the copy: a stale hash must not even migrate the real database
         async with open_copy(settings) as service:
             plan = await make_plan(
-                service, root, aliases=aliases, retro_project=retro_project, overwrite=overwrite
+                service,
+                root,
+                aliases=aliases,
+                retro_project=retro_project,
+                overwrite=overwrite,
+                backlog_file=backlog_file,
             )
         if expect != plan.hash:
-            return 1, stale
+            return 1, stale(plan)
     async with open_board(settings) as service:
         plan = await make_plan(
-            service, root, aliases=aliases, retro_project=retro_project, overwrite=overwrite
+            service,
+            root,
+            aliases=aliases,
+            retro_project=retro_project,
+            overwrite=overwrite,
+            backlog_file=backlog_file,
         )
         if expect is not None and expect != plan.hash:
-            return 1, stale
+            return 1, stale(plan)
         await apply_plan(service, plan)
-    return (1 if plan.failed else 0), [f"{head} (applied)", *format_plan(plan)]
+    return (1 if plan.failed else 0), [f"{head(plan)} (applied)", *format_plan(plan)]

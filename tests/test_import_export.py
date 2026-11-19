@@ -4,10 +4,12 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
 from importlib import resources
 from pathlib import Path
 
@@ -16,10 +18,12 @@ import pytest
 
 from relaybay import cli
 from relaybay.db.connection import connect, migrate
-from relaybay.domain.environments import find_secrets
+from relaybay.domain.backlog import find_location, registry_title
+from relaybay.domain.environments import SecretRules, find_secrets
 from relaybay.domain.markdown_layout import (
     Aliases,
     load_aliases,
+    parse_backlog,
     parse_note,
     parse_registry,
     place_of,
@@ -27,8 +31,16 @@ from relaybay.domain.markdown_layout import (
     split_frontmatter,
     split_stage,
 )
-from relaybay.markdown_export import FileAction, Wanted, _claim, file_hash, read_manifest
-from relaybay.markdown_import import FILE_MAX_BYTES, Plan, apply_plan, make_plan, scan
+from relaybay.markdown_export import FileAction, Wanted, _claim, file_hash, gather, read_manifest
+from relaybay.markdown_import import (
+    FILE_MAX_BYTES,
+    Plan,
+    apply_plan,
+    format_plan,
+    make_plan,
+    registry_day,
+    scan,
+)
 from relaybay.service import Service
 from tests.test_migrations import LATEST
 
@@ -1533,3 +1545,353 @@ def test_a_rank_that_is_no_number_is_an_error(home: Path, tmp_path: Path, capsys
     out = capsys.readouterr().out
     assert "rank must be a whole number from -1000000000 to 1000000000" in out
     assert re.search(r"^  add +task acme-shop/docs", out, re.M), out
+
+
+# --- a bug registry under another name (design 0026) ------------------------------------------
+
+LONG_WHAT = (
+    "The cart badge keeps the old count after a refund. The refund handler in"
+    " `cart/badge.py:42` never sends the event, so the badge waits for a reload; the same is"
+    " true for a partial refund and for a refund that the payment provider starts by itself"
+)
+REGISTRY_TEXT = "\n".join(
+    [
+        "# Findings",
+        "",
+        "| Date | Project | Place in code | Area | Text | Source | Decision |",
+        "|---|---|---|---|---|---|---|",
+        "| 2026-10-02 | acme-shop | | checkout | Remember the last delivery slot | session | |",
+        f"| 05.11 | Acme Shop | | cart | {LONG_WHAT} | review of the cart with QA | wontfix:"
+        " the old count is fine |",
+        "| 05.11.2025 | demo-api | api/errors.py:10 | errors | Problem json for validation"
+        " errors | owner | later |",
+        "| 30.12 | demo-api | | | Rate limits per key | chat with the client | maybe next"
+        " quarter |",
+        "| 2026-11-02 | demo-api | | " + "very long area name " * 4 + "| Continued row",
+        "cut by a line break | session | |",
+        "",
+        "- 2026-11-01 | acme-shop | | search | Typo tolerance | session | dropped: nobody asked |",
+        "| 2026-11-03 | nowhere | | | Unknown project | owner | |",
+        "",
+    ]
+)
+REGISTRY_ALIASES = {"decisions": {"wontfix": "declined", "dropped": "declined"}}
+
+
+async def registry_service(tmp_path: Path) -> tuple[Service, Path]:
+    service = Service(tmp_path / "relaybay.sqlite")
+    await service.start()
+    await service.upsert_project("acme-shop", name="Acme Shop")
+    await service.upsert_project("demo-api")
+    path = tmp_path / "FINDINGS.md"
+    path.write_text(REGISTRY_TEXT, encoding="utf-8")
+    modified = datetime(2026, 11, 19, 12).timestamp()
+    os.utime(path, (modified, modified))
+    return service, path
+
+
+async def test_a_registry_imports_every_row(tmp_path: Path) -> None:
+    service, path = await registry_service(tmp_path)
+    names = load_aliases(REGISTRY_ALIASES)
+    try:
+        plan = await make_plan(service, None, aliases=names, backlog_file=path)
+        rows = [i for i in plan.items if i.kind == "backlog"]
+        assert len(rows) == 7 and [i.action for i in rows].count("add") == 6
+        assert [i.detail for i in rows if i.action == "skipped"] == ["unknown project 'nowhere'"]
+        assert plan.summary == ["FINDINGS.md: 7 rows read: add 6, skipped 1"]
+        assert "  FINDINGS.md: 7 rows read: add 6, skipped 1" in format_plan(plan)
+        warnings = "\n".join(plan.warnings)
+        assert "line 10: a line without a leading pipe continues line 9" in warnings
+        assert "line 12: rows after a blank line are read as rows of the table" in warnings
+        assert "FINDINGS.md:8: the decision is not one of" in warnings
+        assert "FINDINGS.md:9: area cut to 60 characters" in warnings
+        await apply_plan(service, plan)
+        items = {b.title: b for b in await service.all_backlog()}
+        assert len(items) == 6
+
+        long = items["The cart badge keeps the old count after a refund."]
+        assert (long.project_slug, long.body_md, long.what) == ("acme-shop", LONG_WHAT, LONG_WHAT)
+        # The location column is there and empty: no location, whatever the text says.
+        assert (long.location, long.found_on, long.created_at[:10]) == (
+            None,
+            "2026-11-05",
+            "2026-11-05",
+        )
+        assert (long.origin, long.origin_text) == ("owner", "review of the cart with QA")
+        assert (long.status, long.decline_reason) == ("declined", "the old count is fine")
+        errors = items["Problem json for validation errors"]
+        assert (errors.found_on, errors.location, errors.status) == (
+            "2025-11-05",
+            "api/errors.py:10",
+            "later",
+        )
+        limits = items["Rate limits per key"]
+        assert (limits.found_on, limits.status) == ("2025-12-30", "new")
+        assert limits.triage_note == "maybe next quarter"
+        assert items["Continued row\ncut by a line break"].area.endswith("…")
+        typo = items["Typo tolerance"]
+        assert (typo.status, typo.decline_reason) == ("declined", "nobody asked")
+        assert items["Remember the last delivery slot"].origin_text is None
+
+        again = await make_plan(service, None, aliases=names, backlog_file=path)
+        assert {i.action for i in again.items if i.kind == "backlog"} == {"unchanged", "skipped"}
+        # An import of the export changes nothing; the export says what the registry said.
+        root = tmp_path / "out"
+        root.mkdir()
+        exported = (await gather(service))[0]["backlog.md"].text
+        assert "| kind | location | note |" in exported
+        assert "| review of the cart with QA | declined: the old count is fine |" in exported
+        (root / "backlog.md").write_text(exported, encoding="utf-8")
+        third = await make_plan(service, root)
+        assert {i.action for i in third.items if i.kind == "backlog"} == {"unchanged"}
+        assert third.summary == ["backlog.md: 6 rows read: unchanged 6"]
+    finally:
+        await service.close()
+
+
+async def test_a_registry_file_replaces_backlog_md_and_needs_a_name_without_secrets(
+    tmp_path: Path,
+) -> None:
+    service, path = await registry_service(tmp_path)
+    try:
+        root = tmp_path / "setup"
+        root.mkdir()
+        (root / "backlog.md").write_text(REGISTRY_TEXT, encoding="utf-8")
+        plan = await make_plan(service, root, backlog_file=path)
+        assert "backlog.md: skipped; --backlog names the registry" in plan.warnings
+        assert {i.source.split(":")[0] for i in plan.items if i.kind == "backlog"} == {
+            "FINDINGS.md"
+        }
+        secret = tmp_path / f"{FAKE_TOKEN}.md"
+        secret.write_text(REGISTRY_TEXT, encoding="utf-8")
+        hidden = await make_plan(service, None, backlog_file=secret)
+        assert [(i.kind, i.item, i.action) for i in hidden.items] == [
+            ("file", "(hidden name)", "refused")
+        ]
+        assert FAKE_TOKEN not in "\n".join(format_plan(hidden))
+    finally:
+        await service.close()
+
+
+async def test_a_registry_row_holding_a_secret_is_refused(tmp_path: Path) -> None:
+    service, path = await registry_service(tmp_path)
+    try:
+        path.write_text(
+            "| date | project | what | origin |\n|---|---|---|---|\n"
+            f"| 2026-11-01 | acme-shop | Leaked {FAKE_TOKEN} in a log | session |\n",
+            encoding="utf-8",
+        )
+        plan = await make_plan(service, None, backlog_file=path)
+        [row] = [i for i in plan.items if i.kind == "backlog"]
+        assert row.action == "refused" and FAKE_TOKEN not in row.detail
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize(
+    ("cell", "day"),
+    [
+        ("2026-11-05", "2026-11-05"),
+        ("05.11", "2026-11-05"),
+        ("5.11.", "2026-11-05"),
+        ("19.11", "2026-11-19"),
+        ("20.11", "2025-11-20"),
+        ("05.11.2024", "2024-11-05"),
+        ("29.02", "2024-02-29"),
+        ("31.02", None),
+        ("05.112026", None),
+        ("yesterday", None),
+    ],
+)
+def test_registry_days(cell: str, day: str | None) -> None:
+    assert registry_day(cell, date(2026, 11, 19)) == day
+
+
+def test_registry_titles_and_locations() -> None:
+    assert registry_title("Short") == ("Short", None)
+    title, body = registry_title(LONG_WHAT)
+    assert (title, body) == ("The cart badge keeps the old count after a refund.", LONG_WHAT)
+    words = "word " * 60
+    cut, _ = registry_title(words)
+    assert len(cut) <= 120 and cut.endswith("word…")
+    assert find_location("see `src/cart.py:12-14` and docs") == "src/cart.py:12-14"
+    assert find_location("in web:src/app.ts:7") == "web:src/app.ts:7"
+    assert find_location("https://example.com:8080/x") is None
+    assert find_location("version 1.2:3") is None
+    assert find_location("open www.example.com:8080 or user@host.example.com:22") is None
+    assert find_location("host db.internal:5432, then app/db.py:9") == "app/db.py:9"
+    assert find_location("lines (Doc.cs:322/341/469)") == "Doc.cs:322"
+    assert find_location("see https://example.com:8080/x") is None
+
+
+def test_cli_imports_a_registry_without_a_folder(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "FINDINGS.md"
+    path.write_text(
+        "| date | project | what |\n|---|---|---|\n| 2026-11-01 | acme-shop | Slot |\n",
+        encoding="utf-8",
+    )
+    with ThreadPoolExecutor(1) as pool:
+        missing = pool.submit(cli.main, ["import", "--home", str(home)]).result()
+        assert missing == 2
+        assert "--backlog" in capsys.readouterr().err
+        code = pool.submit(
+            cli.main, ["import", "--backlog", str(path), "--home", str(home)]
+        ).result()
+    out = capsys.readouterr().out
+    assert code == 1 and "unknown project 'acme-shop'" in out
+    assert "FINDINGS.md: 1 rows read: error 1" in out
+
+
+def test_rows_without_a_leading_pipe_stay_rows() -> None:
+    text = (
+        "| date | project | what |\n|---|---|---|\n| 2026-10-01 | acme-shop | First |\n"
+        "2026-10-02 | acme-shop | Second\n2026-10-03 | acme-shop | Third |\n"
+    )
+    rows, warnings = parse_backlog(text, Aliases())
+    assert [r.title for r in rows] == ["First", "Second", "Third"] and not warnings
+
+
+def test_a_legend_after_a_blank_line_is_left_out_with_a_warning() -> None:
+    text = (
+        "| date | project | area | what | origin |\n|---|---|---|---|---|\n"
+        "| 2026-10-01 | acme-shop | cart | First | session |\n\n"
+        "- priority | -9..9 | higher first\n- origin | session | review\n"
+    )
+    rows, warnings = parse_backlog(text, Aliases())
+    assert [r.title for r in rows] == ["First"]
+    assert [w.split(":")[0] for w in warnings] == ["line 5", "line 6"]
+    assert all("not read" in w for w in warnings)
+
+
+async def test_a_legend_never_turns_a_clean_file_into_an_error(tmp_path: Path) -> None:
+    service, path = await registry_service(tmp_path)
+    try:
+        path.write_text(
+            "| date | project | what |\n|---|---|---|\n| 2026-10-01 | acme-shop | First |\n\n"
+            "- kind | bug | idea\n",
+            encoding="utf-8",
+        )
+        plan = await make_plan(service, None, backlog_file=path)
+        assert not plan.failed
+        assert [i.action for i in plan.items if i.kind == "backlog"] == ["add", "skipped"]
+        assert plan.summary == ["FINDINGS.md: 2 rows read: add 1, skipped 1"]
+    finally:
+        await service.close()
+
+
+async def test_location_comes_from_the_text_only_without_the_column(tmp_path: Path) -> None:
+    service, path = await registry_service(tmp_path)
+    try:
+        path.write_text(
+            "| date | project | what |\n|---|---|---|\n"
+            "| 2026-10-01 | acme-shop | Crash in src/a.py:12 on save |\n",
+            encoding="utf-8",
+        )
+        await apply_plan(service, await make_plan(service, None, backlog_file=path))
+        [derived] = await service.all_backlog()
+        assert derived.location == "src/a.py:12"
+        # A board item whose text holds a path:line but that has no location: export, then
+        # import, changes nothing (the empty location column clears, the text is not read).
+        board = await service.add_backlog_item("demo-api", "Crash at src/b.py:3", by_owner=True)
+        assert board.location is None
+        root = tmp_path / "out"
+        root.mkdir()
+        (root / "backlog.md").write_text(
+            (await gather(service))[0]["backlog.md"].text, encoding="utf-8"
+        )
+        plan = await make_plan(service, root)
+        assert {i.action for i in plan.items if i.kind == "backlog"} == {"unchanged"}
+        await apply_plan(service, plan)
+        assert (await service.backlog_item(board.id)).location is None
+    finally:
+        await service.close()
+
+
+def test_cli_hides_a_secret_like_registry_name(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / f"{FAKE_TOKEN}.md"
+    path.write_text("| date | project | what |\n|---|---|---|\n", encoding="utf-8")
+    with ThreadPoolExecutor(1) as pool:
+        code = pool.submit(
+            cli.main, ["import", "--backlog", str(path), "--home", str(home)]
+        ).result()
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "relaybay import: (hidden name) (dry run)" in captured.out
+    assert FAKE_TOKEN not in captured.out + captured.err
+
+
+async def test_an_import_clears_a_duplicate_the_file_no_longer_says(tmp_path: Path) -> None:
+    service, path = await registry_service(tmp_path)
+    service.coordinators = ["lead"]
+    try:
+        path.write_text(
+            "| date | project | what |\n|---|---|---|\n"
+            "| 2026-10-01 | acme-shop | First |\n| 2026-10-02 | acme-shop | Second |\n",
+            encoding="utf-8",
+        )
+        await apply_plan(service, await make_plan(service, None, backlog_file=path))
+        first, second = sorted(await service.all_backlog(), key=lambda b: b.id)
+        await service.update_backlog_item(second.id, duplicate_of=first.id, session="lead")
+        root = tmp_path / "out"
+        root.mkdir()
+        exported = (await gather(service))[0]["backlog.md"].text
+        assert f"declined: duplicate of #{first.id}" in exported
+        (root / "backlog.md").write_text(exported, encoding="utf-8")
+        same = await make_plan(service, root)
+        assert {i.action for i in same.items if i.kind == "backlog"} == {"unchanged"}
+        await apply_plan(service, same)
+        assert (await service.backlog_item(second.id)).duplicate_of == first.id
+        reopened = exported.replace(f"declined: duplicate of #{first.id}", "later")
+        (root / "backlog.md").write_text(reopened, encoding="utf-8")
+        await apply_plan(service, await make_plan(service, root))
+        saved = await service.backlog_item(second.id)
+        assert (saved.status, saved.duplicate_of) == ("later", None)
+    finally:
+        await service.close()
+
+
+def test_only_a_row_cut_short_takes_a_continuation() -> None:
+    head = "| date | project | area | what | origin | decision |\n|---|---|---|---|---|---|\n"
+    closed = head + "| 2026-01-01 | acme | ui | a | owner | |\n2026-01-02 | acme | ui | b |\n"
+    rows, warnings = parse_backlog(closed, Aliases())
+    assert [(r.title, r.decision) for r in rows] == [("a", ""), ("b", "")] and not warnings
+    cut = (
+        head + "| 2026-01-01 | acme | ui | long\nmore text\n| 2026-01-02 | acme | ui | b | x | |\n"
+    )
+    rows, warnings = parse_backlog(cut, Aliases())
+    assert [r.title for r in rows] == ["long\nmore text", "b"]
+    assert warnings == ["line 4: a line without a leading pipe continues line 3"]
+
+
+def test_rows_after_a_blank_line_stop_at_the_next_table() -> None:
+    text = (
+        "| date | project | area | what | origin | decision |\n|---|---|---|---|---|---|\n"
+        "| 2026-01-01 | acme | ui | a | owner | |\n\n"
+        "| 2026-01-03 | acme | ui | c | owner | |\n"
+        "| k | v | a | b | c | d |\n|---|---|---|---|---|---|\n| x | y |\n"
+    )
+    rows, warnings = parse_backlog(text, Aliases())
+    assert [r.title for r in rows] == ["a", "c"]
+    assert "line 6: a table without project and what columns was skipped" in warnings[-1]
+
+
+async def test_the_registry_name_is_hidden_by_the_boards_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _ = await registry_service(tmp_path)
+    try:
+        path = tmp_path / f"{FAKE_TOKEN}.md"
+        path.write_text("| date | project | what |\n|---|---|---|\n", encoding="utf-8")
+        assert (await make_plan(service, None, backlog_file=path)).name_hidden
+
+        async def allowing(project: str | None) -> SecretRules:
+            return SecretRules(disabled=frozenset({"github-token"}))
+
+        monkeypatch.setattr(service, "secret_rules", allowing)
+        assert not (await make_plan(service, None, backlog_file=path)).name_hidden
+    finally:
+        await service.close()

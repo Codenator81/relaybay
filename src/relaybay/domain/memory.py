@@ -14,7 +14,7 @@ NOTE_KINDS = ("user", "feedback", "project", "reference")
 NOTE_OPS = ("add", "update", "supersede", "noop")
 BLOCK_SCOPES = ("global", "project")
 SOURCE_KINDS = ("report", "event", "comment", "message")
-SEARCH_KINDS = ("note", "decision", "doc", "report", "comment")
+SEARCH_KINDS = ("note", "decision", "doc", "report", "comment", "backlog")
 
 DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 DOC_BODY_MAX = 200_000

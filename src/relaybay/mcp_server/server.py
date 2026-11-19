@@ -187,6 +187,17 @@ BacklogAssignee = Annotated[
     str | None,
     Field(description="Who it is for, a name or a role: To plan makes it waiting_on." + CLEARS),
 ]
+BacklogKind = Annotated[
+    str | None,
+    Field(description=f"What it is: {', '.join(backlog.KINDS)}. Optional." + CLEARS),
+]
+BacklogLocation = Annotated[
+    str | None,
+    Field(
+        description="Where in the code: 'repo:path:line', 'path:line' or a link, up to"
+        f" {backlog.LOCATION_MAX} characters. Optional." + CLEARS
+    ),
+]
 
 
 def cleared(value: str | None) -> str | None:
@@ -1227,14 +1238,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         kinds: Annotated[
             list[str] | None,
             Field(
-                description="What to search: note, decision, doc, report, comment (default"
-                " all; only notes when scope is given)."
+                description="What to search: note, decision, doc, report, comment, backlog"
+                " (default all; only notes when scope is given)."
             ),
         ] = None,
         limit: Annotated[int, Field(ge=1, le=50, description="How many hits.")] = 10,
     ) -> str:
-        """Search memory notes, decisions, documents, reports and comments. Each hit has its
-        id and the matching line; open a note with memory_get and a document with doc_get."""
+        """Search memory notes, decisions, documents, reports, comments and backlog items. Each
+        hit has its id and the matching line; open a note with memory_get, a document with
+        doc_get and a backlog item with backlog_list."""
         hits = await run(
             service.search(query, project=project or None, kinds=kinds, scope=scope, limit=limit)
         )
@@ -1499,13 +1511,16 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         ] = None,
         priority: BacklogPriority = None,
         assignee: BacklogAssignee = None,
+        kind: BacklogKind = None,
+        location: BacklogLocation = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
         """Put a finding outside your task (a bug, a missing feature, a question for later) on
         the project's backlog instead of a comment or a report. It starts as new; the owner
-        decides on the board ("To plan" creates the task)."""
+        decides on the board ("To plan" creates the task). It is always added; open items with
+        a similar title are named so that a duplicate can be closed."""
         item = await run(
             service.add_backlog_item(
                 project,
@@ -1515,12 +1530,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 task=task or None,
                 priority=priority,
                 assignee=cleared(assignee),
+                kind=cleared(kind),
+                location=cleared(location),
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
             )
         )
-        return fmt.backlog_saved(item, "Added")
+        similar = await run(service.similar_backlog(item))
+        return fmt.backlog_saved(item, "Added") + fmt.backlog_similar(item, similar)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def backlog_list(
@@ -1534,12 +1552,47 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str | None,
             Field(description="Who it is for; '-' lists the items for nobody. Optional."),
         ] = None,
+        query: Annotated[
+            str | None,
+            Field(
+                description="Words that must all be in the title, the text, the location, the"
+                " source or the decision (word forms match). Optional."
+            ),
+        ] = None,
+        kind: Annotated[
+            str | None,
+            Field(
+                description=f"{', '.join(backlog.KINDS)}; '-' lists the items without a kind."
+                " Optional."
+            ),
+        ] = None,
+        since: Annotated[
+            str | None,
+            Field(description="A day like 2026-11-05: items found on it or later. Optional."),
+        ] = None,
+        task: Annotated[
+            str | None,
+            Field(description="A task key: items found in it or linked to it. Optional."),
+        ] = None,
+        has_location: Annotated[
+            bool | None,
+            Field(description="true: only items with a code location; false: only without."),
+        ] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="At most this many.")] = 50,
     ) -> str:
         """Backlog items: new first, the highest priority first within a status, then newest."""
         items = await run(
             service.list_backlog(
-                project=project, status=status, area=area, assignee=assignee, limit=limit
+                project=project,
+                status=status,
+                area=area,
+                assignee=assignee,
+                query=query,
+                kind=kind,
+                since=since,
+                task=task or None,
+                has_location=has_location,
+                limit=limit,
             )
         )
         return fmt.backlog_items(items)
@@ -1567,13 +1620,38 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         area: Annotated[str | None, Field(description="New area." + CLEARS)] = None,
         priority: BacklogPriority = None,
         assignee: BacklogAssignee = None,
+        kind: BacklogKind = None,
+        location: BacklogLocation = None,
+        triage_note: Annotated[
+            str | None,
+            Field(
+                description=f"The decision in words, up to {backlog.TRIAGE_MAX} characters;"
+                " coordinator sessions only." + CLEARS
+            ),
+        ] = None,
+        duplicate_of: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                description="Close it as a duplicate of this item of the same project (status"
+                " declined, reason 'duplicate of #N'); coordinator sessions only.",
+            ),
+        ] = None,
+        task: Annotated[
+            str | None,
+            Field(
+                description="Link an existing card of the same project (status planned);"
+                " coordinator sessions only. 'To plan' on the board creates a new one.",
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Change a backlog item. Its title, body, area, priority and assignee: the session that
-        added it, while it is new. Its status: coordinator sessions named in the server's config
-        only; everyone else leaves that to the owner on the board."""
+        """Change a backlog item. Its title, body, area, priority, assignee, kind and location:
+        the session that added it, while it is new. Its status, triage note, duplicate and
+        linked card: coordinator sessions named in the server's config only; everyone else
+        leaves that to the owner on the board."""
         saved = await run(
             service.update_backlog_item(
                 item,
@@ -1585,6 +1663,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 area=cleared(area),
                 priority=priority,
                 assignee=cleared(assignee),
+                kind=cleared(kind),
+                location=cleared(location),
+                triage_note=cleared(triage_note),
+                duplicate_of=duplicate_of,
+                task=task or None,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
@@ -1599,8 +1682,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             dict[str, Any],
             Field(
                 description='Item fields to change as one JSON object, e.g. {"priority": 2}.'
-                f" Allowed: {', '.join(backlog.PATCH_FIELDS)}. '-', '' or null clears body, area"
-                " and assignee, and resets priority to 0."
+                f" Allowed: {', '.join(backlog.PATCH_FIELDS)}. '-', '' or null clears body, area,"
+                " assignee, kind, location and triage_note, and resets priority to 0."
             ),
         ],
         session: Session = None,
@@ -1620,13 +1703,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             )
         changes: dict[str, Any] = {}
         for name, value in fields.items():
-            if not isinstance(value, str | None) and name != "priority":
+            if not isinstance(value, str | None) and name not in ("priority", "duplicate_of"):
                 raise ToolError(f"{name} must be text.")
             changes[name] = (
                 "" if value is None else cleared(value) if isinstance(value, str) else value
             )
-        if "link" in changes:
-            changes["link"] = changes["link"] or None
+        for name in ("link", "duplicate_of", "task"):
+            if name in changes:
+                changes[name] = changes[name] or None
         saved = await run(
             service.update_backlog_item(
                 item,

@@ -10,9 +10,15 @@
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   {%- set base = "/p/" ~ backlog_project.slug ~ "/backlog" if backlog_project else "/backlog" %}
   <form class="board-tools" method="get" action="{{ base }}" role="search">
+    <input class="board-filter" type="search" name="q" value="{{ query_filter }}" maxlength="200" placeholder="Search title, text, place, note" aria-label="Search">
     <select class="board-filter" name="status" aria-label="Status">
       <option value="">Open (new and later)</option>
       {% for s in statuses %}<option value="{{ s }}"{% if s == status_filter %} selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+    <select class="board-filter" name="kind" aria-label="Kind">
+      <option value="">Any kind</option>
+      {% for k in kinds %}<option value="{{ k }}"{% if k == kind_filter %} selected{% endif %}>{{ k }}</option>{% endfor %}
+      <option value="-"{% if kind_filter == "-" %} selected{% endif %}>No kind</option>
     </select>
     <input class="board-filter" type="search" name="area" value="{{ area_filter }}" maxlength="60" placeholder="Area" aria-label="Area" list="backlog-areas">
     <datalist id="backlog-areas">{% for a in areas %}<option value="{{ a }}"></option>{% endfor %}</datalist>
@@ -26,6 +32,7 @@
     <button type="submit" class="btn">Filter</button>
     {% if filter_qs %}<a class="action" href="{{ base }}">Clear</a>{% endif %}
   </form>
+  {% if search_error %}<p class="form-error" role="alert">{{ search_error }}</p>{% endif %}
   {% include "_backlog.html" %}
   <details class="panel" id="backlog-add">
     <summary><h2>Add an item</h2></summary>
