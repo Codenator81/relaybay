@@ -51,16 +51,17 @@ The board holds tasks well and knowledge badly. Measured on the copies:
 | Card to spec section | `relaybay://doc/<project>/<doc>#<anchor>` in the description, progress or document field; `task_context` shows the heading and 3 lines, at most 5 links | the section's size, its lines, the file, the call that reads it |
 | Edit one section | `doc_update(section)` with `base_version`, conflict text, history, diff | byte-exact replacement (4 of 84 identity replacements changed a blank line); a unit below a section |
 | Import and export | `relaybay import` / `export`, idempotent, dry run with a plan hash | the file's own bytes: line endings and the final newline are normalised on import |
-| A document that lives in a repository | `source_url` (an http link): the board links out, relaybay has no text | reading, outline and search of the file itself |
+| A document that lives in a file | `source_url` (an http link): the board links out, relaybay has no text | reading, outline and search of the file itself |
 | Bug registry | the backlog: status, area, origin, priority, assignee, a task from "To plan", `backlog.md` import | kind, code location, source text, link to an existing task, duplicates, search |
 | Human reading | document page with heading anchors, section list, history, diff; a search box on Docs & rules | a table of contents that stays in view; search inside a document |
 | One line per open task for a coordinator | `task_list()` over all projects (32 open cards in 11,082 characters), the registry written by `relaybay export` | the same list inside `portfolio_digest` |
 
 ### Source of truth
 
-**Decision: a document that is edited together with code lives in its repository as a file, and
-relaybay indexes that file. A document without a repository home (status, brief, runbook, a task's
-notes) lives in the database, as today.** relaybay never keeps a second editable copy of a file.
+**Decision: a document that is kept as a file (in a repository next to code, or in a folder of
+the project's notes) stays a file, and relaybay indexes it. A document with no file of its own
+(a brief, a runbook, a task's notes) lives in the database, as today.** relaybay never keeps a
+second editable copy of a file.
 
 Why, for the measured spec:
 
@@ -83,27 +84,36 @@ and every failure of the sync leaves two texts that both look current. The exist
 
 ### File documents
 
-A document may point at a file: one of the project's repositories (`project_repo`, by name) and a
-path relative to its root.
+A document may point at a file: **any absolute path on the machine relaybay runs on**. Project
+documents often live outside every repository (a status, a spec kept in a folder of the project's
+own notes), so a file document does not depend on git; a file inside a repository is the same
+thing with a path that happens to be in a working tree. (Coordinator, 2026-11-19: the first draft
+tied file documents to a project repository; it was widened before any code.)
 
-- **Created** with `doc_update(base_version=0, source_repo=..., source_path=...)` and body `-`, or
-  with **New document → A file in a repository** on Docs & rules. The path is resolved under the
-  repository root; a path that leaves it, also through a link, is refused (the check
-  `escapes_root` of the import). A file over 8 MB or not UTF-8 is refused.
+- **Created** with `doc_update(base_version=0, source_path=<absolute path>)` and body `-`, or with
+  **New document → A file on disk** on Docs & rules. The path must be absolute and resolve to a
+  regular file (links are resolved first); a file over 8 MB or not UTF-8 is refused.
+  `attachment_roots` and the policy's denied paths still apply.
 - **Read on demand.** Each read compares the file's size and modification time with the stored
   ones, hashes it when they differ and rebuilds the section list and the section index when the
   hash differs. Nothing watches the disk. A changed hash writes one `document.updated` event with
   the anchors of the sections that were added, removed or changed, so Activity and the digests say
   "spec changed: 3 sections" without a model.
-- **The text is not versioned in the database.** `doc_history` of a file document lists those
-  events (when, which sections) and says the history is in git.
+- **History and conflicts by hash.** The text is not versioned in the database. `doc_history` of a
+  file document lists those events (when, which sections, the hash before and after). Every read
+  names the content hash; a writer that wants to be sure nobody changed the file under it compares
+  that hash (and the section's lines) before it edits. Where the file is in git, git keeps the
+  full history as well.
+- **Missing file.** A file that is gone (moved, deleted, the disk not mounted) keeps its document
+  and its last index, marked "file missing since ..."; nothing is deleted, and reads say so.
 - **Never written by relaybay.** `doc_update` on a file document is refused, as it is today for a
   document with `source_url`, and the refusal names the file and the section's lines: the agent
   edits the file with its own tools, in its own working tree, and commits it with the code. The
   board shows "lives in `<repo>/<path>`", no edit links, and the existing "open the code" action.
-- **Which checkout.** The file is read from the repository path the project names. A session in a
-  worktree gets the repository-relative path and the anchor, so it reads its own copy; the header
-  of every read names the branch and the short content hash it came from.
+- **The same tools either way.** `doc_outline`, `doc_search` and `doc_get(section)` answer alike
+  for a file document and a database document; for a file document every answer also names the
+  path and the section's line range, so the agent edits the file directly. A session in a worktree
+  whose file is inside the repository maps the path to its own copy.
 - **Not reachable** (a server in a container, another machine): the document stays listed with
   "file not found at ...", and the tools return the pointer only.
 - **Secrets.** The index is the only place where the file's text is stored. A line that matches a
@@ -159,7 +169,7 @@ For file documents and database documents alike.
   board is written back with the same SHA-256. A file with mixed line endings is imported with a
   warning line that says its export will use LF. Measured: the status file has 91 CRLF lines, the
   spec loses one final newline; both would differ after today's round trip.
-- The limit of a database document stays 200,000 characters. A larger one belongs in a repository.
+- The limit of a database document stays 200,000 characters. A larger one is a file document.
 
 ### The backlog as a bug registry
 
@@ -359,7 +369,7 @@ accepted and ignored.
 |---|---|
 | 0051 `backlog_registry` | `backlog_item.kind`, `location`, `origin_text`, `triage_note`, `duplicate_of`, `found_on` |
 | 0052 `archive_and_launch` | `task.archived_from`, `session.launched_by` |
-| 0053 `document_file` | `document.source_repo_id`, `source_path`, `file_hash`, `file_size`, `file_mtime`, `file_seen_at`; table `document_section` (document, position, anchor, alias, level, title, heading path, first and last line, characters, hash); `import_item.eol`, `bom`, `lead_blank`, `final_newlines` |
+| 0053 `document_file` | `document.source_path` (absolute), `file_missing_at`, `file_hash`, `file_size`, `file_mtime`, `file_seen_at`; table `document_section` (document, position, anchor, alias, level, title, heading path, first and last line, characters, hash); `import_item.eol`, `bom`, `lead_blank`, `final_newlines` |
 
 The numbers follow the order of the pull requests. `doc_section_index` is an FTS5 table the
 service creates and rebuilds, like `search_index`; it is not in a migration. No column or table is
@@ -372,7 +382,7 @@ Version 2 stays. Added tools: `doc_outline`, `doc_search`. Added optional parame
 | Tool | Parameters |
 |---|---|
 | `doc_get` | `lines`, `max_chars` |
-| `doc_update` | `source_repo`, `source_path`, `lines`, `expected` |
+| `doc_update` | `source_path`, `lines`, `expected` |
 | `backlog_add` | `kind`, `location` |
 | `backlog_update`, `backlog_patch` | `kind`, `location`, `triage_note`, `duplicate_of`, `task` |
 | `backlog_list` | `query`, `kind`, `since`, `task`, `has_location` |
@@ -469,7 +479,7 @@ On a copy of a working board, never on the live data folder:
   working a card in dev receives its current step and nothing after the card left dev;
 - a session started from another one appears as a desktop session with linked hooks and, when the
   start named one card, bound to it, with no `task_bind_session` and no `hook_session`;
-- a 900,000-character markdown file in a repository is added as a file document: `doc_outline`
+- a 900,000-character markdown file on disk is added as a file document: `doc_outline`
   under 10,000 characters, no `doc_get` answer over the cap, `doc_search` returns different
   sections for one query, `task_context` of a linked card names the section's size and lines and
   stays under its budget, and the file's SHA-256 is unchanged after all of it;
