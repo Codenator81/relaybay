@@ -202,6 +202,15 @@ Not planned: Electron and a browser panel of our own, because the browser and th
 | MCP contract 2: the twenty tools and the resource kept as deprecated stubs in 0.12 removed (announced for not before 2026-12-17, shortened by the maintainer's decision) | done | [0025](design/0025-board-with-the-desktop.md#mcp-contract) |
 | The card's Open: a menu of In desktop and In terminal (any ended session resumes in a terminal); one Open at a time re-reads the session under the lock, the 409 on a published name points to `http://127.0.0.1:<port>`, a `/clear` keeps the start folder | done | [0025](design/0025-board-with-the-desktop.md) |
 
+## 0.14 — project knowledge and a quieter board
+
+| Item | Status | Design |
+|---|---|---|
+| A quieter Inbox and digest: no work-log reminders where a project keeps no tracker, ended hook sessions and done cards out, one row per card with marks; the plan reminder only for the card's session in plan or dev; the project pulse derived from the cards | planned | [0026](design/0026-project-knowledge.md) |
+| The backlog as a bug registry: kind, code location, triage note, duplicates, the found date, a link to a card, search and filters, an importer for a markdown registry | planned | [0026](design/0026-project-knowledge.md) |
+| Archive on live cards, Archive all shown with Undo, an archived project; a session started from a desktop session links and binds by itself | planned | [0026](design/0026-project-knowledge.md) |
+| Documents for large specs: a file in the project's repository indexed by relaybay, an outline with sizes, search by section, capped reads, the card's pointer to a section, a table of contents on the page; exact section writes and byte-identical import and export | planned | [0026](design/0026-project-knowledge.md) |
+
 Not planned: project managers and a Managers page (the owner, 2026-11-16).
 
 ## 1.0
