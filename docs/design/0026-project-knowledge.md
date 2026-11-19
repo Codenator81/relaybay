@@ -1,6 +1,6 @@
 # 0026 — Project knowledge and a quieter board
 
-- Status: **Accepted**, 2026-11-19, for 0.14. Builds on [0008](0008-memory-and-context.md) and
+- Status: **Implemented** in 0.14.0, 2026-11-19, for 0.14. Builds on [0008](0008-memory-and-context.md) and
   [0011](0011-docs-in-database.md) (documents, search, import), [0014](0014-task-plan.md) (the
   plan reminder), [0015](0015-intake-and-autonomy.md) (the backlog) and
   [0025](0025-board-with-the-desktop.md) (the board next to the desktop app). Nothing that 0.12

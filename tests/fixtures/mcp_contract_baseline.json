@@ -460,6 +460,26 @@
               }
             ]
           },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "priority": {
             "anyOf": [
               {
@@ -543,6 +563,26 @@
               }
             ]
           },
+          "has_location": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "limit": {
             "maximum": 500,
             "minimum": 1,
@@ -558,7 +598,37 @@
               }
             ]
           },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
             "anyOf": [
               {
                 "type": "string"
@@ -663,6 +733,17 @@
               }
             ]
           },
+          "duplicate_of": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "hook_session": {
             "anyOf": [
               {
@@ -676,7 +757,27 @@
           "item": {
             "type": "integer"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
             "anyOf": [
               {
                 "type": "string"
@@ -738,7 +839,27 @@
               }
             ]
           },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "triage_note": {
             "anyOf": [
               {
                 "type": "string"
@@ -1163,6 +1284,26 @@
           "doc": {
             "type": "string"
           },
+          "lines": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -1252,6 +1393,85 @@
         "type": "object"
       }
     },
+    "doc_outline": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "depth": {
+            "anyOf": [
+              {
+                "maximum": 6,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "doc": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "under": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "doc",
+          "project"
+        ],
+        "type": "object"
+      }
+    },
+    "doc_search": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "doc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "query"
+        ],
+        "type": "object"
+      }
+    },
     "doc_update": {
       "annotations": {
         "destructive_hint": false,
@@ -1269,6 +1489,16 @@
           "doc": {
             "type": "string"
           },
+          "expected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "force": {
             "type": "boolean"
           },
@@ -1283,6 +1513,16 @@
             ]
           },
           "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lines": {
             "anyOf": [
               {
                 "type": "string"
@@ -1319,6 +1559,16 @@
             ]
           },
           "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_path": {
             "anyOf": [
               {
                 "type": "string"
@@ -2364,6 +2614,16 @@
       },
       "input": {
         "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "description": {
             "anyOf": [
               {
@@ -3212,6 +3472,9 @@
               }
             ]
           },
+          "bind": {
+            "type": "boolean"
+          },
           "branch": {
             "anyOf": [
               {
@@ -3911,5 +4174,5 @@
       }
     }
   },
-  "version": "0.13.0"
+  "version": "0.14.0"
 }
