@@ -109,6 +109,7 @@ nav:
           - Card modes, the run as a thread, areas: design/0024-card-modes-thread-and-areas.md
           - The board with the desktop: design/0025-board-with-the-desktop.md
           - Project knowledge and a quieter board: design/0026-project-knowledge.md
+          - File documents written and a task context that fits: design/0027-file-documents-written-and-task-context.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
           - Desktop shell: adr/0002-desktop-shell.md
