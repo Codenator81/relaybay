@@ -1145,6 +1145,16 @@
       },
       "input": {
         "properties": {
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "decided_by": {
             "anyOf": [
               {
@@ -1492,6 +1502,20 @@
           "expected": {
             "anyOf": [
               {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "file_writes": {
+            "anyOf": [
+              {
+                "enum": [
+                  "on",
+                  "off"
+                ],
                 "type": "string"
               },
               {
@@ -2452,6 +2476,58 @@
             ]
           }
         },
+        "type": "object"
+      }
+    },
+    "project_delete": {
+      "annotations": {
+        "destructive_hint": true,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "confirm": {
+            "type": "string"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirm",
+          "slug"
+        ],
         "type": "object"
       }
     },
@@ -3538,6 +3614,19 @@
           "project": {
             "type": "string"
           },
+          "sections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "session": {
             "anyOf": [
               {
@@ -3618,6 +3707,65 @@
         "required": [
           "project",
           "title"
+        ],
+        "type": "object"
+      }
+    },
+    "task_doc_link": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "doc": {
+            "type": "string"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remove": {
+            "type": "boolean"
+          },
+          "section": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc",
+          "section",
+          "task"
         ],
         "type": "object"
       }
@@ -4174,5 +4322,5 @@
       }
     }
   },
-  "version": "0.14.0"
+  "version": "0.15.0"
 }

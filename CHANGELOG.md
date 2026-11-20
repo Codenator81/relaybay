@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-20
+
 ### Added
 
 - `relaybay import --backlog <file> --project <slug>` (design 0027) reads only the rows of one project, the others are skipped as "other project". A row that is an open item of that project already on the board is not created again: it matches when its text names the item (`#N`, `backlog #N`, never `PR #N`), its title is alike (title similarity 0.6 and up) or it holds nearly all of the item's title words (0.7 and up); the dry run shows `matches #N: names it` / `title 0.71` / `cover 0.80`, and `--apply` records the row against the item without changing it, so a second import is a no-op. A row near an item (0.4 up to the threshold, or whose item a better row took) is created with a `near #N (score)` warning. Matches count in the plan hash.
@@ -1118,7 +1120,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.0
 [0.14.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.14.0
 [0.13.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.13.0
 [0.12.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.12.0
