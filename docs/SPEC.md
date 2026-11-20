@@ -9,7 +9,7 @@ sessions report through MCP tools and Claude Code hooks, the owner reads, answer
 accepts on the board, and relaybay starts no agent ([design
 0025](design/0025-board-with-the-desktop.md)).
 
-Version covered: `0.14.0`. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.15.0`. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:

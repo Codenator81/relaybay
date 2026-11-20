@@ -1,6 +1,6 @@
 # 0027 — File documents written through relaybay, and a task context that fits the task
 
-- Status: **Accepted** 2026-11-19, for 0.15. Part B is implemented (unreleased). Builds on [0026](0026-project-knowledge.md) and
+- Status: **Implemented** in 0.15.0, 2026-11-20. Builds on [0026](0026-project-knowledge.md) and
   supersedes its decision K2 ("relaybay never writes a file document") and the "Never written by
   relaybay" item of its File documents section.
 - Two parts. **A**: `doc_update` writes a file document: the change goes into the file on disk,
