@@ -83,7 +83,6 @@ from relaybay.domain.environments import (
     LEVELS,
     Environment,
     PolicyProposal,
-    Proposal,
     SecretRules,
 )
 from relaybay.domain.errors import (
@@ -620,7 +619,6 @@ class Inbox:
     not_logged: list[Task]
     unlinked: list[Session]
     replies: list[tuple[Task, list[Comment]]] = field(default_factory=list)
-    proposals: list[Proposal] = field(default_factory=list)
     policy_proposals: list[PolicyProposal] = field(default_factory=list)
     review: list[Task] = field(default_factory=list)  # tasks in review/test with a checklist
     rule_proposals: list[RuleProposal] = field(default_factory=list)
@@ -678,13 +676,13 @@ class Inbox:
     @property
     def badge(self) -> int:
         """What the badge and the digests count: the items that each need the owner (cards,
-        questions, approvals, proposals, rules notices); the grouped lines are not counted."""
+        questions, approvals, policy and rules proposals, rules notices); the grouped lines are
+        not counted."""
         return (
             len(self.questions)
             + len(self.approvals)
             # A card with an open question or request counts once, as that.
             + sum(1 for c in self.cards if not c.asked)
-            + len(self.proposals)
             + len(self.policy_proposals)
             + len(self.rule_proposals)
             + len(self.rule_notices)
@@ -733,8 +731,6 @@ class Snapshot:
     last_reports: dict[int, Report]
     decisions: list[Decision]
     rules: Rules
-    environments: list[Environment] = field(default_factory=list)
-    policies: dict[int, EffectivePolicy] = field(default_factory=dict)  # by environment id
     areas: list[ProjectArea] = field(default_factory=list)
 
 
@@ -1228,7 +1224,7 @@ FILE_WRITES_NOT_COORDINATOR = (
 PROJECT_ARCHIVE_NOT_COORDINATOR = (
     "project_upsert(archived) is only for the coordinator sessions named in the server's config;"
     " a desktop id also needs that session's own hook_session. Nothing changed. The owner"
-    " archives a project on its Stands & access page."
+    " archives a project on its Settings page."
 )
 ARCHIVE_NOT_COORDINATOR = (
     "{tool} is only for the coordinator sessions named in the server's config; a desktop id also"
@@ -2624,7 +2620,6 @@ class Service:
                 (by_id[task_id], items, await self.comment_wait_reason(by_id[task_id]))
                 for task_id, items in undelivered.items()
             ],
-            proposals=await repo.list_proposals(self._r),
             policy_proposals=await repo.list_policy_proposals(self._r),
             review=[t for t in await repo.review_queue(self._r) if t.project_id not in gone],
             rule_proposals=await repo.list_rule_proposals(self._r),
@@ -3094,15 +3089,12 @@ class Service:
     async def snapshot(self, slug: str, include_done: bool = False) -> Snapshot:
         project = await self.get_project(slug)
         tasks = await self.list_tasks(project=project.slug, include_done=include_done)
-        environments = await repo.list_environments(self._r, [project.id])
         return Snapshot(
             project=project,
             tasks=tasks,
             last_reports=await self.last_reports(tasks),
             decisions=await repo.list_decisions(self._r, project_id=project.id, limit=10),
             rules=await self._rules(self._r, project),
-            environments=environments,
-            policies=await self._policies(self._r, environments),
             areas=await repo.list_areas(self._r, project.id),
         )
 
@@ -6342,11 +6334,6 @@ class Service:
             async with self._tx() as tx:
                 await repo.set_reader_cursor(tx.conn, name, level, ref_id, reached, tx.now)
 
-    async def _environment_levels(self, project_id: int) -> list[tuple[Environment, str]]:
-        environments = await repo.list_environments(self._r, [project_id])
-        policies = await self._policies(self._r, environments)
-        return [(e, policies[e.id].level_for(e)) for e in environments]
-
     def plan_draft_hours(self, task: Task, now: datetime | None = None) -> int | None:
         """Whole hours since the plan of a task in dev was last written while it is still a
         draft, once that reaches `plan_draft_hint_hours` (0: off); else None."""
@@ -6467,7 +6454,6 @@ class Service:
                 self._r, project_id=project.id, limit=digests.DECISIONS_MAX
             ),
             decisions_total=await repo.count_current_decisions(self._r, project_id=project.id),
-            environments=await self._environment_levels(project.id),
             blocks=await repo.list_blocks(self._r, project.id),
             notes=[n for n in notes if n.scope in ("project", "global")],
             changes=changes,
@@ -6566,7 +6552,6 @@ class Service:
             decisions_total=await repo.count_current_decisions(self._r, project_id=project_id),
             doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX]),
             doc_links_total=len(links),
-            environments=await self._environment_levels(project_id),
             rules_line=rules_line(await self._rules(self._r, project)),
             comments=[c for c in unread if c.to_agent],
             reader_session_id=reader.id if reader is not None else None,
@@ -9070,11 +9055,6 @@ class Service:
         proj = await self.get_project(project)
         return proj, await repo.list_environments(self._r, [proj.id])
 
-    async def proposals(self, project: str | None = None) -> list[Proposal]:
-        """Pending environment proposals, oldest first."""
-        project_id = (await self.get_project(project)).id if project else None
-        return await repo.list_proposals(self._r, project_id)
-
     async def live_journal(self, project: str | None = None, limit: int = 20) -> list[Event]:
         """The newest agent actions on live environments (`live.action` events)."""
         return await self.activity(project=project, kind=LIVE_ACTION, limit=limit)
@@ -9308,106 +9288,6 @@ class Service:
                 access_kind=entry.kind,
                 access_id=access_id,
             )
-
-    async def propose_environment_change(
-        self,
-        project: str,
-        change: Any,
-        reason: str,
-        *,
-        session: str | None = None,
-        session_title: str | None = None,
-        hook_session: str | None = None,
-    ) -> Proposal:
-        """An agent's proposal: recorded for the owner, nothing else changes."""
-        secrets = (await self.effective_policy(project)).secret_rules
-        clean = envs.clean_change(change, secrets)
-        text = _clean_text(reason, "reason", envs.REASON_MAX)
-        if not text:
-            raise ValidationError("reason must say why the change is needed.")
-        envs.check_secret("reason", text, secrets)
-        async with self._tx() as tx:
-            proj = await self.get_project(project, tx.conn)
-            current = await repo.find_environment(tx.conn, proj.id, clean["environment"])
-            if current is None and "kind" not in clean:
-                raise ValidationError(
-                    f"{proj.slug} has no environment {clean['environment']!r}; a new one needs"
-                    " kind (local, test or live)."
-                )
-            if current is not None:
-                clean["environment"] = current.name
-            sess = await self._session(tx, session, session_title, hook_session)
-            actor = sess.name if sess else "agent"
-            proposal_id = await repo.insert_proposal(
-                tx.conn, proj.id, clean, text, actor, sess.id if sess else None, tx.now
-            )
-            await tx.event(
-                "environment.proposed",
-                actor,
-                project_id=proj.id,
-                session_id=sess.id if sess else None,
-                project=proj.slug,
-                environment=clean["environment"],
-                proposal_id=proposal_id,
-                change=envs.change_summary(clean),
-            )
-            proposal = await repo.get_proposal(tx.conn, proposal_id)
-            assert proposal is not None
-            return proposal
-
-    async def decide_proposal(
-        self,
-        proposal_id: int,
-        accept: bool,
-        *,
-        project: str | None = None,
-        confirm_live: bool = False,
-        actor: str = "board",
-    ) -> Proposal:
-        """Accept (apply the change) or reject an agent's proposal. Board only."""
-        async with self._tx() as tx:
-            proposal = await repo.get_proposal(tx.conn, proposal_id)
-            if proposal is None or (
-                project is not None and proposal.project_slug != project.strip().lower()
-            ):
-                raise NotFoundError(f"Proposal #{proposal_id} not found.")
-            if proposal.status != "pending":
-                raise ConflictError(f"Proposal #{proposal_id} is already {proposal.status}.")
-            proj = await self.get_project(proposal.project_slug, tx.conn)
-            if accept:
-                change = dict(proposal.change)
-                access = change.pop("access", [])
-                name = change.pop("environment")
-                current = await repo.find_environment(tx.conn, proj.id, name)
-                values = {"name": current.name if current else name, **change}
-                env = await self._write_environment(tx, proj, current, values, actor, confirm_live)
-                for entry in access:
-                    access_id = await repo.insert_access(
-                        tx.conn, env.id, entry["kind"], entry["fields"], actor, tx.now
-                    )
-                    await self._access_event(
-                        tx,
-                        "environment.access_added",
-                        actor,
-                        proj,
-                        env,
-                        access_kind=entry["kind"],
-                        access_id=access_id,
-                    )
-            status = "accepted" if accept else "rejected"
-            await repo.decide_proposal(tx.conn, proposal.id, status, actor, tx.now)
-            await tx.event(
-                f"environment.proposal_{status}",
-                actor,
-                project_id=proj.id,
-                project=proj.slug,
-                environment=proposal.environment,
-                proposal_id=proposal.id,
-                change=envs.change_summary(proposal.change),
-            )
-            decided = await repo.get_proposal(tx.conn, proposal.id)
-            assert decided is not None
-            return decided
 
     # --- policy ------------------------------------------------------------
 

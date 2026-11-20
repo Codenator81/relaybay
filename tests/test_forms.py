@@ -71,24 +71,18 @@ def test_policy_saves_redirect_and_flash_once(board: TestClient, token: str) -> 
     assert preview.status_code == 200
 
 
-def test_stands_and_access_writes_redirect_and_flash_once(board: TestClient, token: str) -> None:
+def test_project_settings_writes_redirect_and_flash_once(board: TestClient, token: str) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.upsert_project, "acme-shop")
-    page = "/p/acme-shop/environments"
-    created = post(board, token, page, name="staging", kind="test")
-    assert created.status_code == 303 and created.headers["location"] == page
-    once(board, page, "Environment added.")
-    _, [env] = run_in_app(board, service.environments, "acme-shop")
-    updated = post(board, token, f"{page}/{env.id}", name="staging", kind="test", notes="x")
-    assert updated.status_code == 303 and updated.headers["location"] == f"{page}#env-{env.id}"
-    once(board, page, "Environment saved.")
-    added = post(board, token, f"{page}/{env.id}/access", kind="ssh", fields="host: stage")
-    assert added.status_code == 303
-    once(board, page, "Saved.")
-    deleted = post(board, token, f"{page}/{env.id}/delete")
+    page = "/p/acme-shop/settings"
+    created = post(board, token, "/p/acme-shop/repos", name="web", path="/home/dev/web")
+    assert created.status_code == 303 and created.headers["location"] == f"{page}#repos"
+    once(board, page, "Repository added.")
+    _, [repo] = run_in_app(board, service.project_repos, "acme-shop")
+    deleted = post(board, token, f"/p/acme-shop/repos/{repo.id}/delete")
     assert deleted.status_code == 303
-    once(board, page, "Environment deleted.")
-    refused = post(board, token, page, name="", kind="test")
+    once(board, page, "Repository removed.")
+    refused = post(board, token, "/p/acme-shop/repos", name="web", path="")
     assert refused.status_code == 400  # nothing saved: the page with the reason
 
 

@@ -1,6 +1,8 @@
 # 0006 — Project environments, access map and agent permissions
 
-- Status: **Implemented** (step 11.4b, unreleased, for 0.2.0). Shipped behaviour: [SPEC §7](../SPEC.md#spec-environments).
+- Status: **Partly removed in 0.15**: the Stands & access page and the tools `environments_get`
+  and `environment_propose` are gone (owner, 2026-11-19); stored environments still drive the guard.
+  Implemented (step 11.4b, for 0.2.0). Shipped behaviour: [SPEC §7](../SPEC.md#spec-environments).
   Review ([0007](0007-review.md)) uses the sign-in flag for screenshots.
 - As built (0.8): an Audit page shows the journal, and a per-session "no live now" switch denies
   any touch of live on top of the policy ([SPEC](../SPEC.md#spec-no-live)).

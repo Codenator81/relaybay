@@ -120,7 +120,7 @@ MUTATING_TOOL_RE = re.compile(
     r"|set|put|post|insert|drop|upload|push|merge|rollback)(_|$)",
     _I,
 )
-# relaybay's own MCP tools mention environments by design (environment_propose).
+# relaybay's own MCP tools mention environments by design (policy_propose).
 OWN_TOOL_PREFIX = "mcp__relaybay__"
 TEXT_MAX = 8 * 1024  # characters of a tool call the guard reads
 SEGMENTS_MAX = 200
@@ -346,10 +346,7 @@ def _reason(env: Environment, level: str, mutating: str | None, identifier: str)
         what = f"{where} is read-only for agents; this looks like a {mutating}"
     else:
         what = f"{where} needs the owner's approval for agent actions (level ask)"
-    return (
-        f"relaybay guard: {what} (matched '{identifier}'). Ask the owner, or propose a change"
-        " with environment_propose."
-    )
+    return f"relaybay guard: {what} (matched '{identifier}'). Ask the owner."
 
 
 # `log` records the call in the journal and tells nobody.

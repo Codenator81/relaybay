@@ -63,11 +63,9 @@ def instructions(rules: Rules) -> str:
             " coordinator sessions named in the server's config.",
             "8. When a hook gives you owner comments ('Owner comment on …'), handle them like a"
             " message from the user and call comment_ack (or answer with comment_add).",
-            "9. Before you touch a server, cluster or database, read environments_get for the"
-            " project: your level there (none, read, ask, full) says what you may do unasked;"
-            " live is read-only unless the owner's policy says otherwise (policy_get). Never"
-            " paste secrets into relaybay; propose changes with environment_propose or"
-            " policy_propose.",
+            "9. Hosts and access come from the project's own notes. Never paste secrets into"
+            " relaybay. When the guard stops a tool call, its reason says why (policy_get shows"
+            " the policy); ask the owner, or propose a change with policy_propose.",
             "10. Before you move a task to review or test, write what the owner should check by"
             " eye with review_steps_set (title plus what, how and why) and attach screenshots with"
             " attach_file. The owner's decision on each step reaches you as an owner comment.",
@@ -385,8 +383,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         hook_session: HookSession = None,
     ) -> str:
         """One project, for a manager: pulse, tasks by stage with next step and waiting on, open
-        questions, recent decisions, environments, blocks, notes flagged 'verify' or 'never
-        read' and what changed since your last read. Index lines; each section says which tool
+        questions, recent decisions, blocks, notes flagged 'verify' or 'never read' and what
+        changed since your last read. Index lines; each section says which tool
         shows more."""
         return await run(
             service.project_digest(
@@ -409,9 +407,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         hook_session: HookSession = None,
     ) -> str:
         """One task, for the session working on it: fields and progress, plan with the current
-        step, decisions, linked document sections, environment map, rules, unread owner comments
-        (ids; text only of those already delivered to you), relevant notes and what changed since
-        your last read. It delivers no comment."""
+        step, decisions, linked document sections, rules, unread owner comments (ids; text only
+        of those already delivered to you), relevant notes and what changed since your last
+        read. It delivers no comment."""
         return await run(
             service.task_context(
                 task,
@@ -2262,55 +2260,24 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         return f"Caption of attachment #{item.id} on **{item.task_key}** saved."
 
-    async def environments_map(project: str) -> str:
-        proj, items = await service.environments(project)
-        return fmt.environments_text(
-            proj.slug,
-            items,
-            await service.environment_policies(items),
-            await service.effective_policy(proj.slug),
-        )
-
     @mcp.tool(annotations=READ, structured_output=False)
+    @contract.deprecated()
     async def environments_get(project: ProjectSlug) -> str:
-        """The project's environments (local, test, live): base URL, how to reach each one (ssh
-        alias, kube context, database host, GitOps repository, log links; references only, never
-        secrets) and your permission level there: none, read, ask (ask the owner first) or full.
-        Read it before you touch a server, a cluster or a database."""
-        return await run(environments_map(project))
+        """Removed in 0.15 with the environments: shows nothing."""
+        return contract.STUB_RESULT
 
-    @write
+    @mcp.tool(annotations=WRITE, structured_output=False)
+    @contract.deprecated()
     async def environment_propose(
         project: ProjectSlug,
-        change: Annotated[
-            dict[str, Any],
-            Field(
-                description="What to change: {'environment': <name>, then any of kind (local,"
-                " test, live), base_url, notes, sign_in_allowed, login_state_path, level (none,"
-                " read, ask, full or default), overrides ({capability: level} for sign_in, ssh,"
-                " kubectl, db, deploy), access ([{kind: ssh|kubectl|db|gitops|logs|monitoring|"
-                "other, fields: {...}}] to add)}. References only: a key path, a variable name"
-                " or a vault path, never a secret value."
-            ),
-        ],
-        reason: Annotated[str, Field(description="Why the change is needed, for the owner.")],
+        change: Annotated[dict[str, Any], Field(description="Ignored.")],
+        reason: Annotated[str, Field(description="Ignored.")],
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Propose a change to a project's environments or your permission level there. Nothing
-        changes until the owner accepts it on the board; it shows in the owner's Inbox."""
-        proposal = await run(
-            service.propose_environment_change(
-                project,
-                change,
-                reason,
-                session=session,
-                session_title=session_title,
-                hook_session=hook_session,
-            )
-        )
-        return fmt.proposal_saved(proposal)
+        """Removed in 0.15 with the environments: records nothing."""
+        return contract.STUB_RESULT
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def policy_get(
@@ -2388,14 +2355,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     @mcp.resource(
         "relaybay://project/{slug}/environments",
         name="project-environments",
-        description="A project's environments, access map (no secrets) and permission levels.",
+        description=f"Removed in 0.15 with the environments. {contract.ENVIRONMENTS_GONE}",
         mime_type="text/markdown",
     )
     async def environments_resource(slug: str) -> str:
-        try:
-            return await environments_map(slug)
-        except NotFoundError as exc:
-            raise ResourceNotFoundError(str(exc)) from exc
+        return contract.STUB_RESULT + "\n" + contract.ENVIRONMENTS_GONE
 
     @mcp.resource(
         "relaybay://project/{slug}",

@@ -354,7 +354,7 @@ A later layer wins: the built-in **preset** named by the global layer → `[perm
 and `guard_mode` from `config.toml` (legacy, only when set) → the **global** file
 (`policy.json` in the data directory, setting `policy_file`) → the **project** layer → the
 **environment** layer (both stored in the database, edited in Settings → Policy). The
-environment's own level and per-capability overrides on Stands & access win over every layer.
+environment's own level and per-capability overrides (stored before 0.15) win over every layer.
 
 Objects merge key by key; scalars and lists replace. A list key may also be written `key+` (add
 items; a pattern with an existing `id` replaces it) or `key-` (remove items by value or `id`);

@@ -31,31 +31,14 @@ runs is logged and the last valid version stays in effect.
 
 **Settings → Policy** shows the effective policy for each project and environment, with the layer
 that set every value: `levels.live.default = "full"` from `preset:trusted`, `guard.mode = "log"`.
-Agents see the same with `policy_get`, and `environments_get` says `agents: full (policy:
-preset:trusted)`.
+Agents see the same with `policy_get`.
 
-## 3. Keep a test password next to the test stand
+## 3. Test passwords
 
-With `trusted`, access entries of **local** and **test** environments may hold test secrets. On
-the project's **Stands & access** page, open **Add access** on the test environment and fill
-**Test secrets** with one `name: value` per line:
-
-```text
-password: demo-pass-123
-```
-
-The board shows it as `•••` (test secret). Agents only learn that the entry has a `password`, not
-its value. To let them use it, add to the policy:
-
-```json
-{
-  "preset": "trusted",
-  "secrets": {"expose_test_secrets_to_agents": true}
-}
-```
-
-Test secrets are never accepted on live environments, whatever the policy says, and an
-environment that holds them cannot be switched to live.
+Until 0.15 a test stand's access entry on the board could hold test secrets. The board's Stands &
+access page was removed in 0.15: keep test accounts where the project keeps its other access
+notes, outside relaybay. Test secrets stored before stay masked in the journal and are never shown
+to agents.
 
 ## Variations
 

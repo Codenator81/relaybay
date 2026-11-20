@@ -321,7 +321,7 @@ async def test_project_digest_sections_and_note_flags(service: Service) -> None:
     assert "[dev]" in tasks and "next: Build" in tasks and "Elsewhere" not in text
     questions = text.split("## Open questions")[1].split("##")[0]
     assert "Question" in questions and "Working" not in questions
-    assert "- stage (test): agents " in text and "Read this." in text
+    assert "## Environments" not in text and "Read this." in text
     notes = text.split("## Notes")[1].split("##")[0].strip().split("\n")
     assert "Old fact" in notes[0] and "[verify]" in notes[0] and "[never read]" in notes[0]
     assert "Read one" in notes[1] and "[" not in notes[1].split("]", 1)[1]
@@ -534,7 +534,7 @@ async def test_a_failure_in_the_injection_keeps_the_old_answer(
     async def broken(*args: object, **kwargs: object) -> list:
         raise RuntimeError("database is on fire")
 
-    monkeypatch.setattr("relaybay.db.repo.list_environments", broken)
+    monkeypatch.setattr("relaybay.db.repo.list_decisions", broken)
     text = context_of(await fire(service, "SessionStart", cwd=CWD))
     assert text.startswith(f"Your relaybay hook session: {CC_A}.")
     assert "# " not in text

@@ -43,7 +43,7 @@ Contents:
 folder), a path stored exactly as written (the server never lists it) and an optional
 kind `app`, `web`, `api`, `lib` or `other`. `project_upsert(repos=[{name, path, kind}, …])` writes
 the whole list, matched by name, so a repository that stays keeps its tasks' links; `[]` removes
-them all. The owner edits them on the project's **Stands & access** page ([§2](#spec-board-repos)).
+them all. The owner edits them on the project's **Settings** page ([§2](#spec-board-repos)).
 `repo_path` stays for older readers: it is always the path of the first repository, written in the
 same transaction as every change of the list (moving another one first changes it; removing the
 last one leaves it as it was). `project_upsert(repo_path=…)` without `repos` sets the first
@@ -84,7 +84,7 @@ and the board form set it; `-`, `""` or null clears it. A new area is a `project
 `changes.areas.added`; the task's own change is `task.updated` with `changes.area` (the name, or null).
 Over MCP a new name adds a line to the answer: `Area '<name>' was new: added to <slug>. Its areas now:
 …`, so an agent sees a near-duplicate it just made. The owner renames, recolours, reorders and deletes
-areas on the project's Stands & access page ([§2](#spec-board-areas)); renaming an area to another
+areas on the project's Settings page ([§2](#spec-board-areas)); renaming an area to another
 area's name merges the two (its tasks move, it is deleted); deleting one clears it from its tasks,
 each with a `task.updated` event `changes: {"area": null}` and its version raised, so its history
 keeps what it was. A rename and a merge also raise the version of the area's tasks (each a
@@ -700,7 +700,7 @@ show the word `relaybay`.
 **Navigation.** Every signed-in page has a left sidebar ([design 0004](design/0004-navigation.md)):
 **Inbox** with a live count badge, **All boards**, **All backlog**, **Activity**, **Settings**
 (the Integrations page), then **Projects**, each expandable (the current one is open) with **Board**,
-**Backlog** (with the count of new items, [§12](#spec-backlog)), **Sessions**, **Stands & access** and **Docs & rules**, plus the project's
+**Backlog** (with the count of new items, [§12](#spec-backlog)), **Sessions**, **Docs & rules** and **Settings**, plus the project's
 [saved filters](#spec-saved-filters) under Board. The current item is highlighted (`aria-current="page"`). The header button hides or
 shows the sidebar on wide screens; the choice is remembered in the browser (`localStorage`, the
 sidebar is shown when storage is unavailable). Below 760 px the sidebar is a drawer opened by the
@@ -753,7 +753,7 @@ posts; events `filter.saved`, `filter.deleted`.
 | Sessions | `/p/<slug>/sessions`, `/sessions` | The sessions of a project, or all sessions ([below](#spec-board-sessions)). |
 | Activity | `/activity` | The event feed and the actions on live ([below](#spec-board-activity)). |
 | Audit | `/audit` | Who did what on which live stand, with filters ([below](#spec-board-audit)). |
-| Stands & access | `/p/<slug>/environments` | The project's repositories ([below](#spec-board-repos)), environments, access map, permission levels and agent proposals ([§7](#spec-environments-page)). |
+| Project settings | `/p/<slug>/settings` | The project's repositories ([below](#spec-board-repos)), the archive ([below](#spec-project-archive)) and areas ([below](#spec-board-areas)); the old `/p/<slug>/environments` redirects here (`301`, [§7](#spec-environments-page)). |
 | Docs & rules | `/p/<slug>/docs`, `/p/<slug>/docs/<doc>`, `/p/<slug>/docs/<doc>/edit[?section=]`, `/p/<slug>/docs/<doc>/diff?from=&to=` | Documents, decisions, memory notes, blocks, the effective rules and search ([§8](#spec-memory-page)); editing a document ([§8](#spec-documents-edit)). |
 | Integrations | `/settings/integrations` | Claude Code on this machine ([§5](#spec-setup)); `/settings` redirects here. |
 | Backlog | `/p/<slug>/backlog`, `/backlog` | Backlog items of a project or of all projects ([§12](#spec-backlog)). |
@@ -814,12 +814,12 @@ Approve and Refuse post `/approvals/{id}/decide` ([§1](#spec-approvals)).
 
 <a id="spec-board-repos"></a>
 
-**Repositories block.** The project's Stands & access page starts (after pending proposals) with
+**Repositories block.** The project's Settings page starts with
 **Repositories**: one row per repository in order with its name, kind, path and **Open in VS
 Code**, **Up** / **Down** buttons, an **Edit** fold (name, kind, path) with **Remove** (asks first:
 tasks lose their link, their pull requests stay) and **Add a repository**. Writes are plain form
 posts to `/p/<slug>/repos`, `/p/<slug>/repos/<id>` and `/p/<slug>/repos/<id>/up|down|delete` with
-the session cookie and the CSRF token; a Bearer request is refused (`403`), as for environments.
+the session cookie and the CSRF token; a Bearer request is refused (`403`).
 A refused value (a name taken, an unknown kind, no path) comes back next to its form. Each change
 is a `project.updated` event with `changes.repos` (`added`, `changed`, `removed` names) and
 `repo_path` when the first repository's path changed.
@@ -1124,12 +1124,12 @@ card brought back or archived again since is left as it is.
 
 <a id="spec-project-archive"></a>
 
-**A project in the archive.** The project's Stands & access page has **Archive project** (one
+**A project in the archive.** The project's Settings page has **Archive project** (one
 confirmation) and, while it is archived, **Back from the archive** (`POST
 /p/<project>/project/archive` and `/unarchive`, cookie + CSRF); over MCP,
 `project_upsert(slug, archived=true|false)`, for coordinator sessions only like `task_archive`
 (anyone else: `project_upsert(archived) is only for the coordinator sessions named in the server's
-config; … Nothing changed. The owner archives a project on its Stands & access page.`; the other
+config; … Nothing changed. The owner archives a project on its Settings page.`; the other
 fields of `project_upsert` stay open to every session). Both write `project.updated` with
 `changes: {"archived": true|false}`; a repeat changes nothing and records nothing. `project.archived_at`
 holds when. An archived project leaves the sidebar, All boards and `project_list`; the Inbox (its
@@ -1187,8 +1187,6 @@ the way back. The hooks do not place a session in an archived project by its fol
 - **Unlinked hook sessions** ([§4](#spec-hooks-linking)): one line "N hook sessions not linked"
   linking to Sessions; ended sessions are not counted (Sessions and Integrations still list them).
 - **Limits** ([below](#spec-concurrency)): sessions running above the cap.
-- **Proposed by agents:** pending environment proposals ([§7](#spec-proposals)), linking to the
-  project's Stands & access page.
 - **Policy proposals:** pending policy proposals ([§7](#spec-policy-proposals)), linking to
   Settings → Policy.
 - **Rules proposals:** open rules proposals ([§6](#spec-rules-versions)), linking to
@@ -1198,10 +1196,10 @@ the way back. The hooks do not place a session in an archived project by its fol
 
 Task rows open the task dialog (`/p/<slug>?task=<key>`). The sidebar badge counts the items that
 each need the owner: cards (a card with an open question or approval request counts once, as
-that), questions, approvals, proposals and rules notices; the grouped lines (work log, unlinked
+that), questions, approvals, policy and rules proposals and rules notices; the grouped lines (work log, unlinked
 sessions, backlog, worktrees, limits) are rows of the page but not in the badge (hidden at zero); badge and list refetch on events that
 can change them (`task.*`, `session.seen`, `session.status_changed`, `comment.added`,
-`comment.delivered`, `comment.read`, `environment.proposed`, `environment.proposal_*`, `policy.proposed`,
+`comment.delivered`, `comment.read`, `policy.proposed`,
 `policy.proposal_*`, `rules.updated`, `rules.notice_read`, `rules.proposed`, `rules.proposal_*`, `review.step_*`, `backlog.*`, `concurrency.over`, `question.*` except `question.delivered`, `approval.requested`,
 `approval.decided`, `approval.expired`), at most once per 2 s. With
 nothing to show the page says "Nothing needs you right now."
@@ -1304,9 +1302,9 @@ what to use instead, [below](#spec-mcp-compat)); fix what a `Warning (rules)` li
 read the rules again on a `rules updated to vN` line and change them through `rules_propose`
 (`rules_update` is only for coordinators);
 when a hook gives owner comments, handle them like a user message and call `comment_ack` (or answer
-with `comment_add`); before touching a server, cluster or database read `environments_get` (the
-level says what is allowed unasked; live is read-only unless the owner set otherwise), never paste
-secrets, propose changes with `environment_propose`; before moving a task to review or test,
+with `comment_add`); hosts and access come from the project's own notes, never paste secrets, a
+guard's reason says why a call was stopped (`policy_get` shows the policy, `policy_propose` asks
+for a change); before moving a task to review or test,
 write the Owner check with `review_steps_set` and attach screenshots with `attach_file` (the
 owner's decisions arrive as owner comments); start with a plan: `plan_set` from PLAN.md or your own
 2-5 steps (S tasks: at least a todo), mark steps `in_progress` / `done` with `plan_step_update`,
@@ -1329,7 +1327,7 @@ report.
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption`, `attachment_get`, `annotation_reply` |
 | Plan | `plan_get`, `plan_set`, `plan_step_add`, `plan_step_update`, `plan_accept` |
-| Environments | `environments_get`, `environment_propose`, `audit_list` |
+| Policy and audit | `policy_get`, `policy_propose`, `audit_list`; `environments_get` and `environment_propose` are stubs since 0.15 ([§7](#spec-environments-mcp)) |
 | Catch-up and rules | `events_since`, `rules_get`, `rules_update`, `rules_propose` |
 | Questions | `question_ask`, `question_list`, `question_withdraw` (the asker or a coordinator); none answers ([§1](#spec-questions)) |
 | Approvals | `approval_request`, `approval_list`; none decides ([§1](#spec-approvals)) |
@@ -1356,7 +1354,7 @@ client whose cached schema lacks them, and `relaybay://schema/task` lists them a
 <a id="spec-mcp-resources"></a>
 
 **Resources.** `relaybay://project/{slug}` (same markdown as `project_snapshot`),
-`relaybay://project/{slug}/environments` (same as `environments_get`),
+`relaybay://project/{slug}/environments` (a stub since 0.15, [§7](#spec-environments-mcp)),
 `relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`),
 `relaybay://doc/{project}/{doc}` (a document's current markdown),
 `relaybay://attachments/{attachment_id}/annotated` (a flattened PNG),
@@ -1405,7 +1403,8 @@ the signature and adds the line
 (for a parameter ``Deprecated: parameter `<name>` of <tool> is …``) to the tool's description and to
 its result (for a parameter, only when the call passed it). `relaybay://contract` and the
 [MCP reference](reference/mcp.md#contract) list the version, this rule and the deprecations
-(`Deprecations: none.` in 0.8.0 and again under contract 2). The release that removes an expired
+(`Deprecations: none.` in 0.8.0 and again under contract 2 until 0.15, which deprecates the
+environment tools, [§7](#spec-environments-mcp)). The release that removes an expired
 item raises `CONTRACT_VERSION` (1 in 0.8.0, 2 since 0.13); additions keep it.
 
 **Contract 2: the 0.12 stubs removed.** 0.12 kept twenty tools and one resource of removed
@@ -2018,6 +2017,12 @@ refusal.
 Design: [Environments and access](design/0006-environments-and-access.md),
 [Policy as data](design/0013-policy-as-data.md).
 
+Since 0.15 the board has no page for environments and agents have no tool for them: hosts and
+access live in each project's own notes (owner, 2026-11-19). The environments, access entries and
+proposals stored before stay in the database and nothing edits them any more; the guard, the
+approvals and the live journal below still recognise the stored environments, and the policy
+(Settings → Policy) still governs them. A project without environments is not guarded by name.
+
 <a id="spec-policy"></a>
 
 **Policy.** What agents may do on each kind of environment, what the guard counts as a change and
@@ -2116,8 +2121,7 @@ Quoted values count whole. The journal masks exactly these places, from the same
 always passes, and so does a value, or a detected secret, that one of the policy's `secrets.allow`
 patterns matches whole. The refusal names the field and the detector (`notes looks like it
 contains a secret value (jwt)`) and never repeats the value. The checks of a write use the
-effective policy of the environment (or, for a new environment and for proposals, of the
-project). These are pattern checks: a secret in an unusual shape (e.g. in plain prose) can pass.
+effective policy of the environment (or, for a new environment, of the project). These are pattern checks: a secret in an unusual shape (e.g. in plain prose) can pass.
 
 <a id="spec-test-secrets"></a>
 
@@ -2127,10 +2131,9 @@ on live whatever the layers say), an access entry may hold harmless test values:
 fields JSON as `{"value": "...", "test": true}`, exempt from the secret checks, at most 20 per
 entry, names in lowercase like other fields. They are entered on the board only (a "Test secrets"
 box in the access form, shown when allowed or when the entry has some; `name: ***` keeps a stored
-value, a removed line removes it, a form without the box keeps them); a proposal that carries one
-is refused. The board shows them as `•••` with "(test secret)" and never renders the value.
-`environments_get` lists only their names, unless the policy sets
-`expose_test_secrets_to_agents: true`. An environment with test secrets cannot become live. The
+value, a removed line removes it, a form without the box keeps them) before 0.15; no tool shows
+them to agents since then, so `expose_test_secrets_to_agents` has no effect. An environment with
+test secrets cannot become live. The
 journal masks every stored test secret value, whatever its length, in the commands it records.
 
 <a id="spec-permissions"></a>
@@ -2146,33 +2149,24 @@ higher than before; on an environment that becomes live (created or changed), a 
 layer that weakens the guard compared with the project's (so a layer staged while it was a test
 environment is confirmed now); on a live
 environment whose kind changes, any capability whose effective level, the policy's included,
-rises above `read` (live → test with the default preset turns `read` into `full`). Accepting a
-proposal asks the same. Agents propose changes instead (below).
+rises above `read` (live → test with the default preset turns `read` into `full`). These writes
+had a form on the board until 0.15; the service keeps the rules for the stored environments.
 
 <a id="spec-environments-page"></a>
 
-**Stands & access page** (`/p/<slug>/environments`, sidebar item under each project): one panel per
-environment with its kind, effective level and where it comes from ("(default)" from the default
-preset, "(policy: project:acme-shop)" from another layer, nothing when the environment sets it),
-base URL, per-capability levels, sign-in flag, notes, who changed it when, and its access entries
-(each with its own change time and author); forms to add, edit and delete environments and access
-entries (fields typed as `name: value` lines) and to set the level and overrides. Writes are plain
-form posts that need the browser session cookie and the CSRF token; a request that authenticates
-with the Bearer token instead is refused (`403`) — a guard against an agent using the board, not
-a security boundary, since anyone with the token can sign in. Deleting asks first. Pending agent
-proposals are listed on top with **Accept** / **Reject** and refresh live.
+**Stands & access page: removed in 0.15.** The page (`/p/<slug>/environments`) listed the
+environments with their access entries and levels, with forms to edit them and the agents'
+proposals with **Accept** / **Reject**. Its repositories, areas and archive moved to the project's
+Settings page ([§2](#spec-board-repos)); the old address redirects there (`301`); the environment
+and proposal writes are gone (`404` / `405`).
 
 <a id="spec-proposals"></a>
 
-**Proposals.** `environment_propose(project, change, reason)` records a proposal and changes
-nothing (`environment.proposed`). `change` names the environment (`environment`) and any of
-`kind`, `base_url`, `notes`, `sign_in_allowed`, `login_state_path`, `level` (`default` clears it),
-`overrides` (`{capability: level}`, `default` removes one) and `access` (entries to add); a new
-environment needs `kind`. It is validated like a board write, secrets included, when proposed.
-Pending proposals appear in the Inbox ("Proposed by agents") and on the Stands & access page.
-Accepting applies the change in one transaction (with the same confirmation for raising live) and
-records `environment.proposal_accepted`; rejecting records `environment.proposal_rejected`; a
-decided proposal cannot be decided again.
+**Proposals: removed in 0.15.** `environment_propose` recorded a proposal for the owner
+(`environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`); since
+0.15 it records nothing ([below](#spec-environments-mcp)), the Inbox no longer lists environment
+proposals, and pending ones stay in the table `environment_proposal` undecided. The Audit page and
+`audit_list` still show the old events.
 
 <a id="spec-guard"></a>
 
@@ -2226,7 +2220,7 @@ Decisions per touched environment: `full` → nothing; `read` → nothing unless
 `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny" | "ask",
 "permissionDecisionReason": …}}` — the reason (e.g. `relaybay guard: acme-shop live (live) is
 read-only for agents; this looks like a remote change over ssh (matched 'prod-alias'). Ask the
-owner, or propose a change with environment_propose.`) is shown to Claude for `deny` and to the user
+owner.`) is shown to Claude for `deny` and to the user
 in the permission prompt for `ask`. In `warn` mode the call goes on and `additionalContext` carries
 the same reason ending `(warn mode: not blocked)`. relaybay never answers `allow`, since it would
 skip Claude Code's own permission prompt. When the level lets a call through, the approval check
@@ -2301,15 +2295,17 @@ all), the task dialog and page show the task's own as **Actions on live**, the *
 
 <a id="spec-environments-mcp"></a>
 
-**MCP.** `environments_get(project)` and the resource `relaybay://project/{slug}/environments`
-return the full map (the project's preset and guard mode, each environment with base URL, level
-and its source, overrides, its own guard mode when it differs, sign-in flag and login-state path,
-access entries with test secrets by name only unless exposed, notes, last change).
-`project_snapshot` adds one line per environment after the description: `- live — live · agents:
-read (default) · https://…`. `policy_get(project?, environment?)` returns the effective policy of
+**MCP.** Since 0.15 `environments_get` and `environment_propose` stay registered with their
+parameters as deprecated tools that do nothing, within contract 2 ([§3](#spec-mcp-compat)): each
+answers `Nothing done: this tool does nothing since 0.15.` and `Deprecated: environments and access
+were removed in 0.15; environments are kept in the project's own notes.`, which also ends its
+description; the resource `relaybay://project/{slug}/environments` answers the same. They are
+removed, and the contract version raised, by the first later minor release from 2026-12-19.
+`project_snapshot`, `project_digest` and `task_context` no longer list environments.
+`policy_get(project?, environment?)` returns the effective policy of
 the global scope, a project or an environment: the layer chain and one line per value with the
 layer that set it (`- guard.mode = "warn"  (preset:default)`), plus ignored broken layers. There is
-no write tool besides `environment_propose` and `policy_propose`.
+no write tool besides `policy_propose`.
 
 <a id="spec-policy-proposals"></a>
 
@@ -2332,7 +2328,7 @@ editor for that scope's layer (the global file, or the project or environment la
 a database layer) with **Validate and preview** (the effective policy after the change and whether
 it widens access on live) and **Save**, and the list of project and environment layers with
 their raw JSON and who changed them when. Writes need the browser session cookie and the CSRF
-token; a Bearer request is refused (`403`), as on Stands & access. A change widens agents' access
+token; a Bearer request is refused (`403`), as on the project's Settings page. A change widens agents' access
 on live — and asks for a second confirmation, also when accepting a proposal — when a live level
 of its scope (`levels.live.default` or a capability) rises above `read`, its guard mode gets
 weaker (`block` → `warn` → `log` → `off`), it switches built-in guard rules off (`mcp-tool-name`
@@ -2647,8 +2643,8 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 | Digest | Sections, most important first |
 |---|---|
 | `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
-| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; environments (name, kind, the agents' level); current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
-| `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's and the project's current decisions; changes; linked document sections; the effective rules line; environments (also the base URL); relevant notes |
+| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
+| `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's and the project's current decisions; changes; linked document sections; the effective rules line; relevant notes |
 
 **Linked document sections:** the task's document field when it is a `relaybay://doc/...` link,
 then any `relaybay://doc/<project>/<doc>#<anchor>` in the description or progress, each becomes a
@@ -2875,7 +2871,7 @@ of this leaves the machine.
    `relaybay_login_csrf_8765`, `relaybay_login_error_8765`, `relaybay_flash_8765`; no port there, the
    plain name) and a server beside another one does not sign you out of it; the access log redacts the `/login` query. Unauthenticated page visits redirect
    to `/login?next=…` (only local paths are accepted as `next`). A Bearer header also works for the
-   board's URLs, except the environment writes ([§7](#spec-environments-page)).
+   board's URLs, except the board's own writes (project settings, policy, rules; [§2](#spec-board-repos)).
 6. **CSRF.** Cookie-authenticated non-GET requests must be same-origin (`Origin`, or
    `Sec-Fetch-Site: same-origin`); board forms carry a CSRF token derived from the token; the sign-in
    form uses a double-submit nonce.
@@ -2912,9 +2908,9 @@ of this leaves the machine.
 
 <a id="spec-security-forms"></a>
 
-**Full-page forms** (Stands & access, Settings → Policy, Settings → Integrations without htmx)
+**Full-page forms** (project Settings, Settings → Policy, Settings → Integrations without htmx)
 answer a successful write with `303` to their page (POST → redirect → GET), so a refresh does not
-send the form again; the outcome ("Environment saved.", "Saved the acme-shop policy.", the check
+send the form again; the outcome ("Repository saved.", "Saved the acme-shop policy.", the check
 results) rides in a short-lived `HttpOnly`, `SameSite=Strict` cookie (`relaybay_flash_<port>`, 60 s) that
 the page shows once and deletes. A refused write still renders the page with the reason, and the
 "confirm raising live" step is a rendered page whose confirmed save redirects.

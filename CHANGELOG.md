@@ -24,6 +24,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A card waiting on the owner shows it once, as the state word **Waits for you**; the yellow "waiting on" chip stays only for someone else (a person, a role, another session).
 - The Plan tab shows the bound session's own todo (its Claude Code task list) open under the plan, each item with its status and when it last changed; with no plan, the todo stands alone under "No plan yet".
 - A file document's `version` counts the hashes of its file: 1 when added, one more for every write through relaybay and every outside change a read notices (migration 0054 moves 0.14 file documents from 0 to 1, since `base_version` 0 means "create"). `doc_get` and `doc_outline` of a file document name the version and whether writes through relaybay are on; with writes off `doc_update` is still refused, and the refusal says so.
+- **Archive project** and **Back from the archive** moved, with the repositories and the areas, to the project's new **Settings** page (`/p/<project>/settings`, in the sidebar under each project); the old `/p/<project>/environments` redirects there.
+
+### Removed
+
+- The Stands & access page: the environment and access forms, agents' levels per environment, the saved sign-in, the per capability levels and the environment proposals with their Inbox section, since hosts and access now live in each project's own notes. Nothing is deleted from the database; environments stored before still drive the guard, the approvals and the live journal, and the Audit page still shows their events.
+- `environments_get`, `environment_propose` and the resource `relaybay://project/{slug}/environments` do nothing: they stay registered with their parameters within MCP contract 2 and answer `Nothing done: this tool does nothing since 0.15.` with a `Deprecated: …` line, until the first later minor release from 2026-12-19. The MCP instructions, `project_snapshot`, `project_digest` and `task_context` no longer point to them.
 
 ## [0.14.0] - 2026-11-19
 

@@ -470,7 +470,8 @@ def test_board_archive_project_and_back(board: TestClient, token: str) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop")
     run_in_app(board, service.upsert_project, "demo-api", name="Demo API")
-    assert 'action="/p/demo-api/project/archive"' in board.get("/p/demo-api/environments").text
+    settings = board.get("/p/demo-api/settings").text
+    assert 'action="/p/demo-api/project/archive"' in settings and "data-confirm=" in settings
     data = {"csrf_token": csrf_token(token)}
     response = board.post(
         "/p/demo-api/project/archive", data=data, headers=FORM, follow_redirects=False
@@ -480,11 +481,15 @@ def test_board_archive_project_and_back(board: TestClient, token: str) -> None:
     assert "Demo API is in the archive" in home and 'id="archived-projects"' in home
     assert 'href="/?archived=1#archived-projects">Archived projects (1)</a>' in home
     assert 'href="/p/demo-api"' not in board.get("/fragments/projects").text
-    assert "This project is in the archive" in board.get("/p/demo-api").text
+    page = board.get("/p/demo-api").text
+    assert "This project is in the archive" in page
+    assert 'href="/p/demo-api/settings#archive">Back from the archive' in page
+    assert 'action="/p/demo-api/project/unarchive"' in board.get("/p/demo-api/settings").text
     response = board.post(
         "/p/demo-api/project/unarchive", data=data, headers=FORM, follow_redirects=False
     )
     assert response.status_code == 303
+    assert response.headers["location"] == "/p/demo-api/settings#archive"
     assert 'href="/p/demo-api"' in board.get("/fragments/projects").text
     assert board.post("/p/demo-api/project/delete", data=data, headers=FORM).status_code == 404
 

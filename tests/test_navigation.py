@@ -74,6 +74,17 @@ def test_sidebar_on_every_page(board: TestClient, seeded: str) -> None:
     assert "Integrations</a>" not in board.get("/").text.split("</nav>")[1]  # no header link
 
 
+def test_the_project_settings_replace_stands_and_access(board: TestClient, seeded: str) -> None:
+    for url in ("/", "/p/acme-shop", "/p/acme-shop/settings"):
+        text = board.get(url).text
+        assert "Stands &amp; access" not in text and "Stands & access" not in text, url
+        assert 'href="/p/acme-shop/environments"' not in text, url
+        assert 'href="/p/acme-shop/settings"' in text, url
+    page = board.get("/p/acme-shop/settings").text
+    assert current(page) == ["/p/acme-shop/settings"]
+    assert 'id="repos"' in page and 'id="archive"' in page and 'id="areas"' in page
+
+
 def test_the_removed_map_page_is_gone(board: TestClient) -> None:
     assert 'href="/map"' not in board.get("/").text
     for url in ("/map", "/map/graph", "/static/map.js", "/static/cytoscape.min.js"):

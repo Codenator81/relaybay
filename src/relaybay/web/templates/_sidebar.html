@@ -30,8 +30,8 @@
           {%- set new_backlog = nav.backlog_counts.get(p.slug, 0) if nav.backlog_counts else 0 %}
           <li>{% call item("/p/" ~ p.slug ~ "/backlog", "Backlog", here and nav.active == "backlog") %}{% if new_backlog %} <span class="col-count" title="{{ new_backlog }} new">{{ new_backlog }}</span>{% endif %}{% endcall %}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/sessions", "Sessions", here and nav.active == "sessions") }}</li>
-          <li>{{ item("/p/" ~ p.slug ~ "/environments", "Stands & access", here and nav.active == "environments") }}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/docs", "Docs & rules", here and nav.active == "docs") }}</li>
+          <li>{{ item("/p/" ~ p.slug ~ "/settings", "Settings", here and nav.active == "project_settings") }}</li>
         </ul>
       </details>
     </li>

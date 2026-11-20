@@ -271,11 +271,12 @@ async def test_project_layer_levels_and_the_environment_wins(svc: Service) -> No
     await project_layer(svc, "acme-shop", {"levels": {"live": {"default": "none"}}})
     out = output(await answer(svc, bash("ssh prod-alias uptime")))
     assert "off limits" in out["additionalContext"]
-    # The environment's own level on Stands & access wins over the policy.
+    # The environment's own level wins over the policy.
     await svc.save_environment("acme-shop", {"level": "full"}, env_id=env_id, confirm_live=True)
     assert await answer(svc, bash(RESTART)) is None
-    snapshot = await svc.snapshot("acme-shop")
-    assert snapshot.policies[env_id].level_origin(snapshot.environments[0]) == "environment"
+    _, items = await svc.environments("acme-shop")
+    pol = (await svc.environment_policies(items))[env_id]
+    assert pol.level_origin(items[0]) == "environment"
 
 
 async def test_custom_pattern_in_a_project_layer_warns(svc: Service) -> None:
@@ -393,10 +394,6 @@ async def test_test_secrets_need_the_policy_and_never_go_live(svc: Service) -> N
         "acme-shop", test.id, "db", {"host": "db3.test.example.com"}, access_id=entry.id
     )
     assert kept.access[0].test_secrets == {"password": TEST_PW}
-    with pytest.raises(ValidationError, match="test secrets are entered by a person"):
-        await svc.propose_environment_change(
-            "acme-shop", {"environment": "test", "access": [{"kind": "db", "fields": secret}]}, "x"
-        )
 
 
 async def test_test_secrets_are_hidden_from_agents_and_the_journal(svc: Service) -> None:
@@ -520,8 +517,6 @@ def test_settings_policy_page(board: TestClient, token: str) -> None:
         headers=FORM,
     )
     assert saved.status_code == 200 and "Saved the acme-shop policy" in saved.text
-    stands = board.get("/p/acme-shop/environments").text
-    assert "agents: read (policy: project:acme-shop)" in stands
     page = board.get("/settings/policy?scope=acme-shop/live").text
     assert "project:acme-shop" in page and "acme-shop/live" in page
 
@@ -535,28 +530,6 @@ def test_settings_policy_page(board: TestClient, token: str) -> None:
     )
     assert accepted.status_code == 200 and "accepted" in accepted.text
     assert run_in_app(board, service.effective_policy, "acme-shop").guard_mode == "block"
-
-
-def test_test_secrets_are_masked_on_the_board(board: TestClient, token: str) -> None:
-    service: Service = board.app.state.service
-    run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop")
-    env = run_in_app(board, service.save_environment, "acme-shop", {"name": "qa", "kind": "test"})
-    url = f"/p/acme-shop/environments/{env.id}/access"
-    form = {"csrf_token": csrf_token(token), "kind": "db", "fields": "host: db.qa.example.com"}
-    assert 'name="test_secrets"' not in board.get("/p/acme-shop/environments").text
-    refused = board.post(url, data={**form, "test_secrets": f"password: {TEST_PW}"}, headers=FORM)
-    assert refused.status_code == 400 and "does not allow test secrets" in refused.text
-    run_in_app(board, service.set_preset, "trusted", confirm_live=True)
-    assert 'name="test_secrets"' in board.get("/p/acme-shop/environments").text
-    added = board.post(
-        url,
-        data={**form, "test_secrets": f"password: {TEST_PW}"},
-        headers=FORM,
-        follow_redirects=False,
-    )
-    assert added.status_code == 303
-    page = board.get("/p/acme-shop/environments").text
-    assert TEST_PW not in page and "(test secret)" in page and "password: ***" in page
 
 
 # --- MCP -------------------------------------------------------------------------------------
@@ -594,32 +567,6 @@ async def test_mcp_policy_tools(live_server: Callable[[], LiveServer]) -> None:
         assert '- guard.mode = "block"  (project:acme-shop)' in text
         missing = await client.call_tool("policy_get", {"project": "acme-shop", "environment": "x"})
         assert missing.is_error
-
-
-async def test_environments_get_hides_test_secrets_unless_exposed(svc: Service) -> None:
-    from relaybay.mcp_server import format as fmt
-
-    await svc.upsert_project("acme-shop")
-    write_policy(svc, {"preset": "trusted"})
-    env = await svc.save_environment("acme-shop", {"name": "test", "kind": "test"})
-    await svc.save_access(
-        "acme-shop", env.id, "db", {"host": "db.x", "password": {"value": TEST_PW, "test": True}}
-    )
-
-    async def text() -> str:
-        proj, items = await svc.environments("acme-shop")
-        return fmt.environments_text(
-            proj.slug,
-            items,
-            await svc.environment_policies(items),
-            await svc.effective_policy("acme-shop"),
-        )
-
-    hidden = await text()
-    assert TEST_PW not in hidden and "values not shared with agents" in hidden
-    assert "agents: full (policy: preset:trusted)" in hidden and "Guard: log" in hidden
-    await project_layer(svc, "acme-shop", {"secrets": {"expose_test_secrets_to_agents": True}})
-    assert f"password={TEST_PW}" in await text()
 
 
 # --- review fixes: hostile patterns, staged layers, guard weakening, the file ------------------
@@ -671,11 +618,6 @@ async def test_a_staged_environment_layer_cannot_skip_the_live_confirmation(svc:
     )
     with pytest.raises(ConfirmationNeeded, match=r"level full.*guard warn → off"):
         await svc.save_environment("acme-shop", {"kind": "live"}, env_id=test.id)
-    proposal = await svc.propose_environment_change(
-        "acme-shop", {"environment": "stage", "kind": "live"}, "It is live now"
-    )
-    with pytest.raises(ConfirmationNeeded):
-        await svc.decide_proposal(proposal.id, True)
     moved = await svc.save_environment(
         "acme-shop", {"kind": "live"}, env_id=test.id, confirm_live=True
     )

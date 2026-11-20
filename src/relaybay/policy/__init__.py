@@ -489,7 +489,7 @@ class EffectivePolicy:
         return self.source(f"levels.{kind}.{key}")
 
     def level_for(self, env: Environment, capability: str | None = None) -> str:
-        """The environment's own level and overrides (Stands & access) win over the policy."""
+        """The environment's own level and overrides win over the policy."""
         if capability is not None and capability in env.overrides:
             return env.overrides[capability]
         if env.level is not None:

@@ -10,6 +10,6 @@
   </ol>
   {% if journal|length >= 20 %}<p class="muted"><a class="action" href="/activity?kind=live.action{% if project_filter %}&amp;project={{ project_filter }}{% endif %}">All actions on live</a></p>{% endif %}
   {% else %}
-  <p class="muted">No agent tool calls have touched a live environment{% if project_filter %} of {{ project_filter }}{% endif %} yet. The hooks record them here (a safety net: only names listed under Stands &amp; access are recognised).</p>
+  <p class="muted">No agent tool calls have touched a live environment{% if project_filter %} of {{ project_filter }}{% endif %} yet. The hooks record them here (a safety net: only the names in a project's environments are recognised).</p>
   {% endif %}
 </section>

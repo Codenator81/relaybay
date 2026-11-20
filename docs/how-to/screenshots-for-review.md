@@ -44,9 +44,8 @@ Use `--window-size=390,844` for a phone-sized shot. The browser prints
 ## Playwright with a saved login (local and test environments only)
 
 For pages behind a sign-in, sign in **once** with a test account, save the login state, and then
-capture pages by URL with that state. This is allowed only where the project's environment says
-so: `environments_get` shows "agent may sign in and remember the login: yes" and the path of the
-login state (`login_state_path`). It is never allowed on `live`.
+capture pages by URL with that state. This is allowed only where the project's own notes say so
+(a test account, where its login state lives). It is never allowed on `live`.
 
 - The saved state and the test account live **outside the project repository and outside
   relaybay's database**: in a user folder such as `~/.local/state/acme-shop/test-login.json`.

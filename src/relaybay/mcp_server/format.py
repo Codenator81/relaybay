@@ -19,13 +19,7 @@ from relaybay.domain.doc_index import (
     outside_note,
     size_label,
 )
-from relaybay.domain.environments import (
-    AccessEntry,
-    Environment,
-    PolicyProposal,
-    Proposal,
-    change_summary,
-)
+from relaybay.domain.environments import PolicyProposal
 from relaybay.domain.memory import (
     STRONG_MATCH,
     Document,
@@ -525,9 +519,6 @@ def snapshot(snap: Snapshot, require_log: LogRule = None) -> str:
     by_stage: dict[str, list[Task]] = {}
     for task in snap.tasks:
         by_stage.setdefault(task.stage.value, []).append(task)
-    if snap.environments:
-        lines.append("Environments (full map: environments_get):")
-        lines.extend(environment_line(e, snap.policies[e.id]) for e in snap.environments)
     if snap.areas:
         names = ", ".join(f"{a.name} ({a.tasks})" for a in snap.areas)
         lines.append(f"Areas (tasks carrying each; task_update(area=...) sets one): {names}")
@@ -548,96 +539,13 @@ def snapshot(snap: Snapshot, require_log: LogRule = None) -> str:
     return "\n".join(lines)
 
 
-def level_label(env: Environment, policy: EffectivePolicy) -> str:
-    """`read (default)` from the default preset, `full (policy: preset:trusted)` from another
-    layer, or `ask` when the environment sets it."""
-    level = policy.level_for(env)
-    origin = policy.level_origin(env)
-    if origin == "environment":
-        return level
-    return f"{level} (default)" if origin == "preset:default" else f"{level} (policy: {origin})"
-
-
-def environment_line(env: Environment, policy: EffectivePolicy) -> str:
-    """`- live — live · agents: read (default) · https://shop.example.com`."""
-    parts = [env.kind, f"agents: {level_label(env, policy)}"]
-    if env.base_url:
-        parts.append(env.base_url)
-    return f"- {env.name} — " + " · ".join(parts)
-
-
-LEVEL_HELP = (
-    "Levels: none (do not touch), read (look only), ask (ask the owner before each action),"
-    " full (act as needed). Only the owner changes them on the board; propose a change with"
-    " environment_propose (an environment) or policy_propose (the policy)."
-)
-
-
-def _test_secrets_line(entry: AccessEntry, policy: EffectivePolicy) -> str | None:
-    if not entry.test_secrets:
-        return None
-    if policy.expose_test_secrets:
-        values = ", ".join(f"{k}={v}" for k, v in entry.test_secrets.items())
-        return f"  test secrets (harmless test values): {values}"
-    names = ", ".join(entry.test_secrets)
-    return f"  test secrets (values not shared with agents; ask the owner): {names}"
-
-
-def environments_text(
-    slug: str,
-    items: list[Environment],
-    policies: dict[int, EffectivePolicy],
-    project_policy: EffectivePolicy,
-) -> str:
-    """The full environments map of a project (`environments_get`, resource
-    `relaybay://project/{slug}/environments`). It holds references only, never secrets; test
-    secrets only when the policy exposes them."""
-    if not items:
-        return (
-            f"No environments for {slug} yet. The owner adds them on the board (Stands &"
-            " access); propose one with environment_propose."
-        )
-    mode = project_policy.guard_mode
-    lines = [
-        f"# Environments of {slug}",
-        f"Policy: preset {project_policy.preset} (details: policy_get). Guard: {mode}."
-        f" {LEVEL_HELP}",
-        "Secrets are never stored here, only where they live (a file, a variable, a vault).",
-    ]
-    for env in items:
-        policy = policies[env.id]
-        lines.append(f"\n## {env.name} ({env.kind})")
-        if env.base_url:
-            lines.append(f"- base URL: {env.base_url}")
-        level = f"- agents: {level_label(env, policy)}"
-        if env.overrides:
-            level += "; overrides: " + ", ".join(f"{k} {v}" for k, v in env.overrides.items())
-        lines.append(level)
-        if policy.guard_mode != mode:
-            lines.append(f"- guard: {policy.guard_mode}")
-        sign_in = "yes" if env.sign_in_allowed else "no"
-        if env.login_state_path:
-            sign_in += f" · login state: `{env.login_state_path}`"
-        lines.append(f"- agent may sign in and remember the login: {sign_in}")
-        for entry in env.access:
-            values = ", ".join(f"{k}={v}" for k, v in entry.fields.items())
-            lines.append(f"- {entry.kind}: {values}".rstrip())
-            tests = _test_secrets_line(entry, policy)
-            if tests:
-                lines.append(tests)
-        if env.notes:
-            lines.append(f"- notes: {short(env.notes, 500)}")
-        lines.append(f"- updated {env.updated_at[:16]}Z by {env.updated_by}")
-    return "\n".join(lines)
-
-
 def policy_text(policy: EffectivePolicy, scope: str) -> str:
     """The effective policy of a scope with the layer that set each value (`policy_get`)."""
     chain = " → ".join(layer.name for layer in policy.layers)
     lines = [
         f"# Effective policy: {scope}",
-        f"Layers (a later one wins): {chain}. The environment's own level and overrides on the"
-        " board win over the policy. Propose changes with policy_propose.",
+        f"Layers (a later one wins): {chain}. An environment's own level and overrides win"
+        " over the policy. Propose changes with policy_propose.",
         "",
     ]
     for path, value, source in policy.flat():
@@ -651,13 +559,6 @@ def policy_proposal_saved(p: PolicyProposal) -> str:
     return (
         f"Policy proposal #{p.id} for {p.scope} recorded. Nothing changed yet: the owner accepts"
         " or rejects it on the board (Settings → Policy)."
-    )
-
-
-def proposal_saved(p: Proposal) -> str:
-    return (
-        f"Proposal #{p.id} for {p.project_slug} recorded: {change_summary(p.change)}. Nothing"
-        " changed yet: the owner accepts or rejects it on the board (Stands & access)."
     )
 
 
