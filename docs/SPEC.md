@@ -3202,8 +3202,10 @@ reason, or the edited fields), `backlog.planned`.
 backlog** at the top (`/p/<slug>/backlog`, `/backlog`): a list of cards, one per item, with the
 number and title, a line of date (the day it was found when known), its kind, project (on All
 backlog), area, a "priority N" badge unless it is 0, a "for <who>" badge, origin or the source in
-words (links to the origin task with its stage and the session) and status ("duplicate of #N" links
-to that item), the location and the triage note on lines of their own, the body to expand, and the
+words (links to the origin task with its stage and the session), a **new** mark while the owner
+has not seen the item (it goes once the item has been fully on screen: `POST /backlog/seen`, stored
+in `backlog_item.seen_at`, migration 0056; items decided before 0056 count as seen) and the
+status unless it is `new` ("duplicate of #N" links to that item), the location and the triage note on lines of their own, the body to expand, and the
 actions at the right edge (below on a phone); a search box (the words of the search index's
 backlog rows, [§8](#spec-memory-search); a query without a word shows the error and no items) and
 filters by kind (**No kind** lists the items without one), status, area and who it is for (**For

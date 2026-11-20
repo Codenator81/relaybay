@@ -8071,6 +8071,15 @@ class Service:
             )
             return await self._backlog(tx.conn, item.id)
 
+    async def mark_backlog_seen(self, ids: list[int]) -> int:
+        """Board: these items scrolled into the owner's view; their "new" mark goes. No event:
+        nothing else on the board changes."""
+        wanted = sorted({int(i) for i in ids if int(i) > 0})[:500]
+        if not wanted:
+            return 0
+        async with self._tx() as tx:
+            return await repo.mark_backlog_seen(tx.conn, wanted, tx.now)
+
     async def decide_backlog(
         self,
         ref: Any,

@@ -1180,3 +1180,43 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   for (const picker of document.querySelectorAll(".bind-picker[open]")) picker.removeAttribute("open");
 });
+
+// A backlog item not seen yet carries "new"; once it has been on screen it is recorded as seen
+// (POST /backlog/seen) and the mark is gone from the next render.
+(() => {
+  if (!("IntersectionObserver" in window)) return;
+  const pending = new Set();
+  let timer = null;
+  const csrf = () => {
+    const field = document.querySelector("input[name=csrf_token]");
+    return field ? field.value : "";
+  };
+  const send = () => {
+    timer = null;
+    if (!pending.size) return;
+    const ids = Array.from(pending);
+    pending.clear();
+    fetch("/backlog/seen", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Relaybay-CSRF": csrf() },
+      body: JSON.stringify({ ids }),
+    }).catch(() => ids.forEach((id) => pending.add(id)));
+  };
+  const observer = new IntersectionObserver((entries) => {
+    if (document.visibilityState !== "visible") return;
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const id = Number(entry.target.dataset.unseen);
+      if (id > 0) pending.add(id);
+      observer.unobserve(entry.target);
+    }
+    if (pending.size && !timer) timer = window.setTimeout(send, 1000);
+  }, { threshold: 1 });
+  const watch = (root) => {
+    (root.querySelectorAll ? root : document).querySelectorAll("[data-unseen]").forEach((el) => observer.observe(el));
+  };
+  watch(document);
+  document.addEventListener("htmx:load", (event) => watch(event.target || document));
+  window.addEventListener("pagehide", send);
+})();

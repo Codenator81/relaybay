@@ -2940,6 +2940,18 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
 
         return await board_write(request, csrf, write, back_to(back, "/backlog"))
 
+    @router.post("/backlog/seen")
+    async def backlog_seen(request: Request) -> Response:
+        """The items that scrolled into view (app.js, JSON `{"ids": [...]}`, CSRF in the
+        header): their "new" mark goes on the next render."""
+        board_only(request, request.headers.get(CSRF_HEADER, ""))
+        try:
+            data = await request.json()
+            ids = [int(i) for i in data.get("ids", [])]
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(status_code=400, detail="ids must be a list of numbers") from exc
+        return JSONResponse({"seen": await service.mark_backlog_seen(ids)})
+
     @router.post("/backlog/{item_id}/{decision}")
     async def backlog_decide(
         request: Request,

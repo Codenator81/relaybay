@@ -302,3 +302,28 @@ def test_the_command_prints_a_row_outside_the_code_page(
     out.flush()
     printed = raw.getvalue().decode("utf-8")
     assert f"acme-shop/2026-11-10/{word}-badge" in printed
+
+
+async def test_an_empty_or_dash_decision_keeps_the_board_triage(tmp_path: Path) -> None:
+    service, _ = await board(tmp_path)
+    try:
+        path = tmp_path / "FINDINGS.md"
+        path.write_text(
+            HEADER + "| 2026-11-10 | acme-shop | Gift cards at checkout | owner | — |\n",
+            encoding="utf-8",
+        )
+        plan = await make_plan(service, None, backlog_file=path, project="acme-shop")
+        await apply_plan(service, plan)
+        [item] = [b for b in await service.all_backlog() if b.title == "Gift cards at checkout"]
+        assert (item.status, item.triage_note) == ("new", None)  # a dash is an empty cell
+        await service.decide_backlog(item.id, "later")
+        path.write_text(
+            HEADER + "| 2026-11-10 | acme-shop | Gift cards at checkout | owner | - |\n",
+            encoding="utf-8",
+        )
+        again = await make_plan(service, None, backlog_file=path, project="acme-shop")
+        await apply_plan(service, again)
+        [item] = [b for b in await service.all_backlog() if b.id == item.id]
+        assert item.status == "later"
+    finally:
+        await service.close()

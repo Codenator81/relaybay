@@ -1147,3 +1147,23 @@ def test_guard_redaction_and_validation_are_fast_on_adversarial_input(text: str)
             check_secret("notes", text[:4000])
         best = min(best, time.perf_counter() - started)
     assert best < 0.25
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The basic callback carries only the id",
+        "use a Bearer Token in the header",
+        "basic authentication is off",
+        "Digest mode for the partner",
+    ],
+)
+def test_prose_after_bearer_or_basic_is_not_a_secret(text: str) -> None:
+    check_secret("body", text)
+
+
+def test_an_authorization_header_is_a_secret_whatever_its_value() -> None:
+    with pytest.raises(ValidationError):
+        check_secret("body", "Authorization: Bearer abcdefghijklmnop")
+    with pytest.raises(ValidationError):
+        check_secret("body", "curl -H 'X: y' with Bearer abc123def456")

@@ -4319,7 +4319,17 @@ def _backlog(row: aiosqlite.Row) -> BacklogItem:
         triage_note=row["triage_note"],
         duplicate_of=row["duplicate_of"],
         found_on=row["found_on"],
+        seen_at=row["seen_at"],
     )
+
+
+async def mark_backlog_seen(conn: aiosqlite.Connection, ids: list[int], at: str) -> int:
+    """Record that the owner saw these items; an item seen before keeps its first time."""
+    cur = await conn.executemany(
+        "UPDATE backlog_item SET seen_at = ? WHERE id = ? AND seen_at IS NULL",
+        [(at, i) for i in ids],
+    )
+    return cur.rowcount
 
 
 async def insert_backlog_item(conn: aiosqlite.Connection, values: dict[str, Any]) -> int:

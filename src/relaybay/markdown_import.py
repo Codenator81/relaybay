@@ -1289,6 +1289,15 @@ class _Planner:
                 claimed.add(target.id)
             target_hash = backlog_hash(target) if target else ""
             status, detail, decided_note = self._backlog_decision(row.decision, source)
+            if (
+                target is not None
+                and target.task_id is None
+                and status == "new"
+                and target.status != "new"
+            ):
+                # An empty decision cell says nothing new: the board's triage stays.
+                status = target.status
+                detail = _decision_detail(status, target.decline_reason, target.link)
             done = status == "done"
             origin = row.origin if row.origin in backlog.ORIGINS else "owner"
             origin_text = None
@@ -1327,7 +1336,7 @@ class _Planner:
             else:
                 found = backlog.find_location(row.title)
                 values["location"] = found or (target.location if target else None)
-            if row.note:
+            if row.note and row.note.strip(backlog.DASHES + " "):
                 note = row.note
             elif decided_note:
                 note = decided_note
