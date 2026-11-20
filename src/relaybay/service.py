@@ -4378,34 +4378,76 @@ class Service:
 
     async def _auto_link_repos(self, session: Session, cwd: str) -> None:
         """A session bound to a task works in `cwd`: link the task to the project repository whose
-        path holds it (the closest one). One read outside any transaction; a write transaction
-        only for a new link, and its `task.updated` says `how: auto`, which the digests leave
-        out. Its own transaction: a failure here never undoes the hook's status write."""
-        best: dict[int, tuple[int, int, bool]] = {}  # task -> (path length, repo, linked)
-        for task_id, repo_id, path, linked in await repo.session_repo_candidates(
+        path holds it (the closest one) and record the branch checked out there (backlog #99).
+        Reads outside any transaction (git through the HEAD-file cache); a write transaction only
+        for a new link or a new branch, and its `task.updated` says `how: auto`, which the
+        digests leave out. Its own transaction: a failure here never undoes the hook's status
+        write."""
+        # task -> (path length, repo, linked, stored branch)
+        best: dict[int, tuple[int, int, bool, str | None]] = {}
+        for task_id, repo_id, path, linked, stored in await repo.session_repo_candidates(
             self._r, session.id
         ):
             size = holds(path, cwd)
             if size is None:
                 continue
             if task_id not in best or size > best[task_id][0]:
-                best[task_id] = (size, repo_id, linked)
-        new = [(task_id, repo_id) for task_id, (_, repo_id, linked) in best.items() if not linked]
-        if not new:
+                best[task_id] = (size, repo_id, linked, stored)
+        if not best:
+            return
+        branch = await self._branch_at(cwd)
+        work = [
+            (task_id, repo_id, linked)
+            for task_id, (_, repo_id, linked, stored) in best.items()
+            if not linked or (branch is not None and branch != stored)
+        ]
+        if not work:
             return
         async with self._tx() as tx:
-            for task_id, repo_id in new:
-                await self._auto_link(tx, session, task_id, repo_id)
+            for task_id, repo_id, linked in work:
+                await self._auto_link(tx, session, task_id, repo_id, linked, branch)
 
-    async def _auto_link(self, tx: _Tx, session: Session, task_id: int, repo_id: int) -> None:
-        if not await repo.insert_task_repo(tx.conn, task_id, repo_id, session.name, "auto", tx.now):
-            return  # linked meanwhile
+    async def _branch_at(self, folder: str) -> str | None:
+        """The branch checked out in `folder`, or None (no git, a detached HEAD, git too slow
+        or failing): the hook path never waits on it for long."""
+        git = gitinfo.find_git()
+        if not git:
+            return None
+        try:
+            return await self._current_branch(git, folder, time.monotonic() + 2.0)
+        except (gitinfo.GitTooSlow, OSError):
+            return None
+
+    async def _auto_link(
+        self,
+        tx: _Tx,
+        session: Session,
+        task_id: int,
+        repo_id: int,
+        linked: bool,
+        branch: str | None,
+    ) -> None:
+        changes: dict[str, Any] = {}
+        if not linked and await repo.insert_task_repo(
+            tx.conn, task_id, repo_id, session.name, "auto", tx.now
+        ):
+            changes["repos"] = {"added": []}
+        if branch is not None and await repo.set_task_repo_branch(
+            tx.conn, task_id, repo_id, branch
+        ):
+            changes.setdefault("repos", {})
+        if not changes:
+            return  # linked meanwhile, the branch already stored
         task = await self.get_task(task_id, tx.conn)
         name = next(
             r.name
             for r in await repo.list_project_repos(tx.conn, task.project_id)
             if r.id == repo_id
         )
+        if "added" in changes["repos"]:
+            changes["repos"]["added"] = [name]
+        if branch is not None:
+            changes["repos"]["branch"] = {name: branch}
         await tx.event(
             "task.updated",
             session.name,
@@ -4415,7 +4457,7 @@ class Service:
             project=task.project_slug,
             key=task.key,
             stage=task.stage.value,
-            changes={"repos": {"added": [name]}},
+            changes=changes,
             how="auto",
         )
 
@@ -8071,6 +8113,15 @@ class Service:
             )
             return await self._backlog(tx.conn, item.id)
 
+    async def mark_backlog_seen(self, ids: list[int]) -> int:
+        """Board: these items scrolled into the owner's view; their "new" mark goes. No event:
+        nothing else on the board changes."""
+        wanted = sorted({int(i) for i in ids if int(i) > 0})[:500]
+        if not wanted:
+            return 0
+        async with self._tx() as tx:
+            return await repo.mark_backlog_seen(tx.conn, wanted, tx.now)
+
     async def decide_backlog(
         self,
         ref: Any,
@@ -8761,6 +8812,9 @@ class Service:
                     " (on the board) or the coordinator does."
                 )
             who = sess.name if sess else actor
+            if sess is not None and who in BOARD_ACTORS:
+                # A session named "owner" or "board" is still a session, not the board.
+                who = f"session {who}"
             plan = await self._load_plan(tx.conn, task)
             if not plan.steps:
                 raise ValidationError(

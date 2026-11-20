@@ -560,10 +560,12 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
 }
 .drop-marker { height: 3px; margin: -2px 0; border-radius: 2px; background: var(--accent); }
 :root.is-dragging-card, :root.is-dragging-card * { cursor: grabbing; user-select: none; -webkit-user-select: none; }
-.board-flash { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 6px; margin: 0 0 10px; }
+/* The dismiss cross sits inside the notice, centred on it, over the right end of its lines. */
+.board-flash { position: relative; margin: 0 0 10px; }
 .board-flash[hidden] { display: none; }
 .board-flash-lines { display: grid; gap: 6px; }
-.board-flash-close { padding: 2px 8px; border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.board-flash-lines > * { padding-right: 32px; }
+.board-flash-close { position: absolute; top: 50%; right: 4px; transform: translateY(-50%); padding: 2px 8px; border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
 .board-flash-close:hover, .board-flash-close:focus-visible { color: var(--text); }
 /* Live session status from the hooks: a dot in the icon's corner. */
 .status-dot {
@@ -996,6 +998,8 @@ a.card-key:hover { color: var(--accent); }
   border-radius: 8px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
 }
+/* Inside a card the menu still floats over the content (.card form is relative). */
+.card .bind-menu { position: absolute; }
 .bind-option {
   display: grid;
   gap: 2px;

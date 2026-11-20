@@ -382,13 +382,17 @@ def code_lines(code: TaskCode, branch: str | None) -> list[str]:
     if not code.shown:
         return []
     lines = ["\n## Code"]
-    on = f" · branch `{branch}`" if branch else ""
     for item in code.repos:
+        own = item.branch or branch
+        on = f" · branch `{own}`" if own else ""
         prs = "".join(f" · PR {pr.label} {pr.url}" for pr in item.prs)
         lines.append(f"- {_repo_label(item.repo)}{on}{prs} (linked: {item.how})")
     if not code.repos and code.project_repos:
         names = ", ".join(r.name for r in code.project_repos)
-        lines.append(f"- repos: all ({names}); link the ones it touches with task_update(repos=…)")
+        lines.append(
+            f"- no repository linked yet (the project has {names}); link the ones the task"
+            " touches, when a branch or an edit appears there, with task_update(repos=…)"
+        )
     lines.extend(f"- PR {pr.label} {pr.url}" for pr in code.loose_prs)
     return lines
 

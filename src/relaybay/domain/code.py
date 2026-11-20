@@ -37,6 +37,7 @@ class TaskRepo:
     added_by: str
     how: str
     added_at: str
+    branch: str | None = None  # the task's branch in this repository, seen by the hooks
 
 
 @dataclass(slots=True)
@@ -57,6 +58,16 @@ class TaskPr:
             return f"#{self.number}"
         return self.title or self.url
 
+    @property
+    def repo_label(self) -> str:
+        """A pull request tied to no project repository, named by the repository in its link:
+        `web #12`, so two of them read apart (backlog #97)."""
+        number = self.number if self.number is not None else pr_number(self.url)
+        name = pr_repo_name(self.url)
+        if name and number is not None:
+            return f"{name} #{number}"
+        return name or (f"#{number}" if number is not None else "PR")
+
 
 @dataclass(slots=True)
 class CodeRepo:
@@ -65,6 +76,7 @@ class CodeRepo:
     repo: ProjectRepo
     how: str
     prs: list[TaskPr] = field(default_factory=list)
+    branch: str | None = None
 
 
 @dataclass(slots=True)
@@ -86,16 +98,21 @@ class TaskCode:
         return bool(self.repos or self.loose_prs or self.project_repos)
 
     @property
+    def board_shown(self) -> bool:
+        """The board shows the repositories a task linked and its pull requests; a task that
+        linked none shows no repository line (backlog #98)."""
+        return bool(self.repos or self.loose_prs)
+
+    @property
     def summary(self) -> str:
         """The compact card's line, e.g. `Code: 2 repos, 3 PRs`."""
+        parts = []
         if self.repos:
             n = len(self.repos)
-            parts = [f"{n} repo{'s' if n != 1 else ''}"]
-        else:
-            parts = ["all repos"]
+            parts.append(f"{n} repo{'s' if n != 1 else ''}")
         if self.pr_count:
             parts.append(f"{self.pr_count} PR{'s' if self.pr_count != 1 else ''}")
-        return "Code: " + ", ".join(parts)
+        return "Code: " + ", ".join(parts) if parts else ""
 
 
 def task_code(
@@ -108,7 +125,12 @@ def task_code(
     linked = {link.repo_id: link for link in links if link.task_id == task_id}
     own_prs = [p for p in prs if p.task_id == task_id]
     repos = [
-        CodeRepo(r, linked[r.id].how, [p for p in own_prs if p.repo_id == r.id])
+        CodeRepo(
+            r,
+            linked[r.id].how,
+            [p for p in own_prs if p.repo_id == r.id],
+            linked[r.id].branch,
+        )
         for r in project_repos
         if r.id in linked
     ]

@@ -284,10 +284,12 @@ def test_board_shows_an_intake_body_as_plain_text(board: TestClient) -> None:
     page = board.get("/p/acme-shop/backlog").text
     assert '<p class="intake-text">**bold** idea</p>' in page
     assert "<strong>bold</strong>" not in page and "<strong>mine</strong>" in page
+    assert 'status-new">new</span>' not in page  # new is the default: no badge
 
 
 def test_decision_cells() -> None:
     assert parse_decision("") == ("new", None)
+    assert parse_decision("—") == parse_decision(" - ") == ("new", None)
     assert parse_decision("Later") == ("later", None)
     assert parse_decision("declined: no need") == ("declined", "no need")
     for bad in ("declined", "maybe", "planned: x"):
@@ -1055,3 +1057,22 @@ async def test_closing_a_duplicates_original_moves_its_duplicates(svc: Service) 
         closed, "Updated"
     )
     assert (await svc.backlog_item(b.id)).moved_duplicates == ()  # never stored
+
+
+def test_new_marks_an_item_until_it_was_on_screen(board: TestClient, token: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.upsert_project, "acme-shop")
+    item = run_in_app(board, service.add_backlog_item, "acme-shop", "Unseen", by_owner=True)
+    page = board.get("/p/acme-shop/backlog").text
+    assert f'data-unseen="{item.id}"' in page
+    headers = {**FORM, "X-Relaybay-CSRF": csrf_token(token)}
+    assert board.post("/backlog/seen", json={"ids": [item.id]}, headers={**FORM}).status_code == 403
+    answer = board.post("/backlog/seen", json={"ids": [item.id, item.id]}, headers=headers)
+    assert answer.json() == {"seen": 1}
+    page = board.get("/p/acme-shop/backlog").text
+    assert f'data-unseen="{item.id}"' not in page
+    # Seen once is seen: a second report changes nothing; triage is untouched.
+    assert board.post("/backlog/seen", json={"ids": [item.id]}, headers=headers).json() == {
+        "seen": 0
+    }
+    assert run_in_app(board, service.backlog_item, item.id).status == "new"

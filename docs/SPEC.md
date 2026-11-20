@@ -579,7 +579,7 @@ a fenced code block; an empty `where` or `true`, `false`, `yes`, `no`, `none`, `
 Marks are
 parsed when a report is written by `report_add` and stored in
 `report_check` (the line, the `where`, the claim line without the mark; at most 100 per report). The
-card shows them under the report, a check with the `where`, the claim on hover. An M or L report
+card does not list them again under the report (they are in its text). An M or L report
 without any mark gets `Warning (rules): an M or L report has no verified marks: …` in the
 `report_add` result, the `report.added` event and under the report on the card; never in `strict`
 mode a refusal, and never for an S report or one without a size. The first start with migration
@@ -847,14 +847,18 @@ task dialog shows the chip after the key in its head, and the task view (dialog 
 
 **Code row.** A task whose project has repositories, or that has pull requests, shows a Code row on
 its card and in the task dialog / page ([§1](#spec-task-code)): one line per linked repository with
-its name, its kind, the task's branch (in the dialog; the card shows the branch once, above), its
-pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and **Open in
-VS Code**, a `vscode://file/<path>` link (backslashes become `/`, a Windows drive stays `C:`, other
-unsafe characters are percent-encoded; a leading `~` is left to the editor). With no repository
-linked the row is one folded line **Repos: all** (the project's names), which opens to the same
-links for every repository. Pull requests tied to no listed repository follow as **PRs:**. The
-compact card ([below](#spec-board-compact)) shows only a count instead: `Code: 2 repos, 3 PRs`
-(`Code: all repos` when none is linked). A `task.updated` event refreshes the card.
+its name, its kind, its branch (the one the hooks saw checked out in that repository while a
+bound session worked there, stored on the link, migration 0057; until then the task's own branch;
+the card drops its separate branch chip once a repository is linked), its
+pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and an
+**Open in VS Code** icon (`</>`, the path and the words on hover), a `vscode://file/<path>` link
+(backslashes become `/`, a Windows drive stays `C:`, other unsafe characters are percent-encoded; a
+leading `~` is left to the editor). With no repository linked there is no repository line (until
+0.15 a folded **Repos: all**); `task_get` then names the project's repositories and asks the
+session to link the ones it touches. Pull requests tied to no listed repository follow as
+**PRs:**, each named by the repository in its link (`mobile #7`). The compact card
+([below](#spec-board-compact)) shows only a count instead: `Code: 2 repos, 3 PRs` (nothing when
+the task has neither). A `task.updated` event refreshes the card.
 
 <a id="spec-board-compact"></a>
 
@@ -3202,8 +3206,10 @@ reason, or the edited fields), `backlog.planned`.
 backlog** at the top (`/p/<slug>/backlog`, `/backlog`): a list of cards, one per item, with the
 number and title, a line of date (the day it was found when known), its kind, project (on All
 backlog), area, a "priority N" badge unless it is 0, a "for <who>" badge, origin or the source in
-words (links to the origin task with its stage and the session) and status ("duplicate of #N" links
-to that item), the location and the triage note on lines of their own, the body to expand, and the
+words (links to the origin task with its stage and the session), a **new** mark while the owner
+has not seen the item (it goes once the item has been fully on screen: `POST /backlog/seen`, stored
+in `backlog_item.seen_at`, migration 0056; items decided before 0056 count as seen) and the
+status unless it is `new` ("duplicate of #N" links to that item), the location and the triage note on lines of their own, the body to expand, and the
 actions at the right edge (below on a phone); a search box (the words of the search index's
 backlog rows, [§8](#spec-memory-search); a query without a word shows the error and no items) and
 filters by kind (**No kind** lists the items without one), status, area and who it is for (**For

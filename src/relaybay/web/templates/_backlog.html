@@ -21,7 +21,8 @@
       {%- if b.origin_session_name %} · <a href="/sessions">{{ b.origin_session_name }}</a>{% endif %}
       {%- if b.intake_message_id %} · message #{{ b.intake_message_id }}{% endif -%}
     </span>
-    <span class="backlog-status status-{{ b.status }}">{{ b.status }}</span>
+    {% if b.seen_at is none %}<span class="backlog-status status-new backlog-unseen" data-unseen="{{ b.id }}" title="Not seen yet: the mark goes once the item has been on screen">new</span>{% endif %}
+    {%- if b.status != "new" %} <span class="backlog-status status-{{ b.status }}">{{ b.status }}</span>{% endif %}
     {%- if b.task_key %} <a href="/p/{{ b.project_slug }}?task={{ b.task_key }}">{{ b.task_key }}</a>{% endif %}
     {%- if b.duplicate_of %} <span class="muted backlog-reason">duplicate of <a href="{{ base }}?history=1#backlog-{{ b.duplicate_of }}">#{{ b.duplicate_of }}</a></span>
     {%- elif b.status in ("declined", "done") and b.decline_reason %} <span class="muted backlog-reason">{{ b.decline_reason }}</span>{% endif %}

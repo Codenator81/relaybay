@@ -105,7 +105,20 @@ _SECRET_SPOTS: tuple[tuple[str, re.Pattern[str], re.Pattern[str] | None], ...] =
     ("curl-user", re.compile(r"((?<!\S)(?:-u|--user)(?:=|\s+)[^\s:/]*:)(?!//)(\S+)"), None),
     (
         "auth-header",
-        re.compile(r"(\b(?:bearer|basic|digest)\s+)([A-Za-z0-9._~+/=-]{6,})", re.I),
+        # The value looks like a credential: a digit or a token symbol, or a capital after its
+        # first letter, so prose such as "the basic callback" is not one.
+        re.compile(
+            r"(\b(?i:bearer|basic|digest)\s+)"
+            r"((?=[A-Za-z0-9._~+/=-]*[0-9._~+/=]|[A-Za-z0-9._~+/=-][A-Za-z0-9._~+/=-]*[A-Z])"
+            r"[A-Za-z0-9._~+/=-]{6,})",
+        ),
+        None,
+    ),
+    (
+        "auth-header",
+        re.compile(
+            r"(\bauthorization:\s*(?:bearer|basic|digest)\s+)([A-Za-z0-9._~+/=-]{6,})", re.I
+        ),
         None,
     ),
     (
@@ -156,12 +169,17 @@ SECRET_HINT = (
 )
 
 
-DETECTOR_IDS = (
-    *(name for name, _ in _SECRET_VALUE_RES),
-    *(name for name, _, _ in _SECRET_SPOTS),
-    "secret-assignment",
-    "secret-field-name",
-    "user-password",
+# One id may name several shapes (auth-header: a bare scheme and an Authorization header).
+DETECTOR_IDS = tuple(
+    dict.fromkeys(
+        (
+            *(name for name, _ in _SECRET_VALUE_RES),
+            *(name for name, _, _ in _SECRET_SPOTS),
+            "secret-assignment",
+            "secret-field-name",
+            "user-password",
+        )
+    )
 )
 
 

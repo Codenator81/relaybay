@@ -128,6 +128,7 @@ class BacklogItem:
     triage_note: str | None = None  # the decision in words
     duplicate_of: int | None = None
     found_on: str | None = None  # the day it was found, when older than created_at
+    seen_at: str | None = None  # when the owner first saw it on the board; None shows 'new'
     # Set by the write that closed this item as a duplicate: the items that repeated it and now
     # repeat its original. Not stored.
     moved_duplicates: tuple[int, ...] = ()
@@ -149,11 +150,15 @@ class BacklogItem:
         return "" if self.status == "new" else self.status
 
 
+# A cell holding only a dash (hyphen, en or em dash) is an empty cell.
+DASHES = "-\u2013\u2014"
+
+
 def parse_decision(text: str) -> tuple[str, str | None]:
     """(status, detail) from a backlog.md decision cell: the detail is the reason of a declined
     row and the link of a done one. ValueError names what is wrong."""
     value = text.strip()
-    if not value or value.lower() == "new":
+    if not value.strip(DASHES) or value.lower() == "new":  # a dash is an empty cell
         return "new", None
     head, _, rest = value.partition(":")
     head = head.strip().lower()
