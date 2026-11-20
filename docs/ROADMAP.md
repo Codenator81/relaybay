@@ -218,7 +218,7 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | Item | Status | Design |
 |---|---|---|
 | `doc_update` writes a file document in place (only the replaced lines, its line endings kept); a change made to the file outside relaybay is a new version with a note | planned | [0027](design/0027-file-documents-written-and-task-context.md) |
-| Sections linked to a card (`task_doc_link`); `task_context` shows them, the open backlog items of the card's subject and only the decisions related to the card | planned | [0027](design/0027-file-documents-written-and-task-context.md) |
+| Sections linked to a card (`task_doc_link`); `task_context` shows them, the open backlog items of the card's subject and only the decisions related to the card | done (unreleased) | [0027](design/0027-file-documents-written-and-task-context.md) |
 | `relaybay import --backlog --project`: one project's rows, rows that match existing items are not created again | planned | [0027](design/0027-file-documents-written-and-task-context.md) |
 
 ## 1.0

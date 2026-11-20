@@ -1,6 +1,6 @@
 # 0027 — File documents written through relaybay, and a task context that fits the task
 
-- Status: **Accepted** 2026-11-19, for 0.15. Builds on [0026](0026-project-knowledge.md) and
+- Status: **Accepted** 2026-11-19, for 0.15. Part B is implemented (unreleased). Builds on [0026](0026-project-knowledge.md) and
   supersedes its decision K2 ("relaybay never writes a file document") and the "Never written by
   relaybay" item of its File documents section.
 - Two parts. **A**: `doc_update` writes a file document: the change goes into the file on disk,
@@ -117,7 +117,7 @@ What the card is about, for the two filters below, is a set of word stems (the s
 `memory_search`, words of four letters and more, without common words) taken from:
 
 1. the card's area name, when it has one;
-2. the titles and heading paths of its linked sections;
+2. the titles of its linked sections and their heading paths below the document title;
 3. the card's title.
 
 ### Open backlog items of the same subject

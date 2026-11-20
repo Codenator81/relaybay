@@ -407,9 +407,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         hook_session: HookSession = None,
     ) -> str:
         """One task, for the session working on it: fields and progress, plan with the current
-        step, decisions, linked document sections, rules, unread owner comments (ids; text only
-        of those already delivered to you), relevant notes and what changed since your last
-        read. It delivers no comment."""
+        step, its decisions and the project decisions related to it, linked document sections,
+        rules, unread owner comments (ids; text only of those already delivered to you), relevant
+        notes, the open backlog items of its subject and what changed since your last read. It
+        delivers no comment."""
         return await run(
             service.task_context(
                 task,
@@ -453,9 +454,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         task: TaskRef,
         reports: Annotated[int, Field(ge=1, le=50, description="How many reports.")] = 5,
     ) -> str:
-        """Full task: fields, description, progress, current version, the latest reports and
-        decisions, and the names of the editable fields (for task_patch). Call it before
-        task_update to get the version for expected_version."""
+        """Full task: fields, description, progress, current version, the linked document
+        sections, the latest reports and decisions, and the names of the editable fields (for
+        task_patch). Call it before task_update to get the version for expected_version."""
         detail = await run(service.task_detail(task, reports))
         return fmt.task_detail(detail, await log_rule())
 
@@ -489,6 +490,13 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " your session (a session started for it binds itself, or the launch does)."
             ),
         ] = True,
+        sections: Annotated[
+            list[str] | None,
+            Field(
+                description="Sections of the project's documents to link to the card, each"
+                " 'doc#anchor' (as task_doc_link links one). Optional."
+            ),
+        ] = None,
     ) -> str:
         """Create a task when you start work that is not on the board yet. Give it a short
         `description` (what to do and why). Returns its key (e.g. 'acme-shop-12'); use the key in
@@ -514,11 +522,45 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 session_title=session_title,
                 hook_session=hook_session,
                 bind=bind,
+                sections=sections or None,
             )
         )
         return fmt.with_warnings(
             fmt.task_saved(created, "Created"), fmt.waiting_on_hint(waiting_on)
         )
+
+    @write
+    async def task_doc_link(
+        task: TaskRef,
+        doc: Annotated[str, Field(description="Document name of the task's project, e.g. 'spec'.")],
+        section: Annotated[
+            str,
+            Field(
+                description="The section: its heading anchor or explicit anchor, as doc_outline"
+                " lists them, e.g. 'payouts'."
+            ),
+        ],
+        remove: Annotated[bool, Field(description="true: unlink the section.")] = False,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Link a section of a project document to the card (remove=true unlinks it). The
+        anchor is checked against the document's current outline. task_context lists the linked
+        sections first, and takes the card's subject (for its backlog items and related
+        decisions) from them; a section that disappears later shows as broken."""
+        saved, line, changed = await run(
+            service.link_task_section(
+                task,
+                doc,
+                section,
+                remove=remove,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.task_section_saved(saved, line, remove, changed)
 
     @write
     async def task_update(
@@ -871,6 +913,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " the old one stays in history marked superseded."
             ),
         ] = None,
+        area: Annotated[
+            str | None,
+            Field(
+                description="The area of the project it is about, by name (case does not"
+                " matter): task_context shows a project decision on the cards of that area."
+                " Optional."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -887,6 +937,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 decided_by=decided_by,
                 source=source,
                 supersedes=supersedes,
+                area=area or None,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,

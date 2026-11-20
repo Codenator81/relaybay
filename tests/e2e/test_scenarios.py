@@ -214,3 +214,36 @@ def test_a_terminal_session_says_where_it_runs_through_its_hooks(stand: Stand) -
     run.finish()
     contexts = [e["text"] for e in run.trace("context") if e["event"] == "SessionStart"]
     assert contexts and "could not tell whether you run" not in contexts[0]
+
+
+def test_session_start_shows_the_cards_sections_and_backlog(stand: Stand) -> None:
+    session_id = "22222222-3333-4444-8555-666666666666"
+    desktop = "local_00000000-0000-0000-0000-000000000002"
+    stand.mcp("project_upsert", slug="acme-shop", repo_path=stand.project_dir.as_posix())
+    stand.mcp(
+        "doc_update",
+        project="acme-shop",
+        doc="spec",
+        body="# Spec\n\n## Payouts\nBatches.\n\n## Registration\nA form.",
+        reason="draft",
+        base_version=0,
+    )
+    stand.mcp("backlog_add", project="acme-shop", title="Payout retries loop", area="payouts")
+    stand.mcp("backlog_add", project="acme-shop", title="Form label", area="registration")
+    stand.mcp("decision_add", project="acme-shop", text="The registration form asks for a phone")
+    stand.mcp(
+        "task_create",
+        project="acme-shop",
+        title="Payout batches",
+        stage="dev",
+        area="payouts",
+        sections=["spec#payouts"],
+        session=desktop,
+        hook_session=session_id,
+    )
+    run = stand.run({"turn": [{"text": "Hi."}]}, "--resume", session_id, mcp=False).finish()
+    contexts = [e["text"] for e in run.trace("context") if e["event"] == "SessionStart"]
+    assert '- spec#payouts "Payouts"' in contexts[0]
+    assert "## Open backlog items" in contexts[0] and "Payout retries loop" in contexts[0]
+    assert "Form label" not in contexts[0] and "phone" not in contexts[0]
+    assert "1 project decision not related to this card" in contexts[0]

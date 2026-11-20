@@ -135,6 +135,9 @@
       {%- set d = detail.document %}
       {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
       {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
+      {% if detail.sections %}<dt>Sections</dt><dd><ul class="history task-sections">
+        {%- for sec in detail.sections %}<li>{% if sec.ref.href %}<a class="doc-link" href="{{ sec.ref.href }}">{{ sec.link.doc }}#{{ sec.link.anchor }}</a>{% else %}<code>{{ sec.link.doc }}#{{ sec.link.anchor }}</code>{% endif %}{% if sec.title %} <span class="muted">{{ sec.title }}</span>{% endif %}{% if sec.ref.broken %} <span class="doc-link-mark">{{ sec.ref.broken }}</span>{% endif %}</li>{% endfor %}
+      </ul></dd>{% endif %}
       {%- set is_live = t.stage.value == "live" %}
       {% if is_done or is_live %}{% set in_archive = task_archived(t) %}<dt>Archive</dt><dd>{% if t.archived_at %}archived <time datetime="{{ t.archived_at }}" data-age>{{ t.archived_at|age }}</time> by {{ t.archived_by }}{% if t.archived_from %} · closed from live, comes back to live{% endif %}{% elif in_archive %}archived: closed more than {{ done_window_days }} days ago{% elif is_live %}<span class="muted">in the live column; Archive closes it</span>{% else %}<span class="muted">in the done column</span>{% endif %}
         <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}"

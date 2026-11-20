@@ -9,7 +9,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
 from relaybay.domain.doc_index import IndexedSection, size_label, whole_size
@@ -34,6 +34,7 @@ TASK_DECISIONS_MAX = 10
 NOTES_MAX = 100
 RELEVANT_NOTES_MAX = 8
 DOC_LINKS_MAX = 5
+BACKLOG_ITEMS_MAX = 8
 CHANGES_MAX = 30
 COMMENT_IDS_MAX = 20
 LINE_MAX = 300
@@ -137,7 +138,10 @@ class Section:
     """`lines` are one line each, longest `line_max`. `drill` names the tool that shows more;
     `priority` 0 is kept longest, a larger number shrinks earlier; `extra` counts items that
     were not even loaded; `cap` limits the lines shown whatever the budget; `key` names a section
-    whose kept lines the caller wants to know."""
+    whose kept lines the caller wants to know. With `floor`, the section shrinks to its first
+    `floor` lines at `priority` and only at `floor_priority` (a smaller number) below them.
+    `aside` counts items left out on purpose: the section's last line names them by
+    `aside_label`, shrinks like any line, and once cut joins the count of `… N more`."""
 
     title: str
     lines: list[str]
@@ -147,6 +151,11 @@ class Section:
     cap: int | None = None
     line_max: int = LINE_MAX
     key: str | None = None
+    floor: int = 0
+    floor_priority: int = 0
+    aside: int = 0
+    aside_label: str = ""
+    more_label: str = "listed"  # what `… N more` counts under a kept aside line
     _sizes: list[int] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -155,26 +164,44 @@ class Section:
         self._sizes = [0]
         for line in self.lines:
             self._sizes.append(self._sizes[-1] + len(line) + 1)
+        if self.aside:
+            self.lines.append(f"… {self.aside} {self.aside_label}: {self.drill}")
+            self._sizes.append(self._sizes[-1] + len(self.lines[-1]) + 1)
 
     @property
     def most(self) -> int:
         return min(len(self.lines), self.cap) if self.cap is not None else len(self.lines)
 
+    @property
+    def keep_priority(self) -> int:
+        """The priority of the lines kept longest: what decides when the section is dropped."""
+        return self.floor_priority if self.floor else self.priority
+
     def tail(self, kept: int) -> str:
-        hidden = len(self.lines) - kept + self.extra
-        return f"… {hidden} more: {self.drill}" if hidden else f"More: {self.drill}"
+        """`… N more: <drill>`, or `More: <drill>`; nothing after a kept aside line with nothing
+        else hidden (it names the drill already)."""
+        aside_cut = bool(self.aside) and kept < len(self.lines)
+        hidden = len(self.lines) - kept + self.extra + (self.aside - 1 if aside_cut else 0)
+        if hidden and self.aside and not aside_cut:
+            # Under the aside line a bare "more" would read as more of the left-out items.
+            return f"… {hidden} more {self.more_label}: {self.drill}"
+        if hidden:
+            return f"… {hidden} more: {self.drill}"
+        return "" if self.aside else f"More: {self.drill}"
 
     def size(self, kept: int) -> int:
         """Characters of the section with `kept` lines, the blank line after it included."""
-        return len(self.title) + 1 + self._sizes[kept] + len(self.tail(kept)) + 2
+        tail = self.tail(kept)
+        return len(self.title) + 1 + self._sizes[kept] + len(tail) + (2 if tail else 1)
 
     def text(self, kept: int) -> str:
-        return "\n".join([self.title, *self.lines[:kept], self.tail(kept)])
+        tail = self.tail(kept)
+        return "\n".join([self.title, *self.lines[:kept], *([tail] if tail else [])])
 
 
-def _shrink(section: Section, kept: int, over: int) -> tuple[int, int]:
-    """Whole lines off the end until `over` is gone or no line is left."""
-    while over > 0 and kept > 0:
+def _shrink(section: Section, kept: int, over: int, floor: int = 0) -> tuple[int, int]:
+    """Whole lines off the end until `over` is gone or only `floor` lines are left."""
+    while over > 0 and kept > floor:
         over += section.size(kept - 1) - section.size(kept)
         kept -= 1
     return kept, over
@@ -195,9 +222,11 @@ def render(sections: list[Section], footer: Callable[[bool], str], budget: int) 
     kept = [s.most for s in sections]
     used = sum(s.size(k) for s, k in zip(sections, kept, strict=True)) + room_for_footer
     over = used - budget
-    rest = sorted(range(1, len(sections)), key=lambda i: (-sections[i].priority, -i))
-    for i in rest:
-        kept[i], over = _shrink(sections[i], kept[i], over)
+    steps = [(s.priority, i, min(s.floor, kept[i])) for i, s in enumerate(sections) if i]
+    steps += [(s.floor_priority, i, 0) for i, s in enumerate(sections) if i and s.floor]
+    for _, i, floor in sorted(steps, key=lambda step: (-step[0], -step[1])):
+        kept[i], over = _shrink(sections[i], kept[i], over, floor)
+    rest = sorted(range(1, len(sections)), key=lambda i: (-sections[i].keep_priority, -i))
     dropped: list[int] = []
     for i in rest:
         if over <= 0:
@@ -356,10 +385,13 @@ def _section(
     extra: int = 0,
     line_max: int = LINE_MAX,
     key: str | None = None,
+    **more: Any,
 ) -> None:
     """Adds the section when it has anything to say."""
-    if lines or extra:
-        sections.append(Section(title, lines, drill, priority, extra, line_max=line_max, key=key))
+    if lines or extra or more.get("aside"):
+        sections.append(
+            Section(title, lines, drill, priority, extra, line_max=line_max, key=key, **more)
+        )
 
 
 # --- portfolio -----------------------------------------------------------------------------
@@ -671,9 +703,9 @@ class TaskData:
     plan: Plan
     todo: list[TodoItem]
     task_decisions: list[Decision]
-    project_decisions: list[Decision]
-    decisions_total: int
-    doc_lines: list[str]
+    project_decisions: list[Decision]  # related to the card only
+    decisions_more: int  # the card's own decisions not loaded
+    doc_lines: list[str]  # the linked sections first, then the links found in the text
     doc_links_total: int
     rules_line: str
     comments: list[Comment]  # unread owner comments
@@ -682,6 +714,9 @@ class TaskData:
     changes: Changes
     now: datetime
     others: list[tuple[Task, Plan]] = field(default_factory=list)  # other bound tasks
+    decisions_unrelated: int = 0  # current project decisions not related to the card
+    related_more: int = 0  # related project decisions not loaded
+    backlog_lines: list[str] = field(default_factory=list)  # open items of the card's subject
 
 
 def _task_head(task: Task) -> list[str]:
@@ -761,23 +796,47 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
         f'comments_list("{key}"), then comment_ack or comment_add',
         3,
     )
-    decisions = [*data.task_decisions, *data.project_decisions]
+    # The parts design 0027 added shrink first: the backlog items, the related project
+    # decisions with their count of the unrelated ones, the linked sections after the first
+    # (it stays at 6).
     _section(
         sections,
         "## Decisions",
-        [_decision_line(d) for d in decisions],
-        f'decision_list("{slug}")',
+        [_decision_line(d) for d in data.task_decisions],
+        f'decision_list("{slug}", task="{key}")',
         4,
-        extra=data.decisions_total - len(decisions),
+        extra=data.decisions_more,
+    )
+    unrelated = data.decisions_unrelated
+    _section(
+        sections,
+        "## Related project decisions",
+        [_decision_line(d) for d in data.project_decisions],
+        f'decision_list("{slug}")',
+        11,
+        extra=data.related_more,
+        aside=unrelated,
+        aside_label=f"project decision{'' if unrelated == 1 else 's'} not related to this card",
+        more_label="related",
     )
     _section(
         sections,
         "## Linked document sections",
         data.doc_lines,
         f'doc_get("{slug}", doc, section)',
-        6,
+        10,
         # A `Note:` line about a file changed outside relaybay follows a link; it is no link.
         extra=data.doc_links_total - sum(not x.startswith("Note:") for x in data.doc_lines),
+        floor=2 if data.doc_lines[1:2] and data.doc_lines[1].startswith("Note:") else 1,
+        floor_priority=6,
+    )
+    _section(
+        sections,
+        "## Open backlog items",
+        data.backlog_lines,
+        f'backlog_list(project="{slug}")',
+        12,
+        cap=BACKLOG_ITEMS_MAX,
     )
     sections.append(Section("## Rules", [data.rules_line], f'rules_get("{slug}")', 7))
     _section(

@@ -96,6 +96,8 @@ task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), ad
               -- UNIQUE (task_id, project_repo_id)
 task_pr       id, task_id, project_repo_id (optional, SET NULL), url (http/https), number,
               title, added_by, added_at -- UNIQUE (task_id, url)
+task_doc_section  id, task_id (CASCADE), document_id (CASCADE), anchor (as linked), created_by,
+              created_at -- UNIQUE (task_id, document_id, anchor); task_doc_link
 project_area  id, project_id, name, color (a palette key), position, created_at
               -- UNIQUE (project_id, lower(name)); at most 24 per project (the service)
 task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
@@ -112,7 +114,7 @@ report_check  id, report_id, line, location (the `where` of `verified: <where>`)
               -- INDEX (report_id, line); parsed when the report is written
 decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
-              valid_to, recorded_at, superseded_at, superseded_by (decision.id)
+              valid_to, recorded_at, superseded_at, superseded_by (decision.id), area (a name)
 document      id, project_id, slug (UNIQUE per project), title, kind, version, created_at,
               updated_at, source_url (set: lives in a repository)
 document_version  id, document_id, version (UNIQUE per document), body, author, reason,
