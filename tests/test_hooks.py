@@ -317,7 +317,8 @@ async def test_activity_is_coalesced_per_window(tmp_path: Path) -> None:
             assert (await svc.get_task(task.key)).session_activity == "started (startup)"
             [(session_id, timer)] = svc._activity_timers.items()
             loop = asyncio.get_running_loop()
-            assert 0 < timer.when() - loop.time() <= window  # the flush is due at the window's end
+            due = timer.when() - loop.time()
+            assert 0 < due <= window + 1e-6  # the flush is due at the window's end
             timer.cancel()
             svc._flush_activity(session_id)
             await asyncio.gather(*svc._flushes)
