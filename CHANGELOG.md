@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Update from the tray shows how far it got: the notification gives the installer's size, the tray menu and tooltip show `Downloading X.Y.Z: 12 of 39 MB (30 %)` and then `Checking the download...`, and **Cancel update** stops the download (the partial file is deleted, nothing runs). A failed download says that nothing was changed and that Update tries again. The installer and the backup before a new version are unchanged.
+
+### Removed
+
+- Migration 0058 drops the tables of the runs inside the program, unread and unwritten since 0.12: `run`, `run_turn`, `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`, `schedule_run`. Questions and approvals keep every row; their `run_id` and `turn_id` stay as plain numbers. The program backs the database up before the new version migrates; going back to an older release means restoring that backup.
+
 ## [0.15.1] - 2026-11-20
 
 ### Changed

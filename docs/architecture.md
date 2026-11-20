@@ -133,12 +133,11 @@ session       id, external_id UNIQUE (local_<uuid>), name (unique among rows wit
               cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, transcript_path (unread since 0.12),
               no_live_at, no_live_by, last_seen_at, created_at
 app_setting   key PK, value, updated_at, updated_by
-run, run_turn, run_event, run_worktree, run_profile, project_run_defaults, coordinator_wake,
-schedule, schedule_run, usage_file, usage_day, usage_message, usage_task_day, token_budget,
+schedule, usage_file, usage_day, usage_message, usage_task_day, token_budget,
 budget_mark, brake, session_message, intake_source, intake_message, intake_thread
-              -- runs, the coordinator run, profiles, schedules, usage, budgets, the brake,
-              -- session messages and intake of 0.4 to 0.11: kept in the file since 0.12
-              -- (migration 0049 ended what was open), unread
+              -- schedules, usage, budgets, the brake, session messages and intake of 0.4 to
+              -- 0.11: kept in the file since 0.12 (migration 0049 ended what was open),
+              -- unread; the run tables were dropped by migration 0058
 question      id, task_id, run_id (unread since 0.12), session_id (who asked), asked_by, kind (question|look), text,
               options (JSON), default_answer, blocking (0|1), look_url, look_account,
               default_after, asked_at, status (open|answered|defaulted|withdrawn), answer,

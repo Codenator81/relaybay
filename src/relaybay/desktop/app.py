@@ -113,6 +113,10 @@ WATCH_FAILURES = 2
 RESTART_CAP = 3
 RESTART_WINDOW = 600.0
 NOTIFY_SECONDS = 5.0
+# The tray's download line is redrawn at most this often (a menu rebuild on every 64 KiB read
+# would cost more than the download).
+PROGRESS_SECONDS = 0.5
+NOTICE_MAX = 255  # a tray notification's text on Windows (NOTIFYICONDATA.szInfo, with NUL)
 KEEPS_FAILING = "The server keeps failing: see the log {log}"
 TRAY_TITLE = "relaybay"
 
@@ -141,6 +145,12 @@ class DesktopController:
         self.update = updates.UpdateStatus()  # the program's own version against the release
         self._stopped = threading.Event()  # set by Quit: ends the update and watchdog loops
         self._updating = threading.Lock()  # held while Update downloads or runs an installer
+        self._cancel_update = threading.Event()  # Cancel update in the tray menu, or Quit
+        self.update_progress: str | None = None  # the tray's line while Update downloads
+        self._progress_shown_at: float | None = None  # when that line was last redrawn
+        self._progress_phase: str | None = None  # download, verify or cancel
+        self.update_menu_line: str | None = None  # the menu's coarser line (every 10 %)
+        self._progress_lock = threading.Lock()  # the progress lines and Cancel update
         self.clock = time.monotonic
         self.wall_clock = time.time  # the reopen marker outlives the process
         self.installer_started_at: float | None = None  # see quitting_for_update
@@ -334,6 +344,8 @@ class DesktopController:
             self.icon.title = self.tray_title()
 
     def tray_title(self) -> str:
+        if self.update_progress:
+            return f"{TRAY_TITLE} · {self.update_progress}"
         if self.external and self.unreachable_since:
             return f"{TRAY_TITLE} · server unreachable since {self.unreachable_since}"
         return TRAY_TITLE
@@ -451,6 +463,7 @@ class DesktopController:
             update_version=latest.version if latest and self.update.available else None,
             notify=self.desktop.notify,
             quiet=self.desktop.notify_quiet,
+            update_progress=self.update_menu_line,
         )
         return build_menu(state)
 
@@ -480,6 +493,8 @@ class DesktopController:
         icon = self.icon
         if icon is None or not getattr(icon, "HAS_NOTIFICATION", True):
             return
+        if len(text) > NOTICE_MAX:  # Windows takes 255 characters (szInfo); the log has it all
+            text = text[: NOTICE_MAX - 3] + "..."
         try:
             icon.notify(text, title)
         except NotImplementedError:
@@ -573,11 +588,46 @@ class DesktopController:
             self.notify(f"relaybay {latest.version} is available; upgrade with: {command}")
             return False
         folder = update_folder()
-        self.notify(f"Downloading relaybay {latest.version}...")
+        asset = updates.asset_for(latest, kind, updates.machine_arch())
+        size = f" ({updates.megabytes(asset.size)} MB)" if asset else ""
+        self.notify(
+            f"Downloading relaybay {latest.version}{size}. The tray menu shows how far it got"
+            " and has Cancel update."
+        )
+        self._cancel_update.clear()
+        if self._stopped.is_set():
+            self._cancel_update.set()  # a quit came first
+        self._show_update_progress(latest.version, "download", 0, asset.size if asset else None)
         try:
-            path = updates.prepare_installer(latest, kind, updates.machine_arch(), folder)
+            path = updates.prepare_installer(
+                latest,
+                kind,
+                updates.machine_arch(),
+                folder,
+                progress=lambda phase, done, total: self._show_update_progress(
+                    latest.version, phase, done, total
+                ),
+                cancel=self._cancel_update,
+            )
+        except updates.UpdateCancelled:
+            if not self.quitting:
+                self.notify(self._cancelled_text(latest.version))
+            return False
         except updates.UpdateError as exc:
-            self.show_problem(f"relaybay {latest.version} was not installed: {exc}")
+            self.show_problem(
+                f"relaybay {latest.version} was not installed: {exc}\n"
+                "Nothing was changed; Update in the tray menu tries again."
+            )
+            return False
+        finally:
+            with self._progress_lock:
+                cancelled = self._cancel_update.is_set()
+                self._draw_update_progress(latest.version, None, 0, None)
+        if cancelled:
+            # Cancel update while the download was checked: the verified file never runs.
+            path.unlink(missing_ok=True)
+            if not self.quitting:
+                self.notify(self._cancelled_text(latest.version))
             return False
         log.info("starting the installer %s", path)
         # Before the start: the silent Windows setup sends its `desktop --quit` within seconds.
@@ -596,6 +646,57 @@ class DesktopController:
             target=self._after_installer, args=(process,), name="relaybay-installer", daemon=True
         ).start()
         return True
+
+    @staticmethod
+    def _cancelled_text(version: str) -> str:
+        return (
+            f"The update to relaybay {version} was cancelled; nothing was installed."
+            " Update in the tray menu starts it again."
+        )
+
+    def cancel_update(self) -> None:
+        """Tray menu, Cancel update: stop the download; the partial file is deleted and nothing
+        runs, also when the download is already being checked. An installer that already started
+        is not stopped."""
+        with self._progress_lock:
+            if self.update_progress is None or self._cancel_update.is_set():
+                return  # no update running (it may have just ended), or cancelled already
+            self._cancel_update.set()
+            latest = self.update.latest
+            self._draw_update_progress(latest.version if latest else "", "cancel", 0, None)
+
+    def _show_update_progress(
+        self, version: str, phase: str | None, done: int = 0, total: int | None = None
+    ) -> None:
+        """Put the update's progress into the tray tooltip and menu (None: the update is over).
+        Thread-safe against Cancel update: one lock guards the lines and the cancel flag."""
+        with self._progress_lock:
+            if phase is not None and self._cancel_update.is_set():
+                return  # keep "Cancelling..." until the download stops
+            self._draw_update_progress(version, phase, done, total)
+
+    def _draw_update_progress(
+        self, version: str, phase: str | None, done: int, total: int | None
+    ) -> None:
+        """The tooltip carries the exact line, redrawn at most twice a second and always on a new
+        phase. The menu is rebuilt only when its coarser line changes (a new phase or another
+        10 %): a rebuild replaces a menu the owner may hold open to click Cancel update."""
+        text = None if phase is None else updates.progress_text(version, phase, done, total)
+        menu = None if phase is None else updates.progress_text(version, phase, done, total, True)
+        now = self.clock()
+        last = self._progress_shown_at
+        new_phase = phase != self._progress_phase
+        if text != self.update_progress and (
+            new_phase or last is None or now - last >= PROGRESS_SECONDS
+        ):
+            self.update_progress = text
+            self._progress_shown_at = None if text is None else now
+            if self.icon is not None:
+                self.icon.title = self.tray_title()
+        self._progress_phase = phase
+        if menu != self.update_menu_line:
+            self.update_menu_line = menu
+            self.refresh_menu()
 
     def _after_installer(self, process: subprocess.Popen[bytes]) -> None:
         """Setup asks for the quit before it installs, so its exit without one means it was
@@ -632,6 +733,7 @@ class DesktopController:
             return
         self.quitting = True
         self._stopped.set()
+        self._cancel_update.set()  # a download in progress stops; its partial file is deleted
         if reason == QUIT_BY_IPC and self.quitting_for_update():
             reason = f"{reason}, for the update installer"
         log.info("quit: %s", reason)

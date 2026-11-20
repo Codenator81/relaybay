@@ -32,6 +32,7 @@ class MenuState:
     update_version: str | None = None  # a newer release the program found
     notify: bool = True  # tray notifications are on
     quiet: bool = False
+    update_progress: str | None = None  # Update is running: the line that says how far it got
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,15 +42,20 @@ class Entry:
     checked: bool | None = None  # None: not a checkbox
     default: bool = False  # the item a click (Windows: double click) on the icon runs
     submenu: tuple["Entry", ...] = ()
+    enabled: bool = True  # False: a greyed line that only tells something
 
 
 def build_menu(state: MenuState) -> tuple[Entry, ...]:
     restart = "Restart server" if state.server_mode == "embedded" else "Reconnect"
-    update = (
-        (Entry(f"Update to {state.update_version}", "install_update"),)
-        if state.update_version
-        else ()
-    )
+    if state.update_progress:
+        update: tuple[Entry, ...] = (
+            Entry(state.update_progress, enabled=False),
+            Entry("Cancel update", "cancel_update"),
+        )
+    elif state.update_version:
+        update = (Entry(f"Update to {state.update_version}", "install_update"),)
+    else:
+        update = ()
     quiet = (
         (Entry("Quiet notifications", "toggle_quiet", checked=state.quiet),) if state.notify else ()
     )
@@ -180,6 +186,8 @@ def to_pystray(entries: tuple[Entry, ...], dispatch: Callable[[str], None]) -> A
             return pystray.Menu.SEPARATOR
         if entry.submenu:
             return pystray.MenuItem(entry.text, pystray.Menu(*map(item, entry.submenu)))
+        if not entry.enabled:
+            return pystray.MenuItem(entry.text, lambda _icon, _item: None, enabled=False)
         action = entry.action
         assert action is not None
         checked = entry.checked

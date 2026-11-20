@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +39,7 @@ JSON_MAX = 1024 * 1024
 SUMS_MAX = 1024 * 1024
 DOWNLOAD_MAX = 200 * 1024 * 1024
 CHUNK = 1024 * 1024
+DOWNLOAD_CHUNK = 64 * 1024  # small reads: progress and Cancel answer within a second on a slow line
 START_DELAY = 30.0  # seconds after start-up before the first check
 HOURS_MAX = 720  # update_check_hours: at most once a month
 
@@ -47,6 +50,15 @@ _SUM_LINE = re.compile(r"([0-9a-fA-F]{64}) [ *](.+)")
 
 class UpdateError(Exception):
     """The check or the download failed; the message is for the log, the tray or the form."""
+
+
+class UpdateCancelled(UpdateError):
+    """The owner cancelled the download (tray menu, Cancel update) or the program quit."""
+
+
+# (phase, bytes done, bytes in all or None): phase "download" while the installer streams in,
+# "verify" while its SHA-256 is checked.
+Progress = Callable[[str, int, int | None], None]
 
 
 class Opener(Protocol):
@@ -222,9 +234,18 @@ def upgrade_hint(kind: str, version: str) -> str | None:
 
 
 def download(
-    url: str, dest: Path, *, opener: Opener | None = None, max_bytes: int = DOWNLOAD_MAX
+    url: str,
+    dest: Path,
+    *,
+    opener: Opener | None = None,
+    max_bytes: int = DOWNLOAD_MAX,
+    size: int | None = None,
+    progress: Progress | None = None,
+    cancel: threading.Event | None = None,
 ) -> Path:
-    """Stream `url` to `dest` over HTTPS only, at most `max_bytes`; a partial file never stays."""
+    """Stream `url` to `dest` over HTTPS only, at most `max_bytes`; a partial file never stays.
+    `progress` hears the bytes so far after every read (out of `Content-Length`, else `size`);
+    a set `cancel` stops the download with UpdateCancelled."""
     if not url.startswith(DOWNLOAD_PREFIX):
         raise UpdateError(f"refusing to download from {url}")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -237,13 +258,23 @@ def download(
             length = response.headers.get("Content-Length")
             if length and length.isdigit() and int(length) > max_bytes:
                 raise UpdateError(f"{dest.name} is larger than {max_bytes} bytes")
+            expected = int(length) if length and length.isdigit() else size
             total = 0
+            if progress is not None:
+                progress("download", 0, expected)
             with part.open("wb") as fh:
-                while chunk := response.read(CHUNK):
+                while True:
+                    if cancel is not None and cancel.is_set():
+                        raise UpdateCancelled(f"the download of {dest.name} was cancelled")
+                    chunk = response.read(DOWNLOAD_CHUNK)
+                    if not chunk:
+                        break
                     total += len(chunk)
                     if total > max_bytes:
                         raise UpdateError(f"{dest.name} is larger than {max_bytes} bytes")
                     fh.write(chunk)
+                    if progress is not None:
+                        progress("download", total, expected)
         part.replace(dest)
     except (OSError, http.client.HTTPException, ValueError) as exc:
         raise UpdateError(f"the download of {dest.name} failed: {exc}") from exc
@@ -291,10 +322,18 @@ def clean_folder(folder: Path) -> None:
 
 
 def prepare_installer(
-    release: Release, kind: str, arch: str, folder: Path, opener: Opener | None = None
+    release: Release,
+    kind: str,
+    arch: str,
+    folder: Path,
+    opener: Opener | None = None,
+    *,
+    progress: Progress | None = None,
+    cancel: threading.Event | None = None,
 ) -> Path:
     """Download this system's installer of `release` into `folder` and verify it; a file that
-    fails the check is deleted. Returns the verified file."""
+    fails the check, or a download cancelled through `cancel`, is deleted. Returns the verified
+    file."""
     asset = asset_for(release, kind, arch)
     if asset is None:
         raise UpdateError(
@@ -308,13 +347,50 @@ def prepare_installer(
         raise UpdateError(f"{asset.name} is larger than {DOWNLOAD_MAX} bytes")
     clean_folder(folder)
     sums_text = _get(sums.url, opener, DOWNLOAD_TIMEOUT, SUMS_MAX).decode("utf-8", "replace")
-    path = download(asset.url, folder / asset.name, opener=opener)
+    path = download(
+        asset.url,
+        folder / asset.name,
+        opener=opener,
+        size=asset.size,
+        progress=progress,
+        cancel=cancel,
+    )
     try:
+        if cancel is not None and cancel.is_set():
+            raise UpdateCancelled(f"the download of {asset.name} was cancelled")
+        if progress is not None:
+            progress("verify", asset.size, asset.size)
         verify_sha256(path, sums_text)
     except UpdateError:
         path.unlink(missing_ok=True)
         raise
     return path
+
+
+def megabytes(count: int) -> str:
+    """Bytes as the tray shows them: whole MB from 10 MB on, one decimal below."""
+    value = count / (1024 * 1024)
+    return f"{value:.0f}" if value >= 10 else f"{value:.1f}"
+
+
+def progress_text(
+    version: str, phase: str, done: int, total: int | None, coarse: bool = False
+) -> str:
+    """The tray's line for a running update: `Downloading 0.15.2: 12 of 39 MB (31 %)` in the
+    tooltip; `coarse` (the menu) moves in 10 % steps: `Downloading 0.15.2 (39 MB): 30 %`."""
+    if phase == "verify":
+        return f"Checking the download of {version}..."
+    if phase == "cancel":
+        return f"Cancelling the update to {version}..."
+    if coarse:
+        if not total:
+            return f"Downloading {version}..."
+        step = min(done * 10 // total, 10) * 10
+        return f"Downloading {version} ({megabytes(total)} MB): {step} %"
+    if total:
+        percent = min(done * 100 // total, 100)
+        return f"Downloading {version}: {megabytes(done)} of {megabytes(total)} MB ({percent} %)"
+    return f"Downloading {version}: {megabytes(done)} MB"
 
 
 def installer_command(path: Path, kind: str) -> list[str]:

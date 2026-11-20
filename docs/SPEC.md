@@ -3148,11 +3148,11 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0050_session_surface` | Additive: `session.surface` (`desktop`, `terminal` or NULL), `session.entrypoint` (the raw `CLAUDE_CODE_ENTRYPOINT`), `session.start_cwd` (the resume folder) and `task_session.unbound_reason` (`session_end` or NULL), [§1](#spec-session-surface) |
 | `0051_backlog_registry` | Additive, all nullable: `backlog_item.kind` (`bug`, `idea`, `question`, `debt`), `location`, `origin_text`, `triage_note`, `duplicate_of` (another item, `ON DELETE SET NULL`, indexed), `found_on` ([§12](#spec-backlog-model)). Existing items have no kind |
 | `0052_archive_and_launch` | Additive, no backfill: `task.archived_from` (`live` or NULL, [§2](#spec-board-archive-live)) and `session.launched_by` (the starter's session id, `ON DELETE SET NULL`, [§4](#spec-hooks-launch-bind)); `task_session.unbound_reason` may now also be `handed_over`. Rollback: an older release ignores both columns, but its stage changes do not clear `archived_from`, so after a downgrade and a new upgrade a card archived from live and moved on in between may keep a stale `live` there; if the done window later archives it, Back from the archive returns it to live (move it by hand) |
+| `0058_drop_run_tables` | Drops the run tables, unread and unwritten since 0.12: `run`, `run_turn`, `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`, `schedule_run`. `question` and `approval` rebuilt with foreign keys off: every row and column kept, `run_id` and `turn_id` stay as plain numbers without their foreign keys (SQLite refuses writes into a table whose foreign key names a missing table). The backup before a new version ([§13](#spec-backups)) is taken before it runs; rollback is that backup (an older release needs the dropped tables) |
 
-The tables and columns of runs, the coordinator run, profiles and schedules (`run`, `run_turn`,
-`run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`,
-`schedule`, `schedule_run`, `project.run_retention` and the run columns of `question` and
-`approval`), of usage and budgets (`usage_file`, `usage_day`, `usage_message`, `usage_task_day`,
+The run tables are dropped by migration 0058. What stays in the file since 0.12, unread: of the
+coordinator run and schedules `schedule`, `project.run_retention` and the run columns of
+`question` and `approval` (plain numbers since 0058); of usage and budgets (`usage_file`, `usage_day`, `usage_message`, `usage_task_day`,
 `token_budget`, `budget_mark`, `session.transcript_path`), of the brake (`brake`), of intake
 (`intake_source`, `intake_message`, `intake_thread`, `task.autonomy`, `task.answer_message_id`,
 `project.autonomy`) and of session messages (`session_message`) stay in the file since 0.12, unread; dropping them is a later release's
@@ -3577,6 +3577,20 @@ quits. The SHA-256 from the same release is integrity only: nothing is signed. A
 not the installed one (run from a uv tool, pipx or a checkout) shows its upgrade command instead.
 A second click while a download or an installer runs is ignored, and Windows setup runs one at a
 time (`SetupMutex`).
+
+**Progress and Cancel.** Update says it started in a notification with the installer's size
+("Downloading relaybay X.Y.Z (39 MB)..."). While it downloads, the tray tooltip shows
+`Downloading X.Y.Z: 12 of 39 MB (30 %)` (only the megabytes when the size is not known; redrawn at
+most twice a second), and the tray menu shows a greyed line in place of Update,
+`Downloading X.Y.Z (39 MB): 30 %` in 10 % steps (the menu is rebuilt only for a new step, so one
+held open stays usable), then `Checking the download of X.Y.Z...` during the SHA-256 check, and
+**Cancel update**. Cancel update, or Quit, stops the download at its next read (64 KiB; opening the
+connection or reading `SHA256SUMS.txt` may take up to its 60 s timeout first), also during the
+check: the partial or verified file is deleted, nothing runs, and a notification says that nothing
+was installed (none after Quit). A failed download or check says what failed and that nothing was
+changed; a tray notification longer than Windows takes (255 characters) is cut, the log has it
+whole. Once the installer has started there is nothing to cancel; the installer and
+the backup before a new version work as before.
 
 <a id="spec-backups"></a>
 

@@ -21,10 +21,19 @@ async def connect(path: Path) -> aiosqlite.Connection:
     return conn
 
 
-async def _broken_keys(conn: aiosqlite.Connection) -> set[tuple[str, int, str, int]]:
-    """Rows whose foreign key points nowhere: (table, rowid, parent table, key index)."""
+async def _broken_keys(conn: aiosqlite.Connection) -> set[tuple[str, int, str, str]]:
+    """Rows whose foreign key points nowhere: (table, rowid, parent table, key column). By
+    column, not by the key's index: a rebuild that drops a key renumbers the others."""
     async with conn.execute("PRAGMA foreign_key_check") as cur:
-        return {(r[0], r[1], r[2], r[3]) for r in await cur.fetchall()}
+        found = await cur.fetchall()
+    columns: dict[tuple[str, int], str] = {}
+    for table in {r[0] for r in found}:
+        async with conn.execute(
+            'SELECT id, "from" FROM pragma_foreign_key_list(?)', (table,)
+        ) as cur:
+            for key, column in await cur.fetchall():
+                columns.setdefault((table, key), column)  # a composite key: its first column
+    return {(r[0], r[1], r[2], columns.get((r[0], r[3]), str(r[3]))) for r in found}
 
 
 def _migrations() -> list[tuple[int, str]]:
@@ -36,14 +45,17 @@ def _migrations() -> list[tuple[int, str]]:
     return sorted(found)
 
 
-async def migrate(conn: aiosqlite.Connection) -> int:
-    """Apply numbered migrations newer than `PRAGMA user_version`; returns the resulting version."""
+async def migrate(conn: aiosqlite.Connection, upto: int | None = None) -> int:
+    """Apply numbered migrations newer than `PRAGMA user_version` (up to `upto`, for tests of an
+    older migration); returns the resulting version."""
     async with conn.execute("PRAGMA user_version") as cur:
         row = await cur.fetchone()
     current = row[0] if row else 0
     for number, sql in _migrations():
         if number <= current:
             continue
+        if upto is not None and number > upto:
+            break
         # A table rebuild runs with foreign keys off (the pragma is a no-op inside a
         # transaction), and the result is checked before the commit.
         rebuild = sql.startswith(FOREIGN_KEYS_OFF)

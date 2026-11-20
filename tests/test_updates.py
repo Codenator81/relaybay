@@ -226,6 +226,89 @@ def test_download_limits(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_download_reports_progress_and_size_without_content_length(tmp_path: Path) -> None:
+    url = DL + "setup.exe"
+    body = b"x" * (updates.DOWNLOAD_CHUNK * 2 + 10)
+    seen: list[tuple[str, int, int | None]] = []
+    updates.download(
+        url,
+        tmp_path / "setup.exe",
+        opener=FakeOpener({url: body}),
+        size=len(body),
+        progress=lambda *step: seen.append(step),
+    )
+    assert seen[0] == ("download", 0, len(body))
+    assert seen[-1] == ("download", len(body), len(body))
+    assert len(seen) == 4  # the start and one line per read
+
+
+def test_a_cancelled_download_leaves_no_file(tmp_path: Path) -> None:
+    url = DL + "setup.exe"
+    cancel = threading.Event()
+
+    def stop_after_first(phase: str, done: int, total: int | None) -> None:
+        if done:
+            cancel.set()
+
+    with pytest.raises(updates.UpdateCancelled):
+        updates.download(
+            url,
+            tmp_path / "setup.exe",
+            opener=FakeOpener({url: b"x" * (updates.DOWNLOAD_CHUNK * 3)}),
+            progress=stop_after_first,
+            cancel=cancel,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_prepare_installer_reports_the_check_and_honours_cancel(tmp_path: Path) -> None:
+    payload = b"installer bytes"
+    sums = f"{hashlib.sha256(payload).hexdigest()}  relaybay-{V}-windows-x64-setup.exe\n"
+    release, opener = installer_release(payload, sums)
+    phases: list[str] = []
+    updates.prepare_installer(
+        release,
+        "desktop-windows",
+        "x64",
+        tmp_path,
+        opener,
+        progress=lambda phase, done, total: phases.append(phase),
+    )
+    assert phases[0] == "download" and phases[-1] == "verify"
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(updates.UpdateCancelled):
+        updates.prepare_installer(
+            release, "desktop-windows", "x64", tmp_path / "again", opener, cancel=cancel
+        )
+    assert list((tmp_path / "again").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("phase", "done", "total", "text"),
+    [
+        ("download", 12 * 2**20, 39 * 2**20, "Downloading 0.15.2: 12 of 39 MB (30 %)"),
+        ("download", 2**19, 2**20 * 3, "Downloading 0.15.2: 0.5 of 3.0 MB (16 %)"),
+        ("download", 5 * 2**20, None, "Downloading 0.15.2: 5.0 MB"),
+        ("download", 9, 0, "Downloading 0.15.2: 0.0 MB"),
+        ("verify", 1, 1, "Checking the download of 0.15.2..."),
+        ("cancel", 0, None, "Cancelling the update to 0.15.2..."),
+    ],
+)
+def test_progress_text(phase: str, done: int, total: int | None, text: str) -> None:
+    assert updates.progress_text("0.15.2", phase, done, total) == text
+
+
+def test_progress_text_for_the_menu_moves_in_steps_of_ten() -> None:
+    def line(done: int, total: int | None) -> str:
+        return updates.progress_text("0.15.2", "download", done, total, coarse=True)
+
+    assert line(12 * 2**20, 39 * 2**20) == "Downloading 0.15.2 (39 MB): 30 %"
+    assert line(13 * 2**20, 39 * 2**20) == line(12 * 2**20, 39 * 2**20)
+    assert line(39 * 2**20, 39 * 2**20) == "Downloading 0.15.2 (39 MB): 100 %"
+    assert line(5, None) == "Downloading 0.15.2..."
+
+
 def test_sums_formats() -> None:
     text = f"{'A' * 64}  one.exe\n{'b' * 64} *two.deb\ngarbage\n"
     assert updates.parse_sums(text) == {"one.exe": "a" * 64, "two.deb": "b" * 64}
@@ -404,7 +487,11 @@ def test_update_action_never_runs_a_failed_download(
     monkeypatch.setattr(updates, "launch_installer", lambda path, kind: launched.append(path))
     controller.install_update()
     assert launched == [] and not controller.quitting
-    assert said[-1] == f"relaybay {V} was not installed: SHA-256 does not match"
+    assert said[-1] == (
+        f"relaybay {V} was not installed: SHA-256 does not match\n"
+        "Nothing was changed; Update in the tray menu tries again."
+    )
+    assert controller.update_progress is None  # the tray line is gone again
 
 
 def test_update_action_starts_a_verified_installer_and_quits(
@@ -442,6 +529,132 @@ def test_an_installer_that_does_not_start_is_not_an_update_quit(
     with pytest.raises(OSError, match="blocked"):
         controller.install_update()
     assert controller.installer_started_at is None and not controller.quitting
+
+
+def test_update_progress_in_the_menu_and_tooltip_with_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, said = controller_with_update(tmp_path)
+    monkeypatch.setattr("relaybay.desktop.app.install_kind", lambda: "desktop-windows")
+    monkeypatch.setattr(
+        "relaybay.desktop.app.platformdirs.user_cache_dir", lambda *a, **k: tmp_path
+    )
+    name = f"relaybay-{V}-windows-x64-setup.exe"
+    controller.update = UpdateStatus(
+        current="0.6.0", latest=Release(V, PAGE, (Asset(name, DL + name, 39 * 2**20),))
+    )
+    now = [100.0]
+    controller.clock = lambda: now[0]
+    seen: list[tuple[str | None, str]] = []
+
+    class Icon:
+        title = "relaybay"
+        menu: Any = None
+
+        def update_menu(self) -> None:
+            seen.append((controller.update_menu_line, self.title))
+
+    controller.icon = Icon()
+    monkeypatch.setattr("relaybay.desktop.tray.to_pystray", lambda entries, dispatch: entries)
+
+    def fake_prepare(*args: Any, progress: Any, cancel: threading.Event, **kwargs: Any) -> Path:
+        now[0] += 1
+        progress("download", 12 * 2**20, 39 * 2**20)
+        progress("download", 13 * 2**20, 39 * 2**20)  # within half a second: not redrawn
+        menu = controller.menu_entries()
+        texts = [entry.text for entry in menu]
+        assert f"Downloading {V} (39 MB): 30 %" in texts and "Cancel update" in texts
+        assert not [e for e in menu if e.text == f"Update to {V}"]
+        assert not next(e for e in menu if e.text.startswith("Downloading")).enabled
+        now[0] += 1
+        controller.cancel_update()
+        progress("download", 14 * 2**20, 39 * 2**20)  # "Cancelling..." stays
+        assert controller.update_progress == f"Cancelling the update to {V}..."
+        assert cancel.is_set()
+        raise updates.UpdateCancelled("cancelled")
+
+    monkeypatch.setattr(updates, "prepare_installer", fake_prepare)
+    controller.install_update()
+    assert said[0].startswith(f"Downloading relaybay {V} (39 MB).")
+    assert said[-1].startswith(f"The update to relaybay {V} was cancelled; nothing was installed")
+    # The menu is rebuilt only for a new 10 % step or phase; the tooltip has the exact line.
+    assert seen == [
+        (f"Downloading {V} (39 MB): 0 %", f"relaybay · Downloading {V}: 0.0 of 39 MB (0 %)"),
+        (f"Downloading {V} (39 MB): 30 %", f"relaybay · Downloading {V}: 12 of 39 MB (30 %)"),
+        (f"Cancelling the update to {V}...", f"relaybay · Cancelling the update to {V}..."),
+        (None, "relaybay"),
+    ]
+    assert controller.menu_entries()[-3].text == f"Update to {V}"  # Update works again
+    assert controller._updating.acquire(blocking=False)
+    controller._updating.release()
+
+
+def test_cancel_while_the_download_is_checked_runs_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, said = controller_with_update(tmp_path)
+    launched: list[Path] = []
+    monkeypatch.setattr("relaybay.desktop.app.install_kind", lambda: "desktop-macos")
+    monkeypatch.setattr(
+        "relaybay.desktop.app.platformdirs.user_cache_dir", lambda *a, **k: tmp_path
+    )
+    verified = tmp_path / "x.dmg"
+
+    def fake_prepare(*args: Any, progress: Any, **kwargs: Any) -> Path:
+        progress("verify", 10, 10)
+        controller.cancel_update()  # the check passes after the click
+        verified.write_bytes(b"verified")
+        return verified
+
+    monkeypatch.setattr(updates, "prepare_installer", fake_prepare)
+    monkeypatch.setattr(updates, "launch_installer", lambda path, kind: launched.append(path))
+    controller.install_update()
+    assert launched == [] and not controller.quitting and not verified.exists()
+    assert said[-1].startswith(f"The update to relaybay {V} was cancelled")
+    assert controller.update_progress is None and controller.update_menu_line is None
+    assert controller._updating.acquire(blocking=False)
+    controller._updating.release()
+
+
+def test_cancel_after_the_update_ended_changes_nothing(tmp_path: Path) -> None:
+    controller, _said = controller_with_update(tmp_path)
+    controller.cancel_update()  # the line was just cleared: no stuck "Cancelling..."
+    assert controller.update_progress is None and controller.update_menu_line is None
+    assert not controller._cancel_update.is_set()
+
+
+def test_a_long_notice_is_cut_to_what_windows_takes(tmp_path: Path) -> None:
+    controller = DesktopController(tmp_path)
+    got: list[str] = []
+
+    class Icon:
+        def notify(self, text: str, title: str) -> None:
+            got.append(text)
+
+    controller.icon = Icon()
+    controller._icon_notify("x" * 400, "relaybay")
+    controller._icon_notify("short", "relaybay")
+    assert len(got[0]) == 255 and got[0].endswith("...") and got[1] == "short"
+    controller.icon = None
+
+
+def test_a_quit_during_the_download_cancels_it_without_a_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, said = controller_with_update(tmp_path)
+    monkeypatch.setattr("relaybay.desktop.app.install_kind", lambda: "desktop-macos")
+    monkeypatch.setattr(
+        "relaybay.desktop.app.platformdirs.user_cache_dir", lambda *a, **k: tmp_path
+    )
+
+    def fake_prepare(*args: Any, cancel: threading.Event, **kwargs: Any) -> Path:
+        controller.quit("tray menu")
+        assert cancel.is_set()
+        raise updates.UpdateCancelled("cancelled")
+
+    monkeypatch.setattr(updates, "prepare_installer", fake_prepare)
+    controller.install_update()
+    assert len(said) == 1 and said[0].startswith("Downloading")
 
 
 def test_program_check_now_reports_and_marks_the_menu(

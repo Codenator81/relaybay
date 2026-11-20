@@ -9,7 +9,7 @@ import aiosqlite
 from starlette.testclient import TestClient
 
 from relaybay.db import repo
-from relaybay.db.connection import connect
+from relaybay.db.connection import connect, migrate
 from relaybay.security import csrf_token
 from relaybay.service import LEFTOVER_WORKTREES_KEY, Service
 from tests.conftest import BASE, run_in_app
@@ -125,34 +125,9 @@ async def test_0049_closes_what_runs_left_open_and_keeps_every_row(tmp_path: Pat
     before = await counts(conn)
     await conn.close()
 
-    svc = Service(db)
-    await svc.start()
-    try:
-        inbox = await svc.inbox(["owner"])
-        assert inbox.leftover_worktrees == [
-            "/code/.relaybay-runs/acme-shop-1-run1/shop",
-            "/code/.relaybay-runs/acme-shop-2-run2/shop",
-        ]
-        assert [q.id for q in inbox.questions] == [2]  # the desktop session's stays open
-        assert [a.id for a in inbox.approvals] == [3]
-        closed = await svc.get_task("acme-shop-1")  # its question went with the run
-        assert closed.waiting_on is None
-        assert closed.next_step.startswith("Runs inside the program were removed in 0.12")
-        kept = await svc.get_task("acme-shop-2")  # the desktop session's question stays
-        assert kept.waiting_on == "owner"
-        assert kept.next_step.startswith("Answer question 2")
-        sessions = {r.session.name: r.session.status for r in await svc.list_sessions()}
-        assert sessions["run-1"] == "ended"
-        await svc.dismiss_leftover_worktrees()
-        assert (await svc.inbox(["owner"])).leftover_worktrees == []
-        assert [e.kind for e in await svc.activity(kind="inbox.worktrees_seen")] == [
-            "inbox.worktrees_seen"
-        ]
-    finally:
-        await svc.close()
-
     conn = await connect(db)
     try:
+        assert await migrate(conn, upto=49) == 49
         assert await counts(conn) == before
         assert await rows(conn, "SELECT id, status, status_reason, ended_by FROM run") == [
             (1, "ended", REASON, "relaybay"),
@@ -189,6 +164,32 @@ async def test_0049_closes_what_runs_left_open_and_keeps_every_row(tmp_path: Pat
         ]
     finally:
         await conn.close()
+
+    svc = Service(db)
+    await svc.start()  # 0050 onwards, 0058 drops the run tables
+    try:
+        inbox = await svc.inbox(["owner"])
+        assert inbox.leftover_worktrees == [
+            "/code/.relaybay-runs/acme-shop-1-run1/shop",
+            "/code/.relaybay-runs/acme-shop-2-run2/shop",
+        ]
+        assert [q.id for q in inbox.questions] == [2]  # the desktop session's stays open
+        assert [a.id for a in inbox.approvals] == [3]
+        closed = await svc.get_task("acme-shop-1")  # its question went with the run
+        assert closed.waiting_on is None
+        assert closed.next_step.startswith("Runs inside the program were removed in 0.12")
+        kept = await svc.get_task("acme-shop-2")  # the desktop session's question stays
+        assert kept.waiting_on == "owner"
+        assert kept.next_step.startswith("Answer question 2")
+        sessions = {r.session.name: r.session.status for r in await svc.list_sessions()}
+        assert sessions["run-1"] == "ended"
+        await svc.dismiss_leftover_worktrees()
+        assert (await svc.inbox(["owner"])).leftover_worktrees == []
+        assert [e.kind for e in await svc.activity(kind="inbox.worktrees_seen")] == [
+            "inbox.worktrees_seen"
+        ]
+    finally:
+        await svc.close()
 
 
 async def test_0049_without_leftover_worktrees_adds_no_inbox_line(tmp_path: Path) -> None:

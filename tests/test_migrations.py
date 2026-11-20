@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 57
+LATEST = 58
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -399,12 +399,9 @@ async def test_upgrade_from_0029_adds_the_run_tables(tmp_path: Path) -> None:
     finally:
         await conn.close()
 
-    svc = Service(db)
-    await svc.start()  # migrates; the run tables stay in the file, unread since 0.12
-    await svc.close()
-
     conn = await connect(db)
     try:
+        assert await migrate(conn, upto=57) == 57  # the run tables until 0058 drops them
         for table, wanted in (
             ("run", {"run_open_task", "run_claude_session", "run_project"}),
             ("run_turn", {"run_turn_active", "run_turn_queued"}),

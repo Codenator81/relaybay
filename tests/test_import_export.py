@@ -1337,7 +1337,7 @@ async def test_a_stale_hash_does_not_migrate(
             "project_run_defaults",
             "run_profile",
         ):
-            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"DROP TABLE IF EXISTS {table}")  # the run tables went in 0058
         conn.execute("PRAGMA user_version = 14")
         conn.commit()
     code = run_cli(home, "import", root, "--apply", "--expect", "deadbeefdeadbeef")
