@@ -334,6 +334,9 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
 .col-test { border-top-color: var(--stage-test); }
 .col-live { border-top-color: var(--stage-live); }
 .col-done { border-top-color: var(--stage-done); }
+.col-archive { border-top-color: var(--muted); }
+/* An archived card leaves the Archive only by Back from the archive (board.js skips its drag). */
+.col-archive .card-menu [data-move], .col-archive .card-menu [data-move-stage] { display: none; }
 
 .col-head {
   display: flex;
@@ -370,11 +373,13 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
 @media (min-width: 761px) {
   .board[data-page="1"] .col-live,
   .board[data-page="1"] .col-done,
+  .board[data-page="1"] .col-archive,
   .board[data-page="2"] .col-plan,
   .board[data-page="2"] .col-dev,
   .board[data-page="2"] .col-review,
   .board[data-page="2"] .col-test { display: none; }
   .board[data-page="2"] { grid-template-columns: repeat(2, minmax(196px, 1fr)); }
+  .board.has-archive[data-page="2"] { grid-template-columns: repeat(3, minmax(196px, 1fr)); }
 }
 
 /* minmax(0, 1fr) and min-width: 0 keep long branch names, titles and chips inside the card
@@ -860,14 +865,16 @@ a.badge.tracker:hover { text-decoration: underline; }
   #tab-review:checked ~ .board .col-review,
   #tab-test:checked ~ .board .col-test,
   #tab-live:checked ~ .board .col-live,
-  #tab-done:checked ~ .board .col-done { display: block; }
+  #tab-done:checked ~ .board .col-done,
+  #tab-archive:checked ~ .board .col-archive { display: block; }
 
   #tab-plan:checked ~ .stage-tabs .tab-plan,
   #tab-dev:checked ~ .stage-tabs .tab-dev,
   #tab-review:checked ~ .stage-tabs .tab-review,
   #tab-test:checked ~ .stage-tabs .tab-test,
   #tab-live:checked ~ .stage-tabs .tab-live,
-  #tab-done:checked ~ .stage-tabs .tab-done { color: var(--text); border-bottom-color: var(--accent); }
+  #tab-done:checked ~ .stage-tabs .tab-done,
+  #tab-archive:checked ~ .stage-tabs .tab-archive { color: var(--text); border-bottom-color: var(--accent); }
 
   .stage-radio:focus-visible ~ .stage-tabs { outline: 2px solid var(--accent); }
 }

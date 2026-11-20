@@ -134,7 +134,8 @@ program as its client:
   and marked "stale".
 - **Done column and archive** — the `done` column shows tasks closed in the last
   `done_window_days` (default 7); older ones are archived and come back with "Show archived" or a
-  search by key or title (`/p/<project>?archived=1`, `?q=…`). **Archive** on a done card sends it
+  search by key or title (`/p/<project>?archived=1`, `?q=…`); "Show archived" lists them in
+  an **Archive** column after done, newest archived first. **Archive** on a done card sends it
   there at once, **Back from the archive** brings it back for another window. Done cards hide
   "waiting on" and the next step. A card archived by hand more than `archive_purge_days` ago
   (default 30, 0 never) is deleted by relaybay, and an archived project can be deleted on request

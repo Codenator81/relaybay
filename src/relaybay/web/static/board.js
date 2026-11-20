@@ -208,10 +208,11 @@
     });
   }
 
-  // Archiving a live card closes it: the live and the done columns are both refetched.
+  // Archiving a live card closes it: the live, the done and the Archive columns are refetched.
   function refreshArchive() {
     refresh(document.getElementById("col-live"));
     refresh(document.getElementById("col-done"));
+    refresh(document.getElementById("col-archive"));
   }
 
   // "Archive" / "Back from the archive" on a card: the columns are refetched, so the card
@@ -282,6 +283,7 @@
     }
     var menu = item.closest(".card-menu");
     var card = item.closest(".card[data-key]");
+    if (!column(card)) return;  // the Archive column is not a stage
     var home = spot(card);
     menu.open = false;
     if (item.dataset.move === "up" || item.dataset.move === "down") {
@@ -412,7 +414,7 @@
   document.addEventListener("pointerdown", function (event) {
     if (drag || press || event.button !== 0 || !event.isPrimary) return;
     var card = event.target.closest && event.target.closest("#board .card[data-key]");
-    if (!card) return;
+    if (!card || !column(card)) return;  // a card in the Archive column is not dragged
     // Links, buttons and the menu keep their own clicks; the title link covers the rest.
     var own = event.target.closest("button, summary, details, form, input, select, textarea, a");
     if (own && !own.matches("a.card-open")) return;

@@ -772,7 +772,9 @@ Test →" and "← Live · Done") and the keyboard ← / → switch pages; the k
 inputs, text areas, selects and editable text, with a modifier key, and while a dialog or the
 screenshot viewer is open. The page is in the URL (`?page=2`, kept with search and archive
 filters; out of range clamps), switching does not reload, and live updates keep refreshing every
-column. Below 760 px there is no pager: the stage tab bar has six tabs.
+column. Below 760 px there is no pager: the stage tab bar has six tabs. With "Show archived"
+the Archive column ([below](#spec-board-done)) joins page 2 ("← Live · Done · Archive") and the
+tab bar gets a seventh tab, **Archive**.
 
 <a id="spec-board-cards"></a>
 
@@ -1067,6 +1069,15 @@ changes then refresh the details instead of reloading the page).
 **Done column and archive.** The done column shows tasks closed within `done_window_days` (default
 7), capped at 200 with a note. Older done tasks are archived on the board only: "Show archived"
 (`?archived=1`) and the search box (`?q=`, key or title, also searches the archive) bring them back.
+"Show archived" adds an **Archive** column after done (`id="col-archive"`, refetched live from
+`GET /p/<project>/col/archive`, which is not a stage): it lists every archived task of the project
+(by hand, from live or by age), newest archived first (the hand mark's time, or the end of the done
+window for one archived by age), capped at 200 with a note, with the board's filters (search, stage,
+area, waiting on, session) applied; done then shows only the tasks not in the archive. Without
+"Show archived" there is no Archive column, and a search shows its archived hits in done. The
+Archive column is no drop target and its cards cannot be dragged or moved from the card menu: a
+card leaves it by **Back from the archive**. `task.archived` and `task.unarchived` (and any other
+task event touching done) refetch the done and the Archive columns.
 With `require_tracker_log = true` a done task without the tracker mark is never archived by age,
 in a project that keeps a tracker (any of its cards has or ever had a tracker reference, or has a tracker link now);
 in other projects done cards leave by age and show no "not logged" badge.

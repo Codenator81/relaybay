@@ -50,7 +50,7 @@ from relaybay.domain.models import Task
 from relaybay.domain.review import MB
 from relaybay.domain.rules import rules_markdown
 from relaybay.domain.stages import BOARD_PAGES, STAGES, Stage, parse_stage
-from relaybay.domain.tasks import is_archived
+from relaybay.domain.tasks import archived_since, is_archived
 from relaybay.mcp_server import format as fmt
 from relaybay.mcp_server.format import age, event_detail, event_subject
 from relaybay.policy import PRESETS
@@ -457,9 +457,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         session: str = "",
         area: str = "",
     ) -> dict[str, Any]:
-        """Columns of the board. Archived done tasks are left out unless `archived` is set or a
-        search `q` (matched against key and title) is given; a search covers the archive too.
-        `stage`, `area`, `waiting_on` and `session` narrow the tasks like `task_list` does."""
+        """Columns of the board. Archived done tasks are never in the done column with `archived`
+        set: they make the Archive column (`archive`, newest archived first). Without it they are
+        left out unless a search `q` (matched against key and title) is given; a search covers
+        the archive too and shows its hits in done. `stage`, `area`, `waiting_on` and `session`
+        narrow the tasks like `task_list` does, the Archive column too."""
         project = await service.get_project(slug)
         waiting_on = waiting_on.strip()[:SEARCH_MAX]
         session = session.strip()[:SEARCH_MAX]
@@ -485,19 +487,25 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         needle = q.casefold()
         now = utcnow()
         by_stage: dict[str, list[Task]] = {s.value: [] for s in STAGES}
+        archive: list[Task] = []
         hidden_archived = 0
         tracked = await service.tracker_projects() if settings.require_tracker_log else set()
         for task in tasks:
             if needle and needle not in task.key.casefold() and needle not in task.title.casefold():
                 continue
-            if not (archived or needle) and is_archived(
-                task, now, settings.done_window_days, task.project_id in tracked
-            ):
-                hidden_archived += 1
-                continue
+            if is_archived(task, now, settings.done_window_days, task.project_id in tracked):
+                if archived:
+                    archive.append(task)
+                    continue
+                if not needle:
+                    hidden_archived += 1
+                    continue
             by_stage[task.stage.value].append(task)
         done_more = max(0, len(by_stage[Stage.DONE]) - DONE_COLUMN_LIMIT)
         by_stage[Stage.DONE] = by_stage[Stage.DONE][:DONE_COLUMN_LIMIT]
+        archive.sort(key=lambda t: archived_since(t, settings.done_window_days), reverse=True)
+        archive_more = max(0, len(archive) - DONE_COLUMN_LIMIT)
+        archive = archive[:DONE_COLUMN_LIMIT]
         query = {
             "stage": stage,
             "area": area,
@@ -512,12 +520,14 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             n: urlencode({k: v for k, v in {**view, "page": str(n) if n > 1 else ""}.items() if v})
             for n in range(1, len(BOARD_PAGES) + 1)
         }
-        shown = [t for column in by_stage.values() for t in column]
+        shown = [t for column in by_stage.values() for t in column] + archive
         return {
             "board_pages": BOARD_PAGES,
             "page_qs": page_qs,
             "project": project,
             "columns": by_stage,
+            "archive": archive,
+            "archive_more": archive_more,
             "code": await service.task_codes(project.id, shown),
             "archived": archived,
             "q": q,
@@ -1038,6 +1048,20 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     ):
         context = await activity_context(project.strip().lower(), kind, before, after)
         return render(request, "_activity_rows.html", **context)
+
+    # Before /p/{slug}/col/{stage}: the Archive column is not a stage.
+    @router.get("/p/{slug}/col/archive", response_class=HTMLResponse)
+    async def archive_column_fragment(
+        request: Request,
+        slug: str,
+        q: str = "",
+        stage_filter: Annotated[str, Query(alias="stage")] = "",
+        waiting_on: str = "",
+        session: str = "",
+        area: str = "",
+    ):
+        context = await board_context(slug, True, q, stage_filter, waiting_on, session, area)
+        return render(request, "_archive_column.html", **context)
 
     @router.get("/p/{slug}/col/{stage}", response_class=HTMLResponse)
     async def column_fragment(

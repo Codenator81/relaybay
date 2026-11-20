@@ -228,8 +228,10 @@ def test_done_window_archive_and_search(board: TestClient, seeded: str, monkeypa
     assert all(f'id="card-{k}"' in shown for k in (logged.key, old.key, fresh.key))
     assert 'name="archived" value="1" checked' in shown
     assert 'hx-get="/p/acme-shop/col/done?archived=1"' in shown  # live refresh keeps the view
-    column = board.get("/p/acme-shop/col/done?archived=1").text
+    assert 'hx-get="/p/acme-shop/col/archive?archived=1"' in shown
+    column = board.get("/p/acme-shop/col/archive?archived=1").text
     assert f'id="card-{logged.key}"' in column
+    assert f'id="card-{logged.key}"' not in board.get("/p/acme-shop/col/done?archived=1").text
     assert f'id="card-{logged.key}"' not in board.get("/p/acme-shop/col/done").text
 
     # Search: key or title, case-insensitive, across the archive too; other cards are filtered.

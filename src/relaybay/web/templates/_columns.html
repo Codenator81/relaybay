@@ -1,3 +1,4 @@
 {% for stage in stages %}
 {% with tasks = columns[stage] %}{% include "_column.html" %}{% endwith %}
 {% endfor %}
+{% if archived %}{% include "_archive_column.html" %}{% endif %}
