@@ -1321,7 +1321,7 @@ report.
 | Group | Tools |
 |---|---|
 | Projects | `project_list`, `project_upsert`, `project_snapshot` |
-| Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage`, `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
+| Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage`, `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
@@ -2550,7 +2550,10 @@ from before 0.3.0 `recorded_at` and `valid_from` are their creation time). `supe
 `decision_add` marks a current decision of the same project as replaced (it gets `superseded_at`,
 `superseded_by` and `valid_to`); nothing is deleted. A decision that is already superseded cannot
 be superseded again (the error names the newer one), so chains have no cycles. `decision.project_id`
-stays required: facts for all projects are global memory notes.
+stays required: facts for all projects are global memory notes. `area` (migration 0055) names the
+part of the project a decision is about, by area name, cleaned like a card's area but not added to
+the project's areas; `decision_list` shows it, and `task_context` lists a project decision on the
+cards of that area ([§ task context](#spec-task-subject)).
 
 <a id="spec-memory-notes"></a>
 
@@ -2644,15 +2647,74 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 |---|---|
 | `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
 | `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
-| `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's and the project's current decisions; changes; linked document sections; the effective rules line; relevant notes |
+| `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the effective rules line; relevant notes; open backlog items of the card |
 
-**Linked document sections:** the task's document field when it is a `relaybay://doc/...` link,
-then any `relaybay://doc/<project>/<doc>#<anchor>` in the description or progress, each becomes a
+**Linked document sections:** first the sections linked to the card with `task_doc_link` (or
+`task_create(sections)`), in the order they were linked; then the task's document field when it is
+a `relaybay://doc/...` link, then any `relaybay://doc/<project>/<doc>#<anchor>` in the description
+or progress, each once. Each becomes a
 pointer without the document's text: `spec#gift-cards "Gift cards" · lines 2140-2610 · 52k chars
 (~15k tokens) · shop:docs/spec.md · doc_get("shop", "spec", section="gift-cards")` (the file only
 for a file document, the anchor as the card wrote it, an explicit anchor included). A link without
 an anchor names the document's size and `doc_outline`. One that does not resolve is listed as
-`broken`. At most 5 links.
+`broken`. At most 5 links; the rest are counted.
+
+<a id="spec-task-sections"></a>
+
+**Sections linked to a card** (`task_doc_section`, migration 0055). `task_doc_link(task, doc,
+section, remove?)` links a section of a document of the task's project: the anchor (a heading
+anchor or an explicit anchor, `#` and case do not matter) is checked against the document's
+current outline (a file document's index is brought up to its file first, as `doc_outline` does);
+an unknown one is refused with the known anchors, an unknown document with the project's
+documents. The link keeps one name per section, whichever name it was made with: the
+section's explicit anchor when it has one (it outlives a reworded heading), else its heading
+anchor; linking it again by its other name changes nothing, and removing it by either name
+unlinks it (a section that is gone, by the name it was linked with). A section that disappears later stays
+linked and shows as `broken` (in `task_context`, `task_get` and on the card), and can still be
+removed. A link made twice, or a removal of a link that is not there, changes nothing and says
+so. A change is a `task.updated` event with `changes.sections` (`added` or `removed`:
+`["doc#anchor"]`); the task's version stays. The answer is the section's pointer line.
+`task_create(sections)` takes a list of `doc#anchor` (or `relaybay://doc/<project>/<doc>#<anchor>`
+of the same project), checked the same way before the card is created (one bad entry creates
+nothing); `task.created` carries `sections`. `task_get` lists them under "Linked document
+sections"; the card page under "Sections" in the task details, with the section's title and the
+`broken` mark. Deleting the card or the document deletes the link.
+
+<a id="spec-task-subject"></a>
+
+**The card's subject:** the stems (the `memory_search` stemmer) of the words of four letters and
+more, without bare numbers and common English and Russian words, of the card's area name, the
+titles of its linked sections (those still in the outline) and their heading paths below the
+document's title (the document's first top-level heading names the document, not the subject;
+a section that is that heading adds its own title), and its title. Common words are compared by
+stem, so their other forms are left out too. A linked section's **number** is the number its
+heading starts with (`9.6a` of `9.6a Payout provider`).
+
+**A text names a linked section** by its anchor or its number standing alone (not part of a
+longer word, anchor or number). A one-word anchor (no dash) counts only as `doc#anchor`
+(`spec#payouts`, a `relaybay://doc` link too), and a bare number (no dot, no letter) only after
+`§`, `section` or `sec.` (`§3`, `section 3`): alone they are ordinary words, and the subject's
+stems already match words.
+
+**Open backlog items** in `task_context`: items with status `new`, `later` or `planned` of the
+card's project that are linked to the card (`task`), or whose area has a stem of the subject, or
+that point inside a linked section: a `path:line` in the location, title or text whose line is in
+the section's lines (with the subsections) of the same file (a file document; the path matches by
+its file name, or by its end when it names folders; separators and case do not matter, leading
+`./` and `../` are dropped, and an absolute path with a drive letter such as `C:\work\docs\spec.md:5`
+must be the file's own path), or text that names the section. One line each, `- #12 [payouts] Retry fails twice · bug
+· priority 3` (no area, no kind: left out), linked ones first, then the highest priority, then the
+newest; at most 8, the rest counted with `backlog_list(project="<slug>")`.
+
+**Decisions** in `task_context`: "Decisions" holds the card's own current decisions (at most 10,
+the rest counted with `decision_list("<slug>", task="<key>")`); "Related project decisions"
+holds the project's current project-scope decisions **related** to the card (at most 10, newest
+first): the decision's `area` (optional on `decision_add`) is the card's area name without regard
+to case, or its text names a linked section, or its text holds at least two stems of the card's
+subject. The others are not listed; the section's last line counts them: `… N project decisions
+not related to this card: decision_list("<slug>")` (`1 project decision`); when the budget cuts
+that line, the count joins the section's `… N more`. Decisions of other cards are never listed. What
+every card must follow belongs in the project rules, which `task_context` names.
 
 **Unread owner comments** in `task_context`: the count and the ids; the text only of comments the
 existing channels already delivered to the reader's session. Nothing is marked delivered here.
@@ -2666,7 +2728,11 @@ match first, at most 8.
 500 and 40000. The output never exceeds the budget, footer included. Over budget the lowest
 priority section loses whole lines from its end first, then the next one, and says `… N more: <tool>`;
 only when even that does not fit is a section dropped, lowest priority first, and the footer names
-it if there is room. The first section goes last and is never dropped. Every value in an index line
+it if there is room. In `task_context` the parts of design 0027 shrink first, in this order: the
+open backlog items, the related project decisions with the count of the unrelated ones, the
+linked document sections after the first;
+then the older sections by their priority, the first linked section and the card's own decisions
+among them. The first section goes last and is never dropped. Every value in an index line
 is collapsed to one line and clipped. A budget cut in the changes holds the reader's cursor back
 ([below](#spec-digest-cursors)).
 

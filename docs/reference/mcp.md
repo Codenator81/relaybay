@@ -35,6 +35,7 @@ Deprecations:
 | [`task_list`](#task_list) | read |
 | [`task_get`](#task_get) | read |
 | [`task_create`](#task_create) | write |
+| [`task_doc_link`](#task_doc_link) | write |
 | [`task_update`](#task_update) | write |
 | [`task_patch`](#task_patch) | write |
 | [`task_set_stage`](#task_set_stage) | write |
@@ -161,7 +162,7 @@ One project, for a manager: pulse, tasks by stage with next step and waiting on,
 
 ### `task_context`
 
-One task, for the session working on it: fields and progress, plan with the current step, decisions, linked document sections, rules, unread owner comments (ids; text only of those already delivered to you), relevant notes and what changed since your last read. It delivers no comment.
+One task, for the session working on it: fields and progress, plan with the current step, its decisions and the project decisions related to it, linked document sections, rules, unread owner comments (ids; text only of those already delivered to you), relevant notes, the open backlog items of its subject and what changed since your last read. It delivers no comment.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -187,7 +188,7 @@ List tasks, filtered by project, stage, who they wait on, the bound session or t
 
 ### `task_get`
 
-Full task: fields, description, progress, current version, the latest reports and decisions, and the names of the editable fields (for task_patch). Call it before task_update to get the version for expected_version.
+Full task: fields, description, progress, current version, the linked document sections, the latest reports and decisions, and the names of the editable fields (for task_patch). Call it before task_update to get the version for expected_version.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -218,6 +219,21 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 | `bind` | boolean | no | false: you create the card for someone else; it is not bound to your session (a session started for it binds itself, or the launch does). Default: `True`. |
+| `sections` | list of string or null | no | Sections of the project's documents to link to the card, each 'doc#anchor' (as task_doc_link links one). Optional. |
+
+### `task_doc_link`
+
+Link a section of a project document to the card (remove=true unlinks it). The anchor is checked against the document's current outline. task_context lists the linked sections first, and takes the card's subject (for its backlog items and related decisions) from them; a section that disappears later shows as broken.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `doc` | string | yes | Document name of the task's project, e.g. 'spec'. |
+| `section` | string | yes | The section: its heading anchor or explicit anchor, as doc_outline lists them, e.g. 'payouts'. |
+| `remove` | boolean | no | true: unlink the section. Default: `False`. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `task_update`
 
@@ -347,6 +363,7 @@ Record a decision the user or the team made (scope, approach, trade-off), so lat
 | `decided_by` | string or null | no | Who decided. |
 | `source` | string or null | no | Where it came from: 'report:12', 'comment:7', 'event:301' or 'message:<id>', optionally followed by display text ('comment:7 owner in the review thread'); or display text alone ('owner, chat'). |
 | `supersedes` | integer or null | no | Id of a current decision of the same project this one replaces; the old one stays in history marked superseded. |
+| `area` | string or null | no | The area of the project it is about, by name (case does not matter): task_context shows a project decision on the cards of that area. Optional. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

@@ -1206,12 +1206,13 @@ async def insert_decision(
     decided_by: str | None,
     now: str,
     source: Source | None = None,
+    area: str | None = None,
 ) -> int:
     source = source or Source()
     cur = await conn.execute(
         "INSERT INTO decision (project_id, task_id, text, decided_by, created_at, scope,"
-        " source_kind, source_ref, source_text, valid_from, recorded_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " source_kind, source_ref, source_text, valid_from, recorded_at, area)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             project_id,
             task_id,
@@ -1224,6 +1225,7 @@ async def insert_decision(
             source.text,
             now,
             now,
+            area,
         ),
     )
     return int(cur.lastrowid or 0)
@@ -1257,6 +1259,7 @@ def _decision(r: aiosqlite.Row) -> Decision:
         superseded_at=r["superseded_at"],
         superseded_by=r["superseded_by"],
         project_slug=r["project_slug"],
+        area=r["area"],
     )
 
 
@@ -1320,8 +1323,9 @@ async def count_current_decisions(
     *,
     project_id: int | None = None,
     since: str | None = None,
+    scope: str | None = None,
 ) -> int:
-    where, params = _decision_filter(project_id, None, None, False, None, since)
+    where, params = _decision_filter(project_id, None, None, False, scope, since)
     row = await _one(conn, "SELECT COUNT(*) FROM decision d" + where, tuple(params))
     return int(row[0])
 
@@ -3838,6 +3842,62 @@ async def replace_sections(
         )
 
 
+@dataclass(frozen=True, slots=True)
+class TaskDocSection:
+    """A section linked to a card: the document by slug and the anchor it was linked with."""
+
+    id: int
+    task_id: int
+    document_id: int
+    doc: str
+    anchor: str
+    created_by: str
+    created_at: str
+
+
+async def list_task_doc_sections(conn: aiosqlite.Connection, task_id: int) -> list[TaskDocSection]:
+    rows = await _all(
+        conn,
+        "SELECT s.*, d.slug AS doc FROM task_doc_section s JOIN document d ON d.id = s.document_id"
+        " WHERE s.task_id = ? ORDER BY s.id",
+        (task_id,),
+    )
+    return [
+        TaskDocSection(
+            r["id"],
+            r["task_id"],
+            r["document_id"],
+            r["doc"],
+            r["anchor"],
+            r["created_by"],
+            r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+async def insert_task_doc_section(
+    conn: aiosqlite.Connection, task_id: int, document_id: int, anchor: str, by: str, now: str
+) -> bool:
+    """False when the card already links that section."""
+    cur = await conn.execute(
+        "INSERT OR IGNORE INTO task_doc_section (task_id, document_id, anchor, created_by,"
+        " created_at) VALUES (?, ?, ?, ?, ?)",
+        (task_id, document_id, anchor, by, now),
+    )
+    return cur.rowcount > 0
+
+
+async def delete_task_doc_section(
+    conn: aiosqlite.Connection, task_id: int, document_id: int, anchor: str
+) -> bool:
+    cur = await conn.execute(
+        "DELETE FROM task_doc_section WHERE task_id = ? AND document_id = ? AND anchor = ?",
+        (task_id, document_id, anchor),
+    )
+    return cur.rowcount > 0
+
+
 async def section_index_stale(conn: aiosqlite.Connection, fts: bool) -> bool:
     """The searchable rows do not match the index rows, or a database document with text has
     no index rows (an upgrade from before the index)."""
@@ -4117,6 +4177,19 @@ async def list_backlog(
         " WHEN 'done' THEN 2 ELSE 3 END, b.priority DESC, b.id DESC LIMIT ?"
     )
     return [_backlog(r) for r in await _all(conn, sql + order, (*params, limit))]
+
+
+async def list_open_backlog(
+    conn: aiosqlite.Connection, project_id: int, limit: int = 1000
+) -> list[BacklogItem]:
+    """The project's items with status new, later or planned: highest priority, then newest."""
+    rows = await _all(
+        conn,
+        _BACKLOG_SELECT + " WHERE b.project_id = ? AND b.status IN ('new', 'later', 'planned')"
+        " ORDER BY b.priority DESC, b.id DESC LIMIT ?",
+        (project_id, limit),
+    )
+    return [_backlog(r) for r in rows]
 
 
 async def backlog_new_counts(conn: aiosqlite.Connection) -> dict[int, int]:

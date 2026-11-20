@@ -40,6 +40,7 @@ from relaybay.domain import digest_limits as limits
 from relaybay.domain import environments as envs
 from relaybay.domain import memory as mem
 from relaybay.domain import questions as qrules
+from relaybay.domain import subject as subj
 from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
@@ -341,6 +342,8 @@ AUDIT_CHANGE_KINDS = (
 )
 AUDIT_DAYS_MAX = 366
 JOURNAL_COMMAND_MAX = 200
+# The decisions a task context looks through to find the ones related to the card.
+DECISIONS_SCAN = 2_000
 # Left free in the SessionStart answer next to the lines it holds anyway.
 SESSION_CONTEXT_RESERVE = 500
 # Written by migration 0049: the worktrees runs left behind, for one Inbox line.
@@ -503,6 +506,7 @@ class TaskDetail:
     # Board targets of the document links in the description, progress, reports and comments.
     doc_refs: dict[str, mem.DocRef] = field(default_factory=dict)
     document: "TaskDocument | None" = None  # when the document field is a relaybay://doc link
+    sections: list["TaskSection"] = field(default_factory=list)  # linked with task_doc_link
     from_backlog: BacklogItem | None = None  # the item "To plan" created this task from
     findings: list[BacklogItem] = field(default_factory=list)  # items this task is the origin of
     code: TaskCode = field(default_factory=lambda: TaskCode([], [], []))
@@ -575,6 +579,17 @@ class TaskDocument:
     ref: mem.DocRef
     doc: mem.Document | None
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSection:
+    """A section linked to a card: the link, its board target (`ref.broken` when the section or
+    the document is gone), the section's current title and the pointer line task_context shows."""
+
+    link: digests.DocLink
+    ref: mem.DocRef
+    title: str | None
+    line: str
 
 
 @dataclass(slots=True)
@@ -1171,6 +1186,13 @@ def _doc_ref(link: digests.DocLink, rows: list[IndexedSection] | None) -> mem.Do
     if found is None:
         return mem.DocRef(href, "no such section")
     return mem.DocRef(f"{href}#{found.anchor}")
+
+
+def _clean_section_anchor(value: Any) -> str:
+    """A section as a link keeps it: the anchor without '#', in lower case."""
+    if not isinstance(value, str) or not value.strip().lstrip("#").strip():
+        raise ValidationError("section must name a heading anchor or an explicit anchor.")
+    return value.strip().lstrip("#").strip().casefold()
 
 
 def _first_words(text: str, limit: int = 80) -> str:
@@ -3030,6 +3052,7 @@ class Service:
                 task.description, task.progress, *texts, cache=cache
             ),
             document=await self._task_document(task.doc_path, cache),
+            sections=await self._task_sections(task, cache),
             live_actions=await repo.task_events(self._r, task.id, LIVE_ACTION, 20),
             review=await self._load_review(self._r, task.id),
             bind_choices=await self._bind_choices(task),
@@ -3040,6 +3063,21 @@ class Service:
             findings=await repo.list_backlog(self._r, origin_task_id=task.id, limit=50),
             code=await self.task_code(task),
         )
+
+    async def _task_sections(self, task: Task, cache: DocCache) -> list[TaskSection]:
+        out = []
+        for item in await repo.list_task_doc_sections(self._r, task.id):
+            link = digests.DocLink(task.project_slug, item.doc, item.anchor)
+            loaded = await self._linked_doc(task.project_slug, item.doc, cache)
+            found, rows = loaded if loaded else (None, [])
+            if found is not None and found.is_file and found.place is None:
+                found.place = await self._place(self._r, found)
+            row = doc_index.lookup(rows, item.anchor)
+            ref = _doc_ref(link, rows if loaded else None)
+            out.append(
+                TaskSection(link, ref, row.title if row else None, link.pointer(found, rows))
+            )
+        return out
 
     async def _bind_choices(self, task: Task, limit: int = 40) -> list[Session]:
         """Sessions the board offers to bind: the project's first, then the others, most
@@ -3681,11 +3719,18 @@ class Service:
         hook_session: str | None = None,
         bind: bool = True,
         actor: str = "mcp",
+        sections: list[str] | None = None,
     ) -> Task:
         """With `bind=False` the calling session creates the card for someone else: it is the
-        event's actor and its hook id is linked as on any write, but the card stays unbound."""
+        event's actor and its hook id is linked as on any write, but the card stays unbound.
+        `sections` (`doc#anchor`) are linked to the card as task_doc_link links them."""
         if not isinstance(bind, bool):
             raise ValidationError("bind must be true or false.")
+        targets = (
+            await self._section_targets(await self.get_project(project), sections)
+            if sections is not None
+            else []
+        )
         clean_area = _clean_area(area)
         fields: dict[str, Any] = {
             "title": _clean_title(title),
@@ -3714,6 +3759,10 @@ class Service:
             key = f"{proj.slug}-{await repo.next_task_number(tx.conn, proj.id)}"
             bound_id = session_id if bind else None
             task_id = await repo.insert_task(tx.conn, proj.id, key, fields, bound_id, tx.now)
+            for found, anchor in targets:
+                await repo.insert_task_doc_section(
+                    tx.conn, task_id, found.id, anchor, actor, tx.now
+                )
             if fields.get("tracker_ref") or fields.get("tracker_url"):
                 self._tracked.add(proj.id)
             if fields["tracker_ref"]:
@@ -3736,6 +3785,7 @@ class Service:
                 key=key,
                 title=fields["title"],
                 stage=fields["stage"],
+                **({"sections": [f"{d.slug}#{a}" for d, a in targets]} if targets else {}),
             )
             task = await self.get_task(task_id, tx.conn)
             if sess is not None and bind:
@@ -4516,14 +4566,18 @@ class Service:
         decided_by: str | None = None,
         source: str | None = None,
         supersedes: int | None = None,
+        area: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
     ) -> Decision:
         """Record a decision of a project (scope `task` when a task is given). `supersedes`
         marks a current decision of the same project as replaced by this one; nothing is
-        deleted, and a decision that is already superseded cannot be superseded again."""
+        deleted, and a decision that is already superseded cannot be superseded again. `area`
+        names the part of the project it is about: a task context shows a project decision on
+        the cards of that area."""
         clean = _clean_text(text, "text")
+        clean_area = _clean_area(area)
         if not clean:
             raise ValidationError("Decision text must not be empty.")
         decided_by = _clean_text(decided_by, "decided_by", NAME_MAX)
@@ -4541,6 +4595,7 @@ class Service:
                 source=origin.text,
                 source_ref=origin.ref,
                 decided_by=decided_by,
+                area=clean_area,
             )
             await self._check_source(tx.conn, origin, proj)
             old = None
@@ -4568,6 +4623,7 @@ class Service:
                 decided_by,
                 tx.now,
                 origin,
+                clean_area,
             )
             if old is not None:
                 await repo.supersede_decision(tx.conn, old.id, decision_id, tx.now)
@@ -4584,6 +4640,7 @@ class Service:
                 decision_id=decision_id,
                 text=clean[:200],
                 **({"supersedes": old.id} if old else {}),
+                **({"area": clean_area} if clean_area else {}),
             )
             decision = await repo.get_decision(tx.conn, decision_id)
         assert decision is not None
@@ -5159,6 +5216,111 @@ class Service:
         if link.anchor and not ref.broken and body is not None:
             text = mem.section_text(body, link.anchor)
         return TaskDocument(link, ref, found, text)
+
+    async def _section_target(
+        self, project: Project, doc: str, section: str
+    ) -> tuple[mem.Document, str, list[IndexedSection]]:
+        """A section of a project document to link to a card: the document, the anchor as the
+        link keeps it and the current index (a file document's index is brought up to its file
+        first, as doc_outline does). An anchor the outline lacks is refused with the known ones.
+        The link keeps one name per section: its explicit anchor (which outlives a reworded
+        heading) when it has one, else its heading anchor."""
+        _, found = await self._document(self._r, project.slug, doc)
+        rows = await self._doc_rows(found)
+        row = doc_index.find(rows, _clean_section_anchor(section))
+        if found.is_file and found.place is None:
+            found.place = await self._place(self._r, found)
+        return found, row.alias or row.anchor, rows
+
+    async def _section_targets(
+        self, project: Project, refs: list[str] | None
+    ) -> list[tuple[mem.Document, str]]:
+        """`doc#anchor` entries (or relaybay://doc links of the project) checked like
+        task_doc_link checks one, before the write opens."""
+        if refs is None:
+            return []
+        if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
+            raise ValidationError("sections must be a list of 'doc#anchor' strings.")
+        out: list[tuple[mem.Document, str]] = []
+        for ref in refs:
+            link = digests.doc_link(ref)
+            if link is not None and link.project != project.slug:
+                raise ValidationError(
+                    f"sections: {ref!r} is a document of {link.project}, not of {project.slug}."
+                )
+            if link is not None:
+                doc, anchor = link.doc, link.anchor or ""
+            else:
+                doc, _, anchor = ref.strip().partition("#")
+            if not doc or not anchor:
+                raise ValidationError(f"sections: {ref!r} is not 'doc#anchor'.")
+            found, clean, _ = await self._section_target(project, doc, anchor)
+            if (found.id, clean) not in {(d.id, a) for d, a in out}:
+                out.append((found, clean))
+        return out
+
+    async def link_task_section(
+        self,
+        ref: str | int,
+        doc: str,
+        section: str,
+        *,
+        remove: bool = False,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        actor: str = "mcp",
+    ) -> tuple[Task, str, bool]:
+        """task_doc_link: link a section of a document of the task's project to the card, or
+        with `remove` unlink it. Returns the task, the section's pointer line (the line
+        task_context shows) and whether anything changed."""
+        if not isinstance(remove, bool):
+            raise ValidationError("remove must be true or false.")
+        task = await self.get_task(ref)
+        project = await self.get_project(task.project_slug)
+        if remove:
+            _, found = await self._document(self._r, project.slug, doc)
+            anchor = _clean_section_anchor(section)
+            rows = await self._doc_rows(found)
+            # A section still in the outline is unlinked by any of its names; a gone one by the
+            # name it was linked with.
+            row = doc_index.lookup(rows, anchor)
+            if row is not None:
+                items = await repo.list_task_doc_sections(self._r, task.id)
+                linked = {i.anchor for i in items if i.document_id == found.id}
+                anchor = next((n for n in (row.alias, row.anchor) if n in linked), anchor)
+        else:
+            found, anchor, rows = await self._section_target(project, doc, section)
+            # Linked before by another name of the same section (an explicit anchor added later).
+            target = doc_index.lookup(rows, anchor)
+            for item in await repo.list_task_doc_sections(self._r, task.id):
+                if item.document_id == found.id and doc_index.lookup(rows, item.anchor) is target:
+                    anchor = item.anchor
+        async with self._tx() as tx:
+            sess = await self._session(tx, session, session_title, hook_session)
+            who = sess.name if sess else actor
+            if remove:
+                changed = await repo.delete_task_doc_section(tx.conn, task.id, found.id, anchor)
+            else:
+                changed = await repo.insert_task_doc_section(
+                    tx.conn, task.id, found.id, anchor, who, tx.now
+                )
+            if changed:
+                await tx.event(
+                    "task.updated",
+                    who,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    session_id=sess.id if sess else None,
+                    project=task.project_slug,
+                    key=task.key,
+                    stage=task.stage.value,
+                    changes={
+                        "sections": {"removed" if remove else "added": [f"{found.slug}#{anchor}"]}
+                    },
+                )
+        line = digests.DocLink(project.slug, found.slug, anchor).pointer(found, rows)
+        return task, line, changed
 
     async def _create_file_document(
         self,
@@ -6485,9 +6647,11 @@ class Service:
         hints = await self.plan_draft_hints(found.slug) if coordinator else []
         return "\n".join([text, *hints])
 
-    async def _doc_lines(self, links: list[digests.DocLink]) -> list[str]:
+    async def _doc_lines(
+        self, links: list[digests.DocLink], cache: DocCache | None = None
+    ) -> list[str]:
         """A pointer per link: lines, size and the call that reads it, never the text."""
-        cache: DocCache = {}
+        cache = {} if cache is None else cache
         lines = []
         noted: set[int] = set()
         for link in links:
@@ -6501,6 +6665,22 @@ class Service:
                 noted.add(found.id)
                 lines.append(note)
         return lines
+
+    async def _linked_sections(
+        self, task: Task, cache: DocCache
+    ) -> tuple[list[digests.DocLink], list[subj.LinkedSection]]:
+        """The sections linked to the card, in the order they were linked: as links, and with
+        their current index row (None for a section that is gone) for the subject filters."""
+        links, linked = [], []
+        for item in await repo.list_task_doc_sections(self._r, task.id):
+            links.append(digests.DocLink(task.project_slug, item.doc, item.anchor))
+            loaded = await self._linked_doc(task.project_slug, item.doc, cache)
+            found, rows = loaded if loaded else (None, [])
+            row = doc_index.lookup(rows, item.anchor)
+            path = found.source_path if found is not None else None
+            tops = frozenset(r.title for r in rows if r.level == 1)
+            linked.append(subj.LinkedSection(item.doc, item.anchor, row, path, tops))
+        return links, linked
 
     async def _relevant_notes(self, task: Task) -> list[mem.MemoryNote]:
         """Current project and global notes, best search match on the task's title first."""
@@ -6529,10 +6709,13 @@ class Service:
             "task", task.id, reader, since_event, task_id=task.id, new_context=new_context
         )
         project = await self.get_project(task.project_slug)
+        cache: DocCache = {}
+        explicit, linked = await self._linked_sections(task, cache)
         field_link = digests.doc_link(task.doc_path)
         links = list(
             dict.fromkeys(
                 [
+                    *explicit,
                     *([field_link] if field_link else []),
                     *digests.doc_links(task.description, task.progress),
                 ]
@@ -6540,17 +6723,33 @@ class Service:
         )
         unread = await repo.list_comments(self._r, task.id, unread_only=True)
         project_id = task.project_id
+        subject = subj.card_subject(task.area, task.title, linked)
         limit = digests.TASK_DECISIONS_MAX
+        own = await repo.list_decisions(self._r, task_id=task.id, limit=DECISIONS_SCAN)
+        related = [
+            d
+            for d in await repo.list_decisions(
+                self._r, project_id=project_id, scope="project", limit=DECISIONS_SCAN
+            )
+            if subj.related_decision(d, task.area, subject, linked)
+        ]
+        project_total = await repo.count_current_decisions(
+            self._r, project_id=project_id, scope="project"
+        )
+        backlog_items = subj.backlog_for_card(
+            await repo.list_open_backlog(self._r, project_id), task.id, subject, linked
+        )
         data = digests.TaskData(
             task=task,
             plan=await self._load_plan(self._r, task),
             todo=await self._task_todo(self._r, task),
-            task_decisions=await repo.list_decisions(self._r, task_id=task.id, limit=limit),
-            project_decisions=await repo.list_decisions(
-                self._r, project_id=project_id, scope="project", limit=limit
-            ),
-            decisions_total=await repo.count_current_decisions(self._r, project_id=project_id),
-            doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX]),
+            task_decisions=own[:limit],
+            project_decisions=related[:limit],
+            decisions_more=max(0, len(own) - limit),
+            related_more=max(0, len(related) - limit),
+            decisions_unrelated=project_total - len(related),
+            backlog_lines=[subj.backlog_line(item) for item in backlog_items],
+            doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX], cache),
             doc_links_total=len(links),
             rules_line=rules_line(await self._rules(self._r, project)),
             comments=[c for c in unread if c.to_agent],

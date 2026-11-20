@@ -1271,6 +1271,8 @@ async def test_a_stale_hash_does_not_migrate(
         for column in ("added_after_acceptance_at", "added_by", "added_reason"):
             conn.execute(f"ALTER TABLE plan_step DROP COLUMN {column}")
         conn.execute("ALTER TABLE document DROP COLUMN source_url")
+        conn.execute("DROP TABLE task_doc_section")
+        conn.execute("ALTER TABLE decision DROP COLUMN area")
         conn.execute("DROP TABLE document_section")
         for column in (
             "source_path",

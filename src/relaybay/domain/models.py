@@ -179,6 +179,7 @@ class Decision:
     superseded_at: str | None = None
     superseded_by: int | None = None
     project_slug: str | None = None
+    area: str | None = None  # the area of the project it is about, by name
 
     @property
     def current(self) -> bool:

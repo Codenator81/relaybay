@@ -232,11 +232,16 @@ def changed_anchors(old: list[IndexedSection], new: list[IndexedSection]) -> dic
     }
 
 
-def find(rows: list[IndexedSection], anchor: str) -> IndexedSection:
+def lookup(rows: list[IndexedSection], anchor: str) -> IndexedSection | None:
+    """The section a heading anchor or an explicit anchor names; None when there is none."""
     wanted = anchor.strip().lstrip("#").casefold()
-    for r in rows:
-        if r.anchor and wanted in (r.anchor, r.alias):
-            return r
+    return next((r for r in rows if r.anchor and wanted in (r.anchor, r.alias)), None)
+
+
+def find(rows: list[IndexedSection], anchor: str) -> IndexedSection:
+    found = lookup(rows, anchor)
+    if found is not None:
+        return found
     known = ", ".join(r.anchor for r in rows if r.anchor) or "none (the document has no headings)"
     raise ValidationError(f"No section {anchor!r}; sections: {known}.")
 

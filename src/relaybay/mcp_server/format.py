@@ -575,6 +575,8 @@ def source_label(kind: str | None, ref: str | None, text: str | None) -> str:
 def decision_entry(d: Decision) -> str:
     """A decision_list line: the decision plus its source and supersede links."""
     extra = []
+    if d.area:
+        extra.append(f"area: {d.area}")
     source = source_label(d.source_kind, d.source_ref, d.source_text)
     if source:
         extra.append(f"source: {source}")
@@ -592,7 +594,8 @@ def decisions(project: Project, items: list[Decision], query: str | None) -> str
 
 
 def decision_saved(d: Decision) -> str:
-    text = f"Decision #{d.id} recorded for {d.project_slug} (scope {d.scope})."
+    area = f", area {d.area}" if d.area else ""
+    text = f"Decision #{d.id} recorded for {d.project_slug} (scope {d.scope}{area})."
     if d.source_kind is None and not d.source_text:
         text += " Tip: pass source (e.g. 'comment:12 owner in chat') so later readers see why."
     return text
@@ -1012,6 +1015,9 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None) -> str:
     if t.progress:
         lines.append(f"\n## Progress (done so far)\n{t.progress}")
     lines.extend(code_lines(detail.code, t.branch))
+    if detail.sections:
+        lines.append("\n## Linked document sections")
+        lines.extend(s.line for s in detail.sections)
     if detail.bindings:
         lines.append("\n## Sessions (newest first)")
         for b in detail.bindings:
@@ -1047,6 +1053,15 @@ def task_schema() -> str:
         limit = f" Up to {f.max_length} characters." if f.max_length else ""
         lines.append(f"| `{f.name}` | {f.type} | {f.description}{limit} | {f.clear} |")
     return "\n".join(lines)
+
+
+def task_section_saved(task: Task, line: str, remove: bool, changed: bool) -> str:
+    """task_doc_link's answer: what changed, and the section's pointer line."""
+    if remove:
+        what = "Unlinked from" if changed else "Was not linked to"
+        return f"{what} **{task.key}**:\n{line}"
+    what = "Linked to" if changed else "Already linked to"
+    return f"{what} **{task.key}**:\n{line}"
 
 
 def task_saved(task: Task, verb: str) -> str:
