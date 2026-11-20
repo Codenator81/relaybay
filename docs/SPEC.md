@@ -847,7 +847,9 @@ task dialog shows the chip after the key in its head, and the task view (dialog 
 
 **Code row.** A task whose project has repositories, or that has pull requests, shows a Code row on
 its card and in the task dialog / page ([§1](#spec-task-code)): one line per linked repository with
-its name, its kind, the task's branch (in the dialog; the card shows the branch once, above), its
+its name, its kind, its branch (the one the hooks saw checked out in that repository while a
+bound session worked there, stored on the link, migration 0057; until then the task's own branch;
+the card drops its separate branch chip once a repository is linked), its
 pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and an
 **Open in VS Code** icon (`</>`, the path and the words on hover), a `vscode://file/<path>` link
 (backslashes become `/`, a Windows drive stays `C:`, other unsafe characters are percent-encoded; a

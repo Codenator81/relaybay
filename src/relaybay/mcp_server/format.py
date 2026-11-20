@@ -382,8 +382,9 @@ def code_lines(code: TaskCode, branch: str | None) -> list[str]:
     if not code.shown:
         return []
     lines = ["\n## Code"]
-    on = f" · branch `{branch}`" if branch else ""
     for item in code.repos:
+        own = item.branch or branch
+        on = f" · branch `{own}`" if own else ""
         prs = "".join(f" · PR {pr.label} {pr.url}" for pr in item.prs)
         lines.append(f"- {_repo_label(item.repo)}{on}{prs} (linked: {item.how})")
     if not code.repos and code.project_repos:

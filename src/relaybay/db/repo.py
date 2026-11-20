@@ -434,7 +434,14 @@ async def task_repo_links(
         (params,),
     )
     return [
-        TaskRepo(r["task_id"], r["project_repo_id"], r["added_by"], r["how"], r["added_at"])
+        TaskRepo(
+            r["task_id"],
+            r["project_repo_id"],
+            r["added_by"],
+            r["how"],
+            r["added_at"],
+            r["branch"],
+        )
         for r in rows
     ]
 
@@ -505,19 +512,31 @@ async def delete_task_pr(conn: aiosqlite.Connection, task_id: int, url: str) -> 
 
 async def session_repo_candidates(
     conn: aiosqlite.Connection, session_id: int
-) -> list[tuple[int, int, str, bool]]:
-    """(task id, repository id, path, already linked) for the repositories of every task the
-    session is bound to now: one read on the hook path."""
+) -> list[tuple[int, int, str, bool, str | None]]:
+    """(task id, repository id, path, already linked, the branch stored on the link) for the
+    repositories of every task the session is bound to now: one read on the hook path."""
     rows = await _all(
         conn,
-        "SELECT b.task_id, r.id AS repo_id, r.path, EXISTS (SELECT 1 FROM task_repo tr"
-        "  WHERE tr.task_id = b.task_id AND tr.project_repo_id = r.id) AS linked"
-        " FROM task_session b JOIN task t ON t.id = b.task_id"
+        "SELECT b.task_id, r.id AS repo_id, r.path, tr.task_id IS NOT NULL AS linked,"
+        " tr.branch FROM task_session b JOIN task t ON t.id = b.task_id"
         " JOIN project_repo r ON r.project_id = t.project_id"
+        " LEFT JOIN task_repo tr ON tr.task_id = b.task_id AND tr.project_repo_id = r.id"
         " WHERE b.session_id = ? AND b.unbound_at IS NULL",
         (session_id,),
     )
-    return [(r["task_id"], r["repo_id"], r["path"], bool(r["linked"])) for r in rows]
+    return [(r["task_id"], r["repo_id"], r["path"], bool(r["linked"]), r["branch"]) for r in rows]
+
+
+async def set_task_repo_branch(
+    conn: aiosqlite.Connection, task_id: int, repo_id: int, branch: str
+) -> bool:
+    """Store the task's branch in a linked repository; False when it was that already."""
+    cur = await conn.execute(
+        "UPDATE task_repo SET branch = ? WHERE task_id = ? AND project_repo_id = ?"
+        " AND branch IS NOT ?",
+        (branch, task_id, repo_id, branch),
+    )
+    return cur.rowcount > 0
 
 
 # --- session ---------------------------------------------------------------

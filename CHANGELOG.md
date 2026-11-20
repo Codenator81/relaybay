@@ -10,6 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - The Code row of a card shows only the repositories the task linked: no folded **Repos: all** line and no `Code: all repos` count any more; `task_get` names the project's repositories instead and asks the session to link the ones it touches. A pull request tied to no project repository is named by the repository in its link (`mobile #7`), so two of them no longer read "PR PR". **Open in VS Code** is a `</>` icon with the path on hover.
+- A task in two repositories shows a branch in each: the hooks record the branch checked out in the repository a bound session works in (migration 0057 adds `task_repo.branch`), the card shows it on that repository's row instead of one branch chip, and `task_get` names it per repository.
 - A report's `verified:` marks are no longer listed a second time with ticks under its text.
 - Backlog on the board: the **new** mark means "not seen yet" and goes once the item has been fully on screen (`POST /backlog/seen`, migration 0056 adds `backlog_item.seen_at`; items decided before count as seen). The status badge shows only when the status is not `new`.
 

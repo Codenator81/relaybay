@@ -47,14 +47,16 @@
   <a class="chip plan-chip{% if draft %} is-draft{% endif %}{% if t.plan_deviations %} has-deviation{% endif %}{% if t.plan_done == t.plan_total %} is-done{% endif %}" href="/p/{{ slug }}?task={{ t.key }}&amp;tab=plan" data-task="{{ t.key }}" data-tab="plan"
      title="Plan{% if draft %} (draft, not accepted{% if draft_hours %} for {{ draft_hours }} h{% endif %}){% endif %}: {{ t.plan_done }} of {{ t.plan_total }} steps done{% if t.plan_deviations %}, {{ t.plan_deviations }} with a deviation{% endif %}{% if t.plan_now %}; now: {{ t.plan_now }}{% endif %}">Plan {{ t.plan_done }}/{{ t.plan_total }}{% if draft %} · draft{% if draft_hours %} · {{ draft_hours }} h{% endif %}{% endif %}{% if t.plan_deviations %} · <span class="deviation-mark">{{ t.plan_deviations }} deviation{{ "s" if t.plan_deviations > 1 else "" }}</span>{% endif %}{% if t.plan_now %} · now: {{ t.plan_now }}{% endif %}</a>
   {% endif %}
-  {% if waits_on_other or t.branch %}
+  {%- set c = code.get(t.id) if code else None %}
+  {#- The branch shows on the repository rows when the task linked any (backlog #99). #}
+  {%- set branch_chip = t.branch and not (c and c.repos) %}
+  {% if waits_on_other or branch_chip %}
   <div class="card-meta">
     {#- Who, not what: agents often append the step after a colon; the title keeps the full text. #}
     {% if waits_on_other %}<span class="chip waiting" title="Waiting on {{ t.waiting_on }}">waiting on {{ t.waiting_on.split(":", 1)[0].strip() or t.waiting_on }}</span>{% endif %}
-    {% if t.branch %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
+    {% if branch_chip %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
   </div>
   {% endif %}
-  {%- set c = code.get(t.id) if code else None %}
-  {% if c and c.board_shown %}<div class="card-code">{% with branch = None %}{% include "_code_row.html" %}{% endwith %}<span class="card-code-count">{{ c.summary }}</span></div>{% endif %}
+  {% if c and c.board_shown %}<div class="card-code">{% with branch = t.branch %}{% include "_code_row.html" %}{% endwith %}<span class="card-code-count">{{ c.summary }}</span></div>{% endif %}
   {% if t.next_step and is_open %}<p class="card-next clamp clamp-2{% if t.next_step_stale %} stale{% endif %}"><span class="muted">Next:</span> {{ t.next_step }}{% if t.next_step_stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</p>{% endif %}
 </article>

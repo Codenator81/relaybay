@@ -177,6 +177,44 @@ async def test_hook_links_the_closest_repo_of_the_bound_task(service: Service) -
     assert "task.updated" not in digest
 
 
+async def test_hook_records_the_branch_of_each_repo(
+    service: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task in two repositories has a branch in each (backlog #99)."""
+    await service.upsert_project(
+        "acme-shop",
+        repos=[{"name": "web", "path": f"{ROOT}/web"}, {"name": "api", "path": f"{ROOT}/api"}],
+    )
+    task = await service.create_task(
+        "acme-shop", "Checkout", stage="dev", branch="fix/one", session=DESKTOP, hook_session=CC
+    )
+    branches = {f"{ROOT}/web": "fix/web-side", f"{ROOT}/api": "fix/api-side"}
+
+    async def branch_at(folder: str) -> str | None:
+        return branches[folder]
+
+    monkeypatch.setattr(service, "_branch_at", branch_at)
+    before = await service.last_event_id()
+    hook = {"session_id": CC, "hook_event_name": "UserPromptSubmit", "prompt": "go"}
+    await service.record_hook({**hook, "cwd": f"{ROOT}/web"})
+    await service.record_hook({**hook, "cwd": f"{ROOT}/api", "hook_event_name": "Stop"})
+    await service.record_hook({**hook, "cwd": f"{ROOT}/api"})  # nothing new
+    code = (await service.task_detail(task.key)).code
+    assert [(r.repo.name, r.branch) for r in code.repos] == [
+        ("web", "fix/web-side"),
+        ("api", "fix/api-side"),
+    ]
+    events = [e for e in await service.replay(before, None, 50) if e.kind == "task.updated"]
+    assert [e.payload["changes"] for e in events] == [
+        {"repos": {"added": ["web"], "branch": {"web": "fix/web-side"}}},
+        {"repos": {"added": ["api"], "branch": {"api": "fix/api-side"}}},
+    ]
+    branches[f"{ROOT}/web"] = "fix/web-two"
+    await service.record_hook({**hook, "cwd": f"{ROOT}/web", "hook_event_name": "Stop"})
+    code = (await service.task_detail(task.key)).code
+    assert code.repos[0].branch == "fix/web-two"
+
+
 async def test_a_failing_auto_link_never_fails_the_hook(
     service: Service, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -37,6 +37,7 @@ class TaskRepo:
     added_by: str
     how: str
     added_at: str
+    branch: str | None = None  # the task's branch in this repository, seen by the hooks
 
 
 @dataclass(slots=True)
@@ -75,6 +76,7 @@ class CodeRepo:
     repo: ProjectRepo
     how: str
     prs: list[TaskPr] = field(default_factory=list)
+    branch: str | None = None
 
 
 @dataclass(slots=True)
@@ -123,7 +125,12 @@ def task_code(
     linked = {link.repo_id: link for link in links if link.task_id == task_id}
     own_prs = [p for p in prs if p.task_id == task_id]
     repos = [
-        CodeRepo(r, linked[r.id].how, [p for p in own_prs if p.repo_id == r.id])
+        CodeRepo(
+            r,
+            linked[r.id].how,
+            [p for p in own_prs if p.repo_id == r.id],
+            linked[r.id].branch,
+        )
         for r in project_repos
         if r.id in linked
     ]
