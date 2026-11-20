@@ -223,6 +223,7 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | Archive: tasks archived by hand are deleted after 30 days with an export first; an archived project is deleted on request; an Archive column on the board | done | — |
 | The Stands & access page and the environment tools removed; a project Settings page holds repositories, archive and areas | done | — |
 | Shorter server instructions by when they apply; comments and review steps read like a messenger; the dialog keeps its height; the agent's todo under the plan | done | — |
+| 0.15.1: backlog "new" means not seen yet; a card shows only the repositories a task linked, a branch in each and PRs named by repository | done | — |
 
 ## 1.0
 
