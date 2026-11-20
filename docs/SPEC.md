@@ -2410,8 +2410,9 @@ layout (with text it is written as usual), and import lists a changed file of a 
 
 **File documents** (design 0026). `doc_update(base_version=0, source_path=<absolute path>, body="-")`
 or **New document: a file on disk** on Docs & rules adds a document whose text stays in a file on
-the machine relaybay runs on, inside a repository or not; relaybay keeps no second copy and never
-writes the file. The path must be absolute and resolve (links first) to a regular file; over 8 MB
+the machine relaybay runs on, inside a repository or not; relaybay keeps no second copy, and writes
+the file only when writes through relaybay are on for that document
+([below](#spec-documents-file-writes)). The path must be absolute and resolve (links first) to a regular file; over 8 MB
 or not UTF-8 is refused. The resolved path, never the given one, is then checked against a deny
 list (decided by default, the most reversible way): the data folder at any depth except its
 `worktrees/`, the token file and `desktop.toml`, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`,
@@ -2426,10 +2427,9 @@ they differ (SHA-256 of the bytes) and, when the hash differs, rebuilds the sect
 one `document.updated` event (actor `file`, `file: true`, `hash_before`, `hash_after`,
 `sections_changed` and the anchors `added`, `removed`, `changed`, at most 20 each, compared by the
 hash of each section's own text). Nothing watches the disk. The text is not versioned:
-`doc_history` lists those events, `doc_get` names the file and the hash. A missing file keeps its
+`doc_history` lists those events, `doc_get` names the file, the hash and the version. A missing file keeps its
 document and its last index, marked "file missing since …" (`document.file_missing_at`); reads say
-so and give the pointer only; the file coming back clears the mark. `doc_update` on a file
-document is refused, also with `force`, naming the file and, with `section`, its lines. A secret a
+so and give the pointer only; the file coming back clears the mark. A secret a
 detector of the project's policy finds is masked in the index on every line it covers: a line that
 matches on its own, and every line of a match only the whole text shows (a private key from its
 BEGIN line to its END line or the end of the text, a flag and its value on two lines). A line
@@ -2444,6 +2444,53 @@ text). Export leaves file documents out; import lists a
 file of the layout whose document is a file document as `skipped`. The answers name the file as
 `<repo>:<path>` when it is inside a repository of the project, else by its path. Not built: a
 worktree session mapping the path to its own copy.
+
+<a id="spec-documents-file-writes"></a>
+
+**Writing a file document** (design 0027, part A). A file document's `version` counts the hashes
+its file has had: 1 when it is added (0.14 documents moved from 0 to 1 by migration 0054), one more
+for every write through relaybay and for every change made outside relaybay that a read notices.
+Writes through relaybay are **opt-in per document** (`document.file_writable`, off by default and
+for every document 0.14 added): `doc_update(file_writes="on"|"off")` switches them, at the add or
+later (with `body` `"-"` that is all the call does), for coordinator sessions only (the check of
+`task_archive`); the switch is one `document.updated` event with `file_writes`. With writes off,
+`doc_update` on the document is refused, also with `force`, naming the file and, with `section`,
+its lines, and saying that writes through relaybay are off. With writes on, `doc_update` takes
+`section`, `lines` + `expected` or the whole text, as for a database document. Unlike a database
+document, the body is written as it is (leading blank lines, indents and trailing spaces kept);
+only a CR before LF and the final newlines are dropped, and the file keeps its own final newlines:
+
+1. The path rules are checked again (as for a read); a missing or unreadable file refuses the
+   write and names why. The file's bytes are read and hashed; a hash relaybay did not see is an
+   outside change, recorded first (below), so the version moves on.
+2. A `base_version` other than the version is a conflict whose message holds the current section
+   (or text); `lines` + `expected` write whatever the version, while the lines still read as
+   expected. The new text is checked for secrets like any `doc_update` body; the body of one call
+   holds at most 200,000 characters.
+3. The change is spliced into the bytes: only the lines that differ are written again, every other
+   line keeps its bytes and its line ending. A new line gets the ending of the line where the change
+   starts (at the end of the file, the line before it; else CRLF when the file has any). The byte
+   order mark and the newlines at the end of the file stay exactly as they were, so a section
+   replaced by its own text leaves the same SHA-256 and writes nothing. A result over 8 MB is
+   refused.
+4. The bytes go to a temporary file in the same folder (the file's permissions copied), which
+   replaces the file (`os.replace`). Right before the replace the file is hashed again; when it
+   changed in between, nothing is written, the change is recorded as an outside one and the answer
+   is the conflict with the current text.
+5. The new hash, size and time are stored, the index is rebuilt and one `document.updated` event
+   (actor: the session; `file`, `version`, `reason`, `hash_before`, `hash_after`, the changed
+   anchors, `section` or `lines`) is written; `document.file_changed_by` becomes `relaybay`.
+
+The write does not commit; a file in a git working tree shows the diff of the replaced lines.
+**An outside change** (an editor, a script, a session's own file tools) is never prevented: the
+read that sees the new hash writes `document.updated` with `outside: true` and the changed anchors,
+and sets `document.file_changed_by` `outside`, `file_changed_at` and `file_changed_sections` (the
+anchors of every outside change since the last write through relaybay, at most 20). While it is
+`outside`, `doc_outline`, `doc_get`, the `doc_search` hits of the document (once) and the
+linked-section lines of `task_context` add `Note: <doc> was changed outside relaybay at <time>:
+sections a, b (version N).`; the next write through relaybay clears it. The answers of `doc_get`
+and `doc_outline` name the version and `writes through relaybay: on` or `off`. The board's page of
+a file document stays read-only.
 
 <a id="spec-documents-index"></a>
 

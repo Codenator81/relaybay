@@ -233,7 +233,7 @@ async def test_a_large_file_document_reads_in_parts(acme: Service, spec_file: Pa
     text = text_of(spec_file)
     assert 850_000 < len(text) < 950_000
     saved = await add_file(acme, spec_file)
-    assert saved.is_file and saved.version == 0 and saved.masked_lines == 1
+    assert saved.is_file and saved.version == 1 and saved.masked_lines == 1
 
     found, rows, _ = await acme.document_outline("acme-shop", "handbook")
     outline = fmt.document_outline(found, rows, None, len(rows))
@@ -266,7 +266,7 @@ async def test_a_large_file_document_reads_in_parts(acme: Service, spec_file: Pa
     assert sha(spec_file) == before
 
 
-async def test_relaybay_never_writes_a_file_document(acme: Service, spec_file: Path) -> None:
+async def test_a_file_document_with_writes_off_is_refused(acme: Service, spec_file: Path) -> None:
     await add_file(acme, spec_file)
     with pytest.raises(ValidationError, match=r"lives in the file .*lines \d+-\d+"):
         await acme.update_document(
@@ -544,6 +544,7 @@ async def test_the_tools_over_mcp(live_server: Callable[[], LiveServer], outside
             client, "doc_get", project="acme-shop", doc="guide", lines="6-7", max_chars=2000
         )
         assert part.split("\n")[-2:] == ["### Refunds", "Back in 14 days."]
+        assert "version 1 · writes through relaybay: off" in part
         history = await call(client, "doc_history", project="acme-shop", doc="guide")
         assert "its text is not versioned here" in history
 

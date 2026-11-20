@@ -502,7 +502,7 @@ The documents of a project (spec, status, brief, runbooks, ADRs) with versions.
 
 ### `doc_get`
 
-A project document as markdown (or one section, or a line range), with its current version to pass as base_version to doc_update; a file document names its file and hash. A read over the cap returns the first lines, the outline of the rest and the call that reads on, never a silent cut. For a large document: doc_outline first.
+A project document as markdown (or one section, or a line range), with its current version to pass as base_version to doc_update; a file document names its file, hash and whether doc_update writes it, and a change made to it outside relaybay. A read over the cap returns the first lines, the outline of the rest and the call that reads on, never a silent cut. For a large document: doc_outline first.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -537,7 +537,7 @@ Search a project's documents per section: each hit names the document, the secti
 
 ### `doc_update`
 
-Write a new version of a project document (base_version 0 creates it). If it changed since you read it, nothing is saved and the current text comes back to merge. With lines + expected only those lines change, as long as they still read as expected. A task's document is `task-<ref>`; point the task at it with task_update(doc_path= 'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body '-' (no text of its own). A file document (source_path) is refused here: edit the file.
+Write a new version of a project document (base_version 0 creates it). If it changed since you read it, nothing is saved and the current text comes back to merge. With lines + expected only those lines change, as long as they still read as expected. A task's document is `task-<ref>`; point the task at it with task_update(doc_path= 'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body '-' (no text of its own). A file document (source_path) whose writes through relaybay are on is written in its file: only the replaced lines change, its line endings stay; a change made to the file outside relaybay is a new version first. With writes off it is refused: edit the file.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -551,9 +551,10 @@ Write a new version of a project document (base_version 0 creates it). If it cha
 | `kind` | string or null | no | spec, status, task, brief, runbook, adr, retro or your own (default doc). |
 | `source_url` | string or null | no | http(s) link when the document lives in a repository: the board links there and later writes need force; '-' unlinks. |
 | `force` | boolean | no | Write a document that lives in a repository anyway. Default: `False`. |
-| `source_path` | string or null | no | Absolute path of a file on this machine: with base_version 0 and body '-' it becomes a file document that relaybay indexes and never writes. |
+| `source_path` | string or null | no | Absolute path of a file on this machine: with base_version 0 and body '-' it becomes a file document that relaybay indexes on demand. |
 | `lines` | string or null | no | Replace only these lines 'a-b' (with expected); body '-' removes. |
 | `expected` | string or null | no | The current text of `lines` as you read it; else a conflict. |
+| `file_writes` | string or null | no | Coordinators only: turn writes through relaybay into a file document's file on or off (default off); with body '-' that is all it does. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

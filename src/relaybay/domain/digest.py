@@ -792,7 +792,8 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
         data.doc_lines,
         f'doc_get("{slug}", doc, section)',
         6,
-        extra=data.doc_links_total - len(data.doc_lines),
+        # A `Note:` line about a file changed outside relaybay follows a link; it is no link.
+        extra=data.doc_links_total - sum(not x.startswith("Note:") for x in data.doc_lines),
     )
     _section(
         sections,

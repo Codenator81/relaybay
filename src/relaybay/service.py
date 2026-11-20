@@ -1206,6 +1206,25 @@ LIVE_ARCHIVE_OPEN_ITEMS = (
     "{key} has an open question, an open approval request or an approved, unused approval:"
     " answer, withdraw or use it first, the archive closes nothing for good. Nothing changed."
 )
+# What a file document's row says about its file, taken again after waiting for a write.
+_FILE_STATE = (
+    "version",
+    "updated_at",
+    "file_hash",
+    "file_size",
+    "file_mtime",
+    "file_seen_at",
+    "file_missing_at",
+    "masked_lines",
+    "file_changed_by",
+    "file_changed_at",
+    "file_changed_sections",
+    "file_writable",
+)
+FILE_WRITES_NOT_COORDINATOR = (
+    "file_writes is only for the coordinator sessions named in the server's config; a desktop id"
+    " also needs that session's own hook_session. Nothing changed."
+)
 PROJECT_ARCHIVE_NOT_COORDINATOR = (
     "project_upsert(archived) is only for the coordinator sessions named in the server's config;"
     " a desktop id also needs that session's own hook_session. Nothing changed. The owner"
@@ -1279,6 +1298,7 @@ class Service:
         self._config_table_hash = rules_hash(table)
         self.rules_mode = rules_mode
         self.coordinators = [c.strip() for c in coordinators or [] if c.strip()]
+        self._file_locks: dict[int, asyncio.Lock] = {}
         # The first report id the missing-marks warning applies to: reports written before
         # migration 0036 never warn (set at start).
         self.report_marks_from = 0
@@ -4733,6 +4753,10 @@ class Service:
         proj = await self.get_project(project)
         return proj, await repo.list_documents(self._r, proj.id)
 
+    async def document_meta(self, project: str, doc: str) -> mem.Document:
+        """A document's row only: no text read, no file touched."""
+        return (await self._document(self._r, project, doc))[1]
+
     async def _document(
         self, conn: aiosqlite.Connection, project: str, doc: str
     ) -> tuple[Project, mem.Document]:
@@ -4770,7 +4794,9 @@ class Service:
         repos = [(r.name, r.path) for r in await repo.list_project_repos(conn, doc.project_id)]
         return await asyncio.to_thread(doc_index.place, doc.source_path, repos)
 
-    async def _refresh_file(self, doc: mem.Document, need_text: bool) -> str | None:
+    async def _refresh_file(
+        self, doc: mem.Document, need_text: bool, locked: bool = False
+    ) -> str | None:
         """Bring a file document's index up to the file: its size and time first, its hash when
         they differ, the index and one `document.updated` event when the hash differs. The path
         is resolved and checked again first; the file is read and indexed before the write
@@ -4810,6 +4836,31 @@ class Service:
             return None
         if same:
             return text
+        if not locked and doc_index.content_hash(data) != doc.file_hash:
+            # A write through relaybay may be between its replace and its commit: wait for it,
+            # then look at the file and the row again, so its own bytes are not an outside change.
+            async with self._file_lock(doc.id):
+                fresh = await repo.get_document(self._r, doc.project_id, doc.slug)
+                if fresh is None:
+                    raise NotFoundError(f"{doc.slug} was removed while it was being read.")
+                for name in _FILE_STATE:
+                    setattr(doc, name, getattr(fresh, name))
+                return await self._refresh_file(doc, need_text, locked=True)
+        await self._take_file(doc, data, text, seen)
+        return text
+
+    def _file_lock(self, document_id: int) -> asyncio.Lock:
+        """One per file document: a write through relaybay and a read that sees a new hash take
+        turns (not reentrant: never taken again inside)."""
+        return self._file_locks.setdefault(document_id, asyncio.Lock())
+
+    async def _take_file(
+        self, doc: mem.Document, data: bytes, text: str, seen: doc_index.FileStat
+    ) -> None:
+        """Record the file's bytes as relaybay's last view of it: the stored state when the hash
+        is the same, else the index rebuilt and, for a new hash, an outside change (the version
+        moves on, one `document.updated` event with `outside` and the changed anchors, and the
+        document notes it until the next write through relaybay)."""
         digest = doc_index.content_hash(data)
         indexed = await repo.count_sections(self._r, doc.id)
         if digest == doc.file_hash and indexed:
@@ -4837,6 +4888,12 @@ class Service:
                 # The same hash is an index rebuilt (after an upgrade or a lost search index),
                 # not a change of the file: no event then.
                 changed = current.file_hash is not None and digest != current.file_hash
+                changes = doc_index.changed_anchors(old, rows)
+                named = [a for v in changes.values() for a in v]
+                if changed and current.file_changed_by == "outside":
+                    # Outside changes since the last write through relaybay add up.
+                    earlier = (current.file_changed_sections or "").split(",")
+                    named = list(dict.fromkeys([*filter(None, earlier), *named]))
                 await repo.set_file_state(
                     tx.conn,
                     doc.id,
@@ -4845,10 +4902,10 @@ class Service:
                     mtime=seen.mtime,
                     seen_at=tx.now,
                     masked_lines=masked,
-                    changed=changed,
+                    changed_by="outside" if changed else None,
+                    changed_sections=",".join(named[: doc_index.EVENT_ANCHORS_MAX]),
                 )
                 if changed:
-                    changes = doc_index.changed_anchors(old, rows)
                     await tx.event(
                         "document.updated",
                         "file",
@@ -4856,15 +4913,22 @@ class Service:
                         project=proj.slug if proj else "",
                         doc=doc.slug,
                         file=True,
+                        outside=True,
+                        version=current.version + 1,
                         hash_before=current.file_hash,
                         hash_after=digest,
                         sections_changed=sum(len(v) for v in changes.values()),
                         **{k: v[: doc_index.EVENT_ANCHORS_MAX] for k, v in changes.items() if v},
                     )
+                saved = await repo.get_document(tx.conn, doc.project_id, doc.slug)
+                assert saved is not None
             doc.masked_lines = masked
+            doc.version = saved.version
+            doc.file_changed_by = saved.file_changed_by
+            doc.file_changed_at = saved.file_changed_at
+            doc.file_changed_sections = saved.file_changed_sections
         doc.file_hash, doc.file_size, doc.file_mtime = digest, seen.size, seen.mtime
         doc.file_missing_at = None
-        return text
 
     def _path_rules(self) -> doc_index.PathRules:
         roots = [*self.attachment_roots]
@@ -5111,6 +5175,7 @@ class Service:
         slug: str,
         prepared: PreparedFile,
         *,
+        writable: bool,
         title: str | None,
         kind: str | None,
         reason: str,
@@ -5125,6 +5190,7 @@ class Service:
             kind or "doc",
             tx.now,
             source_path=str(prepared.path),
+            file_writable=writable,
         )
         found = await repo.get_document(tx.conn, proj.id, slug)
         assert found is not None and found.id == doc_id
@@ -5151,6 +5217,7 @@ class Service:
             file=True,
             created=True,
             hash_after=prepared.digest,
+            **({"file_writes": "on"} if writable else {}),
         )
         saved = await repo.get_document(tx.conn, proj.id, slug)
         assert saved is not None
@@ -5163,10 +5230,235 @@ class Service:
             row = doc_index.find(rows, section)
             where = f"{where}, lines {row.first_line}-{row.last_line}"
         raise ValidationError(
-            f"{found.project_slug}/{found.slug} lives in the file {where}. relaybay never writes"
-            " it: edit the file with your own tools (in your own working tree) and commit it with"
-            " the code."
+            f"{found.project_slug}/{found.slug} lives in the file {where}. Writes through relaybay"
+            " are off for this document: edit the file with your own tools (in your own working"
+            " tree) and commit it with the code, or ask a coordinator to turn them on"
+            " (doc_update with file_writes='on')."
         )
+
+    def _file_conflict(self, found: mem.Document, text: str, section: str | None, why: str) -> str:
+        shown = text
+        if section and mem.section_named(mem.sections(text), section):
+            shown = mem.section_text(text, section)
+        return (
+            f"{found.slug} {why}. Merge your change into the current"
+            f" {'section' if shown is not text else 'text'} below and send it again with"
+            f" base_version {found.version}.\n\n{shown}"
+        )
+
+    async def _read_for_write(
+        self, found: mem.Document, rules: doc_index.PathRules
+    ) -> tuple[Path, bytes, str]:
+        """The file of a file document about to be written: its path checked again, its bytes
+        and text read, and an outside change recorded first (the version moves on)."""
+        assert found.source_path is not None
+        name = f"{found.project_slug}/{found.slug} is not written"
+        # Resolved once: the path checked is the path read and written.
+        real = await asyncio.to_thread(Path(found.source_path).resolve)
+        refused = await asyncio.to_thread(doc_index.recheck, str(real), rules)
+        if refused:
+            raise ValidationError(f"{name}: {refused}.")
+        seen = await asyncio.to_thread(doc_index.file_stat, str(real))
+        if seen is None:
+            if found.file_missing_at is None:
+                async with self._tx() as tx:
+                    await repo.set_file_missing(tx.conn, found.id, tx.now)
+            raise ValidationError(f"{name}: the file {found.source_path} is missing.")
+        try:
+            data, text = await asyncio.to_thread(doc_index.read_file, str(real))
+        except (OSError, ValidationError) as exc:
+            reason = exc.strerror if isinstance(exc, OSError) else str(exc)
+            raise ValidationError(f"{name}: cannot read {found.source_path}: {reason}") from None
+        await self._take_file(found, data, text, seen)
+        return real, data, text
+
+    async def _set_file_writes(
+        self,
+        found: mem.Document,
+        on: bool,
+        why: str,
+        actor: str,
+        session: str | None,
+        session_title: str | None,
+        hook_session: str | None,
+    ) -> None:
+        if on == found.file_writable:
+            return
+        async with self._tx() as tx:
+            sess = await self._session(tx, session, session_title, hook_session)
+            await repo.set_file_writable(tx.conn, found.id, on)
+            await tx.event(
+                "document.updated",
+                sess.name if sess else actor,
+                project_id=found.project_id,
+                session_id=sess.id if sess else None,
+                project=found.project_slug,
+                doc=found.slug,
+                file=True,
+                file_writes="on" if on else "off",
+                reason=why[:200],
+            )
+        found.file_writable = on
+
+    async def _write_file_document(
+        self,
+        found: mem.Document,
+        *,
+        text: str,
+        line_text: str | None,
+        section: str | None,
+        lines: str | None,
+        expected: str | None,
+        base: int,
+        why: str,
+        title: str | None,
+        kind: str | None,
+        actor: str,
+        session: str | None,
+        session_title: str | None,
+        hook_session: str | None,
+    ) -> mem.Document:
+        """doc_update of a file document whose writes through relaybay are on: the change is
+        spliced into the file's bytes (only the replaced lines change) and the file replaced
+        atomically; a change made outside relaybay becomes a new version first."""
+        proj = await self.get_project(found.project_slug)
+        secret_rules = await self._secret_rules(self._r, proj)
+        _scan(secret_rules, body=line_text if lines else text, title=title, kind=kind, reason=why)
+        # Two writes of one document in this process take turns: the second reads what the
+        # first wrote and meets its new version.
+        async with self._file_lock(found.id):
+            return await self._write_file_turn(
+                found,
+                proj,
+                secret_rules,
+                text=text,
+                line_text=line_text,
+                section=section,
+                lines=lines,
+                expected=expected,
+                base=base,
+                why=why,
+                title=title,
+                kind=kind,
+                actor=actor,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+
+    async def _write_file_turn(
+        self,
+        found: mem.Document,
+        proj: Project,
+        secret_rules: SecretRules,
+        *,
+        text: str,
+        line_text: str | None,
+        section: str | None,
+        lines: str | None,
+        expected: str | None,
+        base: int,
+        why: str,
+        title: str | None,
+        kind: str | None,
+        actor: str,
+        session: str | None,
+        session_title: str | None,
+        hook_session: str | None,
+    ) -> mem.Document:
+        real, data, current = await self._read_for_write(found, self._path_rules())
+        if base != found.version and lines is None:
+            raise ConflictError(
+                self._file_conflict(
+                    found,
+                    current,
+                    section,
+                    f"is at version {found.version}, not {base}: its file changed since you"
+                    " read it",
+                )
+            )
+        span = None
+        if lines is not None:
+            assert expected is not None
+            span = mem.parse_lines(lines, len(current.split("\n")))
+            new = mem.replace_lines(current, *span, expected, line_text)
+        elif section:
+            new = mem.replace_section(current, section, text)
+        else:
+            new = text
+        if not new.strip():
+            raise ValidationError(f"The change would leave the file of {found.slug} empty.")
+        new_bytes = doc_index.splice(data, current, new)
+        if new_bytes == data:
+            _note(f"{found.slug} is unchanged; it stays at version {found.version}.")
+            return found
+        if len(new_bytes) > doc_index.FILE_MAX_BYTES:
+            raise ValidationError(
+                f"The file of {found.slug} would have more than"
+                f" {doc_index.FILE_MAX_BYTES // (1024 * 1024)} MB; nothing was written."
+            )
+        digest = doc_index.content_hash(data)
+        try:
+            seen = await asyncio.to_thread(doc_index.write_file, real, new_bytes, digest)
+        except OSError as exc:
+            raise ValidationError(
+                f"{found.project_slug}/{found.slug} is not written: {real}: {exc.strerror}."
+            ) from None
+        if seen is None:
+            _, _, now_text = await self._read_for_write(found, self._path_rules())
+            raise ConflictError(
+                self._file_conflict(
+                    found, now_text, section, "changed in its file while it was being written"
+                )
+            )
+        new_text = new_bytes.decode("utf-8-sig").replace("\r\n", "\n")
+        rows, masked = await asyncio.to_thread(doc_index.build, new_text, secret_rules)
+        new_hash = doc_index.content_hash(new_bytes)
+        async with self._tx() as tx:
+            sess = await self._session(tx, session, session_title, hook_session)
+            old = await repo.list_sections(tx.conn, found.id)
+            if title or kind:
+                await repo.set_document_meta(
+                    tx.conn, found.id, title or found.title, kind or found.kind, tx.now
+                )
+            await repo.replace_sections(
+                tx.conn, found.id, found.project_id, title or found.title, rows, self.search_fts
+            )
+            changes = doc_index.changed_anchors(old, rows)
+            named = [a for v in changes.values() for a in v]
+            await repo.set_file_state(
+                tx.conn,
+                found.id,
+                file_hash=new_hash,
+                size=seen.size,
+                mtime=seen.mtime,
+                seen_at=tx.now,
+                masked_lines=masked,
+                changed_by="relaybay",
+                changed_sections=",".join(named[: doc_index.EVENT_ANCHORS_MAX]),
+            )
+            anchor = mem.find_section(current, section).anchor if section else None
+            await tx.event(
+                "document.updated",
+                sess.name if sess else actor,
+                project_id=proj.id,
+                session_id=sess.id if sess else None,
+                project=proj.slug,
+                doc=found.slug,
+                file=True,
+                version=found.version + 1,
+                reason=why[:200],
+                hash_before=digest,
+                hash_after=new_hash,
+                sections_changed=len(named),
+                **{k: v[: doc_index.EVENT_ANCHORS_MAX] for k, v in changes.items() if v},
+                **({"section": anchor} if anchor else {}),
+                **({"lines": f"{span[0]}-{span[1]}"} if span else {}),
+            )
+            saved = await repo.get_document(tx.conn, proj.id, found.slug)
+        assert saved is not None
+        saved.place = await self._place(self._r, saved)
+        return saved
 
     async def update_document(
         self,
@@ -5184,6 +5476,7 @@ class Service:
         lines: str | None = None,
         expected: str | None = None,
         force: bool = False,
+        file_writes: str | None = None,
         author: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
@@ -5196,7 +5489,10 @@ class Service:
         current text to merge. `source_url` links the document to its repository ('-' unlinks
         it); a linked document changes only with `force`, and its body may be '-' (no text of
         its own). `source_path` (with base_version 0 and body '-') creates a file document:
-        relaybay reads and indexes that file and never writes it."""
+        relaybay reads and indexes that file on demand. A file document is written in its file
+        (by section, lines or whole, only the replaced lines change) when its writes through
+        relaybay are on; `file_writes` ('on'/'off', coordinators only) switches them, at the
+        creation or later (with body '-' that is all the call does)."""
         slug = _clean_doc_slug(doc)
         no_text = str(body or "").strip() == "-"
         text = "" if no_text else _clean_text(body, "body", mem.DOC_BODY_MAX) or ""
@@ -5212,8 +5508,15 @@ class Service:
         if path_text and (source_url or section or lines or not no_text or base_version != 0):
             raise ValidationError(
                 "A file document is created with base_version 0, body '-' and source_path only;"
-                " relaybay reads the file and never writes it."
+                " a later doc_update writes its text, when its writes through relaybay are on."
             )
+        writes = None
+        if file_writes is not None:
+            if str(file_writes).strip() not in ("on", "off"):
+                raise ValidationError("file_writes is 'on' or 'off'.")
+            if not await self._is_coordinator(self._r, session, hook_session):
+                raise ValidationError(FILE_WRITES_NOT_COORDINATOR)
+            writes = str(file_writes).strip() == "on"
         unlink = str(source_url or "").strip() == "-"
         link = None if unlink else _clean_url(source_url, "source_url")
         if link is not None and len(link) > mem.SOURCE_URL_MAX:
@@ -5232,6 +5535,49 @@ class Service:
         prepared = None
         if path_text:
             prepared = await self._prepare_file(await self.get_project(project), path_text)
+        else:
+            known = await repo.get_document(self._r, (await self.get_project(project)).id, slug)
+            if writes is not None and (known is None or not known.is_file):
+                raise ValidationError("file_writes is for a file document (source_path).")
+            if known is not None and known.is_file:
+                _scan(
+                    await self._secret_rules(self._r, await self.get_project(project)), reason=why
+                )
+                if source_url:
+                    raise ValidationError(
+                        f"{known.project_slug}/{known.slug} lives in a file; it has no source_url."
+                    )
+                if writes is not None:
+                    await self._set_file_writes(
+                        known, writes, why, default_actor, session, session_title, hook_session
+                    )
+                    if no_text:
+                        return known
+                if not known.file_writable:
+                    await self._refuse_file_write(known, section)
+                if no_text:
+                    raise ValidationError(
+                        f"body '-' does not empty the file of {known.slug}; send its text."
+                    )
+                # A file keeps its bytes: the body loses only its CRs before LF and its final
+                # newlines (the file's own are kept), never spaces or a leading blank line.
+                assert line_text is not None
+                return await self._write_file_document(
+                    known,
+                    text=line_text,
+                    line_text=line_text,
+                    section=section,
+                    lines=lines,
+                    expected=expected,
+                    base=base,
+                    why=why,
+                    title=new_title,
+                    kind=new_kind,
+                    actor=default_actor,
+                    session=session,
+                    session_title=session_title,
+                    hook_session=hook_session,
+                )
         async with self._tx() as tx:
             proj = await self.get_project(project, tx.conn)
             _scan(
@@ -5255,6 +5601,7 @@ class Service:
                     proj,
                     slug,
                     prepared,
+                    writable=bool(writes),
                     title=new_title,
                     kind=new_kind,
                     reason=why,
@@ -5282,8 +5629,8 @@ class Service:
                 found = await repo.get_document(tx.conn, proj.id, slug)
                 assert found is not None and found.id == doc_id
             else:
-                if found.is_file:
-                    await self._refuse_file_write(found, section)
+                if found.is_file:  # made a file document since the check above
+                    raise ConflictError(f"{found.slug} became a file document; send it again.")
                 if found.source_url and not force:
                     raise ValidationError(
                         f"{proj.slug}/{found.slug} lives in the repository: {found.source_url}."
@@ -6156,12 +6503,17 @@ class Service:
         """A pointer per link: lines, size and the call that reads it, never the text."""
         cache: DocCache = {}
         lines = []
+        noted: set[int] = set()
         for link in links:
             loaded = await self._linked_doc(link.project, link.doc, cache)
             found, rows = loaded if loaded else (None, [])
             if found is not None and found.is_file and found.place is None:
                 found.place = await self._place(self._r, found)
             lines.append(link.pointer(found, rows))
+            note = doc_index.outside_note(found) if found is not None else None
+            if note and found is not None and found.id not in noted:
+                noted.add(found.id)
+                lines.append(note)
         return lines
 
     async def _relevant_notes(self, task: Task) -> list[mem.MemoryNote]:

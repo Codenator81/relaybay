@@ -1,11 +1,16 @@
 """The section index of a document (design 0026): one row per section with its lines and size,
 the outline built from it, capped reads that point at the next part instead of cutting silently,
-and where a file document's text comes from. No I/O except `read_file`."""
+where a file document's text comes from, and how a change is spliced back into its bytes. No
+I/O except `read_file` and `write_file`."""
 
 import bisect
+import contextlib
 import fnmatch
 import hashlib
+import os
+import shutil
 import stat
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +19,7 @@ from relaybay.domain.environments import DEFAULT_SECRET_RULES, SecretRules, reda
 from relaybay.domain.errors import ValidationError
 from relaybay.domain.memory import (
     DOC_BODY_MAX,
+    Document,
     Section,
     parse_heading,
     sections,
@@ -502,3 +508,113 @@ def place(path: str, repos: list[tuple[str, str]]) -> str:
 
 def content_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def outside_note(doc: Document) -> str | None:
+    """`Note: spec was changed outside relaybay at <time>: sections a, b (version N).` while
+    the last change of a file document's file seen by relaybay was not its own."""
+    if doc.file_changed_by != "outside":
+        return None
+    named = [a for a in (doc.file_changed_sections or "").split(",") if a]
+    sections = f": sections {', '.join(named)}" if named else ""
+    return (
+        f"Note: {doc.slug} was changed outside relaybay at {(doc.file_changed_at or '')[:16]}Z"
+        f"{sections} (version {doc.version})."
+    )
+
+
+_BOM = b"\xef\xbb\xbf"
+
+
+def _empty_tail(lines: list[str]) -> int:
+    n = 0
+    while n < len(lines) and not lines[len(lines) - 1 - n].rstrip("\r"):
+        n += 1
+    return n
+
+
+def splice(data: bytes, old: str, new: str) -> bytes:
+    """The bytes of a file whose text (as `read_file` gives it: no byte order mark, LF) goes
+    from `old` to `new`: only the lines that differ are written again, every other line keeps
+    its bytes and its own line ending. A new line gets the ending of the line where the change
+    starts (the line before it at the end of the file, else the file's: CRLF when it has any).
+    The byte order mark and the newlines at the end of the file stay as they were. A carriage
+    return left at a line's end (a CR CR LF ending) does not count as a difference: a sender
+    that turns CRLF into LF loses it, and the line keeps its bytes."""
+    bom = _BOM if data.startswith(_BOM) else b""
+    pieces = data[len(bom) :].split(b"\n")
+    raw = [(p[:-1], b"\r\n") if p.endswith(b"\r") else (p, b"\n") for p in pieces[:-1]]
+    raw.append((pieces[-1], b""))
+    old_lines, new_lines = old.split("\n"), new.split("\n")
+    assert len(old_lines) == len(raw)
+    # The empty lines at the end (a lone CR counts as empty) are the file's own.
+    tail = _empty_tail(old_lines)
+    new_lines = (
+        new_lines[: len(new_lines) - _empty_tail(new_lines)] + old_lines[len(old_lines) - tail :]
+    )
+    n, m = len(old_lines), len(new_lines)
+    first = 0
+    old_cmp = [line.rstrip("\r") for line in old_lines]
+    new_cmp = [line.rstrip("\r") for line in new_lines]
+    while first < min(n, m) and old_cmp[first] == new_cmp[first]:
+        first += 1
+    same_end = 0
+    while same_end < min(n, m) - first and old_cmp[n - 1 - same_end] == new_cmp[m - 1 - same_end]:
+        same_end += 1
+    if first < n and raw[first][1]:
+        eol = raw[first][1]
+    elif first > 0 and raw[first - 1][1]:
+        eol = raw[first - 1][1]
+    else:
+        eol = b"\r\n" if any(e == b"\r\n" for _, e in raw) else b"\n"
+    out = [
+        *raw[:first],
+        *[(line.encode("utf-8"), eol) for line in new_lines[first : m - same_end]],
+        *raw[n - same_end :],
+    ]
+    # Every line but the last ends with a line ending; the last ends the file.
+    fixed = [(line, e or eol) for line, e in out[:-1]]
+    return bom + b"".join(line + e for line, e in [*fixed, (out[-1][0], b"")])
+
+
+def read_only(path: Path) -> bool:
+    """The file may not be written: no write permission, or the Windows read-only attribute
+    (os.replace would overwrite a read-only file on POSIX and fail on Windows)."""
+    attributes = getattr(path.stat(), "st_file_attributes", 0)
+    return not os.access(path, os.W_OK) or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_READONLY", 0)
+    )
+
+
+def _remove(tmp: str) -> None:
+    """Remove a temporary file, read-only or not; a failure here never hides the error that
+    led to it."""
+    with contextlib.suppress(OSError):
+        Path(tmp).chmod(stat.S_IREAD | stat.S_IWRITE)
+        Path(tmp).unlink()
+
+
+def write_file(path: Path, data: bytes, expected_hash: str) -> FileStat | None:
+    """Write `data` to `path` atomically: a temporary file in the same folder replaces it. The
+    file is hashed again right before the replace; when it is no longer `expected_hash` nothing
+    is written and the answer is None, else the size and time of the bytes written."""
+    if read_only(path):
+        raise ValidationError(f"{path} is read-only; nothing was written.")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        shutil.copymode(path, tmp)
+        written = Path(tmp).stat()
+        with path.open("rb") as fh:
+            now = content_hash(fh.read(FILE_MAX_BYTES + 1))
+        if now != expected_hash:
+            _remove(tmp)
+            return None
+        Path(tmp).replace(path)
+    except BaseException:
+        _remove(tmp)
+        raise
+    return FileStat(written.st_size, written.st_mtime)

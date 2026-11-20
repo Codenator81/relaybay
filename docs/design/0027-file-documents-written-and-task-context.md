@@ -33,9 +33,17 @@ project:
 
 ### The rule
 
-`doc_update` on a file document is no longer refused. With `section` it replaces that section,
-with `lines` + `expected` those lines, without either the whole text; the same parameters as a
-database document. The text goes into the file:
+`doc_update` on a file document is no longer refused once writes through relaybay are on for
+that document. They are **opt-in per document** (owner, 2026-11-19): `document.file_writable`, off
+by default and for every file document that exists before 0054; `doc_update(file_writes="on"|"off")`
+switches them, at the creation (`base_version` 0 + `source_path`) or later (with body `-` that is
+all the call does), for coordinator sessions only (the check of `rules_update` and
+`project_upsert(archived)`). With writes off, `doc_update` is refused as in 0.14: the refusal names
+the file and the section's lines and says that writes through relaybay are off for this document.
+`doc_outline` and `doc_get` say `writes through relaybay: on` or `off`.
+
+With writes on, `section` replaces that section, `lines` + `expected` those lines, neither the
+whole text; the same parameters as a database document. The text goes into the file:
 
 1. Read the file's bytes and hash them. When the hash is not the one relaybay last saw, the file
    was changed outside relaybay: the read path's refresh runs first (index, event, the outside
@@ -146,12 +154,13 @@ project decisions, then linked sections beyond the first. The total never exceed
 
 | Migration | What |
 |---|---|
-| 0054 | `document.file_changed_by`, `file_changed_at`, `file_changed_sections`; nullable |
+| 0054 | `document.file_changed_by`, `file_changed_at`, `file_changed_sections`, nullable; `file_writable` integer, default 0; file documents at version 0 move to 1 |
 | 0055 | `task_doc_section` (task, document, anchor, created_by, created_at, unique per task and anchor); `decision.area` nullable |
 
 ## MCP contract
 
-Version 2, additions only: the tool `task_doc_link`; `doc_update` accepts a file document;
+Version 2, additions only: the tool `task_doc_link`; `doc_update` accepts a file document and
+`file_writes`;
 `decision_add(area)`; `task_create(sections)`. The `doc_update` description stops saying that a
 file is never written.
 
@@ -194,7 +203,7 @@ created item with a warning, so a person checks those before `--apply`.
 
 | # | Point | Default | Other way |
 |---|---|---|---|
-| F1 | A file document written through relaybay | yes, section, lines or whole text, spliced in place | read-only (0026 K2) |
+| F1 | A file document written through relaybay | opt-in per document, off by default (a coordinator turns it on); then section, lines or whole text, spliced in place | always on; read-only (0026 K2) |
 | F2 | An edit of the file outside relaybay | a new version with an "outside" note until the next write | an import with a conflict to resolve |
 | F3 | The board's page of a file document | read-only | edit a section on the page |
 | F4 | Project decisions in `task_context` | only related ones, the rest counted | all, newest first |

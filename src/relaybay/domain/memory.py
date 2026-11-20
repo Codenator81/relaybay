@@ -65,6 +65,12 @@ class Document:
     file_seen_at: str | None = None
     file_missing_at: str | None = None
     masked_lines: int = 0
+    # The last change of the file relaybay saw: by 'relaybay' (a doc_update) or 'outside', when,
+    # and the anchors of its sections (comma-separated); writes through relaybay are opt-in.
+    file_changed_by: str | None = None
+    file_changed_at: str | None = None
+    file_changed_sections: str | None = None
+    file_writable: bool = False
     # Set by a read of a file document: why its text is not there (missing, unreadable), and
     # where it is in words (`<repo>:<path>` inside a repository of the project, else the path).
     file_problem: str | None = None

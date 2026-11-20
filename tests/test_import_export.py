@@ -1280,6 +1280,10 @@ async def test_a_stale_hash_does_not_migrate(
             "file_seen_at",
             "file_missing_at",
             "masked_lines",
+            "file_changed_by",
+            "file_changed_at",
+            "file_changed_sections",
+            "file_writable",
         ):
             conn.execute(f"ALTER TABLE document DROP COLUMN {column}")
         conn.execute("DROP TABLE saved_filter")

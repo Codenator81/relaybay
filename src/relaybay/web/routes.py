@@ -2294,6 +2294,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         request: Request, slug: str, doc: str, csrf: Annotated[str, Form(alias=CSRF_FIELD)] = ""
     ):
         board_only(request, csrf)
+        found = await service.document_meta(slug, doc)
+        if found.is_file:  # the page stays read-only for a file document (design 0027, F3)
+            return flash_redirect(
+                request,
+                f"/p/{found.project_slug}/docs/{found.slug}",
+                message="This document lives in a file; edit the file itself.",
+            )
         form = await request.form()
         body = str(form.get("body") or "")
         reason = str(form.get("reason") or "")

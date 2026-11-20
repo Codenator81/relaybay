@@ -3153,6 +3153,10 @@ def _document(row: aiosqlite.Row) -> Document:
         file_seen_at=row["file_seen_at"],
         file_missing_at=row["file_missing_at"],
         masked_lines=row["masked_lines"],
+        file_changed_by=row["file_changed_by"],
+        file_changed_at=row["file_changed_at"],
+        file_changed_sections=row["file_changed_sections"],
+        file_writable=bool(row["file_writable"]),
     )
 
 
@@ -3217,13 +3221,26 @@ async def insert_document(
     now: str,
     source_url: str | None = None,
     source_path: str | None = None,
+    file_writable: bool = False,
 ) -> int:
     """A document without versions yet (version 0); `add_document_version` gives it text. A
-    file document (`source_path`) never has versions."""
+    file document (`source_path`) has no stored versions: its version counts its file's hashes
+    and starts at 1."""
     cur = await conn.execute(
         "INSERT INTO document (project_id, slug, title, kind, version, created_at, updated_at,"
-        " source_url, source_path) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
-        (project_id, slug, title, kind, now, now, source_url, source_path),
+        " source_url, source_path, file_writable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            project_id,
+            slug,
+            title,
+            kind,
+            0 if source_path is None else 1,
+            now,
+            now,
+            source_url,
+            source_path,
+            int(file_writable),
+        ),
     )
     return int(cur.lastrowid or 0)
 
@@ -3237,15 +3254,44 @@ async def set_file_state(
     mtime: float | None,
     seen_at: str,
     masked_lines: int | None = None,
-    changed: bool = False,
+    changed_by: str | None = None,
+    changed_sections: str | None = None,
 ) -> None:
-    """What a read of a file document saw; the file is there again if it was missing."""
+    """What a read or a write of a file document saw; the file is there again if it was
+    missing. `changed_by` ('relaybay' or 'outside') records a new hash: the version moves on
+    and the change is named."""
+    changed = changed_by is not None
     await conn.execute(
         "UPDATE document SET file_hash = ?, file_size = ?, file_mtime = ?, file_seen_at = ?,"
         " file_missing_at = NULL, masked_lines = coalesce(?, masked_lines),"
-        " updated_at = CASE WHEN ? THEN ? ELSE updated_at END WHERE id = ?",
-        (file_hash, size, mtime, seen_at, masked_lines, int(changed), seen_at, document_id),
+        " updated_at = CASE WHEN ? THEN ? ELSE updated_at END,"
+        " version = version + ?,"
+        " file_changed_by = CASE WHEN ? THEN ? ELSE file_changed_by END,"
+        " file_changed_at = CASE WHEN ? THEN ? ELSE file_changed_at END,"
+        " file_changed_sections = CASE WHEN ? THEN ? ELSE file_changed_sections END"
+        " WHERE id = ?",
+        (
+            file_hash,
+            size,
+            mtime,
+            seen_at,
+            masked_lines,
+            int(changed),
+            seen_at,
+            int(changed),
+            int(changed),
+            changed_by,
+            int(changed),
+            seen_at,
+            int(changed),
+            changed_sections,
+            document_id,
+        ),
     )
+
+
+async def set_file_writable(conn: aiosqlite.Connection, document_id: int, on: bool) -> None:
+    await conn.execute("UPDATE document SET file_writable = ? WHERE id = ?", (int(on), document_id))
 
 
 async def set_file_missing(conn: aiosqlite.Connection, document_id: int, now: str) -> None:

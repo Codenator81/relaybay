@@ -439,7 +439,7 @@ class _Planner:
             with contextlib.suppress(NotFoundError):  # not created yet: an add
                 current, text = await self.service.get_document(project, doc)
         if current is not None and current.is_file:
-            detail = f"lives in the file {current.source_path}; relaybay only reads it"
+            detail = f"lives in the file {current.source_path}; import does not change it"
             self.add("document", name, file.rel, "skipped", detail)
             return
         style, mixed = file_style(file.text, file.bom)
