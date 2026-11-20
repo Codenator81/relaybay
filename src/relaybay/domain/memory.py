@@ -456,6 +456,23 @@ def title_similarity(a: str, b: str) -> float:
     return len(left & right) / len(left | right)
 
 
+COVER_WORD_MIN = 4  # letters: shorter words say too little about what a title is about
+
+
+def word_cover(title: str, text: str) -> float:
+    """The share of `title`'s words (stems, stop words and words under four letters dropped)
+    found in `text`; 0.0 for a title with fewer than two such words, where one shared word
+    would be a full cover."""
+    words = {
+        stem(w)
+        for w in _WORD_RE.findall(title)
+        if len(w) >= COVER_WORD_MIN and w.casefold() not in _STOP_WORDS
+    }
+    if len(words) < 2:
+        return 0.0
+    return len(words & set(stem_text(text).split())) / len(words)
+
+
 def candidate_words(title: str) -> list[str]:
     """The words of a new note's title that are worth searching for (stop words and one- and
     two-letter words dropped)."""

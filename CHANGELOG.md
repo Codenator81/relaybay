@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `relaybay import --backlog <file> --project <slug>` (design 0027) reads only the rows of one project, the others are skipped as "other project". A row that is an open item of that project already on the board is not created again: it matches when its text names the item (`#N`, `backlog #N`, never `PR #N`), its title is alike (title similarity 0.6 and up) or it holds nearly all of the item's title words (0.7 and up); the dry run shows `matches #N: names it` / `title 0.71` / `cover 0.80`, and `--apply` records the row against the item without changing it, so a second import is a no-op. A row near an item (0.4 up to the threshold, or whose item a better row took) is created with a `near #N (score)` warning. Matches count in the plan hash.
+- `relaybay import --match LINE=N` (repeatable, with `--backlog` and `--project`): the registry row on line LINE is item N (`matches #N: by hand`), over the automatic matching; `--match LINE=new` creates the row although it matches. An item that is missing, of another project, not open or already another row's, or a line that is no row, is an error line in the plan; the choices count in the plan hash.
+
+### Fixed
+
+- The command line no longer fails with `UnicodeEncodeError` when its output goes to a file or a pipe on Windows: stdout and stderr in another encoding print UTF-8.
+
 ### Changed
 
 - The task dialog keeps its height when you switch between Overview, Plan and Review: a short or empty tab no longer shrinks the window to one line, and every tab has a minimum height. An empty Plan or Review tab now speaks to the owner: what will appear there, who writes it and when, and what to do now: **Ask for a plan** or **Ask for review steps** sends the bound session a comment, and a card without a session points to Copy the brief.

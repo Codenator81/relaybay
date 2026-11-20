@@ -91,6 +91,8 @@ Bring a markdown setup (project briefs, task registry, task notes, memory notes)
 | `--aliases` | `FILE` | JSON file with more column, stage, heading and backlog decision names, in any language. |
 | `--retro-project` | `SLUG` | The project whose document 'retro' receives retro.md (skipped without it). |
 | `--backlog` | `FILE` | A backlog or bug registry under another name, read in place of backlog.md. |
+| `--project` | `SLUG` | Read only the backlog rows of this project (slug or name); a row that matches an open item of it already on the board is recorded against that item, not created. |
+| `--match` | `LINE=N` | With --backlog and --project, repeatable: the row on line LINE of the registry is item N of the project (over the automatic match); LINE=new creates it as a new item. |
 | `--home` | `HOME` | relaybay data directory. |
 
 ## `export`
