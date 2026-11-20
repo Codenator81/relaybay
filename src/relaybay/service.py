@@ -8187,6 +8187,15 @@ class Service:
                 loose.append(item)
             else:
                 step.attachments.append(item)
+        # Each step's conversation: a comment on the step, or a reply to one, oldest first.
+        owner: dict[int, int] = {}
+        for comment in await repo.list_comments(conn, task_id):
+            step_id = comment.step_id
+            if step_id is None and comment.in_reply_to is not None:
+                step_id = owner.get(comment.in_reply_to)
+            if step_id in by_id:
+                owner[comment.id] = step_id
+                by_id[step_id].thread.append(comment)
         return Review(steps, loose)
 
     async def review(self, ref: str | int) -> tuple[Task, Review, list[Comment]]:

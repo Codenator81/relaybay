@@ -61,6 +61,9 @@ class ReviewStep:
     created_at: str
     updated_at: str
     attachments: list[Attachment] = field(default_factory=list)
+    # The step's conversation, oldest first: the owner's comments and decisions on it and the
+    # replies to them (comment objects; typed loosely to keep this module free of models).
+    thread: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
