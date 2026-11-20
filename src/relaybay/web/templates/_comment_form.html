@@ -1,7 +1,10 @@
 {#- The comment box of the task dialog and the task page. Outside every fragment that live events
     refetch (_task_view.html, _comment_thread.html), so a half-typed comment is never swapped
-    away. Expects: t (the task). -#}
-<section class="panel comment-box" aria-label="New comment">
+    away; the thread above it refetches itself. Expects: t (the task), detail. -#}
+<section class="panel comment-box comments" aria-labelledby="comments-title-{{ t.key }}">
+  {#- The conversation sits right above the box, like a messenger: what you send shows at once. #}
+  <h2 id="comments-title-{{ t.key }}">Comments</h2>
+  {% with comments = detail.comments, doc_refs = detail.doc_refs, wait_reason = detail.undelivered %}{% include "_comment_thread.html" %}{% endwith %}
   <form class="comment-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/comments"
         hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/comments" hx-target="#comments-{{ t.key }}" hx-swap="outerHTML">
     <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">

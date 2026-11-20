@@ -471,7 +471,8 @@ def test_board_thread_shows_marks_and_escapes(board: TestClient, token: str) -> 
 
     run_in_app(board, fire, service, "PostToolUse")
     thread = board.get(url)
-    assert "delivered" in thread.text and "to Checkout" in thread.text
+    # Delivered, without naming the session: the id says nothing to the owner.
+    assert "delivered" in thread.text and "to Checkout" not in thread.text
     assert "mark-read" not in thread.text
 
     run_in_app(board, service.ack_comments, task=task.key)

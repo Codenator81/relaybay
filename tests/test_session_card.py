@@ -71,7 +71,8 @@ def test_the_comment_box_is_outside_every_refetched_fragment(board: TestClient) 
         assert "comment-form" not in fragment
 
 
-def test_the_card_order_is_state_report_comments_then_folds(board: TestClient) -> None:
+def test_the_card_order_is_state_report_folds_then_comments(board: TestClient) -> None:
+    """The comments sit with the box at the end, like a messenger (owner, 2026-11-20)."""
     service: Service = board.app.state.service
     task = run_in_app(board, project_task, service)
     run_in_app(board, service.add_report, task.key, "changed · S · first pass")
@@ -79,10 +80,10 @@ def test_the_card_order_is_state_report_comments_then_folds(board: TestClient) -
     marks = [
         'class="panel state-line',
         'class="panel task-report"',
-        'class="comment-thread"',
         'data-fold="session"',
         'data-fold="details"',
         'data-fold="description"',
+        'class="comment-thread"',
         'class="comment-form"',
     ]
     places = [html.index(mark) for mark in marks]

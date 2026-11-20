@@ -671,3 +671,46 @@ def test_static_links_carry_a_content_hash(board: TestClient) -> None:
         assert f'"/static/{name}?v={versions[name]}"' in html
         assert len(versions[name]) == 12
     assert board.get(f"/static/app.js?v={versions['app.js']}").status_code == 200
+
+
+def test_a_step_shows_its_conversation_as_bubbles(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    key, ids = board_task(board)
+    run_in_app(board, service.decide_review_step, key, ids[1], "comment", "The badge shows 1")
+    _, review, _ = run_in_app(board, service.review, key)
+    asked = review.steps[1].thread[0]
+    run_in_app(
+        board, service.add_agent_comment, key, "Fixed: it counts items now", in_reply_to=asked.id
+    )
+    page = board.get(f"/p/acme-shop/t/{key}/review").text
+    mine = page.index('class="bubble mine"')
+    theirs = page.index('class="bubble theirs"')
+    assert mine < theirs  # oldest first: the owner's comment, then the agent's reply
+    assert "The badge shows 1" in page and "Fixed: it counts items now" in page
+    _, review, _ = run_in_app(board, service.review, key)
+    assert [len(s.thread) for s in review.steps] == [0, 2, 0]  # only the step it was about
+
+
+def test_a_numbered_step_title_shows_its_number_once(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop")
+    task = run_in_app(board, service.create_task, "acme-shop", "Checkout", stage="review")
+    run_in_app(board, service.set_review_steps, task.key, [{"title": "1. Pager on the phone"}])
+    page = board.get(f"/p/acme-shop/t/{task.key}/review").text
+    assert '<span class="muted">1.</span> Pager on the phone</span>' in page
+
+
+def test_a_step_bubble_drops_the_on_step_prefix(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    key, ids = board_task(board)
+    run_in_app(board, service.decide_review_step, key, ids[0], "comment", "Too small on a phone")
+    page = board.get(f"/p/acme-shop/t/{key}/review").text
+    assert "<p>Too small on a phone</p>" in page and "On step 1" not in page
+
+
+def test_step_comments_stay_out_of_the_task_thread(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    key, ids = board_task(board)
+    run_in_app(board, service.decide_review_step, key, ids[0], "accept")
+    thread = board.get(f"/p/acme-shop/t/{key}/comments").text
+    assert "accepted" not in thread and "1 comment on review steps: see the Review tab." in thread

@@ -26,6 +26,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The task's comments sit right above the comment box and read like a messenger (yours on the right, the agent's on the left), so a sent comment shows at once; comment numbers and the session id it was delivered to are gone, an agent without a readable name is "Agent", and comments on review steps stay in the step's thread on the Review tab (the task thread counts them).
+- A review step shows its conversation like a messenger: the owner's comments and decisions on the step on the right, the agent's replies on the left, oldest first, each with its time (and sent / delivered / read for the owner's); it refreshes live when a comment or a reply arrives. A step title that already starts with its own number ("5. ...") shows the number once.
 - The task dialog keeps its height when you switch between Overview, Plan and Review: a short or empty tab no longer shrinks the window to one line, and every tab has a minimum height. An empty Plan or Review tab now speaks to the owner: what will appear there, who writes it and when, and what to do now: **Ask for a plan** or **Ask for review steps** sends the bound session a comment, and a card without a session points to Copy the brief.
 - A card waiting on the owner shows it once, as the state word **Waits for you**; the yellow "waiting on" chip stays only for someone else (a person, a role, another session).
 - The Plan tab shows the bound session's own todo (its Claude Code task list) open under the plan, each item with its status and when it last changed; with no plan, the todo stands alone under "No plan yet".

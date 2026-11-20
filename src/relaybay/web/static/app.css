@@ -1870,3 +1870,20 @@ summary { cursor: pointer; }
 .brief-fold > summary { color: var(--muted); font-size: 13px; }
 .brief-fold > summary:hover { color: var(--accent); }
 .brief-text { width: 100%; box-sizing: border-box; margin-top: 6px; font-size: 12px; }
+
+/* A review step's conversation, like a messenger: the owner right, the agent left. */
+.chat { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.bubble { max-width: min(80%, 60ch); padding: 6px 10px; border-radius: 12px; border: 1px solid var(--border); overflow-wrap: anywhere; }
+.bubble.mine { align-self: flex-end; background: color-mix(in srgb, var(--accent) 22%, transparent); border-bottom-right-radius: 4px; }
+.bubble.theirs { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 4px; }
+.bubble-author { display: block; font-size: 0.8em; font-weight: 600; color: var(--accent); }
+.bubble-body > :first-child { margin-top: 0; }
+.bubble-body > :last-child { margin-bottom: 0; }
+.bubble-meta { display: block; font-size: 0.75em; text-align: right; }
+
+/* The task's comment thread as a messenger too: the owner right, the agent left. */
+.comment-list { display: flex; flex-direction: column; }
+.comment { max-width: min(85%, 70ch); border-radius: 12px; }
+.comment.from-owner { align-self: flex-end; background: color-mix(in srgb, var(--accent) 22%, transparent); border-bottom-right-radius: 4px; }
+.comment.from-agent { align-self: flex-start; border-bottom-left-radius: 4px; }
+.comment.from-owner .comment-marks { text-align: right; }

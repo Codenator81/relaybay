@@ -290,6 +290,7 @@
       if (data.key !== live.dataset.task) return;
       if (isComment(data.kind)) {
         queue(thread(data.key));
+        queueReview(data.key);  // a review step shows its own conversation
       } else if (isReview(data.kind)) {
         queueReview(data.key);
       } else if (isPlan(data.kind)) {
@@ -365,7 +366,7 @@
       });
     }
     if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) {
-      if (isComment(data.kind)) queue(thread(data.key));
+      if (isComment(data.kind)) { queue(thread(data.key)); queueReview(data.key); }
       else if (isReview(data.kind)) queueReview(data.key);
       else if (isPlan(data.kind)) queue(planPanel(data.key));
       else if (isQuestion(data.kind)) queueQuestions(data.key);

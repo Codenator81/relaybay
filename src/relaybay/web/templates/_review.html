@@ -35,7 +35,9 @@
         <input type="hidden" name="decision" value="{{ 'reopen' if s.status == 'accepted' else 'accept' }}">
         <label class="review-check">
           <input type="checkbox"{% if s.status == "accepted" %} checked{% endif %} aria-label="Accept step {{ s.position }}">
-          <span class="review-title"><span class="muted">{{ s.position }}.</span> {{ s.title }}</span>
+          {#- An agent often numbers the title itself ("5. ..."): show the position once. #}
+          {%- set prefix = s.position ~ "." %}
+          <span class="review-title"><span class="muted">{{ s.position }}.</span> {{ s.title[prefix|length:]|trim if s.title.startswith(prefix) else s.title }}</span>
         </label>
         <span class="review-status status-{{ s.status }}">{{ s.status }}</span>
       </form>
@@ -46,6 +48,21 @@
       </details>
       {% endif %}
       {{ thumbs(s.attachments) }}
+      {% if s.thread %}
+      {#- The step's conversation like a messenger: the owner on the right, the agent on the left. #}
+      <ol class="chat" aria-label="Comments on step {{ s.position }}">
+        {% for c in s.thread %}
+        <li class="bubble {{ 'mine' if c.from_owner else 'theirs' }}" id="comment-{{ c.id }}">
+          {% if not c.from_owner %}<span class="bubble-author">{{ "Agent" if c.author.startswith("local_") else c.author }}</span>{% endif %}
+          {%- set lead = "On step " ~ s.position ~ " '" ~ s.title ~ "': " %}
+          {% if c.author_kind == "external" %}<p class="bubble-body">{{ c.body_md }}</p>
+          {% else %}<div class="markdown bubble-body">{{ (c.body_md[lead|length:] if c.body_md.startswith(lead) else c.body_md)|markdown }}</div>{% endif %}
+          <span class="bubble-meta muted"><time datetime="{{ c.created_at }}" title="{{ c.created_at[:19]|replace('T', ' ') }} UTC" data-age>{{ c.created_at|age }}</time>
+            {%- if c.from_owner %}{% if c.read_at %} · read{% elif c.delivered_at %} · delivered{% else %} · not delivered yet{% endif %}{% endif %}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% endif %}
       <form class="review-comment" method="post" action="{{ base }}" hx-post="{{ base }}" hx-target="closest .review" hx-swap="outerHTML">
         <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
         <textarea name="comment" rows="2" maxlength="{{ comment_max }}" aria-label="Comment on step {{ s.position }}"
