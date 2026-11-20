@@ -50,11 +50,6 @@
     {% endfor %}
   </section>
 
-  <section class="panel comments" aria-labelledby="comments-title-{{ t.key }}">
-    <h2 id="comments-title-{{ t.key }}">Comments</h2>
-    {% with comments = detail.comments, doc_refs = detail.doc_refs, wait_reason = detail.undelivered %}{% include "_comment_thread.html" %}{% endwith %}
-  </section>
-
   <details class="panel fold" data-fold="session" open>
     <summary><h2>Session and its history</h2></summary>
     {% if t.session_name %}

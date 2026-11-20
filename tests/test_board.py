@@ -450,7 +450,8 @@ def test_the_folds_of_the_task_view(board: TestClient, seeded: str) -> None:
     text = (templates / "_task_view.html").read_text(encoding="utf-8")
     assert '<details class="panel"' not in text
     sections = re.findall(r'<section class="panel ([a-z-]+)"', text)
-    assert sections == ["task-report", "comments"]
+    # The comments sit with the box below the view, so what is sent shows at once.
+    assert sections == ["task-report"]
     run_in_app(
         board,
         board.app.state.service.update_task,
@@ -465,6 +466,8 @@ def test_the_folds_of_the_task_view(board: TestClient, seeded: str) -> None:
         assert "<summary><h2>Description</h2></summary>" in page
         assert 'data-fold="reports"' not in page and 'data-fold="comments"' not in page
         assert '<section class="panel state-line state-none"' in page
+        # The thread comes right before the box that adds to it.
+        assert page.index(f'id="comments-{seeded}"') < page.index('class="comment-form"')
     dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
     assert '<details class="panel fold dialog-edit" data-fold="edit">' in dialog
     assert "<summary><h2>Edit task</h2></summary>" in dialog

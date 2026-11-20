@@ -53,7 +53,7 @@
       <ol class="chat" aria-label="Comments on step {{ s.position }}">
         {% for c in s.thread %}
         <li class="bubble {{ 'mine' if c.from_owner else 'theirs' }}" id="comment-{{ c.id }}">
-          {% if not c.from_owner %}<span class="bubble-author">{{ c.author }}</span>{% endif %}
+          {% if not c.from_owner %}<span class="bubble-author">{{ "Agent" if c.author.startswith("local_") else c.author }}</span>{% endif %}
           {%- set lead = "On step " ~ s.position ~ " '" ~ s.title ~ "': " %}
           {% if c.author_kind == "external" %}<p class="bubble-body">{{ c.body_md }}</p>
           {% else %}<div class="markdown bubble-body">{{ (c.body_md[lead|length:] if c.body_md.startswith(lead) else c.body_md)|markdown }}</div>{% endif %}

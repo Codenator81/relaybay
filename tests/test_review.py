@@ -706,3 +706,11 @@ def test_a_step_bubble_drops_the_on_step_prefix(board: TestClient) -> None:
     run_in_app(board, service.decide_review_step, key, ids[0], "comment", "Too small on a phone")
     page = board.get(f"/p/acme-shop/t/{key}/review").text
     assert "<p>Too small on a phone</p>" in page and "On step 1" not in page
+
+
+def test_step_comments_stay_out_of_the_task_thread(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    key, ids = board_task(board)
+    run_in_app(board, service.decide_review_step, key, ids[0], "accept")
+    thread = board.get(f"/p/acme-shop/t/{key}/comments").text
+    assert "accepted" not in thread and "1 comment on review steps: see the Review tab." in thread
