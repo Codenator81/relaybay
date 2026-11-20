@@ -2,6 +2,7 @@
 coordinators only, and the events on Activity and the Audit page."""
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from relaybay.domain.errors import NotFoundError, ValidationError
-from relaybay.domain.tasks import is_archived
+from relaybay.domain.tasks import archived_since, is_archived
 from relaybay.security import csrf_token
 from relaybay.service import Service
 from relaybay.web import routes
@@ -176,7 +177,8 @@ def test_board_archive_and_back(board: TestClient, seeded: str, token: str) -> N
     column = done_column(board)
     assert f'id="card-{task.key}"' not in column
     assert "1 in the archive (closed more than 7 days ago or archived by hand)" in column
-    shown = board.get("/p/acme-shop/col/done?archived=1").text
+    assert f'id="card-{task.key}"' not in board.get("/p/acme-shop/col/done?archived=1").text
+    shown = board.get("/p/acme-shop/col/archive?archived=1").text
     assert f'id="card-{task.key}"' in shown
     assert 'data-archive="unarchive">Back from the archive</button>' in shown
     found = board.get("/p/acme-shop?q=receipts").text
@@ -506,3 +508,56 @@ async def test_a_hook_id_passed_as_session_is_the_same_caller_for_the_coordinato
     assert archived.archived_by == "lead"
     with pytest.raises(ValidationError, match="only for the coordinator"):
         await svc.set_archived_mcp(task.key, False, session="2f9d7a10-5b3c-4e8a-a1d2-77c3e4f5a6b7")
+
+
+def test_board_archive_column(board: TestClient, seeded: str, token: str) -> None:
+    service: Service = board.app.state.service
+    first = run_in_app(board, service.create_task, "acme-shop", "Receipts", stage="done")
+    second = run_in_app(
+        board, service.create_task, "acme-shop", "Invoices", stage="done", waiting_on="Ann"
+    )
+    open_done = run_in_app(board, service.create_task, "acme-shop", "Refunds", stage="done")
+    archive(board, token, first.key)
+    time.sleep(0.01)  # the marks are in milliseconds: the second is the newer one
+    archive(board, token, second.key)
+
+    off = board.get("/p/acme-shop").text
+    assert 'id="col-archive"' not in off and 'id="tab-archive"' not in off
+    assert "Archive</a>" not in off  # the pager's last page is live and done only
+
+    page = board.get("/p/acme-shop?archived=1").text
+    assert '<section class="col col-archive" id="col-archive"\n' in page  # no data-stage: no drop
+    assert '<label for="tab-archive" class="stage-tab tab-archive">Archive</label>' in page
+    assert "Archive</a>" in page and 'class="board has-archive"' in page
+
+    done = board.get("/p/acme-shop/col/done?archived=1").text
+    assert f'id="card-{open_done.key}"' in done
+    assert f'id="card-{first.key}"' not in done and f'id="card-{second.key}"' not in done
+    column = board.get("/p/acme-shop/col/archive?archived=1").text
+    assert 'hx-get="/p/acme-shop/col/archive?archived=1"' in column
+    assert '<span class="col-count">2</span>' in column
+    assert column.index(f'id="card-{second.key}"') < column.index(f'id="card-{first.key}"')
+    assert column.count('data-archive="unarchive">Back from the archive</button>') == 2
+    assert f'id="card-{open_done.key}"' not in column and f'id="card-{seeded}"' not in column
+
+    found = board.get("/p/acme-shop/col/archive?archived=1&q=receipts").text
+    assert f'id="card-{first.key}"' in found and f'id="card-{second.key}"' not in found
+    waiting = board.get("/p/acme-shop/col/archive?archived=1&waiting_on=Ann").text
+    assert f'id="card-{second.key}"' in waiting and f'id="card-{first.key}"' not in waiting
+    assert "Nothing here" in board.get("/p/acme-shop/col/archive?archived=1&stage=dev").text
+
+    assert archive(board, token, first.key, "unarchive").status_code == 200
+    column = board.get("/p/acme-shop/col/archive?archived=1").text
+    assert f'id="card-{first.key}"' not in column and '<span class="col-count">1</span>' in column
+    assert f'id="card-{first.key}"' in board.get("/p/acme-shop/col/done?archived=1").text
+    assert board.get("/p/acme-shop/col/nonsense").status_code == 422  # stages stay a closed set
+
+
+async def test_archived_since_is_the_hand_mark_or_the_end_of_the_window(svc: Service) -> None:
+    task = await svc.create_task("acme-shop", "Receipts", stage="done")
+    assert task.closed_at is not None
+    end = datetime.fromisoformat(task.closed_at) + timedelta(days=7)
+    assert archived_since(task, 7) == end
+    marked = await svc.set_archived(task.key, True, actor="owner")
+    assert marked.archived_at is not None
+    assert archived_since(marked, 7) == datetime.fromisoformat(marked.archived_at)

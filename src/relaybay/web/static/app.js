@@ -162,6 +162,11 @@
   }
 
   function column(stage) { return stage ? document.getElementById("col-" + stage) : null; }
+  // A change that touches the done column can move a card into or out of the Archive column.
+  function touchesDone(data) {
+    return data.stage === "done" || data.from === "done" || data.to === "done" ||
+      data.kind === "task.archived" || data.kind === "task.unarchived";
+  }
   function thread(key) { return key ? document.getElementById("comments-" + key) : null; }
   function isComment(kind) { return kind.indexOf("comment.") === 0; }
   function isReview(kind) {
@@ -389,9 +394,15 @@
         queue(column(data.to));
         break;
       case "task.reordered":
+        queue(column(data.stage));
+        break;
       case "task.archived":
       case "task.unarchived":
+        // An archived live card is closed, one brought back from live returns there.
         queue(column(data.stage));
+        queue(column(data.from));
+        queue(column(data.to));
+        queue(column("done"));
         break;
       case "task.updated":
       case "task.tracker_unlogged":
@@ -409,6 +420,10 @@
         // One event names every bound task of this project; a card not on the board is skipped.
         (data.keys || []).forEach(function (key) { queue(card(key)); });
         break;
+    }
+    var kinds = /^task\.(created|stage_changed|(un)?archived|updated|tracker_unlogged|purged)$/;
+    if (kinds.test(data.kind) && touchesDone(data)) {
+      queue(column("archive"));
     }
   }
 

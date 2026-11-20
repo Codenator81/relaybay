@@ -1,0 +1,13 @@
+{#- Not a stage: no data-stage, so no drop target; a card leaves it by Back from the archive. #}
+<section class="col col-archive" id="col-archive"
+         hx-get="/p/{{ project.slug }}/col/archive{% if view_qs %}?{{ view_qs }}{% endif %}" hx-trigger="rb:refresh" hx-swap="outerHTML">
+  <h2 class="col-head"><span class="col-title">Archive</span><span class="col-count">{{ archive|length }}</span></h2>
+  <div class="cards">
+    {% for t in archive %}
+    {% with slug = project.slug %}{% include "_card.html" %}{% endwith %}
+    {% else %}
+    <p class="col-empty">Nothing here</p>
+    {% endfor %}
+  </div>
+  {% if archive_more %}<p class="col-note muted">{{ archive_more }} more not shown; search to find them.</p>{% endif %}
+</section>

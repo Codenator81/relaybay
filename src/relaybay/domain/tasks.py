@@ -23,3 +23,11 @@ def is_archived(
         return False
     since = max(task.closed_at, task.unarchived_at or "")
     return datetime.fromisoformat(since) < now - timedelta(days=window_days)
+
+
+def archived_since(task: Task, window_days: int) -> datetime:
+    """When an archived task went to the archive: the hand mark, or the end of its done window."""
+    if task.archived_at is not None:
+        return datetime.fromisoformat(task.archived_at)
+    since = max(task.closed_at or "", task.unarchived_at or "")
+    return datetime.fromisoformat(since) + timedelta(days=window_days)
