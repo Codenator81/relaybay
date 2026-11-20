@@ -712,11 +712,13 @@ def test_instructions_start_with_the_digest_once() -> None:
     from relaybay.mcp_server.server import instructions
 
     text = instructions(Rules(DEFAULT_RULES))
-    assert text.count("Start with the digest for your level") == 1
-    assert "1. Start with the digest for your level" in text and "13." not in text
+    assert text.count("1. Read task_context") == 1 and "8." not in text
+    for part in ("At the start", "While you work", "At the end", "Always"):
+        assert text.count(part) == 1, part
     assert "relaybay brake on" not in text and "framed as external" not in text
     assert "Session message from" not in text
-    assert "12. A finding outside your task" in text
+    assert "backlog_add" in text and "give it an area" in text and "TaskCreate" in text
+    assert "Finished work goes to done" in text
     assert "project_snapshot" in text and "project_pulse_set" not in text
     assert "rules line" in text and "relaybay://rules/<project>" in text
 

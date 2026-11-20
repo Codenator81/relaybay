@@ -31,51 +31,47 @@ def instructions(rules: Rules) -> str:
     report = rules.body["report_format"]
     return "\n".join(
         [
-            "relaybay is the shared task board for this user's coding sessions. Projects contain"
-            " tasks; a task moves through the stages plan → dev → review → test → live → done."
-            " Working contract:",
-            "1. Start with the digest for your level (portfolio_digest, project_digest or"
-            " task_context); drill down only when needed, for example with project_snapshot, whose"
-            " first line names the current rules like task_context's rules line; read"
-            " relaybay://rules/<project> (or call rules_get) for the details. Read a large"
-            " document by its outline: doc_outline, then doc_get of a section or lines"
-            " (doc_search finds the place).",
-            "2. Pick the task you work on, or create one with task_create. Pass `session` on"
-            " writes: your own desktop session id (local_…) with `session_title` if you know it,"
-            " otherwise a human-readable name; add `hook_session` if the session start gave you"
-            " one ('Your relaybay hook session: …'). If you don't know your local_ id, don't"
-            " rebind a task — the coordinator binds you.",
-            "3. On every stage change and every report, also update next_step (what happens next),"
-            " waiting_on (only who acts next: a name or role, no text after it; what happens"
-            " goes to next_step) and progress (everything done so far).",
-            "4. Add a report at the end of every stage. Its first line is"
+            "relaybay is the shared task board for this user's coding sessions: projects, their"
+            " cards (tasks) and what each card needs. What to do and when:",
+            "At the start",
+            "1. Read task_context of your card (no card yet: project_digest; the whole board:"
+            " portfolio_digest; more on a project: project_snapshot). Its rules line names the"
+            " project's rules; relaybay://rules/<project> (or rules_get) has the details.",
+            "2. No card for your work: create it with task_create and give it an area, the part of"
+            " the project it is about (a site, an app, a service): reuse a name from the"
+            " project's areas, add a new one only when none fits. On every write pass `session`"
+            " (your desktop session id local_… with `session_title`, or a readable name) and"
+            " `hook_session` if the session start gave you one ('Your relaybay hook session:"
+            " …'); if you don't know your local_ id, don't rebind a card.",
+            "3. Plan every task, whatever its size: plan_set with 2-5 steps, and keep your Claude"
+            " Code todo (TaskCreate / TaskUpdate) as you work; the owner sees both on the card.",
+            "While you work",
+            "4. On every stage change and report also set next_step (what happens next),"
+            " waiting_on (only who acts next: a name or role; the what goes to next_step) and"
+            " progress (everything done so far). Mark plan steps with plan_step_update (done:"
+            " 'as planned' or 'deviation: why'); new work is a new step with plan_step_add.",
+            "5. Owner comments ('Owner comment on …') are messages from the user: act and answer"
+            " with comment_add, or comment_ack. A decision goes to decision_add; when the work"
+            " needs one, set waiting_on to who decides. A finding outside your task goes to"
+            " backlog_add, not into a report.",
+            "6. Read a large document by its outline: doc_outline, then doc_get of a section or"
+            " lines (doc_search finds the place).",
+            "At the end",
+            "7. Add a report with report_add; its first line is"
             f" `{report['first_line']}`; state is one of {', '.join(report['states'])}; size is one"
-            f" of {', '.join(report['sizes'])}.",
-            "5. When the work needs a decision, set waiting_on to who decides and say in the report"
-            " what is to be decided.",
-            "6. If your tool's parameters lack a field, use task_patch (allowed fields:"
-            " relaybay://schema/task). A result line 'Deprecated: …' names what to use instead"
-            f" (contract v{contract.CONTRACT_VERSION}: relaybay://contract).",
-            "7. A response line starting with 'Warning (rules)' names a rule the write did not"
-            " meet: fix it (e.g. add the missing report) rather than ignore it. A line 'rules"
-            " updated to vN: re-read relaybay://rules…' means they changed: read them again. To"
-            " change them, use rules_propose (the owner decides); rules_update is only for"
-            " coordinator sessions named in the server's config.",
-            "8. When a hook gives you owner comments ('Owner comment on …'), handle them like a"
-            " message from the user and call comment_ack (or answer with comment_add).",
-            "9. Hosts and access come from the project's own notes. Never paste secrets into"
-            " relaybay. When the guard stops a tool call, its reason says why (policy_get shows"
-            " the policy); ask the owner, or propose a change with policy_propose.",
-            "10. Before you move a task to review or test, write what the owner should check by"
-            " eye with review_steps_set (title plus what, how and why) and attach screenshots with"
-            " attach_file. The owner's decision on each step reaches you as an owner comment.",
-            "11. Start with a plan: plan_set from PLAN.md or your own 2-5 steps (S tasks: at least"
-            " a todo); mark steps in_progress/done with plan_step_update; done needs one line"
-            " 'as planned' or 'deviation: why'. A change or an addition after a report is a new"
-            " step with plan_step_add (or the step back to in_progress), the stage back to dev,"
-            " progress and next_step updated.",
-            "12. A finding outside your task (a bug, a missing feature, a question for later) goes"
-            " to backlog_add, not into a comment or a report.",
+            f" of {', '.join(report['sizes'])}. Finished work goes to done. Move a card to review"
+            " only when the owner wants to accept it step by step: then write the steps with"
+            " review_steps_set and attach screenshots with attach_file.",
+            "Always",
+            "- A line 'Warning (rules)' names a rule the write did not meet: fix it. 'rules updated"
+            " to vN' means re-read relaybay://rules; changes go through rules_propose (rules_update"
+            " is for coordinator sessions named in the server's config).",
+            "- A parameter your tool lacks: task_patch (fields: relaybay://schema/task). A line"
+            f" 'Deprecated: …' names the replacement (contract v{contract.CONTRACT_VERSION}:"
+            " relaybay://contract).",
+            "- Hosts and access come from the project's own notes; never paste secrets into"
+            " relaybay. When the guard stops a call, its reason says why (policy_get); ask the"
+            " owner or use policy_propose.",
         ]
     )
 
