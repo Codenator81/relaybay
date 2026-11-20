@@ -27,6 +27,7 @@ Deprecations:
 |---|---|
 | [`project_list`](#project_list) | read |
 | [`project_upsert`](#project_upsert) | write |
+| [`project_delete`](#project_delete) | write |
 | [`project_snapshot`](#project_snapshot) | read |
 | [`project_pulse_set`](#project_pulse_set) | write |
 | [`portfolio_digest`](#portfolio_digest) | write |
@@ -110,6 +111,18 @@ Create a project, or rename it / set its repositories / archive it. Call it once
 | `description` | string or null | no | One-line description. |
 | `archived` | boolean or null | no | Coordinator sessions only. true sends the project to the archive: it leaves the project list, the board's sidebar, the Inbox and the digests, and nothing is deleted; false brings it back. |
 | `repos` | list of object or null | no | The project's repositories, the whole list in order: [{"name": "web", "path": "/code/acme/web", "kind": "web"}]. kind is one of app, web, api, lib, other (optional); without a name the path's last folder names it. Matched by name, so tasks keep their links to a repository that stays; [] removes them all. The path is stored as written. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `project_delete`
+
+Delete an archived project for good, for coordinator sessions only: its tasks with their reports, comments, plans and attachments, its documents (the rows only; files on disk stay), backlog, decisions, notes and areas. An export of everything deleted is written first to `deleted/` in the server's data folder. A project not in the archive is refused; archive it first with project_upsert(archived=true).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `slug` | string | yes | Project slug such as 'acme-shop'. |
+| `confirm` | string | yes | The project's slug once more: the deletion cannot be undone. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -293,7 +306,7 @@ Move a task to another stage (plan, dev, review, test, live, done) when its work
 
 ### `task_archive`
 
-Send a done or live task to the archive now, for coordinator sessions only: it leaves the board's columns (the board's "show archive" and search still find it). A live task is closed and archived in one step, and task_unarchive returns it to live. Any later stage change takes it out of the archive. Nothing is deleted.
+Send a done or live task to the archive now, for coordinator sessions only: it leaves the board's columns (the board's "show archive" and search still find it). A live task is closed and archived in one step, and task_unarchive returns it to live. Any later stage change takes it out of the archive. Nothing is deleted now; after the server's `archive_purge_days` (30 by default) in the archive relaybay deletes it, with an export written first.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

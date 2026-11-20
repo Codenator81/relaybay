@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import time
 import unicodedata
@@ -25,9 +26,11 @@ from urllib.parse import urlencode
 
 import aiosqlite
 
-from relaybay import gitinfo, updates
+from relaybay import __version__, gitinfo, updates
 from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
+from relaybay.deletion_export import EXPORT_FORMAT, export_name, stage_files, write_export
+from relaybay.deletion_export import FOLDER as DELETED_FOLDER
 from relaybay.desktop.settings import FILE_NAME as DESKTOP_FILE
 from relaybay.desktop.settings import config_dir
 from relaybay.domain import annotations as ann
@@ -226,7 +229,7 @@ from relaybay.domain.task_fields import (
     TEXT_MAX,
     TITLE_MAX,
 )
-from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS, is_archived
+from relaybay.domain.tasks import DEFAULT_ARCHIVE_PURGE_DAYS, DEFAULT_DONE_WINDOW_DAYS, is_archived
 from relaybay.events import EventBus
 from relaybay.install import install_kind
 from relaybay.policy import (
@@ -334,6 +337,8 @@ AUDIT_CHANGE_KINDS = (
     "question.withdrawn",
     "task.archived",
     "task.unarchived",
+    "task.purged",
+    "project.deleted",
     "approval.requested",
     "approval.decided",
     "approval.used",
@@ -1115,6 +1120,24 @@ def _sweep(root: Path, keep: set[tuple[str, str, str]]) -> int:
     return removed
 
 
+def _discard(path: Path | None) -> None:
+    if path is not None:
+        path.unlink(missing_ok=True)
+
+
+def _remove_tree(root: Path, *parts: str) -> None:
+    """Remove the attachment folder of a deleted task or project. A file another program holds
+    (Windows) stays and is logged; the startup sweep removes it, since no row names it."""
+    folder = root.joinpath(*parts)
+    if not folder.is_dir() or folder.is_symlink():
+        return
+
+    def failed(_func: Any, name: str, exc: BaseException) -> None:
+        logger.warning("Could not remove %s (%s); the next start removes it", name, exc)
+
+    shutil.rmtree(folder, onexc=failed)
+
+
 def _clean_doc_slug(value: Any) -> str:
     slug = str(value or "").strip().lower()
     if not mem.DOC_SLUG_RE.match(slug):
@@ -1253,6 +1276,22 @@ ARCHIVE_NOT_COORDINATOR = (
     " needs that session's own hook_session. Nothing changed. The owner archives done cards on"
     " the board."
 )
+PURGE_INTERVAL_SECONDS = 24 * 3600.0
+PURGE_ACTOR = "relaybay"
+PROJECT_DELETE_NOT_COORDINATOR = (
+    "project_delete is only for the coordinator sessions named in the server's config; a desktop"
+    " id also needs that session's own hook_session. Nothing changed. The owner deletes an"
+    " archived project on its Settings page."
+)
+PROJECT_DELETE_ACTIVE = (
+    "{slug} is not in the archive: only an archived project is deleted. Archive it first"
+    " (project_upsert with archived=true, or Archive project on its Settings page)."
+    " Nothing changed."
+)
+EXPORT_FAILED = "Could not write the export to {folder}: {exc}. Nothing was deleted."
+PROJECT_DELETE_CONFIRM = (
+    "Deleting {slug} cannot be undone: confirm with the project's slug, {slug}. Nothing changed."
+)
 
 
 class Service:
@@ -1286,6 +1325,7 @@ class Service:
         coordinators: list[str] | None = None,
         max_concurrent_sessions: int = 0,
         rules_table: dict[str, Any] | None = None,
+        archive_purge_days: int = DEFAULT_ARCHIVE_PURGE_DAYS,
     ) -> None:
         """`permission_defaults` and `guard_mode` are the legacy `config.toml` keys: a policy
         layer between the preset and the global `policy_file` (only what was set)."""
@@ -1324,6 +1364,8 @@ class Service:
         self._logged_rule_errors: set[str] = set()
         self.db_path = db_path
         self.attachments_dir = attachments_dir or db_path.parent / "attachments"
+        self.deleted_dir = db_path.parent / DELETED_FOLDER
+        self.archive_purge_days = archive_purge_days
         # Opens an ended terminal session again; tests replace it so no window opens.
         self.terminal = TerminalLauncher()
         self.terminal_hold = TERMINAL_OPEN_HOLD_SECONDS
@@ -3300,6 +3342,235 @@ class Service:
 
     async def archived_projects(self) -> list[Project]:
         return await repo.list_archived_projects(self._r)
+
+    # --- deleting from the archive ------------------------------------------------------------
+
+    async def archive_purge_loop(self, interval: float = PURGE_INTERVAL_SECONDS) -> None:
+        """The purge of old archived tasks: at the start, then once a day."""
+        while True:
+            try:
+                await self.purge_archived()
+            except Exception:
+                logger.exception("Purging the archive failed; the next pass tries again")
+            await asyncio.sleep(interval)
+
+    async def purge_archived(self, now: datetime | None = None) -> list[Path]:
+        """Delete the tasks archived more than `archive_purge_days` ago, each in its own
+        transaction after its export is written; returns the exports. A task that fails is
+        logged and left for the next pass; the others go on. 0 days: none."""
+        if not self.archive_purge_days:
+            return []
+        moment = now or datetime.now(UTC)
+        cutoff = moment - timedelta(days=self.archive_purge_days)
+        before = cutoff.isoformat(timespec="milliseconds")
+        exports: list[Path] = []
+        for task_id in await repo.purgeable_task_ids(self._r, before):
+            try:
+                path = await self._purge_task(task_id, before)
+            except Exception:
+                logger.exception(
+                    "Could not delete task #%d from the archive; the next pass tries", task_id
+                )
+                continue
+            if path is not None:
+                exports.append(path)
+        return exports
+
+    async def _purge_task(self, task_id: int, before: str) -> Path | None:
+        task = await self.get_task(task_id)
+        staged = await self._stage_files(
+            task.project_slug, await repo.attachments_of(self._r, task_id=task.id)
+        )
+        path: Path | None = None
+        try:
+            async with self._tx() as tx:
+                # Brought back or moved on since the list was read: it stays.
+                if not await repo.purgeable_task_ids(tx.conn, before, task_id):
+                    return None
+                task = await self.get_task(task_id, tx.conn)
+                rows = await repo.cascade_rows(tx.conn, "task", [task.id])
+                decisions = await repo.task_decisions(tx.conn, task.id)
+                if decisions:
+                    rows["decision"] = decisions
+                rows["event"] = await repo.events_of_tasks(tx.conn, [task.id])
+                imports = await repo.import_rows(tx.conn, rows)
+                if imports:
+                    rows["import_item"] = imports
+                path = await self._write_deletion_export(
+                    tx,
+                    task.project_slug,
+                    task.key,
+                    rows,
+                    staged,
+                    reason=f"archived more than {self.archive_purge_days} days ago",
+                    actor=PURGE_ACTOR,
+                )
+                await repo.unindex(tx.conn, rows, self.search_fts)
+                await repo.forget_imports(tx.conn, imports)
+                await repo.delete_task(tx.conn, task.id)
+                await tx.event(
+                    "task.purged",
+                    PURGE_ACTOR,
+                    project_id=task.project_id,
+                    project=task.project_slug,
+                    key=task.key,
+                    title=task.title,
+                    archived_at=task.archived_at,
+                    archived_by=task.archived_by,
+                    export=f"{DELETED_FOLDER}/{path.name}",
+                    rows={table: len(items) for table, items in rows.items()},
+                )
+        except BaseException:
+            _discard(path)  # rolled back: the export of a deletion that did not happen
+            raise
+        finally:
+            _discard(staged)
+        await asyncio.to_thread(_remove_tree, self.attachments_dir, task.project_slug, task.key)
+        logger.info("Deleted %s from the archive; its export is %s", task.key, path)
+        return path
+
+    async def delete_project(self, slug: str, confirm: str | None, *, actor: str = "owner") -> Path:
+        """The board's "Delete project" on an archived project; returns the export."""
+        _, path = await self._delete_project(slug, confirm, actor, None)
+        return path
+
+    async def delete_project_mcp(
+        self,
+        slug: str,
+        confirm: str | None,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[Project, Path]:
+        """`project_delete`: for coordinator sessions only."""
+        if not await self._is_coordinator(self._r, session, hook_session):
+            raise ValidationError(PROJECT_DELETE_NOT_COORDINATOR)
+        caller = (session, session_title, hook_session)
+        return await self._delete_project(slug, confirm, None, caller)
+
+    async def _delete_project(
+        self,
+        slug: str,
+        confirm: str | None,
+        actor: str | None,
+        caller: tuple[str | None, str | None, str | None] | None,
+    ) -> tuple[Project, Path]:
+        """Only an archived project, only with its slug typed again. Its documents' files on
+        disk are never touched: only the rows that index them go. `caller` (session, title,
+        hook session) is an MCP caller, checked again inside the transaction."""
+        project = await self._deletable_project(slug, confirm, self._r)
+        staged = await self._stage_files(
+            project.slug, await repo.attachments_of(self._r, project_id=project.id)
+        )
+        path: Path | None = None
+        try:
+            async with self._tx() as tx:
+                session_id = None
+                if caller is not None:
+                    if not await self._is_coordinator(tx.conn, caller[0], caller[2]):
+                        raise ValidationError(PROJECT_DELETE_NOT_COORDINATOR)
+                    sess = await self._session(tx, *caller)
+                    assert sess is not None
+                    actor, session_id = sess.name, sess.id
+                assert actor is not None
+                project = await self._deletable_project(slug, confirm, tx.conn)
+                rows = await repo.cascade_rows(tx.conn, "project", [project.id])
+                rows["event"] = await repo.project_events(tx.conn, project.id)
+                seen = await repo.rule_seen_rows(tx.conn, project.id)
+                if seen:
+                    rows["rule_seen"] = seen
+                imports = await repo.import_rows(tx.conn, rows)
+                if imports:
+                    rows["import_item"] = imports
+                path = await self._write_deletion_export(
+                    tx, project.slug, None, rows, staged, reason="project deleted", actor=actor
+                )
+                await repo.unindex(tx.conn, rows, self.search_fts)
+                await repo.forget_imports(tx.conn, imports)
+                await repo.delete_project(tx.conn, project.id)
+                await tx.event(
+                    "project.deleted",
+                    actor,
+                    session_id=session_id,
+                    project=project.slug,
+                    name=project.name,
+                    archived_at=project.archived_at,
+                    tasks=len(rows.get("task", [])),
+                    export=f"{DELETED_FOLDER}/{path.name}",
+                    rows={table: len(items) for table, items in rows.items()},
+                )
+        except BaseException:
+            _discard(path)  # rolled back: the export of a deletion that did not happen
+            raise
+        finally:
+            _discard(staged)
+        await asyncio.to_thread(_remove_tree, self.attachments_dir, project.slug)
+        await self.tracker_projects()
+        logger.info("Deleted the project %s; its export is %s", project.slug, path)
+        return project, path
+
+    async def _deletable_project(
+        self, slug: str, confirm: str | None, conn: aiosqlite.Connection
+    ) -> Project:
+        project = await self.get_project(_clean_slug(slug), conn)
+        if project.archived_at is None:
+            raise ValidationError(PROJECT_DELETE_ACTIVE.format(slug=project.slug))
+        if (confirm or "").strip().lower() != project.slug:
+            raise ValidationError(PROJECT_DELETE_CONFIRM.format(slug=project.slug))
+        return project
+
+    def _export_files(self, slug: str, attachments: list[dict[str, Any]]) -> list[tuple[str, Path]]:
+        """(path in the zip, file on disk) of each attachment row; the rows carry `task_key`."""
+        files: list[tuple[str, Path]] = []
+        for item in attachments:
+            key = item["task_key"]
+            for name in (item["stored_name"], item["annotated_name"]):
+                if name:
+                    arc = f"attachments/{slug}/{key}/{name}"
+                    files.append((arc, self.attachments_dir / slug / key / name))
+        return files
+
+    async def _stage_files(self, slug: str, attachments: list[dict[str, Any]]) -> Path | None:
+        """Copy the attachment files before the write lock is taken: they can be large."""
+        files = self._export_files(slug, attachments)
+        try:
+            return await asyncio.to_thread(stage_files, self.deleted_dir, files)
+        except OSError as exc:
+            raise ValidationError(EXPORT_FAILED.format(folder=self.deleted_dir, exc=exc)) from exc
+
+    async def _write_deletion_export(
+        self,
+        tx: _Tx,
+        slug: str,
+        key: str | None,
+        rows: dict[str, list[dict[str, Any]]],
+        staged: Path | None,
+        *,
+        reason: str,
+        actor: str,
+    ) -> Path:
+        """Inside the deleting transaction: a failed write rolls the deletion back."""
+        keys = {t["id"]: t["key"] for t in rows.get("task", [])}
+        attachments = [{**a, "task_key": keys[a["task_id"]]} for a in rows.get("attachment", [])]
+        files = self._export_files(slug, attachments)
+        content = {
+            "format": EXPORT_FORMAT,
+            "relaybay": __version__,
+            "deleted_at": tx.now,
+            "deleted_by": actor,
+            "reason": reason,
+            "project": slug,
+            "task": key,
+            "tables": rows,
+        }
+        name = export_name(tx.now, slug, key, zipped=bool(files))
+        try:
+            return await asyncio.to_thread(
+                write_export, self.deleted_dir, name, content, files, staged
+            )
+        except OSError as exc:
+            raise ValidationError(EXPORT_FAILED.format(folder=self.deleted_dir, exc=exc)) from exc
 
     @staticmethod
     def _wanted_repos(

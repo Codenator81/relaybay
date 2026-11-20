@@ -75,9 +75,16 @@
 
   <section class="panel" id="archive">
     <h2>Archive</h2>
+    {{ error_for("delete") }}
     {% if project.archived_at %}
     <p class="muted">In the archive since <time datetime="{{ project.archived_at }}" data-age>{{ project.archived_at|age }}</time>: not in the sidebar, All boards, the Inbox or the digests. Nothing of it was deleted.</p>
     <form method="post" action="/p/{{ project.slug }}/project/unarchive">{{ hidden_csrf() }}<button type="submit" class="btn">Back from the archive</button></form>
+    <h3 id="delete">Delete project</h3>
+    <p class="muted">Deletes the project for good: its cards with their reports, comments, plans and attachments, its documents (files in repositories stay), backlog, decisions, notes and areas. An export of everything deleted is written first to <code>deleted/</code> in the data folder.</p>
+    <form method="post" action="/p/{{ project.slug }}/project/delete" data-confirm="Delete the project {{ project.name }} and everything in it? This cannot be undone.">{{ hidden_csrf() }}
+      <label>Type <code>{{ project.slug }}</code> to confirm <input name="confirm" required autocomplete="off" pattern="{{ project.slug }}" aria-label="The project's slug"></label>
+      <button type="submit" class="btn danger">Delete project</button>
+    </form>
     {% else %}
     <p class="muted">An archived project leaves the sidebar, All boards, the Inbox and the digests; its board, cards and history are kept and it can be brought back.</p>
     <form method="post" action="/p/{{ project.slug }}/project/archive" data-confirm="Archive the project {{ project.name }}? It leaves the sidebar, All boards, the Inbox and the digests; nothing is deleted.">{{ hidden_csrf() }}<button type="submit" class="btn">Archive project</button></form>

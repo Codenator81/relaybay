@@ -1084,7 +1084,8 @@ from the later of `closed_at` and `unarchived_at`, so the card shows in done for
 window. Only a task in `done` is archived or brought back (otherwise `Only a done task goes to the
 archive; <key> is in <stage>. Nothing changed.`); a repeat changes nothing and records nothing; any
 stage change clears all three columns, so a task moved back to done starts fresh. Nothing is
-deleted, and the marks do not bump the task's version (an open edit form does not conflict). Board
+deleted at once (after `archive_purge_days` it is: [Deleting from the
+archive](#spec-archive-purge)), and the marks do not bump the task's version (an open edit form does not conflict). Board
 writes are cookie + CSRF only (`POST /p/<project>/t/<key>/archive` and `/unarchive`; a Bearer client
 gets 403). Over MCP, `task_archive` / `task_unarchive` are for coordinator sessions only; anyone
 else is refused with `<tool> is only for the coordinator sessions named in the server's config; …
@@ -1134,10 +1135,61 @@ fields of `project_upsert` stay open to every session). Both write `project.upda
 `changes: {"archived": true|false}`; a repeat changes nothing and records nothing. `project.archived_at`
 holds when. An archived project leaves the sidebar, All boards and `project_list`; the Inbox (its
 cards, review checklists and new backlog items); `portfolio_digest` (its project line, waiting and
-stale cards, decisions and the changes since the last read). Nothing is deleted: its board, cards
+stale cards, decisions and the changes since the last read). Archiving deletes nothing: its board, cards
 and history stay, the board says it is in the archive, `project_digest` and `task_*` tools still
 read it, and All boards links to **Archived projects (n)** (`/?archived=1`), which lists them with
 the way back. The hooks do not place a session in an archived project by its folder.
+
+<a id="spec-archive-purge"></a>
+
+**Deleting from the archive.** Two deletions are for good; before each one relaybay writes an export
+of what it deletes to `deleted/` in the data directory, in the same transaction as the deletion (a
+failed write deletes nothing): `<UTC time>-<project>[-<task key>].json` with the database rows by
+table (`tables`, every row the deletion takes along through the foreign keys, and the events), or
+a `.zip` of that JSON (`export.json`) and the attachment files when there are attachments
+(`files`; one gone from disk is listed in `missing_files`). The attachment files are copied into
+the zip before the write transaction; only the JSON is written while it holds the write lock (a
+file added in between is copied then). A transaction that rolls back removes its export again, and
+a failed export refuses the deletion with `Could not write the export to <folder>: <reason>.
+Nothing was deleted.` Nothing deletes the exports. Besides the foreign keys, a deletion also removes
+the rows keyed by the deleted ids that have none, since ids are reused: the search index rows of
+the deleted items, the digest read cursors, `import_item` records of `relaybay import` (in the
+export) and, for a project, the sessions' `rule_seen` marks (in the export).
+
+- *A task archived long ago.* A task in `done` with the archive mark (`archived_at`, by hand or from
+  live) older than `archive_purge_days` (default 30; 0 never), and not brought back since
+  (`unarchived_at` empty or before `archived_at`), is deleted by relaybay at the start and then
+  once a day, each task in its own transaction (one that fails is logged and tried again at the
+  next pass; the others go on). It takes with it everything that hangs on the task: reports (and
+  their `verified:` marks), comments, review steps, the plan and its revisions, attachments (the
+  files too) with their annotations, approvals, questions, PR and repository links, bindings,
+  tracker history, intake threads, schedules of the task (active ones too), its token budgets and
+  brakes, its runs with their turns and events, its usage per day (`usage_task_day`: the usage
+  history of the project shrinks by that task's share) and its task decisions (scope `task`). A
+  task decision that superseded a decision outside the task stays, as a project decision without
+  the task, so that topic keeps a current decision. A done card the done window archived by age
+  has no mark and is never deleted. `require_tracker_log` does not hold a card back: one archived
+  by hand without its work log is deleted all the same, and its data stays in the export
+  (decided by default). What stays: backlog items and intake messages it was linked to (the link
+  is cleared), messages between sessions, and its events (their `task_id` is cleared; the payload
+  still names the key). The event `task.purged` (actor `relaybay`, on Activity and, with
+  "changes", on the Audit page) names the key, title, archive mark, the export (`deleted/<file>`)
+  and the row count per table.
+- *An archived project, on request.* The Settings page (`/p/<project>/settings`) of an archived project has, next to Archive, **Delete
+  project**: the slug typed into the form and one confirmation (`POST /p/<project>/project/delete`,
+  form field `confirm`, cookie + CSRF; a wrong slug, a project not in the archive or an export
+  that could not be written shows the reason with status 400; a repeat after the deletion goes to
+  All boards with `There is no project <slug> (any more).`). Over MCP, `project_delete(slug, confirm=slug)` is for coordinator sessions only
+  (`project_delete is only for the coordinator sessions named in the server's config; … Nothing
+  changed.`). A project not in the archive is always refused (`<slug> is not in the archive: only an
+  archived project is deleted. …`), and so is a `confirm` other than the slug (`Deleting <slug>
+  cannot be undone: confirm with the project's slug, <slug>. Nothing changed.`). The project goes
+  with its tasks (as above), documents (the rows and their index only: a file document's file on
+  disk is never touched), backlog, decisions, notes and blocks, rules, policy layers, stands, areas,
+  repositories, filters, schedules and its events; sessions placed in it lose the link. It is gone
+  from `project_list`, the board, All boards, the Inbox, the digests, `portfolio_digest`, search and
+  Activity. The event `project.deleted` (no project id, the actor who asked) names the slug, name,
+  task count, export and row counts; it is on Activity and, with "changes", on the Audit page.
 
 <a id="spec-board-inbox"></a>
 
@@ -1320,7 +1372,7 @@ report.
 
 | Group | Tools |
 |---|---|
-| Projects | `project_list`, `project_upsert`, `project_snapshot` |
+| Projects | `project_list`, `project_upsert`, `project_delete` (coordinators only, [§2](#spec-archive-purge)), `project_snapshot` |
 | Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage`, `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |

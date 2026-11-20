@@ -37,7 +37,7 @@ from relaybay.domain.review import DEFAULT_FILE_MAX_MB, DEFAULT_TASK_MAX_MB
 from relaybay.domain.rules import DEFAULT_RULES, RULES_MODES, merge_rules, validate_rules
 from relaybay.domain.sessions import DEFAULT_DESKTOP_LINK_TEMPLATE, parse_session_id
 from relaybay.domain.stages import STAGES
-from relaybay.domain.tasks import DEFAULT_DONE_WINDOW_DAYS
+from relaybay.domain.tasks import DEFAULT_ARCHIVE_PURGE_DAYS, DEFAULT_DONE_WINDOW_DAYS
 from relaybay.policy import PolicyFile
 from relaybay.updates import HOURS_MAX
 
@@ -127,6 +127,17 @@ class Settings:
             "Days a done task stays in the done column (whole number >= 1).",
             key="done_window_days",
             env="RELAYBAY_DONE_WINDOW_DAYS",
+        ),
+    )
+    archive_purge_days: int = field(
+        default=DEFAULT_ARCHIVE_PURGE_DAYS,
+        metadata=_doc(
+            "Days a task stays in the archive (sent there by hand or from live) before relaybay"
+            " deletes it with its reports, comments, review steps, plan and attachments, after"
+            " writing an export to `deleted/` of the data directory; checked at the start and"
+            " once a day (whole number >= 0; 0 never deletes).",
+            key="archive_purge_days",
+            env="RELAYBAY_ARCHIVE_PURGE_DAYS",
         ),
     )
     require_tracker_log: bool = field(
@@ -493,6 +504,7 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         ("session_context_project_chars", BUDGET_MIN, BUDGET_MAX),
         ("update_check_hours", 1, HOURS_MAX),
         ("backup_keep", 0, None),
+        ("archive_purge_days", 0, None),
         ("max_concurrent_sessions", 0, None),
     ):
         if key in data:

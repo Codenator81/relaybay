@@ -50,6 +50,7 @@ def create_app(settings: Settings) -> FastAPI:
         session_context_project_chars=settings.session_context_project_chars,
         coordinators=settings.coordinators,
         max_concurrent_sessions=settings.max_concurrent_sessions,
+        archive_purge_days=settings.archive_purge_days,
     )
     mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
 
@@ -65,6 +66,8 @@ def create_app(settings: Settings) -> FastAPI:
             asyncio.create_task(service.concurrency_loop()),
             asyncio.create_task(service.question_loop()),
         ]
+        if settings.archive_purge_days:
+            loops.append(asyncio.create_task(service.archive_purge_loop()))
         if settings.update_check:
             loops.append(asyncio.create_task(service.update_loop(settings.update_check_hours)))
         try:

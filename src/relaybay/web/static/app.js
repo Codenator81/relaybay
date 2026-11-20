@@ -4,9 +4,9 @@
   "use strict";
 
   var KINDS = [
-    "project.created", "project.updated", "project.pulse_set",
+    "project.created", "project.updated", "project.deleted", "project.pulse_set",
     "task.created", "task.updated", "task.stage_changed", "task.reordered",
-    "task.archived", "task.unarchived",
+    "task.archived", "task.unarchived", "task.purged",
     "report.added", "decision.added", "task.session_bound", "task.session_unbound",
     "task.tracker_unlogged", "session.seen", "session.status_changed", "session.alias_added",
     "session.no_live_on", "session.no_live_off",
@@ -34,7 +34,7 @@
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
     "task.created", "task.updated", "task.stage_changed", "task.tracker_unlogged",
-    "task.archived", "task.unarchived",
+    "task.archived", "task.unarchived", "task.purged", "project.deleted",
     "session.seen", "session.status_changed", "comment.added", "comment.delivered", "comment.read",
     "policy.proposed", "policy.proposal_accepted", "policy.proposal_rejected",
     "policy.proposal_reopened",
