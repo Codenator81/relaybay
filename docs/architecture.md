@@ -88,7 +88,7 @@ the work: **projects → tasks → stages → reports**, and which session is do
 
 ```
 project       id, slug UNIQUE, name, repo_path, description, task_seq, created_at, updated_at,
-              archived_at, pulse, pulse_at, pulse_by, autonomy (0|1, unread since 0.12), run_retention (unread since 0.12)
+              archived_at, pulse, pulse_at, pulse_by
               -- repo_path: always the path of the first project_repo (kept for older readers)
 project_repo  id, project_id, name (UNIQUE per project), path (as written),
               kind (app|web|api|lib|other, optional), position, created_at, updated_at
@@ -105,7 +105,6 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
               next_step_at, stage_changed_at, created_at, updated_at, closed_at, size (S|M|L),
               plan_status (draft|accepted), plan_accepted_at, plan_accepted_by,
-              autonomy, answer_received_at, answer_message_id (intake, unread since 0.12),
               archived_at, archived_by, unarchived_at (the hand archive of a done task),
               rank   -- the owner's order within the stage column, lower first; INDEX (project_id, stage, rank)
               area_id -- project_area, ON DELETE SET NULL
@@ -130,14 +129,12 @@ search_index  FTS5 (kind, ref, project_id, title, body, stems), created at start
               FTS5; rebuilt from the tables when its row count is off
 session       id, external_id UNIQUE (local_<uuid>), name (unique among rows without external_id),
               project_id, cwd, kind, desktop_link, status (working|idle|waiting|ended), activity,
-              cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason, transcript_path (unread since 0.12),
+              cc_session_id UNIQUE, cc_exact, activity_at, unlinked_reason,
               no_live_at, no_live_by, last_seen_at, created_at
 app_setting   key PK, value, updated_at, updated_by
-schedule, usage_file, usage_day, usage_message, usage_task_day, token_budget,
-budget_mark, brake, session_message, intake_source, intake_message, intake_thread
-              -- schedules, usage, budgets, the brake, session messages and intake of 0.4 to
-              -- 0.11: kept in the file since 0.12 (migration 0049 ended what was open),
-              -- unread; the run tables were dropped by migration 0058
+              -- the tables of runs, schedules, usage, budgets, the brake, session messages
+              -- and intake of 0.4 to 0.11 were kept unread from 0.12 and dropped by
+              -- migrations 0058 and 0059
 question      id, task_id, run_id (unread since 0.12), session_id (who asked), asked_by, kind (question|look), text,
               options (JSON), default_answer, blocking (0|1), look_url, look_account,
               default_after, asked_at, status (open|answered|defaulted|withdrawn), answer,
@@ -210,7 +207,7 @@ event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor
 import_item   kind (document|task|task_note|decision|note|backlog), item, source_path, target_id,
               content_hash, target_hash, imported_at
 backlog_item  id, project_id, title, body_md, area, origin (session|review|intake|owner),
-              origin_task_id, origin_session_id, intake_message_id, status
+              origin_task_id, origin_session_id, intake_message_id (a number, its table is gone), status
               (new|later|planned|done|declined), decline_reason, link, priority, assignee,
               task_id, decided_at, decided_by, created_at, created_by, kind
               (bug|idea|question|debt), location, origin_text, triage_note, duplicate_of,

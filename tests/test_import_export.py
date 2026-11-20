@@ -1245,6 +1245,12 @@ async def test_literal_br_survives_the_round_trip(
         await service.close()
 
 
+def drop_column(conn: sqlite3.Connection, table: str, column: str) -> None:
+    """Drop a column for an older schema; one a later migration dropped already is skipped."""
+    if column in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+
+
 async def test_a_stale_hash_does_not_migrate(
     home: Path, root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1256,7 +1262,7 @@ async def test_a_stale_hash_does_not_migrate(
         conn.execute("ALTER TABLE task DROP COLUMN area_id")
         conn.execute("DROP TABLE project_area")
         for table in ("backlog_item", "intake_thread", "intake_message", "intake_source"):
-            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
         for table, column in (
             ("task", "autonomy"),
             ("task", "answer_received_at"),
@@ -1267,7 +1273,7 @@ async def test_a_stale_hash_does_not_migrate(
             ("project", "autonomy"),
             ("project", "run_retention"),
         ):
-            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            drop_column(conn, table, column)
         for column in ("added_after_acceptance_at", "added_by", "added_reason"):
             conn.execute(f"ALTER TABLE plan_step DROP COLUMN {column}")
         conn.execute("ALTER TABLE document DROP COLUMN source_url")
@@ -1293,21 +1299,21 @@ async def test_a_stale_hash_does_not_migrate(
         conn.execute("DROP TABLE rule_proposal")
         conn.execute("DROP TABLE rule_version")
         conn.execute("DROP TABLE rule_set")
-        conn.execute("DROP TABLE budget_mark")
-        conn.execute("DROP TABLE brake")
-        conn.execute("DROP TABLE token_budget")
-        conn.execute("DROP TABLE usage_task_day")
-        conn.execute("DROP TABLE usage_message")
-        conn.execute("DROP TABLE usage_day")
-        conn.execute("DROP TABLE usage_file")
+        conn.execute("DROP TABLE IF EXISTS budget_mark")
+        conn.execute("DROP TABLE IF EXISTS brake")
+        conn.execute("DROP TABLE IF EXISTS token_budget")
+        conn.execute("DROP TABLE IF EXISTS usage_task_day")
+        conn.execute("DROP TABLE IF EXISTS usage_message")
+        conn.execute("DROP TABLE IF EXISTS usage_day")
+        conn.execute("DROP TABLE IF EXISTS usage_file")
         conn.execute("ALTER TABLE task DROP COLUMN archived_from")
         conn.execute("ALTER TABLE session DROP COLUMN launched_by")
         conn.execute("ALTER TABLE session DROP COLUMN surface")
         conn.execute("ALTER TABLE session DROP COLUMN entrypoint")
         conn.execute("ALTER TABLE session DROP COLUMN start_cwd")
         conn.execute("ALTER TABLE task_session DROP COLUMN unbound_reason")
-        conn.execute("ALTER TABLE session DROP COLUMN transcript_path")
-        conn.execute("DROP TABLE session_message")
+        drop_column(conn, "session", "transcript_path")
+        conn.execute("DROP TABLE IF EXISTS session_message")
         conn.execute("ALTER TABLE session DROP COLUMN no_live_at")
         conn.execute("ALTER TABLE session DROP COLUMN no_live_by")
         conn.execute("DROP TABLE annotation_reply")
@@ -1320,7 +1326,7 @@ async def test_a_stale_hash_does_not_migrate(
         conn.execute("ALTER TABLE task DROP COLUMN rank")
         conn.execute("DROP TABLE import_item")
         for table in ("task_pr", "task_repo", "project_repo"):
-            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute("DROP INDEX task_session_open_session")
         for table in (
             "schedule_run",

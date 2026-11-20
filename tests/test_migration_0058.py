@@ -41,7 +41,7 @@ async def test_0058_drops_the_run_tables_and_keeps_questions_and_approvals(
         )
         assert any(r[2] is not None for r in questions)  # the seed has questions of a run
 
-        assert await migrate(conn) == 58
+        assert await migrate(conn, upto=58) == 58
         left = await tables(conn)
         assert not DROPPED & left
         assert {"schedule", "question", "approval", "token_budget", "app_setting"} <= left
@@ -70,7 +70,7 @@ async def test_0058_drops_the_run_tables_and_keeps_questions_and_approvals(
         await conn.execute("UPDATE approval SET told_at = ? WHERE id = 3", (NOW,))
         await conn.execute("DELETE FROM task WHERE id = 1")  # cascades into both tables
         await conn.commit()
-        assert await migrate(conn) == 58  # idempotent
+        assert await migrate(conn) == 59
     finally:
         await conn.close()
 
@@ -86,7 +86,7 @@ async def test_0058_keeps_a_dangling_key_the_database_already_had(tmp_path: Path
         await conn.commit()
         await conn.execute("PRAGMA foreign_keys=ON")
         # The rebuild renumbers question's keys; the old orphan is still not this migration's.
-        assert await migrate(conn) == 58
+        assert await migrate(conn) == 59
         assert await rows(conn, "SELECT session_id FROM question WHERE id = 2") == [(999,)]
     finally:
         await conn.close()

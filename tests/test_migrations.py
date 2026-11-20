@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 58
+LATEST = 59
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:
@@ -298,7 +298,7 @@ async def test_upgrade_from_0023_adds_backlog_priority_and_assignee(tmp_path: Pa
 
 
 async def test_upgrade_from_0024_adds_the_brake_tables_and_keeps_usage(tmp_path: Path) -> None:
-    """The brake, budget and usage tables stay in the file, unread since 0.12."""
+    """The brake, budget and usage tables, kept unread from 0.12 until 0059 dropped them."""
     db = tmp_path / "relaybay.sqlite"
     folder = resources.files("relaybay.db").joinpath("migrations")
     names = sorted(e.name for e in folder.iterdir() if e.name.endswith(".sql") and e.name < "0025")
@@ -317,12 +317,9 @@ async def test_upgrade_from_0024_adds_the_brake_tables_and_keeps_usage(tmp_path:
     finally:
         await conn.close()
 
-    svc = Service(db)
-    await svc.start()
-    await svc.close()
-
     conn = await connect(db)
     try:
+        assert await migrate(conn, upto=58) == 58  # the usage tables until 0059 drops them
         async with conn.execute("SELECT COUNT(*) FROM usage_task_day") as cur:
             assert (await cur.fetchone())[0] == 0  # no backfill
         assert await migrate(conn) == LATEST

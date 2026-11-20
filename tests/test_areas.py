@@ -237,7 +237,9 @@ async def test_migration_from_0047_keeps_every_task(tmp_path: Path) -> None:
         assert len(after) == len(before)
         added = ("area_id", "archived_from")  # columns of later migrations
         untouched = {k: v for k, v in after[1].items() if k not in added}
-        assert untouched == before[1] and after[1]["area_id"] is None
+        dropped = ("autonomy", "answer_received_at", "answer_message_id")  # by 0059
+        kept = {k: v for k, v in before[1].items() if k not in dropped}
+        assert untouched == kept and after[1]["area_id"] is None
         async with conn.execute("PRAGMA index_list(project_area)") as cur:
             assert "project_area_name" in {row[1] for row in await cur.fetchall()}
     finally:

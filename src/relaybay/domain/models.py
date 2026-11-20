@@ -37,7 +37,6 @@ class Session:
     cc_session_id: str | None = None
     unlinked_reason: str | None = None
     cc_exact: bool = False  # cc_session_id was linked by the agent itself (`hook_session`)
-    transcript_path: str | None = None  # the transcript file its hooks reported last
     no_live_at: str | None = None  # the owner's "no live now" switch is on since then
     no_live_by: str | None = None
     surface: str | None = None  # desktop or terminal, as the hook or the session told; else None

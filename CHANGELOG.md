@@ -14,6 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Removed
 
 - Migration 0058 drops the tables of the runs inside the program, unread and unwritten since 0.12: `run`, `run_turn`, `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`, `schedule_run`. Questions and approvals keep every row; their `run_id` and `turn_id` stay as plain numbers. The program backs the database up before the new version migrates; going back to an older release means restoring that backup.
+- Migration 0059 drops the rest of what 0.12 left unread: `schedule`, the usage and budget tables (`usage_file`, `usage_day`, `usage_message`, `usage_task_day`, `token_budget`, `budget_mark`), `brake`, `session_message`, the intake tables (`intake_source`, `intake_message`, `intake_thread`) and the columns `project.autonomy`, `project.run_retention`, `session.transcript_path`, `task.autonomy`, `task.answer_received_at`, `task.answer_message_id`. Tasks and backlog items keep every other value; a backlog item's intake message number stays. Backup and rollback as for 0058.
 
 ## [0.15.1] - 2026-11-20
 

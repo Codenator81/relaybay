@@ -559,7 +559,6 @@ def _session(row: aiosqlite.Row) -> Session:
         cc_session_id=row["cc_session_id"],
         unlinked_reason=row["unlinked_reason"],
         cc_exact=bool(row["cc_exact"]),
-        transcript_path=row["transcript_path"],
         no_live_at=row["no_live_at"],
         no_live_by=row["no_live_by"],
         surface=row["surface"],
