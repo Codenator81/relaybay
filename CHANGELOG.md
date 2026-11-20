@@ -9,10 +9,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The Code row of a card shows only the repositories the task linked: no folded **Repos: all** line and no `Code: all repos` count any more; `task_get` names the project's repositories instead and asks the session to link the ones it touches. A pull request tied to no project repository is named by the repository in its link (`mobile #7`), so two of them no longer read "PR PR". **Open in VS Code** is a `</>` icon with the path on hover.
+- A report's `verified:` marks are no longer listed a second time with ticks under its text.
 - Backlog on the board: the **new** mark means "not seen yet" and goes once the item has been fully on screen (`POST /backlog/seen`, migration 0056 adds `backlog_item.seen_at`; items decided before count as seen). The status badge shows only when the status is not `new`.
 
 ### Fixed
 
+- The dismiss cross of a board notice ("Warning (rules): …") sits inside the notice, centred on it.
+- A plan accepted over MCP by a session named `owner` or `board` is recorded as that session's acceptance (`session owner`), not as one on the board.
 - The Done and Not doing menus of a backlog item float over the card instead of stretching the actions row (a card rule made every form in it `position: relative`).
 - The secret check no longer takes prose such as "the basic callback" for an auth header: after `bearer`, `basic` or `digest` the value must look like a credential (a digit, a token symbol or a capital after its first letter); after `Authorization:` any value still counts. A section write into a spec that says "basic callback" was refused.
 - `relaybay import --backlog`: a cell holding only a dash (`-`, en or em dash) is empty, so it is no longer stored as a triage note; an empty decision cell on a row imported before keeps the item's status on the board (later, done, declined) instead of moving it back to new.

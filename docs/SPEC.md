@@ -579,7 +579,7 @@ a fenced code block; an empty `where` or `true`, `false`, `yes`, `no`, `none`, `
 Marks are
 parsed when a report is written by `report_add` and stored in
 `report_check` (the line, the `where`, the claim line without the mark; at most 100 per report). The
-card shows them under the report, a check with the `where`, the claim on hover. An M or L report
+card does not list them again under the report (they are in its text). An M or L report
 without any mark gets `Warning (rules): an M or L report has no verified marks: …` in the
 `report_add` result, the `report.added` event and under the report on the card; never in `strict`
 mode a refusal, and never for an S report or one without a size. The first start with migration
@@ -848,13 +848,15 @@ task dialog shows the chip after the key in its head, and the task view (dialog 
 **Code row.** A task whose project has repositories, or that has pull requests, shows a Code row on
 its card and in the task dialog / page ([§1](#spec-task-code)): one line per linked repository with
 its name, its kind, the task's branch (in the dialog; the card shows the branch once, above), its
-pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and **Open in
-VS Code**, a `vscode://file/<path>` link (backslashes become `/`, a Windows drive stays `C:`, other
-unsafe characters are percent-encoded; a leading `~` is left to the editor). With no repository
-linked the row is one folded line **Repos: all** (the project's names), which opens to the same
-links for every repository. Pull requests tied to no listed repository follow as **PRs:**. The
-compact card ([below](#spec-board-compact)) shows only a count instead: `Code: 2 repos, 3 PRs`
-(`Code: all repos` when none is linked). A `task.updated` event refreshes the card.
+pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and an
+**Open in VS Code** icon (`</>`, the path and the words on hover), a `vscode://file/<path>` link
+(backslashes become `/`, a Windows drive stays `C:`, other unsafe characters are percent-encoded; a
+leading `~` is left to the editor). With no repository linked there is no repository line (until
+0.15 a folded **Repos: all**); `task_get` then names the project's repositories and asks the
+session to link the ones it touches. Pull requests tied to no listed repository follow as
+**PRs:**, each named by the repository in its link (`mobile #7`). The compact card
+([below](#spec-board-compact)) shows only a count instead: `Code: 2 repos, 3 PRs` (nothing when
+the task has neither). A `task.updated` event refreshes the card.
 
 <a id="spec-board-compact"></a>
 

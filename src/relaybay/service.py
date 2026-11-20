@@ -8770,6 +8770,9 @@ class Service:
                     " (on the board) or the coordinator does."
                 )
             who = sess.name if sess else actor
+            if sess is not None and who in BOARD_ACTORS:
+                # A session named "owner" or "board" is still a session, not the board.
+                who = f"session {who}"
             plan = await self._load_plan(tx.conn, task)
             if not plan.steps:
                 raise ValidationError(
