@@ -12,7 +12,13 @@ from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskCode
 from relaybay.domain.digest import age
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
-from relaybay.domain.doc_index import SNIPPET_MAX, IndexedSection, outline_line, size_label
+from relaybay.domain.doc_index import (
+    SNIPPET_MAX,
+    IndexedSection,
+    outline_line,
+    outside_note,
+    size_label,
+)
 from relaybay.domain.environments import (
     AccessEntry,
     Environment,
@@ -750,14 +756,17 @@ def document_history(doc: Document, versions: list[DocumentVersion], diff: list[
 _outline_line = outline_line
 
 
-def _file_head(doc: Document) -> str:
+def _file_head(doc: Document) -> list[str]:
+    """The file line of a file document's answer, and the outside-change note under it."""
     seen = f" · hash {doc.file_hash[:12]}" if doc.file_hash else ""
     masked = f" · {doc.masked_lines} line(s) masked in the index" if doc.masked_lines else ""
-    return (
-        f"<!-- file {_clip_name(doc.place or doc.source_path or '', 200)}{seen}{masked} ·"
-        " relaybay never writes it:"
-        " edit the file itself -->"
-    )
+    writes = "on: doc_update writes the file" if doc.file_writable else "off: edit the file itself"
+    head = [
+        f"<!-- file {_clip_name(doc.place or doc.source_path or '', 200)}{seen} · version"
+        f" {doc.version}{masked} · writes through relaybay: {writes} -->"
+    ]
+    note = outside_note(doc)
+    return [*head, note] if note else head
 
 
 def _clip_name(name: str, limit: int = 80) -> str:
@@ -778,7 +787,7 @@ def document_read(read: DocRead) -> str:
             return document(doc, read.text, anchor)
     if doc.is_file:
         named = f" section #{_clip_name(anchor)}" if anchor else ""
-        head = [f"<!-- {doc.project_slug}/{doc.slug}{named} · {doc.kind} -->", _file_head(doc)]
+        head = [f"<!-- {doc.project_slug}/{doc.slug}{named} · {doc.kind} -->", *_file_head(doc)]
     else:
         head = [document(doc, "", _clip_name(anchor) if anchor else None).split("\n")[0]]
     if doc.file_problem:
@@ -855,7 +864,7 @@ def document_outline(
         " level, #anchor, title, lines a-b, characters/tokens (~bytes/3.5)"
     ]
     if doc.is_file:
-        head.append(_file_head(doc))
+        head.extend(_file_head(doc))
     if doc.file_problem:
         head.append(f"<!-- {doc.file_problem} -->")
     if not rows:
@@ -875,6 +884,7 @@ def document_hits(project: Project, hits: list[DocHit], query: str) -> str:
         f"# doc_search {project.slug}: {query} · {len(hits)} section(s)",
         "Read a hit: doc_get(project, doc, section=anchor), or lines around the line.",
     ]
+    noted: set[int] = set()
     for h in hits:
         r = h.section
         name = (
@@ -886,6 +896,10 @@ def document_hits(project: Project, hits: list[DocHit], query: str) -> str:
             f" {r.first_line}-{r.last_line} · {size_label(r.chars, r.bytes)}{where}"
         )
         lines.extend(f"    {n}: {_short(text)}" for n, text in h.around)
+        note = outside_note(h.doc)
+        if note and h.doc.id not in noted:
+            noted.add(h.doc.id)
+            lines.append(f"  {note}")
     return "\n".join(lines)
 
 
@@ -897,17 +911,24 @@ def _short(text: str, limit: int = SNIPPET_MAX) -> str:
 def file_history(doc: Document, events: list[Event]) -> str:
     lines = [
         f"# History of {doc.project_slug}/{doc.slug} (the file {doc.place or doc.source_path};"
-        " its text is not versioned here, git keeps it where the file is in a repository)"
+        f" version {doc.version}; its text is not versioned here, git keeps it where the file is"
+        " in a repository)"
     ]
     for e in events:
         p = e.payload
         if p.get("created"):
             what = f"added by {e.actor}: {p.get('reason') or ''}".rstrip(": ")
+        elif p.get("file_writes") and not p.get("hash_after"):
+            what = f"writes through relaybay turned {p['file_writes']} by {e.actor}"
         else:
             parts = [f"{k} {', '.join(p[k])}" for k in ("added", "removed", "changed") if p.get(k)]
             what = f"changed: {p.get('sections_changed', 0)} section(s)" + (
                 f" ({'; '.join(parts)})" if parts else ""
             )
+            if p.get("outside"):
+                what += " outside relaybay"
+            elif p.get("reason"):
+                what += f" by {e.actor}: {p['reason']}"
         before = f"{p['hash_before'][:12]} → " if p.get("hash_before") else ""
         after = (p.get("hash_after") or "")[:12]
         lines.append(f"- {e.ts[:16]}Z {what} · hash {before}{after}")
@@ -917,8 +938,25 @@ def file_history(doc: Document, events: list[Event]) -> str:
 def file_document_saved(doc: Document, rows: int) -> str:
     return (
         f"{doc.project_slug}/{doc.slug} is a file document: {doc.source_path} ({rows} section(s)"
-        f" indexed). relaybay reads it on demand and never writes it; read it with"
+        f" indexed), version {doc.version}. relaybay reads it on demand; writes through"
+        f" relaybay are {'on' if doc.file_writable else 'off'}. Read it with"
         f' doc_outline(project="{doc.project_slug}", doc="{doc.slug}") and doc_get.'
+    )
+
+
+def file_document_written(doc: Document) -> str:
+    named = [a for a in (doc.file_changed_sections or "").split(",") if a]
+    sections = f"; sections changed: {', '.join(named)}" if named else ""
+    return (
+        f"{doc.project_slug}/{doc.slug} written to its file {doc.place or doc.source_path}:"
+        f" version {doc.version}{sections}. Next base_version: {doc.version}."
+    )
+
+
+def file_writes_set(doc: Document) -> str:
+    return (
+        f"Writes through relaybay into the file of {doc.project_slug}/{doc.slug} are"
+        f" {'on' if doc.file_writable else 'off'} (version {doc.version})."
     )
 
 
@@ -1219,7 +1257,12 @@ def event_detail(e: Event) -> str:
     if e.kind == "document.updated" and p.get("file"):
         if p.get("created"):
             return f"{p.get('doc')} (a file document) added: {p.get('reason') or ''}".rstrip(": ")
-        return f"{p.get('doc')} changed in its file: {p.get('sections_changed', 0)} section(s)"
+        if p.get("file_writes") and not p.get("hash_after"):
+            return f"{p.get('doc')}: writes through relaybay turned {p['file_writes']}"
+        how = " outside relaybay" if p.get("outside") else " through relaybay"
+        if "version" not in p:
+            how = ""
+        return f"{p.get('doc')} changed in its file{how}: {p.get('sections_changed', 0)} section(s)"
     if e.kind == "document.updated":
         part = f" #{p['section']}" if p.get("section") else ""
         return f"{p.get('doc')} v{p.get('version')}{part}: {p.get('reason') or ''}".rstrip()

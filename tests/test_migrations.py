@@ -24,7 +24,7 @@ MIGRATIONS = (
     "0014_digests.sql",
     "0015_import.sql",
 )
-LATEST = 53
+LATEST = 54
 
 
 async def make_old_db(path: Path, version: int = 1) -> None:

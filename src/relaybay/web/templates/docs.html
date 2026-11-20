@@ -127,7 +127,7 @@
     <summary class="btn">New document: a file on disk</summary>
     <form class="task-form doc-new-form" method="post" action="/p/{{ project.slug }}/docs/new">
       {{ hidden_csrf() }}
-      <p class="muted inbox-hint">relaybay reads and indexes the file whenever it is read, and never writes it: the file stays the source (in its repository or in a notes folder). Use it for a document over 200,000 characters.</p>
+      <p class="muted inbox-hint">relaybay reads and indexes the file whenever it is read, and writes it only when a coordinator turns writes through relaybay on for that document: the file stays the source (in its repository or in a notes folder). Use it for a document over 200,000 characters.</p>
       {% if error and error_target == "doc-file" %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
       <div class="field-row">
         <label class="field"><span>Name</span>

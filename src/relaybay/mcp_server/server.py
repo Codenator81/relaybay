@@ -3,7 +3,7 @@
 import functools
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError, ToolError
@@ -1319,7 +1319,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         ] = None,
     ) -> str:
         """A project document as markdown (or one section, or a line range), with its current
-        version to pass as base_version to doc_update; a file document names its file and hash.
+        version to pass as base_version to doc_update; a file document names its file, hash and
+        whether doc_update writes it, and a change made to it outside relaybay.
         A read over the cap returns the first lines, the outline of the rest and the call that
         reads on, never a silent cut. For a large document: doc_outline first."""
         found = await run(
@@ -1411,7 +1412,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str | None,
             Field(
                 description="Absolute path of a file on this machine: with base_version 0 and"
-                " body '-' it becomes a file document that relaybay indexes and never writes."
+                " body '-' it becomes a file document that relaybay indexes on demand."
             ),
         ] = None,
         lines: Annotated[
@@ -1422,6 +1423,13 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str | None,
             Field(description="The current text of `lines` as you read it; else a conflict."),
         ] = None,
+        file_writes: Annotated[
+            Literal["on", "off"] | None,
+            Field(
+                description="Coordinators only: turn writes through relaybay into a file"
+                " document's file on or off (default off); with body '-' that is all it does."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -1431,7 +1439,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         lines + expected only those lines change, as long as they still read as expected. A
         task's document is `task-<ref>`; point the task at it with task_update(doc_path=
         'relaybay://doc/<project>/task-<ref>'). A document linked with source_url may have body
-        '-' (no text of its own). A file document (source_path) is refused here: edit the file."""
+        '-' (no text of its own). A file document (source_path) whose writes through relaybay
+        are on is written in its file: only the replaced lines change, its line endings stay;
+        a change made to the file outside relaybay is a new version first. With writes off it
+        is refused: edit the file."""
         saved = await run(
             service.update_document(
                 project,
@@ -1447,14 +1458,19 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 lines=lines or None,
                 expected=expected,
                 force=force,
+                file_writes=file_writes or None,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
             )
         )
-        if saved.is_file:
+        if saved.is_file and source_path:
             _, rows, _ = await run(service.document_outline(project, saved.slug))
             return fmt.file_document_saved(saved, len(rows))
+        if saved.is_file and body.strip() == "-":
+            return fmt.file_writes_set(saved)
+        if saved.is_file:
+            return fmt.file_document_written(saved)
         return fmt.document_saved(saved)
 
     @mcp.tool(annotations=READ, structured_output=False)
