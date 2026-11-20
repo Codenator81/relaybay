@@ -7,28 +7,7 @@ with a message that says what to do.
 
 ## Server instructions
 
-The server's MCP `instructions` (sent once when a session connects) are a short working contract:
-start with the digest for your level (`portfolio_digest`, `project_digest` or `task_context`),
-drill down only when needed, for example with `project_snapshot` (its first line names the rules,
-like `task_context`'s rules line); pick or create a task and pass
-`session` (your `local_` id with `session_title` if you know it, plus `hook_session` if the
-session start gave you one; if not, don't rebind — the coordinator binds you); update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and
-report; start a report with the configured first line, states and sizes (taken from the
-effective global rules, so they match `rules_get`); set `waiting_on` to who
-decides when the work needs a decision; use `task_patch` for fields your tool schema lacks (a
-`Deprecated: …` result line names what to use instead, see [Contract](#contract-and-deprecations)); treat a
-`Warning (rules)` line as something to fix and a `rules updated to vN` line as a reason to read the
-rules again, and change them through `rules_propose` (`rules_update` is only for coordinators); when a hook hands over owner comments, handle them like
-a message from the user and call `comment_ack` (or answer with `comment_add`); take hosts and
-access from the project's own notes and never paste secrets into relaybay; when the guard stops a
-call its reason says why (`policy_get` shows the policy, `policy_propose` asks for a change);
-before moving a task to review or test, write what the
-owner should check with `review_steps_set` and attach screenshots with `attach_file` (the owner's
-decisions arrive as owner comments); start with a plan — `plan_set` from PLAN.md or your own 2-5
-steps (S tasks: at least a todo) — and mark steps `in_progress` / `done` with `plan_step_update`
-(done needs one line `as planned` or `deviation: why`), and a change or an addition after a report
-is a new step with `plan_step_add` (or the step back to `in_progress`), the stage back to dev,
-`progress` and `next_step` updated; a finding outside your task goes to `backlog_add`, not into a comment or a report. The details live in the rules below.
+The server's MCP `instructions` (sent once when a session connects) are a short working contract in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_patch` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`).
 
 Conventions:
 
