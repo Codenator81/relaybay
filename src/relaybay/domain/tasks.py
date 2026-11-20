@@ -4,6 +4,8 @@ from relaybay.domain.models import Task
 from relaybay.domain.stages import Stage
 
 DEFAULT_DONE_WINDOW_DAYS = 7
+# Days a task stays in the archive before relaybay deletes it (with an export first); 0 never.
+DEFAULT_ARCHIVE_PURGE_DAYS = 30
 
 
 def is_archived(

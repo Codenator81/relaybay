@@ -4043,6 +4043,239 @@ async def set_archive_mark(
     )
 
 
+# --- deleting from the archive ------------------------------------------------
+
+_CHUNK = 500  # ids per IN (...): well under SQLite's bound-variable limit
+# Where each kind of the search index keeps its items.
+_SEARCH_TABLES = {
+    "doc": "document",
+    "decision": "decision",
+    "note": "memory",
+    "report": "report",
+    "comment": "comment",
+    "backlog": "backlog_item",
+}
+
+
+async def purgeable_task_ids(
+    conn: aiosqlite.Connection, cutoff: str, task_id: int | None = None
+) -> list[int]:
+    """Done tasks archived by hand (or from live) before `cutoff` and not brought back since
+    (only `task_id`, when given). The done window's archive by age sets no mark, so it never
+    makes a task purgeable."""
+    only = " AND id = ?" if task_id is not None else ""
+    rows = await _all(
+        conn,
+        "SELECT id FROM task WHERE stage = 'done' AND archived_at IS NOT NULL"
+        " AND archived_at < ? AND (unarchived_at IS NULL OR unarchived_at < archived_at)"
+        f"{only} ORDER BY id",
+        (cutoff, *(() if task_id is None else (task_id,))),
+    )
+    return [r[0] for r in rows]
+
+
+async def _cascade_children(conn: aiosqlite.Connection) -> dict[str, list[tuple[str, str]]]:
+    """parent table -> (child table, key column) of every ON DELETE CASCADE foreign key."""
+    tables = await _all(
+        conn,
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%'"
+        " AND name NOT LIKE 'sqlite_%'",
+    )
+    children: dict[str, list[tuple[str, str]]] = {}
+    for (name,) in tables:
+        for fk in await _all(conn, "SELECT * FROM pragma_foreign_key_list(?)", (name,)):
+            if fk["on_delete"] == "CASCADE":
+                children.setdefault(fk["table"], []).append((name, fk["from"]))
+    return children
+
+
+async def cascade_rows(
+    conn: aiosqlite.Connection, table: str, ids: list[int]
+) -> dict[str, list[dict[str, Any]]]:
+    """The rows of `table` with these ids and every row a DELETE of them takes along through
+    ON DELETE CASCADE, by table: what the export before a deletion holds. Read from the
+    schema, so a table a later migration adds is included without a change here."""
+    children = await _cascade_children(conn)
+    found: dict[str, list[dict[str, Any]]] = {}
+    seen: dict[str, set[int]] = {}
+    queue: list[tuple[str, str, list[int]]] = [(table, "id", ids)]
+    while queue:
+        name, column, keys = queue.pop(0)
+        new_ids: list[int] = []
+        for start in range(0, len(keys), _CHUNK):
+            part = keys[start : start + _CHUNK]
+            marks = ", ".join("?" for _ in part)
+            rows = await _all(
+                conn, f"SELECT * FROM {name} WHERE {column} IN ({marks})", tuple(part)
+            )
+            for row in rows:
+                item = dict(row)
+                row_id = item.get("id")
+                if row_id is not None:
+                    if row_id in seen.setdefault(name, set()):
+                        continue
+                    seen[name].add(row_id)
+                    new_ids.append(row_id)
+                found.setdefault(name, []).append(item)
+        if new_ids:
+            queue += [(child, key, new_ids) for child, key in children.get(name, [])]
+    return found
+
+
+async def attachments_of(
+    conn: aiosqlite.Connection, *, task_id: int | None = None, project_id: int | None = None
+) -> list[dict[str, Any]]:
+    """The attachment rows of one task or of every task of a project, with the task's key."""
+    column, value = ("t.id", task_id) if task_id is not None else ("t.project_id", project_id)
+    rows = await _all(
+        conn,
+        "SELECT a.*, t.key AS task_key FROM attachment a JOIN task t ON t.id = a.task_id"
+        f" WHERE {column} = ? ORDER BY a.id",
+        (value,),
+    )
+    return [dict(r) for r in rows]
+
+
+async def events_of_tasks(conn: aiosqlite.Connection, task_ids: list[int]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for start in range(0, len(task_ids), _CHUNK):
+        part = task_ids[start : start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        rows = await _all(
+            conn, f"SELECT * FROM event WHERE task_id IN ({marks}) ORDER BY id", tuple(part)
+        )
+        found += [dict(r) for r in rows]
+    return found
+
+
+# A task decision that replaced a decision outside the task: deleting it would leave that one
+# superseded by nothing, so the topic had no current decision.
+_SUPERSEDED_ELSEWHERE = (
+    "id IN (SELECT superseded_by FROM decision WHERE superseded_by IS NOT NULL"
+    " AND task_id IS NOT ?)"
+)
+# The table each kind of import_item points into (`target_id`, no foreign key).
+_IMPORT_TABLES = {
+    "document": "document",
+    "task": "task",
+    "task_note": "task",
+    "decision": "decision",
+    "note": "memory",
+    "backlog": "backlog_item",
+}
+
+
+async def task_decisions(conn: aiosqlite.Connection, task_id: int) -> list[dict[str, Any]]:
+    """The decisions deleted with the task: those recorded for it (scope `task`), except one
+    that superseded a decision outside it, which stays as a project decision."""
+    rows = await _all(
+        conn,
+        "SELECT * FROM decision WHERE task_id = ? AND scope = 'task'"
+        f" AND NOT {_SUPERSEDED_ELSEWHERE} ORDER BY id",
+        (task_id, task_id),
+    )
+    return [dict(r) for r in rows]
+
+
+async def delete_task(conn: aiosqlite.Connection, task_id: int) -> None:
+    """Delete one task: its task decisions here, its events keep their text without the link,
+    the rest goes with the foreign keys (cascade, or the link cleared as in a backlog item)."""
+    await conn.execute(
+        "UPDATE decision SET task_id = NULL, scope = 'project'"
+        f" WHERE task_id = ? AND scope = 'task' AND {_SUPERSEDED_ELSEWHERE}",
+        (task_id, task_id),
+    )
+    await conn.execute("DELETE FROM decision WHERE task_id = ? AND scope = 'task'", (task_id,))
+    await conn.execute("UPDATE event SET task_id = NULL WHERE task_id = ?", (task_id,))
+    await conn.execute("DELETE FROM reader_cursor WHERE level = 'task' AND ref_id = ?", (task_id,))
+    await conn.execute("DELETE FROM task WHERE id = ?", (task_id,))
+
+
+async def project_events(conn: aiosqlite.Connection, project_id: int) -> list[dict[str, Any]]:
+    rows = await _all(
+        conn,
+        "SELECT * FROM event WHERE project_id = ?"
+        " OR task_id IN (SELECT id FROM task WHERE project_id = ?) ORDER BY id",
+        (project_id, project_id),
+    )
+    return [dict(r) for r in rows]
+
+
+async def rule_seen_rows(conn: aiosqlite.Connection, project_id: int) -> list[dict[str, Any]]:
+    rows = await _all(conn, "SELECT * FROM rule_seen WHERE project_id = ?", (project_id,))
+    return [dict(r) for r in rows]
+
+
+async def delete_project(conn: aiosqlite.Connection, project_id: int) -> None:
+    """Delete a project with everything of it: its events too (they are in the export), so
+    no digest or feed shows a project that is gone, and the rows keyed by its id without a
+    foreign key, which a new project could inherit (ids are reused)."""
+    await conn.execute(
+        "DELETE FROM event WHERE project_id = ?"
+        " OR task_id IN (SELECT id FROM task WHERE project_id = ?)",
+        (project_id, project_id),
+    )
+    await conn.execute(
+        "DELETE FROM reader_cursor WHERE (level = 'project' AND ref_id = ?)"
+        " OR (level = 'task' AND ref_id IN (SELECT id FROM task WHERE project_id = ?))",
+        (project_id, project_id),
+    )
+    await conn.execute("DELETE FROM rule_seen WHERE project_id = ?", (project_id,))
+    await conn.execute("DELETE FROM project WHERE id = ?", (project_id,))
+
+
+def _ids(rows: dict[str, list[dict[str, Any]]], table: str) -> list[int]:
+    return [r["id"] for r in rows.get(table, [])]
+
+
+async def import_rows(
+    conn: aiosqlite.Connection, rows: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """The import records whose target is among the deleted `rows`: left behind, a later item
+    that gets the same id would count as imported."""
+    found: list[dict[str, Any]] = []
+    for kind, table in _IMPORT_TABLES.items():
+        ids = _ids(rows, table)
+        for start in range(0, len(ids), _CHUNK):
+            part = ids[start : start + _CHUNK]
+            marks = ", ".join("?" for _ in part)
+            found += [
+                dict(r)
+                for r in await _all(
+                    conn,
+                    f"SELECT * FROM import_item WHERE kind = ? AND target_id IN ({marks})",
+                    (kind, *part),
+                )
+            ]
+    return found
+
+
+async def forget_imports(conn: aiosqlite.Connection, items: list[dict[str, Any]]) -> None:
+    await conn.executemany(
+        "DELETE FROM import_item WHERE kind = ? AND item = ?",
+        [(i["kind"], i["item"]) for i in items],
+    )
+
+
+async def unindex(
+    conn: aiosqlite.Connection, rows: dict[str, list[dict[str, Any]]], fts: bool
+) -> None:
+    """Drop the search rows of the deleted `rows`: the indexes have no foreign keys, so a
+    deletion leaves them behind. By rowid, which the index derives from kind and id."""
+    if fts:
+        rowids = [
+            _search_rowid(kind, item_id)
+            for kind, table in _SEARCH_TABLES.items()
+            for item_id in _ids(rows, table)
+        ]
+        await conn.executemany("DELETE FROM search_index WHERE rowid = ?", [(r,) for r in rowids])
+    key = "rowid" if fts else "id"
+    await conn.executemany(
+        f"DELETE FROM {_section_table(fts)} WHERE {key} = ?",
+        [(i,) for i in _ids(rows, "document_section")],
+    )
+
+
 _BACKLOG_SELECT = """
 SELECT b.*, p.slug AS project_slug, ot.key AS origin_task_key, ot.stage AS origin_task_stage,
        os.name AS origin_session_name, t.key AS task_key

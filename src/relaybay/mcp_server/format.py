@@ -1082,6 +1082,13 @@ def task_archive_saved(task: Task) -> str:
     return f"**{task.key}** “{task.title}” is in the {task.stage.value} column, not in the archive."
 
 
+def project_deleted(project: Project, export: str) -> str:
+    return (
+        f"Deleted the project **{project.slug}** with all its tasks, documents, backlog,"
+        f" decisions and notes; the export is `deleted/{export}` in the server's data folder."
+    )
+
+
 def comment_marks(c: Comment) -> str:
     """`sent … · delivered … to <session> · read …` for an owner comment; `reply · unread` for
     an agent's."""
@@ -1167,6 +1174,8 @@ def event_detail(e: Event) -> str:
     if e.kind == "task.unarchived":
         by = p.get("archived_by")
         return f"archived by {by}" if by else "archived by the done window"
+    if e.kind in ("task.purged", "project.deleted"):
+        return f"{p.get('key') or p.get('project')} deleted, export {p.get('export')}"
     if e.kind == "decision.added":
         supersedes = f" (supersedes #{p['supersedes']})" if p.get("supersedes") else ""
         return f"#{p.get('decision_id')} {p.get('text', '')}{supersedes}"

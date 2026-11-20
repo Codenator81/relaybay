@@ -136,7 +136,10 @@ program as its client:
   `done_window_days` (default 7); older ones are archived and come back with "Show archived" or a
   search by key or title (`/p/<project>?archived=1`, `?q=…`). **Archive** on a done card sends it
   there at once, **Back from the archive** brings it back for another window. Done cards hide
-  "waiting on" and the next step.
+  "waiting on" and the next step. A card archived by hand more than `archive_purge_days` ago
+  (default 30, 0 never) is deleted by relaybay, and an archived project can be deleted on request
+  (**Delete project**, or `project_delete` for coordinators); each deletion writes an export to
+  `deleted/` in the data folder first.
 - **External tracker mark** — a task can carry its issue in any tracker (tracker name, issue key,
   optional link) and a "work log entered" mark. The card shows the issue as a badge at the top (a
   link when a URL is set, ✓ once logged). With `require_tracker_log = true` a done task without
@@ -303,6 +306,7 @@ port = 8765
 allowed_hosts = ["my-laptop.lan"]   # needed only when you bind to a LAN address
 desktop_link_template = "claude://claude.ai/epitaxy/{id}"  # {id} = desktop session id (local_…)
 done_window_days = 7                # older done tasks are archived
+archive_purge_days = 30             # tasks archived by hand are deleted after this many days (export first); 0 never
 require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
 owner_names = ["owner", "me"]       # waiting_on values listed in the Inbox
 rules_mode = "warn"                 # "strict": a stage move or report that misses a rule is refused

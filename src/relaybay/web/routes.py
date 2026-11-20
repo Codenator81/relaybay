@@ -120,6 +120,7 @@ EVENT_ID_MAX = 2**63 - 1  # the largest integer SQLite binds
 EVENT_KINDS = (
     "project.created",
     "project.updated",
+    "project.deleted",
     "project.pulse_set",
     "task.created",
     "task.updated",
@@ -130,6 +131,7 @@ EVENT_KINDS = (
     "task.tracker_unlogged",
     "task.archived",
     "task.unarchived",
+    "task.purged",
     "report.added",
     "decision.added",
     "session.seen",
@@ -2706,6 +2708,34 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         count = f"{len(back)} card{'' if len(back) == 1 else 's'}"
         message = f"Brought back {count}." if back else "Nothing to bring back."
         return JSONResponse({"keys": back, "message": message})
+
+    # Before /p/{slug}/project/{action}, which knows only archive and unarchive.
+    @router.post("/p/{slug}/project/delete")
+    async def delete_project(
+        request: Request,
+        slug: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+        confirm: Annotated[str, Form()] = "",
+    ) -> Response:
+        """Project settings: "Delete project", only for an archived project, with its slug typed."""
+        board_only(request, csrf)
+        try:
+            path = await service.delete_project(slug, confirm, actor="owner")
+        except NotFoundError:
+            # A second submit after the deletion (back button, double click).
+            return flash_redirect(
+                request, "/?archived=1", message=f"There is no project {slug} (any more)."
+            )
+        except DomainError as exc:  # a refusal, or the export could not be written
+            return await project_settings_page(
+                request, slug, error=str(exc), error_target="delete", status=400
+            )
+        return flash_redirect(
+            request,
+            "/?archived=1",
+            message=f"Deleted the project {slug}; its export is deleted/{path.name} in the data"
+            " folder.",
+        )
 
     @router.post("/p/{slug}/project/{action}")
     async def archive_project(

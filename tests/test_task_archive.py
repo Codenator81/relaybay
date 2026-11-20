@@ -491,7 +491,9 @@ def test_board_archive_project_and_back(board: TestClient, token: str) -> None:
     assert response.status_code == 303
     assert response.headers["location"] == "/p/demo-api/settings#archive"
     assert 'href="/p/demo-api"' in board.get("/fragments/projects").text
-    assert board.post("/p/demo-api/project/delete", data=data, headers=FORM).status_code == 404
+    # Delete is only for an archived project (tests/test_archive_purge.py).
+    assert board.post("/p/demo-api/project/delete", data=data, headers=FORM).status_code == 400
+    assert run_in_app(board, service.get_project, "demo-api").archived_at is None
 
 
 async def test_a_hook_id_passed_as_session_is_the_same_caller_for_the_coordinator_check(

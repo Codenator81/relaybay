@@ -82,6 +82,7 @@ def instructions(rules: Rules) -> str:
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
+DELETE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 
 SESSION_HELP = (
     "Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a"
@@ -310,6 +311,34 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         _, repos_now = await run(service.project_repos(project.slug))
         return fmt.project(project, created, repos_now)
+
+    # Not under `write`: its rules hint would look up the project this call just deleted.
+    @mcp.tool(annotations=DELETE, structured_output=False)
+    async def project_delete(
+        slug: ProjectSlug,
+        confirm: Annotated[
+            str, Field(description="The project's slug once more: the deletion cannot be undone.")
+        ],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Delete an archived project for good, for coordinator sessions only: its tasks with
+        their reports, comments, plans and attachments, its documents (the rows only; files on
+        disk stay), backlog, decisions, notes and areas. An export of everything deleted is
+        written first to `deleted/` in the server's data folder. A project not in the archive
+        is refused; archive it first with project_upsert(archived=true)."""
+        with collect_notes() as notes:
+            project, path = await run(
+                service.delete_project_mcp(
+                    slug,
+                    confirm,
+                    session=session,
+                    session_title=session_title,
+                    hook_session=hook_session,
+                )
+            )
+        return "\n".join([fmt.project_deleted(project, path.name), *notes])
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def project_snapshot(
@@ -732,7 +761,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         """Send a done or live task to the archive now, for coordinator sessions only: it leaves
         the board's columns (the board's "show archive" and search still find it). A live task is
         closed and archived in one step, and task_unarchive returns it to live. Any later stage
-        change takes it out of the archive. Nothing is deleted."""
+        change takes it out of the archive. Nothing is deleted now; after the server's
+        `archive_purge_days` (30 by default) in the archive relaybay deletes it, with an export
+        written first."""
         saved = await run(
             service.set_archived_mcp(
                 task,
