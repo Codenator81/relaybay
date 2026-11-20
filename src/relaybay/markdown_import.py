@@ -62,6 +62,8 @@ from relaybay.domain.memory import (
     TITLE_MAX,
     MemoryNote,
     diff_lines,
+    title_similarity,
+    word_cover,
 )
 from relaybay.domain.models import Decision, ImportItem, Project, Task
 from relaybay.domain.task_fields import MARKDOWN_MAX, NAME_MAX, TEXT_MAX
@@ -108,6 +110,17 @@ CHANGED_ON_BOARD = (
 )
 NOT_IMPORTED = "already on the board and not from an import; --overwrite takes the file's text"
 SEPARATORS = ":,.;-" + chr(0x2013) + chr(0x2014)
+# A registry row imported with --project matches an item already on the board (design 0027).
+MATCH_STATUSES = ("new", "later", "planned")
+MATCH_TITLE_MIN = backlog.SIMILAR_MIN
+MATCH_COVER_MIN = 0.7
+NEAR_MIN = 0.4
+# The content hash of a row recorded as matching an item it did not create: never written to it.
+MATCH_PREFIX = "match:"
+_MATCH_ARG_RE = re.compile(r"(\d+)\s*=\s*(\d+|new)", re.IGNORECASE)
+_ITEM_REF_RE = re.compile(r"#(\d+)\b")
+# `PR #41` names a pull request, not a backlog item.
+_OTHER_REF_RE = re.compile(r"\b(?:pr|pull|request|issue|mr)\W*$", re.IGNORECASE)
 _DAY_RE = re.compile(r"(?P<day>\d{1,2})\.(?P<month>\d{1,2})(?:\.(?P<year>\d{4})?)?")
 
 
@@ -127,7 +140,9 @@ class Item:
     record: bool = False  # nothing to write on the board, but the bookkeeping changes
     diff: list[str] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)
-    fixed: str = ""  # what a new item keeps for good and its hashes do not cover
+    # What a new item keeps for good and its hashes do not cover; for a backlog row, the item it
+    # matches or is near.
+    fixed: str = ""
 
     @property
     def order(self) -> tuple[int, str, str]:
@@ -324,12 +339,20 @@ class _Row:
 
 class _Planner:
     def __init__(
-        self, service: Service, aliases: Aliases, retro_project: str | None, overwrite: bool
+        self,
+        service: Service,
+        aliases: Aliases,
+        retro_project: str | None,
+        overwrite: bool,
+        project: str | None = None,
+        matches: dict[int, int | None] | None = None,
     ) -> None:
         self.service = service
         self.aliases = aliases
         self.retro_project = retro_project
         self.overwrite = overwrite
+        self.only_project = project  # --project: the backlog rows of this project only
+        self.forced = matches or {}  # --match: registry line -> item id, or None for a new item
         self.items: list[Item] = []
         self.warnings: list[str] = []
         self.tracked: dict[tuple[str, str], ImportItem] = {}
@@ -1151,7 +1174,10 @@ class _Planner:
         item. Every row ends as exactly one plan item, and the summary counts them."""
         rows, warnings = parse_backlog(file.text, self.aliases)
         self.warnings.extend(f"{file.rel}: {w}" for w in warnings)
-        by_target = {t.target_id: t for t in self.tracked.values() if t.kind == "backlog"}
+        # A row that matched an item it did not create is no identity of that item.
+        by_target = {
+            t.target_id: t for t in self.tracked.values() if t.kind == "backlog" and not _matched(t)
+        }
         items = await self.service.all_backlog()
         current = {b.id: b for b in items}
         # Items no import wrote (made on the board, or exported from it) match by the same
@@ -1171,14 +1197,39 @@ class _Planner:
         names = {p.project.name.casefold(): p.project.slug for p in summaries}
         names |= {n.casefold(): s for s, n in self.new_projects.items() if n}
         modified = datetime.fromtimestamp(file.mtime).date() if file.mtime else date.today()
+        only = None
+        if self.only_project is not None:
+            cell = self.only_project.strip()
+            only = await self._backlog_project(cell.lower(), cell, names)
+            if only is None:
+                raise NotFoundError(f"--project {cell!r}: no such project on the board")
+        if self.forced and only is None:
+            raise ImportProblem("--match goes with --project")
         seen: set[str] = set()
+        claimed: set[int] = set()  # items a row of this file already stands for
+        # New items that may match one on the board: item, title, text, line.
+        pending: list[tuple[Item, str, str, int]] = []
         first = len(self.items)
         for row in rows:
             source = f"{file.rel}:{row.line}"
             day = registry_day(row.date, modified)
             title, body = backlog.registry_title(row.title)
-            project = await self._backlog_project(row, names)
+            project = await self._backlog_project(row.project, row.project_cell, names)
             name = f"{project or row.project}/{day or row.date}/{backlog.title_slug(title)}"
+            hand = row.line in self.forced
+            if hand and project != only:
+                problem = f"--match {row.line}: the row is not of {only}"
+                self.add("backlog", name, source, "error", problem)
+                continue
+            if only is not None and project != only:
+                self.add("backlog", name, source, "skipped", "other project")
+                continue
+            forced = self.forced.get(row.line)
+            if forced is not None:
+                problem = _hand_problem(forced, current.get(forced), only)
+                if problem:
+                    self.add("backlog", name, source, "error", f"--match {row.line}={problem}")
+                    continue
             if project is None:
                 problem = (
                     f"invalid project name {row.project_cell!r}"
@@ -1223,6 +1274,19 @@ class _Planner:
             target = current.get(tracked.target_id) if tracked else None
             if tracked is None:
                 target = untracked.get(name)
+            if tracked is not None and target is not None and _matched(tracked):
+                if not hand or forced == target.id:
+                    claimed.add(target.id)
+                    detail = f"matches #{target.id} (recorded by an earlier import)"
+                    self.add("backlog", name, source, "unchanged", detail, tracked.content_hash)
+                    continue
+                tracked = target = None  # --match says otherwise: the row is matched afresh
+            if forced is not None and target is not None:
+                problem = f"--match {row.line}: the row is already item #{target.id}"
+                self.add("backlog", name, source, "error", problem)
+                continue
+            if target is not None:
+                claimed.add(target.id)
             target_hash = backlog_hash(target) if target else ""
             status, detail, decided_note = self._backlog_decision(row.decision, source)
             done = status == "done"
@@ -1303,25 +1367,110 @@ class _Planner:
                 "values": values,
                 "target_id": target.id if target else 0,
             }
-            self.add(
+            item = self.add(
                 "backlog", name, source, action, detail, content, target_hash, record, [], payload
             )
+            if only is not None and action == "add":
+                pending.append((item, title, text, row.line))
+        if pending:
+            candidates = [
+                b
+                for b in items
+                if b.project_slug == only and b.status in MATCH_STATUSES and b.id not in claimed
+            ]
+            self._match_existing(pending, candidates, current, claimed)
         made = Counter(i.action for i in self.items[first:])
         counts = ", ".join(f"{a} {made[a]}" for a in ACTIONS if made[a])
         self.summary.append(f"{file.rel}: {len(rows)} rows read: {counts or 'none'}")
+        for line in sorted(set(self.forced) - {row.line for row in rows}):
+            where = f"{file.rel}:{line}"
+            self.add("backlog", where, where, "error", f"--match {line}: no row on that line")
 
-    async def _backlog_project(self, row: BacklogRow, names: dict[str, str]) -> str | None:
-        """The project of a registry row: by its slug, else by its name; None when neither is
-        on the board or created by this import."""
-        if SLUG_RE.match(row.project):
-            if row.project in self.projects or row.project in self.new_projects:
-                return row.project
+    async def _backlog_project(self, slug: str, cell: str, names: dict[str, str]) -> str | None:
+        """The project of a registry row (or of --project): by its slug, else by its name; None
+        when neither is on the board or created by this import."""
+        if SLUG_RE.match(slug):
+            if slug in self.projects or slug in self.new_projects:
+                return slug
             try:
-                self.projects[row.project] = await self.service.get_project(row.project)
-                return row.project
+                self.projects[slug] = await self.service.get_project(slug)
+                return slug
             except NotFoundError:
                 pass
-        return names.get(row.project_cell.casefold())
+        return names.get(cell.casefold())
+
+    def _match_existing(
+        self,
+        pending: list[tuple[Item, str, str, int]],
+        candidates: list[BacklogItem],
+        current: dict[int, BacklogItem],
+        claimed: set[int],
+    ) -> None:
+        """Rows about to be created that are an open item already on the board (design 0027):
+        `--match` says so by hand, the row names it, its title is like the item's, or its text
+        holds nearly all of the item's title words. By hand first, then the best pairs, one row
+        per item; a matched row only records the item as its target, the item itself is never
+        written. A row near an item (0.4 up to the threshold, or a match another row won) is
+        created with a warning."""
+        rows: set[int] = set()
+        taken: set[int] = set()
+        for index, (item, _title, _text, line) in enumerate(pending):
+            if line not in self.forced:
+                continue
+            rows.add(index)
+            forced = self.forced[line]
+            if forced is None:
+                continue
+            if forced in claimed or forced in taken:
+                item.action = "error"
+                item.detail = f"--match {line}={forced}: #{forced} is already another row's item"
+                continue
+            taken.add(forced)
+            _mark_match(item, current[forced], "by hand")
+        pairs: list[tuple[int, float, int, BacklogItem, str]] = []
+        near: dict[int, tuple[float, BacklogItem]] = {}
+        for index, (_item, title, text, _line) in enumerate(pending):
+            if index in rows:
+                continue
+            named = _named_items(text)
+            for b in candidates:
+                if b.id in taken:
+                    continue
+                similar = title_similarity(title, b.title)
+                cover = word_cover(b.title, text)
+                if b.id in named:
+                    pairs.append((2, 1.0, index, b, "names it"))
+                else:
+                    found = [
+                        (value, f"{what} {value:.2f}")
+                        for value, what, least in (
+                            (similar, "title", MATCH_TITLE_MIN),
+                            (cover, "cover", MATCH_COVER_MIN),
+                        )
+                        if value >= least
+                    ]
+                    if found:
+                        value, reason = max(found)
+                        pairs.append((1, value, index, b, reason))
+                score = 1.0 if b.id in named else max(similar, cover)
+                if score >= NEAR_MIN and score > near.get(index, (0.0, b))[0]:
+                    near[index] = (score, b)
+        pairs.sort(key=lambda p: (-p[0], -p[1], p[2], p[3].id))
+        for _rank, _score, index, b, reason in pairs:
+            if index in rows or b.id in taken:
+                continue
+            rows.add(index)
+            taken.add(b.id)
+            _mark_match(pending[index][0], b, reason)
+        for index, (score, b) in sorted(near.items()):
+            if index in rows:
+                continue
+            item = pending[index][0]
+            item.fixed = f"near #{b.id} {score:.2f}"
+            self.warnings.append(
+                f"{item.source}: created as a new item, but it is near #{b.id} ({score:.2f});"
+                " check it is not the same before --apply"
+            )
 
     def _backlog_decision(self, text: str, source: str) -> tuple[str, str | None, str | None]:
         """(status, detail, note) of a decision cell: the vocabulary, else the leading words of
@@ -1431,6 +1580,57 @@ def _backlog_hash(
     return text_hash(what, area, origin, status, detail, *queue, *registry)
 
 
+def _mark_match(item: Item, target: BacklogItem, reason: str) -> None:
+    """A row to be created becomes a record against `target`, which stays as it is."""
+    item.action, item.record = "skipped", True
+    item.detail = f"matches #{target.id}: {reason}"
+    item.content_hash = MATCH_PREFIX + item.content_hash
+    item.target_hash = backlog_hash(target)
+    item.fixed = f"#{target.id} {reason}"
+    item.payload["target_id"] = target.id
+
+
+def _hand_problem(item_id: int, item: BacklogItem | None, project: str | None) -> str | None:
+    """Why `--match LINE=N` cannot name item N; None when it can."""
+    if item is None:
+        return f"{item_id}: no backlog item #{item_id}"
+    if item.project_slug != project:
+        return f"{item_id}: #{item_id} is an item of {item.project_slug}"
+    if item.status not in MATCH_STATUSES:
+        return f"{item_id}: #{item_id} is {item.status}, not open"
+    return None
+
+
+def parse_matches(values: list[str]) -> dict[int, int | None]:
+    """`--match LINE=N` or `LINE=new`, repeatable: registry line -> item id, None for new."""
+    found: dict[int, int | None] = {}
+    for value in values:
+        hit = _MATCH_ARG_RE.fullmatch(value.strip())
+        if hit is None:
+            raise ImportProblem(f"--match {value!r}: use LINE=N (an item id) or LINE=new")
+        line = int(hit.group(1))
+        target = None if hit.group(2).lower() == "new" else int(hit.group(2))
+        if line in found and found[line] != target:
+            raise ImportProblem(f"--match: line {line} is given twice")
+        found[line] = target
+    return found
+
+
+def _matched(tracked: ImportItem) -> bool:
+    """A row recorded as matching an item on the board, not as the item's source."""
+    return tracked.content_hash.startswith(MATCH_PREFIX)
+
+
+def _named_items(text: str) -> set[int]:
+    """The item numbers a row names: `#12` or `backlog #12` (any word before it), never
+    `PR #12`."""
+    return {
+        int(m.group(1))
+        for m in _ITEM_REF_RE.finditer(text)
+        if not _OTHER_REF_RE.search(text[: m.start()])
+    }
+
+
 def backlog_hash(item: BacklogItem) -> str:
     detail = _decision_detail(item.status, item.decline_reason, item.link)
     return _backlog_hash(
@@ -1509,8 +1709,10 @@ async def make_plan(
     retro_project: str | None = None,
     overwrite: bool = False,
     backlog_file: Path | None = None,
+    project: str | None = None,
+    matches: dict[int, int | None] | None = None,
 ) -> Plan:
-    planner = _Planner(service, aliases or Aliases(), retro_project, overwrite)
+    planner = _Planner(service, aliases or Aliases(), retro_project, overwrite, project, matches)
     return await planner.build(root, backlog_file)
 
 
@@ -1827,6 +2029,8 @@ async def run_import(
     apply: bool,
     expect: str | None,
     backlog_file: Path | None = None,
+    project: str | None = None,
+    matches: dict[int, int | None] | None = None,
 ) -> tuple[int, list[str]]:
     """(exit code, output lines): 1 when something was refused, in conflict or failed."""
 
@@ -1850,6 +2054,8 @@ async def run_import(
                 retro_project=retro_project,
                 overwrite=overwrite,
                 backlog_file=backlog_file,
+                project=project,
+                matches=matches,
             )
         lines = [f"{head(plan)} (dry run)", *format_plan(plan), ""]
         lines.append(
@@ -1867,6 +2073,8 @@ async def run_import(
                 retro_project=retro_project,
                 overwrite=overwrite,
                 backlog_file=backlog_file,
+                project=project,
+                matches=matches,
             )
         if expect != plan.hash:
             return 1, stale(plan)
@@ -1878,6 +2086,8 @@ async def run_import(
             retro_project=retro_project,
             overwrite=overwrite,
             backlog_file=backlog_file,
+            project=project,
+            matches=matches,
         )
         if expect is not None and expect != plan.hash:
             return 1, stale(plan)

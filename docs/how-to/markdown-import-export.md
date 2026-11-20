@@ -75,6 +75,24 @@ The plan ends with one line per registry file, `findings.md: 40 rows read: add 3
 row is accounted for. Without a folder, `relaybay import --backlog findings.md --aliases aliases.json`
 reads only that file; with one, the file stands in for the folder's `backlog.md`.
 
+**Into a project that already has items.** `--project acme-shop` (slug or name) reads only that
+project's rows; the others are listed as `skipped ... other project`. A row that is an open item
+already on the board (`new`, `later` or `planned`) is not created again: the dry run shows
+`skipped backlog ... matches #12: names it` when its text names the item (`#12`, `backlog #12`; not
+`PR #12`), `title 0.71` when the titles are alike (0.6 and up) or `cover 0.80` when the row holds
+the item's title words (0.7 and up). `--apply` records the row against that item and leaves the
+item as it is, so a second import changes nothing. A row close to an item but under the threshold
+(0.4 and up), or one whose item a better row took, is created, and the plan's warnings name it
+(`findings.md:14: created as a new item, but it is near #12 (0.45)`): check those before
+`--apply`. Each item is matched by one row at most.
+
+**Deciding a row by hand.** `--match LINE=N` (repeatable) says that the row on line LINE of the
+registry is item 12 of the project, over any automatic match: `--match 14=12` shows
+`matches #12: by hand`. `--match 14=new` creates the row although it matches. An item that is not
+there, of another project, not open or already another row's, or a line that is no row, is an
+`error` line in the plan, so nothing is applied until you fix it. The dry run's hash covers these
+choices; pass the same `--match` options with `--apply --expect`.
+
 **Which row is which task folder.** A row finds its folder through its `ref` cell, then a `document`
 cell holding a path through `tasks/<ref>/` or a `relaybay://` link, then the title as a slug
 (`Gift cards` finds `tasks/gift-cards/`).

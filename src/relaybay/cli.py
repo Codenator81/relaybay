@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -179,6 +180,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="FILE",
         help="A backlog or bug registry under another name, read in place of backlog.md.",
+    )
+    importer.add_argument(
+        "--project",
+        metavar="SLUG",
+        help="Read only the backlog rows of this project (slug or name); a row that matches an"
+        " open item of it already on the board is recorded against that item, not created.",
+    )
+    importer.add_argument(
+        "--match",
+        action="append",
+        default=[],
+        metavar="LINE=N",
+        help="With --backlog and --project, repeatable: the row on line LINE of the registry is"
+        " item N of the project (over the automatic match); LINE=new creates it as a new item.",
     )
     importer.add_argument("--home", type=Path, help="relaybay data directory.")
 
@@ -398,10 +413,14 @@ def cmd_import(settings: Settings, args: argparse.Namespace) -> int:
     if args.root is None and args.backlog is None:
         print("relaybay import: name the folder, or a registry with --backlog.", file=sys.stderr)
         return 2
+    if args.match and (args.backlog is None or args.project is None):
+        print("relaybay import: --match goes with --backlog and --project.", file=sys.stderr)
+        return 2
     try:
         root = importer.resolve_root(args.root) if args.root is not None else None
         registry = importer.resolve_backlog_file(args.backlog) if args.backlog else None
         aliases = importer.read_aliases(args.aliases)
+        matches = importer.parse_matches(args.match)
     except importer.ImportProblem as exc:
         print(f"relaybay import: {exc}", file=sys.stderr)
         return 2
@@ -416,6 +435,8 @@ def cmd_import(settings: Settings, args: argparse.Namespace) -> int:
                 apply=args.apply,
                 expect=args.expect,
                 backlog_file=registry,
+                project=args.project,
+                matches=matches,
             )
         )
     except (DomainError, ValueError, OSError, sqlite3.Error) as exc:
@@ -577,7 +598,17 @@ def cmd_serve(settings: Settings, reload: bool) -> int:
     return 0
 
 
+def utf8_output() -> None:
+    """Print as UTF-8 to a pipe or a file too: on Windows a redirected stream takes the ANSI code
+    page, and a row's text outside it would end the command with UnicodeEncodeError."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").replace("-", "").lower()
+        if encoding != "utf8" and isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    utf8_output()
     args = build_parser().parse_args(argv)
     command = args.command or "serve"
     if command == "desktop":

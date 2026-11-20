@@ -3147,6 +3147,36 @@ second item. An item planned on the board (it has a task) is never moved back by
 eleven columns: the what cell is the whole body when the title was made from it, the origin the
 source in words when there is one; an import of the export changes nothing.
 
+**One project's rows** (design 0027). `relaybay import --backlog <file> --project <slug>` (or the
+project's name) reads only the rows of that project; the others are `skipped` as "other project",
+an unknown project of `--project` stops the run. A row it would create is matched against the
+project's items in `new`, `later` or `planned` that no other row of the file stands for: the row's
+text names the item (`#N`, `backlog #N`, any word before the number but `PR`, `pull`, `request`,
+`issue`, `mr`), its title is like the item's (`title_similarity` 0.6 and up, as `backlog_add`), or
+the row's text holds the item's title words (stems of four letters or more, stop words left out, a
+title with at least two of them) at a share of 0.7 and up. Pairs are taken best first (a name before
+a score), one row per item. A matched row is `skipped` with `matches #N: names it`, `title 0.71` or
+`cover 0.80`; `--apply` records it in `import_item` against that item (its content hash starts with
+`match:`) and never writes the item, so the next import shows it `unchanged`. A row whose best
+score is 0.4 or more without a match (or whose match another row took) is created, with a
+plan warning `<file>:<line>: created as a new item, but it is near #N (0.45)` (only there, not on
+the row's line). Matches and near misses count in the plan hash. Without `--project` nothing is
+matched.
+
+`--match LINE=N` (repeatable, with `--backlog` and `--project` only) decides one row by hand: the
+row on line LINE of the registry is matched to item N (`matches #N: by hand`) before any automatic
+match, and that item is no longer a candidate for other rows; `--match LINE=new` creates the row
+even when it would match (no near warning either). A row matched by an earlier import and now
+named otherwise by `--match` is matched afresh. It is an `error` line in the plan when N is not an
+item, is an item of another project, is not in `new`, `later` or `planned`, is already another
+row's item (by identity or by another `--match`), or the row is already an item of its own, is of
+another project, or LINE is not a row of the file (`<file>:<line>: --match LINE: no row on that
+line`). A malformed value or one line given twice with two values stops the run (exit 2). The
+`--match` decisions count in the plan hash, so `--apply --expect` writes only the plan approved.
+
+The command line prints UTF-8 when stdout or stderr is a pipe or a file in another encoding (a
+Windows code page), with characters it cannot encode replaced, never a `UnicodeEncodeError`.
+
 <a id="spec-desktop"></a>
 
 ## 13. Desktop program
