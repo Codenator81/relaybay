@@ -639,7 +639,7 @@ def test_board_shows_the_agent_todo_when_there_is_no_plan(board: TestClient) -> 
     run_in_app(board, service.record_hook, post(**todo_create("1", "Fix it", "Fixing it")))
     run_in_app(board, service.record_hook, post(**todo_update("1", "in_progress")))
     panel = board.get(f"/p/acme-shop/t/{task.key}/plan").text
-    assert "Agent&#39;s plan, not accepted" in panel or "Agent's plan, not accepted" in panel
+    assert "works by its own todo below" in panel and 'class="todo-details" open' in panel
     assert "Now doing:</span> Fixing it" in panel and "Accept plan" not in panel
 
 

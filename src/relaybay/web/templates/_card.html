@@ -33,6 +33,9 @@
   </h3>
   {#- A done task waits on nobody: its "waiting on" and "next step" are history, not shown here. #}
   {%- set is_open = t.stage.value != "done" %}
+  {#- Waiting on the owner is already the state word "Waits for you" above; the chip is only for
+      someone else (a person, a role, another session). -#}
+  {%- set waits_on_other = t.waiting_on and is_open and ("waiting on " ~ t.waiting_on.strip()) not in st.reasons %}
   {% if t.review_total %}
   {%- set done = t.review_accepted == t.review_total %}
   <a class="chip review-chip{% if done %} is-done{% elif t.review_rejected %} has-rejected{% endif %}" href="/p/{{ slug }}?task={{ t.key }}&amp;tab=review" data-task="{{ t.key }}" data-tab="review"
@@ -44,10 +47,10 @@
   <a class="chip plan-chip{% if draft %} is-draft{% endif %}{% if t.plan_deviations %} has-deviation{% endif %}{% if t.plan_done == t.plan_total %} is-done{% endif %}" href="/p/{{ slug }}?task={{ t.key }}&amp;tab=plan" data-task="{{ t.key }}" data-tab="plan"
      title="Plan{% if draft %} (draft, not accepted{% if draft_hours %} for {{ draft_hours }} h{% endif %}){% endif %}: {{ t.plan_done }} of {{ t.plan_total }} steps done{% if t.plan_deviations %}, {{ t.plan_deviations }} with a deviation{% endif %}{% if t.plan_now %}; now: {{ t.plan_now }}{% endif %}">Plan {{ t.plan_done }}/{{ t.plan_total }}{% if draft %} · draft{% if draft_hours %} · {{ draft_hours }} h{% endif %}{% endif %}{% if t.plan_deviations %} · <span class="deviation-mark">{{ t.plan_deviations }} deviation{{ "s" if t.plan_deviations > 1 else "" }}</span>{% endif %}{% if t.plan_now %} · now: {{ t.plan_now }}{% endif %}</a>
   {% endif %}
-  {% if (t.waiting_on and is_open) or t.branch %}
+  {% if waits_on_other or t.branch %}
   <div class="card-meta">
     {#- Who, not what: agents often append the step after a colon; the title keeps the full text. #}
-    {% if t.waiting_on and is_open %}<span class="chip waiting" title="Waiting on {{ t.waiting_on }}">waiting on {{ t.waiting_on.split(":", 1)[0].strip() or t.waiting_on }}</span>{% endif %}
+    {% if waits_on_other %}<span class="chip waiting" title="Waiting on {{ t.waiting_on }}">waiting on {{ t.waiting_on.split(":", 1)[0].strip() or t.waiting_on }}</span>{% endif %}
     {% if t.branch %}<code class="branch" title="Branch">{{ t.branch }}</code>{% endif %}
   </div>
   {% endif %}

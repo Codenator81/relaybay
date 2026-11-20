@@ -235,7 +235,8 @@ def test_card_shows_only_essentials(board: TestClient, seeded: str) -> None:
     assert "card-desc" not in card and "Build the page" not in card
     assert "card-progress" not in card and "Done:" not in card
     assert "card-report" not in card and "first pass" not in card
-    assert 'class="chip waiting" title="Waiting on owner">waiting on owner</span>' in card
+    # Waiting on the owner shows once, as the state word; the chip is for anyone else.
+    assert 'class="chip waiting"' not in card and "Waits for you" in card
     assert '<code class="branch" title="Branch">feat/x</code>' in card
     assert '<p class="card-next clamp clamp-2"><span class="muted">Next:</span>' in card
 
@@ -613,3 +614,21 @@ def test_card_menu_offers_the_keyboard_and_phone_way(
         ' aria-label="Dismiss this notice" title="Dismiss">' in page
     )
     assert f'data-csrf="{csrf_token(token)}"' in page
+
+
+def test_empty_plan_and_review_tabs_speak_to_the_owner(board: TestClient, seeded: str) -> None:
+    dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
+    assert "No plan yet" in dialog and "Nothing to check yet" in dialog
+    # Tool names are for agents, not for the owner reading an empty tab.
+    for tool in ("plan_set", "plan_step_update", "review_steps_set", "attach_file"):
+        assert f"<code>{tool}</code>" not in dialog
+    # No session on the card: the owner is told how to start one, no ask button.
+    assert "Copy the brief on Overview" in dialog
+    assert "tab-empty-ask" not in dialog
+
+
+def test_waiting_on_someone_else_keeps_its_chip(board: TestClient, seeded: str) -> None:
+    service: Service = board.app.state.service
+    run_in_app(board, service.update_task, seeded, {"waiting_on": "reviewer"})
+    card = board.get(f"/p/acme-shop/t/{seeded}/card").text
+    assert 'class="chip waiting" title="Waiting on reviewer">waiting on reviewer</span>' in card

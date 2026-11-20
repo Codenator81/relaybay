@@ -551,6 +551,16 @@
   function showTab(root, name) {
     var tabs = root.querySelectorAll(".dialog-tab");
     if (!tabs.length) return;
+    // The dialog keeps the height it has reached: a short tab (an empty plan) does not shrink it.
+    var shown = root.querySelector('.dialog-body[role="tabpanel"]:not([hidden])');
+    var frame = root.querySelector(".dialog-frame") || root;  // replaced with every task
+    if (shown) {
+      var keep = Math.max(shown.offsetHeight, parseFloat(frame.dataset.panelHeight || "0"));
+      frame.dataset.panelHeight = String(keep);
+      root.querySelectorAll('.dialog-body[role="tabpanel"]').forEach(function (panel) {
+        panel.style.minHeight = keep + "px";
+      });
+    }
     tabs.forEach(function (tab) {
       var on = tab.dataset.tab === name;
       tab.setAttribute("aria-selected", on ? "true" : "false");
@@ -873,9 +883,21 @@
   // A sent comment clears its form; a refused one (error shown in the thread) keeps the text.
   document.addEventListener("htmx:afterRequest", function (event) {
     var form = event.target;
-    if (!form.matches || !form.matches("form.comment-form")) return;
     var xhr = event.detail.xhr;
-    if (event.detail.successful && xhr && xhr.getResponseHeader("X-Relaybay-Comment") === "saved") {
+    var saved = event.detail.successful && xhr && xhr.getResponseHeader("X-Relaybay-Comment") === "saved";
+    if (form.matches && form.matches("form.tab-empty-ask")) {
+      var ask = form.querySelector("button");
+      var note = form.querySelector(".muted");
+      if (saved) {
+        if (ask) ask.disabled = true;
+        if (note) note.textContent = "sent: the comment is on Overview";
+      } else if (note) {
+        note.textContent = "not sent: see the comments on Overview";
+      }
+      return;
+    }
+    if (!form.matches || !form.matches("form.comment-form")) return;
+    if (saved) {
       form.reset();
     }
   });
