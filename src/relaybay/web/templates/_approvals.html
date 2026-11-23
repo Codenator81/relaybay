@@ -8,7 +8,7 @@
   <ul class="approval-list">
     {% for a in approvals.open %}{{ approval_item(a, "card") }}{% endfor %}
   </ul>
-  {% else %}
+  {% elif not approvals.closed %}
   <p class="muted">No open request. A push, a merge or a change on a stand waits here for your Approve; agents ask with approval_request, and the guard opens one when it denies a call.</p>
   {% endif %}
   {% if approvals.closed %}

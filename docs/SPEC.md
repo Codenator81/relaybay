@@ -968,12 +968,28 @@ longer sorts its cards.
 <a id="spec-board-state"></a>
 
 **The session card** ([design 0025](design/0025-board-with-the-desktop.md#what-gets-stronger)).
-The task dialog's Overview and the task page show, in this order: the title, the **state line**,
-the Questions and Approvals folds, the **last report** as the main content (older ones below it),
-the **comment thread**, then the folds **Session and its history** and **Task details** (the fields)
-with Description, Done so far, Decisions, Findings, Document, Tracker history and Actions on live;
-the comment box comes last, outside every fragment that live events refetch, so an event never
-clears a half-typed comment (the dialog's Edit task fold follows it).
+The task dialog's Overview and the task page put what the owner acts on first. An open card (not
+done, not archived) shows, in this order: the title and the **state line**; what waits for the
+owner: **Approvals** and **Questions** with an open item, **Unread replies** (the agent replies not
+marked read, as the Inbox counts them); **Next** (cancelled mark, next step, waiting on, Blocked by,
+Blocks); **Plan** (done/all and each step with its status; the Plan tab keeps the full plan and
+Accept plan); the **Last report** (older ones inside it); **Deploy notes**; **Description** and
+**Done so far**; then, folded: **Task details** (area, stage, branch, code, tracker, document,
+sections, archive, backlog, updated), **Session and its history**, Approvals and Questions holding
+only decided or closed items, Decisions, Findings, Document, Tracker history and Actions on live. A
+done or archived card leads with its summary, the Last report and **Code** (the Code row: branches,
+PRs), open; what waits for the owner still comes first when there is any, Next stays open only
+for a cancelled card, everything else is folded (code: web/templates/_task_view.html).
+
+A block with nothing in it is left out, never shown with an empty-state sentence: no report, no
+approval or question at all, no unread reply, no next step or link, no plan steps, no deploy notes,
+no description, no progress, no decisions, findings, tracker history or actions on live. Session and
+its history stays while it can bind a session (the picker), even with nothing bound. A card without
+comments folds the comment box into **Add comment**, the form inside. The view renders its questions
+and approvals itself; a live event that may fill a block left out (a question, an approval, a
+comment, a plan change) refetches the whole view, held while an answer is being typed (code:
+web/static/app.js:queueView). The comment box comes last, outside every fragment that live events
+refetch, so an event never clears a half-typed comment (the dialog's Edit task fold follows it).
 
 The state line is derived and never set by hand (`relaybay.domain.card.card_state`), in a large
 word with the session's dot:
@@ -1058,13 +1074,13 @@ misses a rule shows the warning in the form (or the refusal in `strict` mode).
 
 <a id="spec-board-folds"></a>
 
-**Collapsible blocks.** The folds of the Overview tab and of the task page (Questions,
-Approvals, Session and its history, Task details, Description, Done so far, Decisions, Findings,
-Document, Tracker history, Actions on live, Edit task; not the state line, the last report and the
-comments) fold under their title: a chevron, the whole title row clickable, by
-keyboard too. They start open, except Document and Edit task. The owner's choice is kept per browser
+**Collapsible blocks.** Every block of the Overview tab and of the task page except the state line
+and the comments (and the Add comment fold of a card without comments) folds under its title: a
+chevron, the whole title row clickable, by keyboard too. They start open or folded by the order
+above. The owner's choice is kept per browser
 in `localStorage` by section, not by task (collapse Decisions once and it stays collapsed on every
-task), survives live refreshes and lives nowhere on the server; without storage it lasts until the
+task); a block that starts open on an open card and folded on a closed one keeps the two choices
+apart. It survives live refreshes and lives nowhere on the server; without storage it lasts until the
 page is left, in the desktop program's window until the program quits. A collapsed block keeps its
 content, so a half-written comment or an edit is not lost. Plan and Review are not folded.
 

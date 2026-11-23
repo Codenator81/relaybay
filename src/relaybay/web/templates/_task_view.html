@@ -1,8 +1,20 @@
-{#- The session card, shared by the board's task dialog and the task page (design 0025): the state
-    line, the last report, the comment thread, then folds (the session and its history, task
-    details). Expects: detail, optional error. Refetched on live events, so it holds no form state
-    of its own: the comment box lives outside it (_comment_form.html). -#}
+{#- The session card, shared by the board's task dialog and the task page (design 0025). An open
+    card shows, top to bottom: the state line; what waits for the owner (open approvals and
+    questions, unread agent replies); the next step and what holds the card; the plan; the last
+    report; deploy notes; description and progress; then folded secondary blocks. A done or
+    archived card leads with its last report and code, the rest folded. A block with nothing in
+    it is left out. Expects: detail, optional error. Refetched on live events, so it holds no
+    form state of its own: the comment box lives outside it (_comment_form.html). -#}
 {%- set t = detail.task -%}
+{%- set is_done = t.stage.value == "done" %}
+{%- set is_live = t.stage.value == "live" %}
+{%- set closed = is_done or t.archived_at %}
+{#- Folds whose default differs between an open and a closed card keep the owner's choice apart. #}
+{%- set fp = "done-" if closed else "" %}
+{%- set d = detail.document %}
+{%- set questions = detail.questions %}
+{%- set approvals = detail.approvals %}
+{%- set replies = detail.unread_replies %}
 <div class="task-view" id="view-{{ t.key }}" data-key="{{ t.key }}"
      hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/view" hx-trigger="rb:refresh" hx-swap="outerHTML">
   <h1 class="task-title" id="task-title">{{ t.title }}</h1>
@@ -10,18 +22,77 @@
 
   {% include "_state_line.html" %}
 
-  <details class="panel fold" data-fold="questions" open>
-    <summary><h2>Questions</h2></summary>
-    <div class="questions" id="questions-{{ t.key }}" hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/questions" hx-trigger="load, rb:refresh" hx-swap="outerHTML"><p class="muted">Loading…</p></div>
-  </details>
-
-  <details class="panel fold" data-fold="approvals" open>
+  {%- set approvals_block %}
+  <details class="panel fold" data-fold="{{ 'approvals' if approvals.open else 'approvals-closed' }}"{% if approvals.open %} open{% endif %}>
     <summary><h2>Approvals</h2></summary>
-    <div class="approvals" id="approvals-{{ t.key }}" hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/approvals" hx-trigger="load, rb:refresh" hx-swap="outerHTML"><p class="muted">Loading…</p></div>
+    {% with error = none %}{% include "_approvals.html" %}{% endwith %}
   </details>
+  {%- endset %}
+  {%- set questions_block %}
+  <details class="panel fold" data-fold="{{ 'questions' if questions.open else 'questions-closed' }}"{% if questions.open %} open{% endif %}>
+    <summary><h2>Questions</h2></summary>
+    {% with error = none %}{% include "_questions.html" %}{% endwith %}
+  </details>
+  {%- endset %}
 
-  <section class="panel task-report" aria-labelledby="report-title-{{ t.key }}">
-    <h2 id="report-title-{{ t.key }}">Last report</h2>
+  {#- a. What waits for the owner, on every card. #}
+  {% if approvals.open %}{{ approvals_block }}{% endif %}
+  {% if questions.open %}{{ questions_block }}{% endif %}
+  {% if replies %}
+  <details class="panel fold task-unread" data-fold="unread" open>
+    <summary><h2>Unread replies <span class="col-count">{{ replies|length }}</span></h2></summary>
+    <ol class="comment-list">
+      {% for c in replies %}
+      <li class="comment from-agent">
+        <header class="comment-head"><span class="comment-author">{{ "Agent" if c.author.startswith("local_") else c.author }}</span> <span class="muted"><time datetime="{{ c.created_at }}" data-age>{{ c.created_at|age }}</time></span></header>
+        <div class="markdown comment-body">{{ c.body_md|markdown(detail.doc_refs) }}</div>
+      </li>
+      {% endfor %}
+    </ol>
+    <p class="muted comment-hint">Mark them read under Comments; a comment you send marks them read too.</p>
+  </details>
+  {% endif %}
+
+  {%- set now_block %}
+  {% if t.cancelled or t.waiting_on or t.next_step or detail.blocked_by or detail.blocks %}
+  <details class="panel fold task-now" data-fold="{{ fp }}now"{% if not closed or t.cancelled %} open{% endif %}>
+    <summary><h2>Next</h2></summary>
+    <dl class="fields">
+      {% if t.cancelled %}<dt>Cancelled</dt><dd><span class="chip cancelled-chip">cancelled</span> {{ t.cancelled }}{% if t.cancelled_at %} <span class="muted"><time datetime="{{ t.cancelled_at }}" data-age>{{ t.cancelled_at|age }}</time></span>{% endif %}</dd>{% endif %}
+      {%- set stale = t.next_step_stale and not is_done %}
+      {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
+      {% if t.waiting_on %}<dt>Waiting on</dt><dd>{% if is_done %}<span class="muted">{{ t.waiting_on }}</span>{% else %}<span class="chip waiting">{{ t.waiting_on }}</span>{% endif %}</dd>{% endif %}
+      {% if detail.blocked_by %}<dt>Blocked by</dt><dd><ul class="history task-blockers">
+        {%- for b in detail.blocked_by %}<li{% if not b.active %} class="muted"{% endif %}><a class="card-key" href="/p/{{ b.project_slug }}?task={{ b.key }}">{{ b.key }}</a> <span class="stage-pill stage-{{ b.stage }}">{{ label(b.stage) }}</span> {{ b.title }}{% if not b.active %} <span class="muted">(no longer blocks)</span>{% endif %}</li>{% endfor %}
+      </ul></dd>{% endif %}
+      {% if detail.blocks %}<dt>Blocks</dt><dd><ul class="history task-blockers">
+        {%- for b in detail.blocks %}<li{% if b.stage == "done" or b.archived %} class="muted"{% endif %}><a class="card-key" href="/p/{{ b.project_slug }}?task={{ b.key }}">{{ b.key }}</a> <span class="stage-pill stage-{{ b.stage }}">{{ label(b.stage) }}</span> {{ b.title }}</li>{% endfor %}
+      </ul></dd>{% endif %}
+    </dl>
+  </details>
+  {% endif %}
+  {%- endset %}
+
+  {%- set plan_block %}
+  {%- set plan = detail.plan %}
+  {% if plan.steps %}
+  {%- set current = plan.current %}
+  <details class="panel fold task-plan" data-fold="{{ fp }}plan-steps"{% if not closed %} open{% endif %}>
+    <summary><h2>Plan <span class="col-count">{{ plan.done }}/{{ plan.steps|length }}</span></h2></summary>
+    <p class="muted plan-summary">{{ "Accepted" if plan.status == "accepted" else "Draft" }}{% if plan.deviations %} · {{ plan.deviations }} deviation{{ "s" if plan.deviations > 1 else "" }}{% endif %}</p>
+    <ol class="history task-plan-steps">
+      {% for s in plan.steps %}
+      <li class="status-{{ s.status }}{% if current is not none and s.id == current.id %} is-current{% endif %}">{{ s.title }} <span class="plan-step-status status-{{ s.status }}">{{ s.status|replace("_", " ") }}</span></li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+  {%- endset %}
+
+  {%- set report_block %}
+  {% if detail.reports %}
+  <details class="panel fold task-report" data-fold="report" open>
+    <summary><h2 id="report-title-{{ t.key }}">Last report</h2></summary>
     {% for r in detail.reports %}
     {% if loop.first %}
     <article class="report">
@@ -45,12 +116,91 @@
       {% with checks = detail.checks.get(r.id, []), warning = detail.marks_warning(r) %}{% include "_report_checks.html" %}{% endwith %}
     </details>
     {% endif %}
-    {% else %}
-    <p class="muted">No reports yet.</p>
     {% endfor %}
-  </section>
+  </details>
+  {% endif %}
+  {%- endset %}
 
-  <details class="panel fold" data-fold="session" open>
+  {%- set deploy_block %}
+  {% if t.deploy_notes %}
+  <details class="panel fold" data-fold="{{ fp }}deploy"{% if not closed %} open{% endif %}>
+    <summary><h2>Deploy notes</h2></summary>
+    <p class="deploy-state">{% if t.deploy_done %}<span class="chip is-done">done</span>{% else %}<span class="chip waiting">not done yet</span>{% endif %}</p>
+    <div class="markdown task-deploy">{{ t.deploy_notes|markdown(detail.doc_refs) }}</div>
+  </details>
+  {% endif %}
+  {%- endset %}
+
+  {%- set text_block %}
+  {% if t.description %}
+  <details class="panel fold" data-fold="{{ fp }}description"{% if not closed %} open{% endif %}>
+    <summary><h2>Description</h2></summary>
+    <div class="markdown task-description">{{ t.description|markdown(detail.doc_refs) }}</div>
+  </details>
+  {% endif %}
+  {% if t.progress %}
+  <details class="panel fold" data-fold="{{ fp }}progress"{% if not closed %} open{% endif %}>
+    <summary><h2>Done so far</h2></summary>
+    <div class="markdown task-progress">{{ t.progress|markdown(detail.doc_refs) }}</div>
+  </details>
+  {% endif %}
+  {%- endset %}
+
+  {% if closed %}
+  {#- A closed card: its summary first, the rest folded. #}
+  {{ report_block }}
+  {% if detail.code.board_shown %}
+  <details class="panel fold task-code" data-fold="done-code" open>
+    <summary><h2>Code</h2></summary>
+    {% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}
+  </details>
+  {% endif %}
+  {{ now_block }}
+  {{ plan_block }}
+  {{ deploy_block }}
+  {{ text_block }}
+  {% else %}
+  {{ now_block }}
+  {{ plan_block }}
+  {{ report_block }}
+  {{ deploy_block }}
+  {{ text_block }}
+  {% endif %}
+
+  {#- g. Secondary blocks, folded. #}
+  <details class="panel fold" data-fold="details">
+    <summary><h2>Task details</h2></summary>
+    <dl class="fields">
+      {% if t.area %}<dt>Area</dt><dd>{% include "_area_chip.html" %}</dd>{% endif %}
+      <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
+      {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
+      {% if detail.code.board_shown and not closed %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}
+      {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (tracker_log_required(t) and is_done) %}
+      <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}
+        {%- if t.tracker_url and not t.tracker_ref %}{% set href = t.tracker_url|http_url %}{% if href %} <a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ t.tracker_name or href }}</a>{% endif %}{% endif %}
+        {%- if t.tracker_ref and not t.tracker_logged and not is_done %} <span class="muted">work log not entered yet</span>{% endif %}</dd>
+      {% endif %}
+      {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
+      {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
+      {% if detail.sections %}<dt>Sections</dt><dd><ul class="history task-sections">
+        {%- for sec in detail.sections %}<li>{% if sec.ref.href %}<a class="doc-link" href="{{ sec.ref.href }}">{{ sec.link.doc }}#{{ sec.link.anchor }}</a>{% else %}<code>{{ sec.link.doc }}#{{ sec.link.anchor }}</code>{% endif %}{% if sec.title %} <span class="muted">{{ sec.title }}</span>{% endif %}{% if sec.ref.broken %} <span class="doc-link-mark">{{ sec.ref.broken }}</span>{% endif %}</li>{% endfor %}
+      </ul></dd>{% endif %}
+      {% if is_done or is_live %}{% set in_archive = task_archived(t) %}<dt>Archive</dt><dd>{% if t.archived_at %}archived <time datetime="{{ t.archived_at }}" data-age>{{ t.archived_at|age }}</time> by {{ t.archived_by }}{% if t.archived_from %} · closed from live, comes back to live{% endif %}{% elif in_archive %}archived: closed more than {{ done_window_days }} days ago{% elif is_live %}<span class="muted">in the live column; Archive closes it</span>{% else %}<span class="muted">in the done column</span>{% endif %}
+        <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}"
+              hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}" hx-target="closest .task-view" hx-swap="outerHTML"
+              {%- if is_live %} hx-confirm="Archive {{ t.key }}? It is closed and archived in one step, and Back from the archive returns it to live. A card with an open question or approval is not archived."{% endif %}>
+          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+          <input type="hidden" name="target" value="view">
+          <button type="submit" class="action">{{ "Back from the archive" if in_archive else "Archive" }}</button>
+        </form></dd>{% endif %}
+      {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
+      <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
+    </dl>
+  </details>
+
+  {#- Without a session or a history the fold still hosts the picker that binds one. #}
+  {% if t.session_name or detail.bindings or detail.bind_choices %}
+  <details class="panel fold" data-fold="session">
     <summary><h2>Session and its history</h2></summary>
     {% if t.session_name %}
     <div class="card-session">
@@ -110,83 +260,24 @@
     </ol>
     {% endif %}
   </details>
-
-  <details class="panel fold" data-fold="details" open>
-    <summary><h2>Task details</h2></summary>
-    <dl class="fields">
-      {% if t.area %}<dt>Area</dt><dd>{% include "_area_chip.html" %}</dd>{% endif %}
-      <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
-      {%- set is_done = t.stage.value == "done" %}
-      {% if t.waiting_on %}<dt>Waiting on</dt><dd>{% if is_done %}<span class="muted">{{ t.waiting_on }}</span>{% else %}<span class="chip waiting">{{ t.waiting_on }}</span>{% endif %}</dd>{% endif %}
-      {%- set stale = t.next_step_stale and not is_done %}
-      {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
-      {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
-      {% if t.cancelled %}<dt>Cancelled</dt><dd><span class="chip cancelled-chip">cancelled</span> {{ t.cancelled }}{% if t.cancelled_at %} <span class="muted"><time datetime="{{ t.cancelled_at }}" data-age>{{ t.cancelled_at|age }}</time></span>{% endif %}</dd>{% endif %}
-      {% if detail.blocked_by %}<dt>Blocked by</dt><dd><ul class="history task-blockers">
-        {%- for b in detail.blocked_by %}<li{% if not b.active %} class="muted"{% endif %}><a class="card-key" href="/p/{{ b.project_slug }}?task={{ b.key }}">{{ b.key }}</a> <span class="stage-pill stage-{{ b.stage }}">{{ label(b.stage) }}</span> {{ b.title }}{% if not b.active %} <span class="muted">(no longer blocks)</span>{% endif %}</li>{% endfor %}
-      </ul></dd>{% endif %}
-      {% if detail.blocks %}<dt>Blocks</dt><dd><ul class="history task-blockers">
-        {%- for b in detail.blocks %}<li{% if b.stage == "done" or b.archived %} class="muted"{% endif %}><a class="card-key" href="/p/{{ b.project_slug }}?task={{ b.key }}">{{ b.key }}</a> <span class="stage-pill stage-{{ b.stage }}">{{ label(b.stage) }}</span> {{ b.title }}</li>{% endfor %}
-      </ul></dd>{% endif %}
-      {% if detail.code.board_shown %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}
-      {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (tracker_log_required(t) and is_done) %}
-      <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}
-        {%- if t.tracker_url and not t.tracker_ref %}{% set href = t.tracker_url|http_url %}{% if href %} <a href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ t.tracker_name or href }}</a>{% endif %}{% endif %}
-        {%- if t.tracker_ref and not t.tracker_logged and not is_done %} <span class="muted">work log not entered yet</span>{% endif %}</dd>
-      {% endif %}
-      {%- set d = detail.document %}
-      {% if d and d.ref.href %}<dt>Document</dt><dd><a class="doc-link" href="{{ d.ref.href }}">{{ d.doc.title }}{% if d.link.anchor %} · #{{ d.link.anchor }}{% endif %}</a>{% if d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>
-      {% elif t.doc_path %}<dt>Document</dt><dd><code>{{ t.doc_path }}</code>{% if d and d.ref.broken %} <span class="doc-link-mark">{{ d.ref.broken }}</span>{% endif %}</dd>{% endif %}
-      {% if detail.sections %}<dt>Sections</dt><dd><ul class="history task-sections">
-        {%- for sec in detail.sections %}<li>{% if sec.ref.href %}<a class="doc-link" href="{{ sec.ref.href }}">{{ sec.link.doc }}#{{ sec.link.anchor }}</a>{% else %}<code>{{ sec.link.doc }}#{{ sec.link.anchor }}</code>{% endif %}{% if sec.title %} <span class="muted">{{ sec.title }}</span>{% endif %}{% if sec.ref.broken %} <span class="doc-link-mark">{{ sec.ref.broken }}</span>{% endif %}</li>{% endfor %}
-      </ul></dd>{% endif %}
-      {%- set is_live = t.stage.value == "live" %}
-      {% if is_done or is_live %}{% set in_archive = task_archived(t) %}<dt>Archive</dt><dd>{% if t.archived_at %}archived <time datetime="{{ t.archived_at }}" data-age>{{ t.archived_at|age }}</time> by {{ t.archived_by }}{% if t.archived_from %} · closed from live, comes back to live{% endif %}{% elif in_archive %}archived: closed more than {{ done_window_days }} days ago{% elif is_live %}<span class="muted">in the live column; Archive closes it</span>{% else %}<span class="muted">in the done column</span>{% endif %}
-        <form class="inline-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}"
-              hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/{{ 'unarchive' if in_archive else 'archive' }}" hx-target="closest .task-view" hx-swap="outerHTML"
-              {%- if is_live %} hx-confirm="Archive {{ t.key }}? It is closed and archived in one step, and Back from the archive returns it to live. A card with an open question or approval is not archived."{% endif %}>
-          <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-          <input type="hidden" name="target" value="view">
-          <button type="submit" class="action">{{ "Back from the archive" if in_archive else "Archive" }}</button>
-        </form></dd>{% endif %}
-      {% if detail.from_backlog %}<dt>Backlog</dt><dd><a href="/p/{{ t.project_slug }}/backlog?status=planned#backlog-{{ detail.from_backlog.id }}">From backlog #{{ detail.from_backlog.id }}</a></dd>{% endif %}
-      <dt>Updated</dt><dd><time datetime="{{ t.updated_at }}" data-age>{{ t.updated_at|age }}</time> <span class="muted">· v{{ t.version }}</span></dd>
-    </dl>
-  </details>
-
-  <details class="panel fold" data-fold="description" open>
-    <summary><h2>Description</h2></summary>
-    {% if t.description %}<div class="markdown task-description">{{ t.description|markdown(detail.doc_refs) }}</div>
-    {% else %}<p class="muted">No description yet.</p>{% endif %}
-  </details>
-
-  <details class="panel fold" data-fold="progress" open>
-    <summary><h2>Done so far</h2></summary>
-    {% if t.progress %}<div class="markdown task-progress">{{ t.progress|markdown(detail.doc_refs) }}</div>
-    {% else %}<p class="muted">No progress summary yet.</p>{% endif %}
-  </details>
-
-  {% if t.deploy_notes %}
-  <details class="panel fold" data-fold="deploy" open>
-    <summary><h2>Deploy notes</h2></summary>
-    <p class="deploy-state">{% if t.deploy_done %}<span class="chip is-done">done</span>{% else %}<span class="chip waiting">not done yet</span>{% endif %}</p>
-    <div class="markdown task-deploy">{{ t.deploy_notes|markdown(detail.doc_refs) }}</div>
-  </details>
   {% endif %}
 
+  {% if not approvals.open and approvals.closed %}{{ approvals_block }}{% endif %}
+  {% if not questions.open and questions.closed %}{{ questions_block }}{% endif %}
+
   {% if detail.decisions %}
-  <details class="panel fold" data-fold="decisions" open>
+  <details class="panel fold" data-fold="decisions">
     <summary><h2>Decisions</h2></summary>
     <ul class="history">
-      {% for d in detail.decisions %}
-      <li>{{ d.text }} <span class="muted">· {{ d.created_at[:10] }}{% if d.decided_by %} · {{ d.decided_by }}{% endif %}</span></li>
+      {% for dec in detail.decisions %}
+      <li>{{ dec.text }} <span class="muted">· {{ dec.created_at[:10] }}{% if dec.decided_by %} · {{ dec.decided_by }}{% endif %}</span></li>
       {% endfor %}
     </ul>
   </details>
   {% endif %}
 
   {% if detail.findings %}
-  <details class="panel fold task-findings" data-fold="findings" open>
+  <details class="panel fold task-findings" data-fold="findings">
     <summary><h2>Findings</h2></summary>
     <ul class="history">
       {% for b in detail.findings %}<li><a href="/p/{{ b.project_slug }}/backlog#backlog-{{ b.id }}">#{{ b.id }} {{ b.title }}</a> <span class="muted">· {{ b.status }}</span></li>{% endfor %}
@@ -204,7 +295,7 @@
   {% endif %}
 
   {% if detail.tracker_history %}
-  <details class="panel fold" data-fold="tracker-history" open>
+  <details class="panel fold" data-fold="tracker-history">
     <summary><h2>Tracker history</h2></summary>
     <ol class="history tracker-history">
       {% for e in detail.tracker_history %}
@@ -225,7 +316,7 @@
   {% endif %}
 
   {% if detail.live_actions %}
-  <details class="panel fold" data-fold="live-actions" open>
+  <details class="panel fold" data-fold="live-actions">
     <summary><h2>Actions on live</h2></summary>
     <ol class="journal-list">
       {% for e in detail.live_actions %}{% include "_live_action.html" %}{% endfor %}
