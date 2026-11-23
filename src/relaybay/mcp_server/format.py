@@ -668,6 +668,20 @@ def document_saved(doc: Document) -> str:
     )
 
 
+BROKEN_LINKS_SHOWN = 10
+
+
+def broken_links(names: Sequence[str]) -> str | None:
+    """`Warning: links without a target: spec#a, relaybay://doc/p/d#b (2)`, None when all lead
+    somewhere; at most BROKEN_LINKS_SHOWN are named."""
+    if not names:
+        return None
+    shown = ", ".join(names[:BROKEN_LINKS_SHOWN])
+    more = len(names) - BROKEN_LINKS_SHOWN
+    rest = f" … and {more} more" if more > 0 else ""
+    return f"Warning: links without a target: {shown}{rest} ({len(names)})"
+
+
 def document_deleted(doc: Document, export: str) -> str:
     kept = f" Its file stays on disk: {doc.source_path}." if doc.is_file else ""
     return (

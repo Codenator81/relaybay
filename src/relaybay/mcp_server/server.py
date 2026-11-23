@@ -1453,13 +1453,19 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             )
         )
         marks = []
+        links = None
+        if not section and not lines and version is None and found.cut is None:
+            whole = found.text if found.doc.is_file else found.doc.body
+            if whole:
+                links = fmt.broken_links(await run(service.broken_links(found.doc, whole)))
         if found.section is not None and found.section.anchor and version is None:
             by_anchor = await run(service.change_marks(found.doc, found.rows))
             marks = [
                 service.change_mark_line(found.doc.project_slug, m)
                 for m in by_anchor.get(found.section.anchor, [])
             ]
-        return fmt.document_read(found, service.board_url, marks)
+        text = fmt.document_read(found, service.board_url, marks)
+        return "\n".join([text, *([links] if links else [])])
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_outline(
@@ -1566,6 +1572,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " coordinator only (spec-<task key> also the session bound to that task)."
             ),
         ] = False,
+        from_path: Annotated[
+            str | None,
+            Field(
+                description="Absolute path of a local text or markdown file to import once as"
+                " the whole body (body '-'): a new document (base_version 0) or a whole write of"
+                " a database document. The document keeps no link to the file."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -1578,7 +1592,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         '-' (no text of its own). A file document (source_path) whose writes through relaybay
         are on is written in its file: only the replaced lines change, its line endings stay;
         a change made to the file outside relaybay is a new version first. With writes off it
-        is refused: edit the file. With delete the document is deleted (see delete)."""
+        is refused: edit the file. With delete the document is deleted (see delete). A write
+        ends with a warning that lists the links leading nowhere: relaybay://doc links to a
+        missing document or section and in-document (#anchor) links."""
+        if delete and from_path:
+            raise ToolError("from_path imports a document; it does not go with delete.")
         if delete:
             gone, path = await run(
                 service.delete_document(
@@ -1608,22 +1626,26 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 expected=expected,
                 force=force,
                 file_writes=file_writes or None,
+                from_path=from_path or None,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
             )
         )
         warning = await run(service.change_doc_warning(saved))
+        links = None
         if saved.is_file and source_path:
             _, rows, _ = await run(service.document_outline(project, saved.slug))
             text = fmt.file_document_saved(saved, len(rows))
         elif saved.is_file and body.strip() == "-":
             text = fmt.file_writes_set(saved)
-        elif saved.is_file:
-            text = fmt.file_document_written(saved)
         else:
-            text = fmt.document_saved(saved)
-        return "\n".join([text, *([warning] if warning else [])])
+            _, whole = await run(service.get_document(project, saved.slug))
+            links = fmt.broken_links(await run(service.broken_links(saved, whole)))
+            text = fmt.file_document_written(saved) if saved.is_file else fmt.document_saved(saved)
+            if from_path:
+                text += f" Imported from {from_path.strip()} ({len(whole)} characters)."
+        return "\n".join([text, *([warning] if warning else []), *([links] if links else [])])
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_history(

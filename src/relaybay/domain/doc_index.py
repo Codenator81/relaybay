@@ -442,20 +442,21 @@ def denied(real: Path, rules: PathRules) -> str | None:
     return None
 
 
-def check_path(raw: str, rules: PathRules) -> Path:
-    """The real path of a file document: absolute, links resolved, a regular file, and then not
-    in a denied place by its resolved path (a link never leads around the list)."""
+def check_path(raw: str, rules: PathRules, name: str = "source_path") -> Path:
+    """The real path of a file document (or of a file imported once, `name` its parameter):
+    absolute, links resolved, a regular file, and then not in a denied place by its resolved
+    path (a link never leads around the list)."""
     text = (raw or "").strip()
     if not text:
-        raise ValidationError("source_path must not be empty.")
+        raise ValidationError(f"{name} must not be empty.")
     if not rules.network_ok(text):  # before the disk is touched: reading a share can block
         raise ValidationError(
-            f"{text!r} is a network share or a device path; a file document there needs that"
-            " share in `attachment_roots`."
+            f"{text!r} is a network share or a device path; relaybay reads a file there only"
+            " when that share is in `attachment_roots`."
         )
     given = Path(text).expanduser()
     if not given.is_absolute():
-        raise ValidationError(f"source_path must be an absolute path, got {text!r}.")
+        raise ValidationError(f"{name} must be an absolute path, got {text!r}.")
     try:
         real = given.resolve(strict=True)
         info = real.stat()
@@ -467,7 +468,7 @@ def check_path(raw: str, rules: PathRules) -> Path:
         raise ValidationError(f"{text!r} is not a regular file.")
     reason = denied(real, rules)
     if reason:
-        raise ValidationError(f"{text!r} cannot be a file document: {reason}.")
+        raise ValidationError(f"relaybay does not read {text!r}: {reason}.")
     return real
 
 
