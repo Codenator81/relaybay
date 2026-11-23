@@ -211,12 +211,24 @@
       releaseHeld();
     }
   });
+  // The session card leaves out an empty block (its questions, approvals, unread replies, plan):
+  // an event that may fill one refetches the whole view, unless an answer is being typed in it.
+  function queueView(key) {
+    var view = key ? document.getElementById("view-" + key) : null;
+    if (view) {
+      unlessAnswering(view, "view-" + key, function () {
+        queue(document.getElementById("view-" + key));
+      });
+    }
+  }
   function queueQuestions(key) {
     var panel = key ? document.getElementById("questions-" + key) : null;
     if (panel) {
       unlessAnswering(panel, "questions-" + key, function () {
         queue(document.getElementById("questions-" + key));
       });
+    } else {
+      queueView(key);
     }
   }
   function queueApprovals(key) {
@@ -225,6 +237,8 @@
       unlessAnswering(panel, "approvals-" + key, function () {
         queue(document.getElementById("approvals-" + key));
       });
+    } else {
+      queueView(key);
     }
   }
   // A review panel is refetched only while none of its comment boxes holds text.
@@ -296,10 +310,12 @@
       if (isComment(data.kind)) {
         queue(thread(data.key));
         queueReview(data.key);  // a review step shows its own conversation
+        queueView(data.key);  // its unread replies
       } else if (isReview(data.kind)) {
         queueReview(data.key);
       } else if (isPlan(data.kind)) {
         queue(planPanel(data.key));
+        queueView(data.key);  // its plan block
       } else if (isQuestion(data.kind)) {
         queueQuestions(data.key);
       } else if (isApproval(data.kind)) {
@@ -371,9 +387,9 @@
       });
     }
     if (data.key && dialog && dialog.open && data.key === dialog.dataset.key) {
-      if (isComment(data.kind)) { queue(thread(data.key)); queueReview(data.key); }
+      if (isComment(data.kind)) { queue(thread(data.key)); queueReview(data.key); queueView(data.key); }
       else if (isReview(data.kind)) queueReview(data.key);
-      else if (isPlan(data.kind)) queue(planPanel(data.key));
+      else if (isPlan(data.kind)) { queue(planPanel(data.key)); queueView(data.key); }
       else if (isQuestion(data.kind)) queueQuestions(data.key);
       else if (isApproval(data.kind)) queueApprovals(data.key);
       else refreshDialog();

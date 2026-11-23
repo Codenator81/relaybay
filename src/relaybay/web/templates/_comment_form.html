@@ -1,9 +1,12 @@
 {#- The comment box of the task dialog and the task page. Outside every fragment that live events
     refetch (_task_view.html, _comment_thread.html), so a half-typed comment is never swapped
-    away; the thread above it refetches itself. Expects: t (the task), detail. -#}
-<section class="panel comment-box comments" aria-labelledby="comments-title-{{ t.key }}">
+    away; the thread above it refetches itself. A card without comments folds the box into "Add
+    comment". Expects: t (the task), detail. -#}
+{%- set empty = not detail.comments %}
+<{{ "details" if empty else "section" }} class="panel{% if empty %} fold{% endif %} comment-box comments"{% if empty %} data-fold="add-comment"{% else %} aria-labelledby="comments-title-{{ t.key }}"{% endif %}>
   {#- The conversation sits right above the box, like a messenger: what you send shows at once. #}
-  <h2 id="comments-title-{{ t.key }}">Comments</h2>
+  {% if empty %}<summary><h2 id="comments-title-{{ t.key }}">Add comment</h2></summary>
+  {% else %}<h2 id="comments-title-{{ t.key }}">Comments</h2>{% endif %}
   {% with comments = detail.comments, doc_refs = detail.doc_refs, wait_reason = detail.undelivered %}{% include "_comment_thread.html" %}{% endwith %}
   <form class="comment-form" method="post" action="/p/{{ t.project_slug }}/t/{{ t.key }}/comments"
         hx-post="/p/{{ t.project_slug }}/t/{{ t.key }}/comments" hx-target="#comments-{{ t.key }}" hx-swap="outerHTML">
@@ -14,4 +17,4 @@
     </label>
     <div class="form-actions"><button type="submit" class="btn primary">Send comment</button></div>
   </form>
-</section>
+</{{ "details" if empty else "section" }}>

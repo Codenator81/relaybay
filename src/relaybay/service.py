@@ -531,6 +531,15 @@ class TaskDetail:
     open: OpenMenu | None = None
     brief: str | None = None
     undelivered: str | None = None
+    # The card's questions and approval requests; the board fills them (card_questions,
+    # card_approvals), task_detail leaves them empty.
+    questions: qrules.QuestionView = field(default_factory=qrules.QuestionView)
+    approvals: arules.ApprovalView = field(default_factory=arules.ApprovalView)
+
+    @property
+    def unread_replies(self) -> list[Comment]:
+        """Agent replies the owner has not marked read, as the Inbox counts them."""
+        return [c for c in self.comments if not c.to_agent and c.read_at is None]
 
     def marks_warning(self, report: Report) -> str | None:
         """The rules warning of an M or L report without `verified:` marks."""

@@ -8,7 +8,7 @@
   <ul class="question-list">
     {% for q in questions.open %}{{ question_item(q, "card") }}{% endfor %}
   </ul>
-  {% else %}
+  {% elif not questions.closed %}
   <p class="muted">No open question. Agents ask with question_ask; you answer here or in the Inbox.</p>
   {% endif %}
   {% if questions.closed %}
