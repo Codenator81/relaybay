@@ -1452,7 +1452,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 version=version,
             )
         )
-        return fmt.document_read(found, service.board_url)
+        marks = []
+        if found.section is not None and found.section.anchor and version is None:
+            by_anchor = await run(service.change_marks(found.doc, found.rows))
+            marks = [
+                service.change_mark_line(found.doc.project_slug, m)
+                for m in by_anchor.get(found.section.anchor, [])
+            ]
+        return fmt.document_read(found, service.board_url, marks)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_outline(
@@ -1471,7 +1478,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         found, rows, parent = await run(
             service.document_outline(project, doc, depth=depth, under=under or None)
         )
-        return fmt.document_outline(found, rows, parent, len(rows), service.board_url)
+        marks = await run(service.change_marks(found, rows))
+        return fmt.document_outline(found, rows, parent, len(rows), service.board_url, marks)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_search(
@@ -1605,14 +1613,17 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
+        warning = await run(service.change_doc_warning(saved))
         if saved.is_file and source_path:
             _, rows, _ = await run(service.document_outline(project, saved.slug))
-            return fmt.file_document_saved(saved, len(rows))
-        if saved.is_file and body.strip() == "-":
-            return fmt.file_writes_set(saved)
-        if saved.is_file:
-            return fmt.file_document_written(saved)
-        return fmt.document_saved(saved)
+            text = fmt.file_document_saved(saved, len(rows))
+        elif saved.is_file and body.strip() == "-":
+            text = fmt.file_writes_set(saved)
+        elif saved.is_file:
+            text = fmt.file_document_written(saved)
+        else:
+            text = fmt.document_saved(saved)
+        return "\n".join([text, *([warning] if warning else [])])
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_history(

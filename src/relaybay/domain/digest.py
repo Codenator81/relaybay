@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from relaybay.domain.change_doc import change_doc_slug
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
 from relaybay.domain.doc_index import IndexedSection, lookup, size_label, whole_size
 from relaybay.domain.errors import ValidationError
@@ -746,6 +747,7 @@ class TaskData:
     worktrees: list[str] = field(default_factory=list)  # 'web: <folder> (branch x)' per repo
     blocker_lines: list[str] = field(default_factory=list)  # one per card blocking this one
     blocking: str | None = None  # 'key, key': the open cards this one blocks
+    change_lines: list[str] = field(default_factory=list)  # its change document spec-<key>
 
 
 def _task_head(
@@ -878,6 +880,13 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
         extra=data.doc_links_total - sum(not x.startswith("Note:") for x in data.doc_lines),
         floor=2 if data.doc_lines[1:2] and data.doc_lines[1].startswith("Note:") else 1,
         floor_priority=6,
+    )
+    _section(
+        sections,
+        "## Change document",
+        data.change_lines,
+        f'doc_get("{slug}", "{change_doc_slug(key)}")',
+        8,
     )
     _section(
         sections,
