@@ -472,6 +472,7 @@ async def test_session_start_injects_the_newest_bound_task(service: Service) -> 
     await service.set_plan(older.key, [{"title": "Old step"}])
     text = context_of(await fire(service, "SessionStart", source="clear"))
     assert text.startswith(f"Your relaybay hook session: {CC_A}.")
+    assert f"\nrelaybay card context for {newer.key}: the same as task_context, so do" in text
     assert f"\n# {newer.key} — Newer task\n" in text and "About: What it is" in text
     others = text.split("## Your other bound tasks")[1].split("##")[0]
     assert older.key in others and "'Old step'" in others

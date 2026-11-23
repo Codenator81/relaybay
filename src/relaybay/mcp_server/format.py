@@ -18,6 +18,7 @@ from relaybay.domain.doc_index import (
     SNIPPET_MAX,
     IndexedSection,
     outline_line,
+    outside_mark,
     outside_note,
     size_label,
 )
@@ -873,7 +874,7 @@ def document_hits(
         f"# doc_search {project.slug}: {query} · {len(hits)} section(s)",
         "Read a hit: doc_get(project, doc, section=anchor), or lines around the line.",
     ]
-    noted: set[int] = set()
+    changed: dict[int, Document] = {}
     for h in hits:
         r = h.section
         name = (
@@ -890,10 +891,10 @@ def document_hits(
             f" {r.first_line}-{r.last_line} · {size_label(r.chars, r.bytes)}{where}{link}"
         )
         lines.extend(f"    {n}: {_short(text)}" for n, text in h.around)
-        note = outside_note(h.doc)
-        if note and h.doc.id not in noted:
-            noted.add(h.doc.id)
-            lines.append(f"  {note}")
+        if outside_note(h.doc):
+            changed.setdefault(h.doc.id, h.doc)
+    # One short line per changed document after the hits; doc_get gives the full note.
+    lines.extend(outside_mark(d) for d in changed.values())
     return "\n".join(lines)
 
 

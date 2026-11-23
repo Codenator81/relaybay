@@ -283,6 +283,8 @@ async def test_backlog_items_of_the_card(svc: Service, spec_file: Path) -> None:
     other_line = await add("acme-shop", "Form label", location="docs/spec.md:16", priority=9)
     other = await add("acme-shop", "Registration form label", area="registration", priority=9)
     other_file = await add("acme-shop", "Other file", location="docs/api.md:9")
+    # Its area shares a word with the card's title ("Retry provider calls"): not the card's area.
+    title_word = await add("acme-shop", "Rotate the keys", area="provider", priority=9)
     linked = await add("acme-shop", "Found while planning", priority=-3)
     await svc.update_backlog_item(linked.id, task=key, session="lead")
     done = await add("acme-shop", "Payout fixed", area="payouts")
@@ -295,7 +297,7 @@ async def test_backlog_items_of_the_card(svc: Service, spec_file: Path) -> None:
     assert ids == [linked.id, by_line.id, by_anchor.id, by_number.id, by_text.id, by_area.id]
     assert f"- #{by_area.id} [payouts] Batch size too small · idea · priority 0" in lines
     assert f"- #{by_line.id} Retry loops · priority 2" in lines
-    for item in (other_line, other, other_file, done):
+    for item in (other_line, other, other_file, title_word, done):
         assert f"#{item.id} " not in text
     assert lines[-1] == 'More: backlog_list(project="acme-shop")'
 
