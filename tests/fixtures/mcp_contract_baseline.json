@@ -1496,6 +1496,9 @@
           "body": {
             "type": "string"
           },
+          "delete": {
+            "type": "boolean"
+          },
           "doc": {
             "type": "string"
           },
@@ -1525,6 +1528,16 @@
           },
           "force": {
             "type": "boolean"
+          },
+          "from_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hook_session": {
             "anyOf": [
@@ -3115,6 +3128,16 @@
               }
             ]
           },
+          "remark": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "session": {
             "anyOf": [
               {
@@ -4115,6 +4138,19 @@
               }
             ]
           },
+          "blocked_by": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "branch": {
             "anyOf": [
               {
@@ -4322,5 +4358,5 @@
       }
     }
   },
-  "version": "0.15.2"
+  "version": "0.16.0"
 }

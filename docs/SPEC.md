@@ -9,7 +9,7 @@ sessions report through MCP tools and Claude Code hooks, the owner reads, answer
 accepts on the board, and relaybay starts no agent ([design
 0025](design/0025-board-with-the-desktop.md)).
 
-Version covered: `0.15.2`. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.16.0`. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:
@@ -2698,8 +2698,8 @@ carries it as an id and it outlives a reworded heading), else its heading anchor
 language stay as they are.
 
 **GitHub-style anchors.** GitHub and the editors that follow it make an anchor by turning every
-space into a dash without collapsing runs (`## 2. KYC / KYB / Veriff` → `2-kyc--kyb--veriff`;
-relaybay's is `2-kyc-kyb-veriff`). A section asked for by an anchor with two dashes in a row
+space into a dash without collapsing runs (`## 2. Orders / Returns / Refunds` → `2-orders--returns--refunds`;
+relaybay's is `2-orders-returns-refunds`). A section asked for by an anchor with two dashes in a row
 (`doc_get(section)`, a `relaybay://doc` link, `task_doc_link`) that no heading or explicit anchor
 has is the heading whose GitHub anchor it is, else the heading whose anchor equals it with the
 runs of dashes made one (a relaybay anchor never holds two dashes in a row, so at most one). The document page gives each heading whose GitHub anchor differs (and is not another

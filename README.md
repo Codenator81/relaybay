@@ -112,6 +112,12 @@ program as its client:
   report and the comment thread. A card without a session gives **Copy the brief**: the text to
   paste into a new session, which then binds itself to the card. The everyday loop:
   [Work a card with a session](https://codenator81.github.io/relaybay/how-to/work-a-card/).
+- **A card holds the whole task** — plan, progress, decisions, reports, deploy notes with a done
+  mark, cards it is blocked by (a chip until they are live), a worktree per repository and a
+  cancellation reason; with two or more cards in test, a merge order with warnings for a shared
+  repository. A card's change to the spec is written first as a change document `spec-<card>`,
+  and the sections it changes carry a `changing on <stage>` mark until it is merged:
+  [Coordinator and agents workflow](https://codenator81.github.io/relaybay/how-to/coordinator-workflow/).
 - **Areas** — a card can name the part of its project it belongs to ("web shop", "api"), from a
   list per project that grows from use; the area shows as a coloured chip and filters the board.
 - **Repositories and "Open in VS Code"** — a project lists its repositories (the project's Settings, or
@@ -368,6 +374,9 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
   to an agent. Questions, approvals and `verified` marks stayed.
 - **0.12.0, the board with the desktop** — areas on cards, the card and its session, Copy the
   brief.
+- **0.14 to 0.16, project knowledge** — large specs read in parts, file documents written through
+  relaybay, board links in MCP answers, card fields for deploys and blockers, a merge order,
+  change documents per card.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
 

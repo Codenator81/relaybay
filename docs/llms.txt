@@ -23,6 +23,7 @@ Stages are plan, dev, review, test, live, done. Every session should read `proje
 - [Roadmap](https://codenator81.github.io/relaybay/ROADMAP/): versions and status
 - [Design documents](https://codenator81.github.io/relaybay/design/): upcoming steps
 - [Coordinate many projects](https://codenator81.github.io/relaybay/how-to/coordinator/): one coordinator session, in the desktop app or a terminal, over many projects and their cards
+- [Coordinator and agents workflow](https://codenator81.github.io/relaybay/how-to/coordinator-workflow/): the card holds plan, progress, decisions, deploy notes, blockers and worktrees; a main spec with change documents spec-<card>; what closing a card checks
 - [Read a large spec in parts](https://codenator81.github.io/relaybay/how-to/large-documents/): a spec kept in its file and indexed in place: outline, search per section, capped reads, explicit anchors
 - [Troubleshooting](https://codenator81.github.io/relaybay/how-to/troubleshooting/): `relaybay doctor --json` and what each failing item means
 - [Import and export markdown](https://codenator81.github.io/relaybay/how-to/markdown-import-export/): `relaybay import` and `export`, layout, dry run, conflicts

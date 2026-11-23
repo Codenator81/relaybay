@@ -226,6 +226,18 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | 0.15.1: backlog "new" means not seen yet; a card shows only the repositories a task linked, a branch in each and PRs named by repository | done | — |
 | 0.15.2: update download progress and Cancel in the tray; the tables 0.12 left unread are dropped (migrations 0058, 0059) | done | — |
 
+## 0.16 — the card leads the whole task, change documents per card (released 2026-11-23)
+
+| Item | Status | Design |
+|---|---|---|
+| Board links of documents and sections in MCP answers (`board_url` for a LAN name); a card whose document field names a file document's file leads to it; a card's local Markdown file becomes its file document; GitHub-style anchors | done | — |
+| Card fields: deploy notes with a done mark, a worktree per repository, a cancellation reason, `description_add` | done | — |
+| `blocked_by` between cards of any project, a chip on the card, `Blocked by` in `task_context`; a merge order of the test cards with warnings | done | — |
+| Deleting a project document with an export first; purged cards answer with their export; an empty URL parameter is no secret | done | — |
+| Change documents `spec-<card>`: a delta per section, `changing on <stage>` marks on the spec, hints when a done card still has one | done | — |
+| `doc_update(from_path)`: a one-off import of a local file; warnings for links without a target | done | — |
+| The task dialog puts what waits for the owner first and leaves out empty blocks | done | — |
+
 ## 1.0
 
 Stable MCP contract, complete documentation, a migration path from earlier versions, tested on three

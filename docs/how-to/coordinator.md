@@ -28,7 +28,8 @@ use the tools kept for coordinators: `rules_update`, `plan_accept`, `task_archiv
 `task_unarchive` and backlog triage ([SPEC: Coordinator](../SPEC.md#spec-coordinator)). Project
 sessions follow the working contract in the MCP instructions
 ([SPEC §3](../SPEC.md#spec-mcp-instructions)). Already keeping this in markdown files?
-[Import them](markdown-import-export.md).
+[Import them](markdown-import-export.md). How a coordinator and its agent sessions share the
+work on a card, the spec and its change documents: [Coordinator and agents workflow](coordinator-workflow.md).
 
 ## Binding at start
 
