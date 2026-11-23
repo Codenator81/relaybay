@@ -1,7 +1,7 @@
 """Short, model-friendly markdown for tool results."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from relaybay.domain import approvals as arules
@@ -10,6 +10,7 @@ from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.blockers import blocker_line, blocks_text
+from relaybay.domain.change_doc import ChangeMark
 from relaybay.domain.code import ProjectRepo, TaskCode
 from relaybay.domain.digest import age, board_link
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
@@ -632,9 +633,12 @@ def documents(project: Project, items: list[Document], board: str | None = None)
     return "\n".join(lines)
 
 
-def document(doc: Document, text: str, section: str | None, link: str = "") -> str:
+def document(
+    doc: Document, text: str, section: str | None, link: str = "", marks: Sequence[str] = ()
+) -> str:
     """doc_get: a header line with the version to pass back as base_version (and `link`, the
-    board link part made by `_board_part`), then the text."""
+    board link part made by `_board_part`), the `marks` of the cards changing the section, then
+    the text."""
     part = f" section #{section}" if section else ""
     current = (
         f"current version {doc.version}"
@@ -648,7 +652,13 @@ def document(doc: Document, text: str, section: str | None, link: str = "") -> s
     anchors = [s.anchor for s in sections(doc.body)] if not section else []
     tail = [f"\n<!-- sections: {', '.join(anchors)} -->"] if anchors else []
     source = [f"<!-- lives in the repository: {doc.source_url} · doc_update needs force -->"]
-    return "\n".join([head, *(source if doc.source_url else []), text, *tail])
+    return "\n".join(
+        [head, *(source if doc.source_url else []), *_mark_comments(marks), text, *tail]
+    )
+
+
+def _mark_comments(marks: Sequence[str]) -> list[str]:
+    return [f"<!-- {m} -->" for m in marks]
 
 
 def document_saved(doc: Document) -> str:
@@ -713,7 +723,7 @@ def _board_part(board: str | None, doc: Document, section: IndexedSection | None
     return f" · board {board_link(board, doc.project_slug, doc.slug, anchor)}"
 
 
-def document_read(read: DocRead, board: str | None = None) -> str:
+def document_read(read: DocRead, board: str | None = None, marks: Sequence[str] = ()) -> str:
     """doc_get: the header (version or file and hash), the text, and for a capped read the
     outline of what was not shown and the call that reads on. With a cap the whole answer is
     measured as it is written and never longer than the cap: the outline loses headings first,
@@ -725,7 +735,7 @@ def document_read(read: DocRead, board: str | None = None) -> str:
     if not doc.is_file and read.cap is None:
         whole = read.first == 1 and read.last == len(doc.body.split("\n"))
         if read.cut is None and (anchor is not None or whole):
-            return document(doc, read.text, anchor, link)
+            return document(doc, read.text, anchor, link, marks)
     if doc.is_file:
         named = f" section #{_clip_name(anchor)}" if anchor else ""
         head = [
@@ -734,6 +744,7 @@ def document_read(read: DocRead, board: str | None = None) -> str:
         ]
     else:
         head = [document(doc, "", _clip_name(anchor) if anchor else None, link).split("\n")[0]]
+    head.extend(_mark_comments(marks))
     if doc.file_problem:
         tail = [_outline_line(read.section)] if read.section else []
         return "\n".join(
@@ -805,7 +816,9 @@ def document_outline(
     under: IndexedSection | None,
     all_rows: int,
     board: str | None = None,
+    marks: Mapping[str, list[ChangeMark]] | None = None,
 ) -> str:
+    """doc_outline; a heading an open card changes ends with ` · changing: <key>, …`."""
     where = f" under #{under.anchor} (lines {under.first_line}-{under.last_line})" if under else ""
     head = [
         f"# Outline of {doc.project_slug}/{doc.slug}{where} · {len(rows)} heading(s) · each:"
@@ -824,7 +837,12 @@ def document_outline(
         head.append(f"<!-- {doc.file_problem} -->")
     if not rows:
         head.append("No headings." if not all_rows else "No headings at this depth.")
-    head.extend(_outline_line(r) for r in rows)
+    marks = marks or {}
+    head.extend(
+        _outline_line(r)
+        + (f" · changing: {', '.join(m.key for m in marks[r.anchor])}" if r.anchor in marks else "")
+        for r in rows
+    )
     head.append(
         f'Read: doc_get(project="{doc.project_slug}", doc="{doc.slug}", section=anchor) or'
         ' lines="a-b".'

@@ -8,6 +8,7 @@ from markdown_it.rules_core import StateCore
 from markdown_it.token import Token
 from markupsafe import Markup
 
+from relaybay.domain.change_doc import ChangeMark
 from relaybay.domain.digest import doc_link, doc_link_spans
 from relaybay.domain.memory import DocRef, alias_lines, github_anchor, sections
 
@@ -43,11 +44,27 @@ def _heading_close(self: Any, tokens: list[Any], idx: int, options: Any, env: di
     open_token = tokens[idx - 2]
     anchor = open_token.attrGet("id")
     edit = env.get("edit_url")
-    closing = str(self.renderToken(tokens, idx, options, env))
+    closing = str(self.renderToken(tokens, idx, options, env)) + _changing_marks(env, anchor)
     if not edit or not anchor:
         return closing
     href = escapeHtml(f"{edit}?section={quote(anchor)}")
     return f' <a class="section-edit" href="{href}">edit</a>{closing}'
+
+
+def _changing_marks(env: dict, anchor: str | None) -> str:
+    """A line per open card changing the section, under its heading."""
+    marks: Mapping[str, list[ChangeMark]] = env.get("changing") or {}
+    if not anchor or anchor not in marks:
+        return ""
+    project = quote(env.get("project") or "")
+    lines = []
+    for m in marks[anchor]:
+        task = f'<a href="/t/{quote(m.key)}">{escapeHtml(m.key)}</a>'
+        doc = f'<a href="/p/{project}/docs/{quote(m.change_doc)}">{escapeHtml(m.change_doc)}</a>'
+        lines.append(
+            f'<p class="doc-changing">changing on {escapeHtml(m.stage)}: {task} · {doc}</p>'
+        )
+    return "".join(lines)
 
 
 _doc_md.add_render_rule("heading_open", _heading_open)
@@ -137,9 +154,16 @@ def render_markdown(text: str | None, doc_refs: Mapping[str, DocRef] | None = No
     return Markup(_md.render(text or "", {"doc_refs": doc_refs or {}}))
 
 
-def render_document(text: str | None, edit_url: str | None = None) -> Markup:
-    """A project document: like `render_markdown`, with ids on headings for section links, and
-    with `edit_url` an edit link per top-level heading."""
+def render_document(
+    text: str | None,
+    edit_url: str | None = None,
+    changing: Mapping[str, list[ChangeMark]] | None = None,
+    project: str | None = None,
+) -> Markup:
+    """A project document: like `render_markdown`, with ids on headings for section links, with
+    `edit_url` an edit link per top-level heading, and under a heading `changing` names (by its
+    anchor) a line per open card changing it, linking the card and its change document of
+    `project`."""
     found = sections(text or "")
     anchors = {s.start: s.anchor for s in found}
     aliases = {s.start: s.alias for s in found if s.alias}
@@ -155,5 +179,12 @@ def render_document(text: str | None, edit_url: str | None = None) -> Markup:
     shown = "\n".join(
         "" if n in hidden else line for n, line in enumerate((text or "").split("\n"))
     )
-    env = {"edit_url": edit_url, "anchors": anchors, "aliases": aliases, "github": github}
+    env = {
+        "edit_url": edit_url,
+        "anchors": anchors,
+        "aliases": aliases,
+        "github": github,
+        "changing": changing or {},
+        "project": project,
+    }
     return Markup(_doc_md.render(shown, env))

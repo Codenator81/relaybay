@@ -2053,8 +2053,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 draft={f"{target}-{name}": value for name, value in fields.items()},
                 status=400,
             )
+        warning = await service.change_doc_warning(saved)
         return flash_redirect(
-            request, f"/p/{slug}/docs/{saved.slug}", message=f"Document {saved.slug} created."
+            request,
+            f"/p/{slug}/docs/{saved.slug}",
+            message=" ".join([f"Document {saved.slug} created.", *([warning] if warning else [])]),
         )
 
     @router.get("/p/{slug}/docs/{doc}", response_class=HTMLResponse)
@@ -2072,8 +2075,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             found.shown_version == found.version and not found.source_url and not found.is_file
         )
         edit_url = f"/p/{found.project_slug}/docs/{found.slug}/edit" if editable else None
+        changing = {}
         if version is None:
             _, rows, _ = await service.document_outline(slug, doc)
+            changing = await service.change_marks(found, rows)
         else:
             rows = doc_toc_rows(text)
         q = q.strip()[:SEARCH_MAX]
@@ -2091,7 +2096,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             found.project_slug,
             project=await service.get_project(slug),
             doc=found,
-            body_html=render_document(text, edit_url),
+            body_html=render_document(text, edit_url, changing, found.project_slug),
             toc=doc_toc(rows),
             versions=versions,
             changes=changes,
@@ -2258,10 +2263,13 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 request, found, section, body, base, reason=reason, error=str(exc), status=400
             )
         anchor = f"#{section}" if section else ""
+        warning = await service.change_doc_warning(saved)
         return flash_redirect(
             request,
             f"/p/{slug}/docs/{saved.slug}{anchor}",
-            message=f"Saved as version {saved.version}.",
+            message=" ".join(
+                [f"Saved as version {saved.version}.", *([warning] if warning else [])]
+            ),
         )
 
     @router.get("/p/{slug}/docs/{doc}/diff", response_class=HTMLResponse)

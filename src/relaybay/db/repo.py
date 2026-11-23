@@ -4015,6 +4015,19 @@ async def list_task_doc_sections(conn: aiosqlite.Connection, task_id: int) -> li
     ]
 
 
+async def list_project_doc_sections(
+    conn: aiosqlite.Connection, project_id: int
+) -> list[tuple[int, str, str]]:
+    """(task id, document slug, anchor) of every section linked to a card of the project."""
+    rows = await _all(
+        conn,
+        "SELECT s.task_id, d.slug, s.anchor FROM task_doc_section s"
+        " JOIN document d ON d.id = s.document_id WHERE d.project_id = ? ORDER BY s.id",
+        (project_id,),
+    )
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
 async def insert_task_doc_section(
     conn: aiosqlite.Connection, task_id: int, document_id: int, anchor: str, by: str, now: str
 ) -> bool:

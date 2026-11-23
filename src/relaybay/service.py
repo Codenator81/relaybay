@@ -37,6 +37,7 @@ from relaybay.domain import annotations as ann
 from relaybay.domain import approvals as arules
 from relaybay.domain import areas as area_rules
 from relaybay.domain import backlog, doc_index, guard, intake
+from relaybay.domain import change_doc as cdoc
 from relaybay.domain import comments as comment_text
 from relaybay.domain import digest as digests
 from relaybay.domain import digest_limits as limits
@@ -603,6 +604,17 @@ class TaskDocument:
     text: str
 
 
+@dataclass(slots=True)
+class CardChange:
+    """An open card with a change document: the document, its parsed blocks and every section
+    the card changes (`doc`, `anchor`): the document's targets, then the card's linked sections."""
+
+    task: Task
+    doc: mem.Document
+    parsed: cdoc.ChangeDoc
+    sections: list[tuple[str, str]]
+
+
 @dataclass(frozen=True, slots=True)
 class TaskSection:
     """A section linked to a card: the link, its board target (`ref.broken` when the section or
@@ -1120,6 +1132,15 @@ EMPTY_CHECKLIST_HINT = (
     "Hint: the review checklist of {key} is empty. Write what the owner should check by eye"
     " with review_steps_set (and attach screenshots with attach_file)."
 )
+CHANGE_DOC_LEFT_HINT = (
+    "Hint: {key} is done but its change document {doc} is still there: merge it into the spec"
+    ' and delete it: doc_update("{project}", "{doc}", "-", reason, base_version, delete=true).'
+)
+CHANGE_PROBLEMS_SHOWN = 5  # in the Warning line after a write of a change document
+DEPLOY_NOT_DONE_HINT = (
+    "Hint: {key} is done but its deploy notes are not carried out: do them (or move them to the"
+    " card that rolls out) and set deploy_done=true."
+)
 
 
 def review_decision_text(
@@ -1373,7 +1394,7 @@ EXPORT_FAILED = "Could not write the export to {folder}: {exc}. Nothing was dele
 # Documents of these kinds hold the project's rules: deleting one is the owner's or a
 # coordinator's call, except a task's change document `spec-<task key>` (DOC_CHANGE_PREFIX).
 DOC_DELETE_GUARDED_KINDS = ("spec", "status")
-DOC_CHANGE_PREFIX = "spec-"
+DOC_CHANGE_PREFIX = cdoc.CHANGE_DOC_PREFIX
 DOC_DELETE_NOT_ALLOWED = (
     "{project}/{doc} is a {kind} document: only the owner on the board or a coordinator session"
     " named in the server's config deletes it (a desktop id also needs its own hook_session); a"
@@ -4507,6 +4528,8 @@ class Service:
             stage = diff.get("stage", task.stage.value)
             if diff["cancelled"] and stage != Stage.DONE.value:
                 _note(CANCELLED_HINT.format(key=task.key, stage=stage))
+        if diff.get("stage") == Stage.DONE:
+            await self._done_hints(tx, task, diff)
         if "stage" in diff:
             rank = await repo.top_rank(tx.conn, task.project_id, diff["stage"])
             await repo.set_rank(tx.conn, task.id, rank)
@@ -4552,6 +4575,18 @@ class Service:
             ref = writes.get("tracker_ref", task.tracker_ref)
             await self._unlogged(tx, task, actor, session_id, stage, ref, unlog)
         return Saved(await self.get_task(task.id, tx.conn), warnings)
+
+    async def _done_hints(self, tx: _Tx, task: Task, diff: dict[str, Any]) -> None:
+        """What a card moved to done still leaves open; a cancelled card has nothing to close."""
+        if diff.get("cancelled", task.cancelled):
+            return
+        slug = cdoc.change_doc_slug(task.key)
+        if await repo.get_document(tx.conn, task.project_id, slug) is not None:
+            _note(CHANGE_DOC_LEFT_HINT.format(key=task.key, doc=slug, project=task.project_slug))
+        if diff.get("deploy_notes", task.deploy_notes) and not diff.get(
+            "deploy_done", task.deploy_done
+        ):
+            _note(DEPLOY_NOT_DONE_HINT.format(key=task.key))
 
     async def _write_code_links(
         self, tx: _Tx, task: Task, links: dict[str, list[str]], actor: str, how: str
@@ -7410,6 +7445,133 @@ class Service:
                 lines.append(note)
         return lines
 
+    async def _parse_change_doc(self, doc: mem.Document) -> cdoc.ChangeDoc:
+        if not doc.is_file and doc.version == 0:
+            return cdoc.parse("")
+        body, _ = await self._doc_text(doc)
+        return cdoc.parse(body or "")
+
+    async def _card_changes(self, project_id: int) -> list[CardChange]:
+        """The project's open cards (not done, not cancelled) that have a change document: one
+        query for the documents, one for the cards, one for the linked sections."""
+        docs = {
+            d.slug: d
+            for d in await repo.list_documents(self._r, project_id)
+            if d.slug.startswith(DOC_CHANGE_PREFIX)
+        }
+        if not docs:
+            return []
+        stages = [s.value for s in OPEN_STAGES]
+        tasks = await repo.list_tasks(self._r, project_id=project_id, stages=stages)
+        found = [
+            (t, docs[cdoc.change_doc_slug(t.key)])
+            for t in sorted(tasks, key=lambda t: t.id)
+            if not t.cancelled and cdoc.change_doc_slug(t.key) in docs
+        ]
+        if not found:
+            return []
+        links = await repo.list_project_doc_sections(self._r, project_id)
+        out = []
+        for task, doc in found:
+            parsed = await self._parse_change_doc(doc)
+            linked = [(d, a) for t, d, a in links if t == task.id]
+            out.append(
+                CardChange(task, doc, parsed, list(dict.fromkeys([*parsed.targets(), *linked])))
+            )
+        return out
+
+    async def change_marks(
+        self, doc: mem.Document, rows: list[IndexedSection]
+    ) -> dict[str, list[cdoc.ChangeMark]]:
+        """The open cards changing each heading of `doc` (by its anchor in `rows`)."""
+        entries = [
+            (
+                cdoc.ChangeMark(c.task.key, c.task.stage.value, c.doc.slug),
+                [a for d, a in c.sections if d == doc.slug],
+            )
+            for c in await self._card_changes(doc.project_id)
+            if c.doc.id != doc.id
+        ]
+        return cdoc.marks_by_anchor(rows, entries)
+
+    def change_mark_line(self, project: str, mark: cdoc.ChangeMark) -> str:
+        """The marker line of a heading in an MCP answer: the change document as a doc link."""
+        return cdoc.mark_line(mark, digests.DocLink(project, mark.change_doc, None).uri)
+
+    async def _resolved_sections(
+        self, project: str, pairs: list[tuple[str, str]], cache: DocCache
+    ) -> dict[tuple[str, str], str]:
+        """Each (doc, anchor) that names a section, by (doc, the section's heading anchor)."""
+        out: dict[tuple[str, str], str] = {}
+        for slug, anchor in pairs:
+            loaded = await self._linked_doc(project, slug, cache)
+            row = doc_index.lookup(loaded[1], anchor) if loaded else None
+            if row is not None and row.anchor:
+                out.setdefault((slug, row.anchor), f"{slug}#{anchor}")
+        return out
+
+    async def _change_problems(
+        self, project: str, parsed: cdoc.ChangeDoc, cache: DocCache
+    ) -> list[str]:
+        """The format problems of a change document and its targets that name no section."""
+        outlines: dict[str, list[IndexedSection] | None] = {}
+        for name, _ in parsed.targets():
+            loaded = await self._linked_doc(project, name, cache)
+            outlines[name] = loaded[1] if loaded else None
+        return [*parsed.problems, *cdoc.target_problems(parsed, outlines)]
+
+    async def _change_lines(self, task: Task, cache: DocCache) -> list[str]:
+        """task_context's "Change document" section: the card's change document, its targets
+        with their ops, its problems and the other open cards changing the same sections."""
+        slug = cdoc.change_doc_slug(task.key)
+        doc = await repo.get_document(self._r, task.project_id, slug)
+        if doc is None:
+            return []
+        project = task.project_slug
+        parsed = await self._parse_change_doc(doc)
+        board = f" · {digests.board_link(self.board_url, project, slug)}" if self.board_url else ""
+        lines = [f'- {slug} · version {doc.version} · doc_get("{project}", "{slug}"){board}']
+        ops = dict.fromkeys((b.target, b.op) for b in parsed.blocks)
+        lines.extend(f"- {target} · {op}" for target, op in ops)
+        problems = await self._change_problems(project, parsed, cache)
+        lines.extend(f"- problem: {p}" for p in problems)
+        linked = [(i.doc, i.anchor) for i in await repo.list_task_doc_sections(self._r, task.id)]
+        mine = await self._resolved_sections(
+            project, list(dict.fromkeys([*parsed.targets(), *linked])), cache
+        )
+        shared = []
+        for other in await self._card_changes(task.project_id):
+            if other.task.id == task.id:
+                continue
+            theirs = await self._resolved_sections(project, other.sections, cache)
+            shared.extend(
+                f"{other.task.key} ({other.task.stage.value}) {mine[s]}"
+                for s in theirs
+                if s in mine
+            )
+        if shared:
+            lines.append(f"Other cards changing the same sections: {', '.join(shared)}")
+        return lines
+
+    async def change_doc_warning(self, doc: mem.Document) -> str | None:
+        """After a write of a change document (`spec-<key>` of a card of its project): its format
+        problems as one `Warning:` line. Only a warning: the document is saved as it is."""
+        key = doc.slug.removeprefix(DOC_CHANGE_PREFIX)
+        if key == doc.slug:
+            return None
+        task = await repo.get_task_by_key(self._r, key)
+        if task is None or task.project_id != doc.project_id:
+            return None
+        parsed = await self._parse_change_doc(doc)
+        problems = await self._change_problems(doc.project_slug, parsed, {})
+        if not problems:
+            return None
+        shown = "; ".join(problems[:CHANGE_PROBLEMS_SHOWN])
+        more = len(problems) - CHANGE_PROBLEMS_SHOWN
+        return f"Warning: change document {doc.slug}: {shown}" + (
+            f"; and {more} more (task_context shows them all)." if more > 0 else "."
+        )
+
     async def _linked_sections(
         self, task: Task, cache: DocCache
     ) -> tuple[list[digests.DocLink], list[subj.LinkedSection]]:
@@ -7502,6 +7664,7 @@ class Service:
             blocker_lines=[blocker_line(b, self.board_url) for b in blocked_by],
             blocking=blocks_text(blocks),
             doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX], cache),
+            change_lines=await self._change_lines(task, cache),
             doc_links_total=len(links),
             rules_line=rules_line(await self._rules(self._r, project)),
             comments=[c for c in unread if c.to_agent],

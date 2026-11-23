@@ -158,7 +158,8 @@ rollback. `deploy_done` (boolean) marks those steps as carried out; a write that
 counts its checkbox only when it was changed). `cancelled` is the reason the card was given up on
 (up to 2,000 characters): setting it stamps `cancelled_at`, `'-'` clears both. The card is not
 moved: the answer adds the line `Hint: <key> is marked cancelled and stays in <stage>: …` and the
-card goes to done by an ordinary stage move. `task_context` shows `Cancelled: <reason> (<date>)`
+card goes to done by an ordinary stage move. A move to done of a card that is not cancelled, with
+deploy notes not marked done, adds a hint ([§8](#spec-change-documents)). `task_context` shows `Cancelled: <reason> (<date>)`
 and `Deploy notes: done|not done yet: <notes>` head lines; `task_get` a `cancelled` line and a
 `## Deploy notes (done|not done yet)` section; the board a **Cancelled** row and a `cancelled`
 chip on the card, and a **Deploy notes** panel with its state. A `deploy` approval request shows
@@ -2741,6 +2742,65 @@ CSRF, no Bearer). A wrong name, a stale version or an export that could not be w
 to the document page with the reason; done, it goes to Docs & rules with the export's name; a
 repeat after the deletion says `There is no document <doc> (any more).`
 
+<a id="spec-change-documents"></a>
+
+**Change documents.** The document `spec-<task key>` of a card's project (`spec-acme-shop-12`) is
+that card's change document: what the card changes in the main spec before it is deployed, as a
+delta per section, found by its name (no tool or field of its own). A `spec-` document whose name
+is no card key of its project is an ordinary document. Format: the text before the first `## `
+heading (a title, a summary) is no change; then one `## <doc>#<anchor>` heading per changed
+section of a main document, naming that section by its anchor (or explicit anchor); under it one or
+more blocks, each starting with a line `ADDED:`, `MODIFIED:` or `REMOVED:` (text may follow on the
+same line). `ADDED:` text goes below the section's own text; `MODIFIED:` text replaces it, and a
+line `Was: …` in it quotes the old value and is no part of the new text; `REMOVED:` deletes the
+section (text under it is a note). A new section is an `ADDED:` block under its parent whose text
+starts with its own heading one level below the parent's. Lines inside fenced code are text.
+
+```markdown
+# Gift cards v2
+
+## spec#gift-cards
+MODIFIED:
+Cards expire in two years.
+Was: Cards expire in a year.
+
+ADDED:
+### Gift card refunds
+Within 14 days.
+
+## spec#vouchers
+REMOVED:
+```
+
+The format is checked softly, never refused: a heading that is not `<doc>#<anchor>`, an unknown op
+(a word in capitals with a colon alone on its line), text under a target before its first op, a
+target without a block, `ADDED:` or `MODIFIED:` without text, a document without targets, and a
+target whose document or section does not exist are problems. A write of a change document
+(`doc_update`, the board's edit and New document) answers with them as one line `Warning: change
+document spec-<key>: …` (the first 5; `task_context` lists all).
+
+A card is **open** here while it is not done and not cancelled (an archived card is done). For
+every open card with a change document, the sections its targets name, and the sections linked to
+the card with `task_doc_link`, are **changing**: the document page shows under each such heading
+one line per card, `changing on <stage>: <key> · spec-<key>` (the key links the card, the name its
+change document); `doc_get` of such a section adds `<!-- changing on <stage>: <key> ·
+relaybay://doc/<project>/spec-<key> -->` per card right under its header comment (the current
+version only); `doc_outline` ends such a heading's line with ` · changing: <key>, …`. A target
+that names no section marks nothing. The marks of a document are worked out once per answer: one
+read each of the project's documents, its open cards and its linked sections, then each change
+document's text.
+
+`task_context` of a card with a change document has a `## Change document` section: the document
+with its version, `doc_get` call and board link; a line `- <doc>#<anchor> · <op>` per target and
+op; `- problem: …` per problem; and `Other cards changing the same sections: <key> (<stage>)
+<doc>#<anchor>, …` when another open card changes one of the same sections (by its targets or
+linked sections). Moving a card to done (any stage move: `task_set_stage`, `task_update`, the
+board) adds hints, no rule warnings: `Hint: <key> is done but its change document spec-<key> is
+still there: merge it into the spec and delete it: doc_update(…, delete=true).` while the
+document exists, and `Hint: <key> is done but its deploy notes are not carried out: …` while
+`deploy_notes` is set and `deploy_done` is not ([§1](#spec-task-deploy)). A cancelled card gets
+neither.
+
 <a id="spec-documents-links"></a>
 
 **Links to sections.** `relaybay://doc/<project>/<doc>` with an optional `#<anchor>`, in a task's
@@ -2832,7 +2892,8 @@ the typed text); the effective rules (`rules_get` rendered). Documents, decision
 refresh live on `document.updated`, `document.deleted`, `decision.added`, `memory.*`, and the pulse on
 `project.pulse_set`; blocks and search results stay as
 the owner left them. A document page renders the markdown safely with heading anchors (an explicit
-anchor's line is not shown, its name leads to the heading), a table of contents next to the text
+anchor's line is not shown, its name leads to the heading), a `changing on <stage>: <key> ·
+spec-<key>` line under each heading an open card changes ([§8](#spec-change-documents)), a table of contents next to the text
 that stays in view (headings of levels 1 and 2, deeper ones folded under theirs, each with its
 size, the section being read marked), a search box (`?q=`: `doc_search` in this document, one row
 per section, a click goes to the section with the words marked), the history with a link per
@@ -2867,7 +2928,7 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 |---|---|
 | `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
 | `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
-| `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the effective rules line; relevant notes; open backlog items of the card |
+| `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the card's change document (`## Change document`, [§8](#spec-change-documents)); the effective rules line; relevant notes; open backlog items of the card |
 
 **Linked document sections:** first the sections linked to the card with `task_doc_link` (or
 `task_create(sections)`), in the order they were linked; then the task's document field when it is
