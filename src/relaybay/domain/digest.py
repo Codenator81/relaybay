@@ -15,6 +15,7 @@ from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
 from relaybay.domain.doc_index import IndexedSection, lookup, size_label, whole_size
 from relaybay.domain.errors import ValidationError
 from relaybay.domain.memory import Document, MemoryBlock, MemoryNote
+from relaybay.domain.merge_order import MERGE_ORDER_TITLE, MergeOrder
 from relaybay.domain.models import Comment, Decision, Project, Task
 from relaybay.domain.plan import Plan, TodoItem, one_line, reminder_line
 from relaybay.domain.stages import STAGES
@@ -578,6 +579,7 @@ class ProjectData:
     now: datetime
     rules_line: str = ""
     pulse: Pulse | None = None
+    merge_order: MergeOrder | None = None
 
 
 def waits_for_owner(task: Task, owner_names: set[str]) -> bool:
@@ -601,6 +603,14 @@ def project_text(data: ProjectData, footer: Callable[[bool], str], budget: int) 
     _section(
         sections, "## Tasks", [_task_line(t) for t in tasks], f'task_list(project="{slug}")', 2
     )
+    if data.merge_order and data.merge_order.shown:
+        _section(
+            sections,
+            MERGE_ORDER_TITLE,
+            data.merge_order.lines(),
+            f'task_list(project="{slug}", stage="test")',
+            2,
+        )
     waiting = [t for t in data.tasks if waits_for_owner(t, data.owner_names)]
     _section(
         sections,

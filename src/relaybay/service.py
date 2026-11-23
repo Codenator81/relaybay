@@ -111,6 +111,7 @@ from relaybay.domain.hooks import (
     surface_question,
 )
 from relaybay.domain.markdown_layout import FileStyle
+from relaybay.domain.merge_order import MergeOrder, merge_order
 from relaybay.domain.models import (
     Binding,
     Comment,
@@ -767,6 +768,7 @@ class Snapshot:
     decisions: list[Decision]
     rules: Rules
     areas: list[ProjectArea] = field(default_factory=list)
+    merge_order: MergeOrder | None = None
 
 
 def _clean_text(value: Any, name: str, limit: int = TEXT_MAX) -> str | None:
@@ -3262,6 +3264,7 @@ class Service:
             decisions=await repo.list_decisions(self._r, project_id=project.id, limit=10),
             rules=await self._rules(self._r, project),
             areas=await repo.list_areas(self._r, project.id),
+            merge_order=await self.merge_order(project),
         )
 
     async def events_since(
@@ -4569,6 +4572,18 @@ class Service:
             if link.active:
                 out.setdefault(link.task_id, []).append(link)
         return out
+
+    async def merge_order(self, project: Project) -> MergeOrder:
+        """The project's cards on test in the order they go to the main branch: one read of the
+        cards, their repositories and pull requests, and their blockers."""
+        tasks = await repo.list_tasks(self._r, project_id=project.id, stages=[Stage.TEST.value])
+        repos: dict[int, list[str]] = {}
+        prs: dict[int, list[str]] = {}
+        for task_id, code in (await self.task_codes(project.id, tasks)).items():
+            repos[task_id] = [r.repo.name for r in code.repos]
+            found = [*code.loose_prs, *(p for r in code.repos for p in r.prs)]
+            prs[task_id] = [p.label for p in sorted(found, key=lambda p: p.id)]
+        return merge_order(tasks, repos, await self.active_blockers(project.id), prs)
 
     async def _auto_link_repos(self, session: Session, cwd: str) -> None:
         """A session bound to a task works in `cwd`: link the task to the project repository whose
@@ -7221,6 +7236,7 @@ class Service:
             now=datetime.now(UTC),
             rules_line=rules_line(await self._rules(self._r, project)),
             pulse=(await self.pulses()).get(project.id),
+            merge_order=await self.merge_order(project),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.project_text(data, footer, budget)

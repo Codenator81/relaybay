@@ -98,6 +98,23 @@ chip on the card for each blocker that still blocks (a link to that card), and t
 **Blocks** row. Deleting a card (the archive purge, a project delete)
 takes its links in both directions along, and its export holds them.
 
+<a id="spec-merge-order"></a>
+
+**Merge order.** The project's cards in `test` go to the main branch in this order: a card after
+the test cards that block it ([blockers](#spec-task-blockers)), otherwise by the owner's order of
+the test column (`task.rank`, then the card id), because the blockers are what makes one merge
+depend on another and the column order is the owner's own choice for the rest. A cycle cannot be
+written; if one is met all the same, the remaining cards follow the rank. Each line is
+`1. acme-shop-4 Checkout · repos web, api · PR #12, #13 · waits for demo-api-2 · dev` (repos, pull
+requests and waits only when there are any; at most three pull requests with `+n`). Warnings follow the list:
+`repos overlap: <repo> — <key>, <key>` for a project repository linked to two or more test cards
+(in merge order), and `<key> waits for <key> (<stage>)` for a blocker that still blocks and is not
+in test. It is shown only with two or more cards in test: in `project_digest` and
+`project_snapshot` as `## Merge order (test)`, and on the board as a fold of the test column
+([§2](#spec-board-merge-order)). Read once per project: the test cards, their repository links
+and pull requests, their blockers (code: domain/merge_order.py:merge_order,
+service.py:Service.merge_order).
+
 <a id="spec-areas"></a>
 
 **Areas** ([design 0024](design/0024-card-modes-thread-and-areas.md#areas)). What part of a project a
@@ -964,6 +981,14 @@ longer sorts its cards.
   the column on every open board; a drop on the same place writes nothing. The rank is not an edit:
   `version` and the updated time stay, so an open edit form still saves. The event is left out of
   the digests' changes and makes no tray or browser notification.
+
+<a id="spec-board-merge-order"></a>
+
+**Merge order fold.** With two or more cards in `test`, the test column has a closed fold
+**Merge order** under its header: the numbered cards (each key a link to its dialog) and the
+warnings of [§1](#spec-merge-order). It lists every test card of the project whatever the board's
+filter, since the order belongs to the project, and refreshes with the column (a stage change, a
+reorder) (code: web/templates/_column.html).
 
 <a id="spec-board-state"></a>
 
@@ -2805,7 +2830,7 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 | Digest | Sections, most important first |
 |---|---|
 | `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
-| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
+| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
 | `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the effective rules line; relevant notes; open backlog items of the card |
 
 **Linked document sections:** first the sections linked to the card with `task_doc_link` (or

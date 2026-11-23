@@ -533,6 +533,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "archive_more": archive_more,
             "code": await service.task_codes(project.id, shown),
             "blockers": await service.active_blockers(project.id),
+            "merge_order": await service.merge_order(project),
             "archived": archived,
             "q": q,
             "stage_filter": stage,

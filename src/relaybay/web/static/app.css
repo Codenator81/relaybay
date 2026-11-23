@@ -387,6 +387,11 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
 .cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .col-empty { margin: 8px 4px; font-size: 13px; color: var(--muted); }
 .col-note { margin: 10px 4px 0; font-size: 12px; }
+.merge-order { margin: 0 4px 10px; font-size: 12px; }
+.merge-order > summary { color: var(--muted); font-weight: 600; }
+.merge-order ol, .merge-order ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; }
+.merge-order li { overflow-wrap: anywhere; }
+.merge-warnings { color: var(--warn); }
 
 .board-tools {
   display: flex;

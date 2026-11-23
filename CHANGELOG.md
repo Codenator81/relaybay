@@ -16,6 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A worktree per linked repository: the hooks store the folder a bound session works in, and a `repos` entry `name <absolute path>` sets it by hand. `task_get`, `task_context` and the board's Code row (with its own Open in VS Code icon) show it.
 - `review_step_update(remark=...)` adds the session's comment under the step on the board without changing its status.
 - Blockers between cards (migration 0061): `blocked_by` in `task_update` and `task_patch` takes card keys of any project (`-key` removes one); an unknown key, the card itself and a cycle are refused. A blocker blocks while it is in plan, dev, review or test. `task_context` and `task_get` list the blockers with their stage and board link and the cards a card blocks; the board shows a `blocked by <key> · <stage>` chip and Blocked by / Blocks rows in the task dialog. The archive purge exports the links of a deleted card.
+- Merge order of the cards in `test`: after the test cards that block them, otherwise by the owner's order of the column, with warnings for a repository two test cards share and for a blocker not yet in test. `project_digest` and `project_snapshot` show it as `## Merge order (test)`, and the board's test column as a **Merge order** fold, when two or more cards are in test.
 
 ### Changed
 

@@ -129,7 +129,7 @@ Delete an archived project for good, for coordinator sessions only: its tasks wi
 
 ### `project_snapshot`
 
-Compact markdown snapshot of a project: open tasks by stage with waiting-on, next step, branch, the start of the description and progress, last report, plus recent decisions. Call it at the start of a session to see the state of the project before you pick or create a task.
+Compact markdown snapshot of a project: open tasks by stage with waiting-on, next step, branch, the start of the description and progress, last report, the merge order of the cards on test (two or more), plus recent decisions. Call it at the start of a session to see the state of the project before you pick or create a task.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -162,7 +162,7 @@ Everything at a glance, for a coordinator: one line per project with stage count
 
 ### `project_digest`
 
-One project, for a manager: pulse, tasks by stage with next step and waiting on, open questions, recent decisions, blocks, notes flagged 'verify' or 'never read' and what changed since your last read. Index lines; each section says which tool shows more.
+One project, for a manager: pulse, tasks by stage with next step and waiting on, the merge order of the cards on test (two or more), open questions, recent decisions, blocks, notes flagged 'verify' or 'never read' and what changed since your last read. Index lines; each section says which tool shows more.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
