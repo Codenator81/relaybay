@@ -297,6 +297,34 @@ def _scan_headings(lines: list[str]) -> tuple[list[tuple[int, int, str, str | No
     return found, used
 
 
+_CODE_SPAN_RE = re.compile(r"(`+).*?\1")
+_LOCAL_LINK_RE = re.compile(r"\]\(#([^)\s]+)\)")
+
+
+def prose(text: str) -> str:
+    """`text` without its fenced code and code spans: a link written there is an example, not a
+    link."""
+    kept: list[str] = []
+    fence: str | None = None
+    for line in text.split("\n"):
+        mark = _FENCE_RE.match(line)
+        if mark:
+            token = mark.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None if not line.strip()[len(token) :] else fence
+            continue
+        if fence is None:
+            kept.append(_CODE_SPAN_RE.sub("", line))
+    return "\n".join(kept)
+
+
+def local_links(text: str) -> list[str]:
+    """The anchors of the in-document markdown links `[text](#anchor)` of `text`, each once."""
+    return list(dict.fromkeys(_LOCAL_LINK_RE.findall(text)))
+
+
 def alias_lines(body: str) -> set[int]:
     """Line indexes of the `<a id>` lines that name a section (the page does not show them)."""
     return _scan_headings(body.split("\n"))[1]

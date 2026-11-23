@@ -5694,6 +5694,36 @@ class Service:
             network_ok=lambda text: network_path_allowed(text, roots),
         )
 
+    async def _import_text(self, path: str) -> str:
+        """doc_update from_path: a local file's text, read once under a file document's path
+        rules; the document keeps no link to the file."""
+        real = await asyncio.to_thread(doc_index.check_path, path, self._path_rules(), "from_path")
+        _, text = await asyncio.to_thread(doc_index.read_file, str(real))
+        text = text.strip()
+        if not text:
+            raise ValidationError(f"{path} is empty; there is nothing to import.")
+        if len(text) > mem.DOC_BODY_MAX:
+            raise ValidationError(
+                f"{path} has {len(text)} characters; a document holds at most {mem.DOC_BODY_MAX}"
+                " (a larger one is a file document: doc_update with source_path)."
+            )
+        return text
+
+    async def broken_links(self, doc: mem.Document, body: str) -> list[str]:
+        """The links of `body` that lead nowhere on the board, each once: relaybay://doc links
+        (any project) to a missing document or section, and `[text](#anchor)` links to a
+        section this document lacks (as `<doc>#<anchor>`); code is left out."""
+        text = mem.prose(body)
+        refs = await self.resolve_doc_links(text)
+        out = [uri for uri, ref in refs.items() if ref.broken]
+        rows = doc_index.build(body)[0]
+        out.extend(
+            f"{doc.slug}#{anchor}"
+            for anchor in mem.local_links(text)
+            if doc_index.lookup(rows, anchor) is None
+        )
+        return out
+
     async def _prepare_file(self, project: Project, source_path: str) -> PreparedFile:
         """A new file document's path checked, its file read and indexed: all before the write
         transaction opens."""
@@ -6409,6 +6439,7 @@ class Service:
         expected: str | None = None,
         force: bool = False,
         file_writes: str | None = None,
+        from_path: str | None = None,
         author: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
@@ -6424,9 +6455,22 @@ class Service:
         relaybay reads and indexes that file on demand. A file document is written in its file
         (by section, lines or whole, only the replaced lines change) when its writes through
         relaybay are on; `file_writes` ('on'/'off', coordinators only) switches them, at the
-        creation or later (with body '-' that is all the call does)."""
+        creation or later (with body '-' that is all the call does). `from_path` (with body
+        '-') imports a local file's text once as the whole body of a database document."""
         slug = _clean_doc_slug(doc)
         no_text = str(body or "").strip() == "-"
+        import_path = _clean_text(from_path, "from_path", mem.SOURCE_URL_MAX)
+        if import_path:
+            if not no_text:
+                raise ValidationError(
+                    "body must be '-' with from_path: the file's text is the body."
+                )
+            if section or lines is not None or source_path or source_url or file_writes:
+                raise ValidationError(
+                    "from_path writes a whole database document: not with section, lines,"
+                    " source_path, source_url or file_writes."
+                )
+            body, no_text = await self._import_text(import_path), False
         text = "" if no_text else _clean_text(body, "body", mem.DOC_BODY_MAX) or ""
         if not text and not no_text:
             raise ValidationError("body must not be empty.")
@@ -6471,6 +6515,11 @@ class Service:
             known = await repo.get_document(self._r, (await self.get_project(project)).id, slug)
             if writes is not None and (known is None or not known.is_file):
                 raise ValidationError("file_writes is for a file document (source_path).")
+            if known is not None and known.is_file and import_path:
+                raise ValidationError(
+                    f"{known.slug} lives in a file; from_path imports into a database document"
+                    " only. Edit the file, or send its text in body when its writes are on."
+                )
             if known is not None and known.is_file:
                 _scan(
                     await self._secret_rules(self._r, await self.get_project(project)), reason=why

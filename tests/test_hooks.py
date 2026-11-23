@@ -594,7 +594,7 @@ async def test_status_event_readers_use_the_keys(service: Service) -> None:
 
 async def test_held_back_activity_is_stored_when_the_event_window_ends(tmp_path: Path) -> None:
     svc = Service(tmp_path / "db.sqlite", hook_activity_window=0)
-    svc.activity_event_window = 0.3
+    svc.activity_event_window = 1.0  # three hooks fit in it on a slow CI runner
     await svc.start()
     try:
         task = await bound_task(svc)

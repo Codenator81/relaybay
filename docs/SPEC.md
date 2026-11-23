@@ -2742,6 +2742,34 @@ CSRF, no Bearer). A wrong name, a stale version or an export that could not be w
 to the document page with the reason; done, it goes to Docs & rules with the export's name; a
 repeat after the deletion says `There is no document <doc> (any more).`
 
+<a id="spec-documents-import"></a>
+
+**Importing a file once.** `doc_update(from_path=<absolute path>, body="-")` reads a local text or
+markdown file once and saves its text as the whole body of a database document, so an agent does
+not send a long text through `body`. It creates the document (`base_version` 0) or writes an
+existing database document whole (`base_version` its current version, else the usual conflict
+with the current text). It does not go with `section`, `lines`, `source_path`, `source_url`,
+`file_writes` or `delete`, nor into a file document (edit its file instead). The path passes the
+same checks as a file document's `source_path` ([above](#spec-documents-file): absolute, links
+resolved, a regular file, no network share outside `attachment_roots`, not in relaybay's data
+folder, not a protected or credentials file); the text is UTF-8 (a byte order mark dropped, CRLF
+read as LF, outer blank lines dropped), at most 200,000 characters, not empty, and secret-scanned
+like `body`. The document keeps no link to the file: a later change to the file does not reach it.
+The answer adds `Imported from <path> (N characters).`
+
+<a id="spec-documents-link-check"></a>
+
+**Links without a target.** A `doc_update` that writes a document's text (a database document, or
+a file document written through relaybay) and a `doc_get` of a whole current document (no
+`section`, `lines` or `version`, not capped) end with one line
+`Warning: links without a target: <link>, … (N)` when the text has links that lead nowhere:
+`relaybay://doc/<project>/<doc>[#<anchor>]` links of any project on the board whose document or
+section is missing, and in-document markdown links `[text](#anchor)` to a section the document
+lacks (listed as `<doc>#<anchor>`). Sections are looked up as the board looks them up (anchor,
+explicit anchor, GitHub-style anchor, [above](#spec-documents-index)); links inside fenced
+code and code spans are examples and not checked. At most 10 are named, then `… and N more`; each
+link once. Nothing is refused.
+
 <a id="spec-change-documents"></a>
 
 **Change documents.** The document `spec-<task key>` of a card's project (`spec-acme-shop-12`) is
