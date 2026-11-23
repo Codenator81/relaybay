@@ -97,6 +97,9 @@ task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), ad
               -- UNIQUE (task_id, project_repo_id)
 task_pr       id, task_id, project_repo_id (optional, SET NULL), url (http/https), number,
               title, added_by, added_at -- UNIQUE (task_id, url)
+task_block    id, task_id (CASCADE), blocker_id (CASCADE, a task of any project), created_by,
+              created_at -- UNIQUE (task_id, blocker_id); blocks while the blocker is in
+              plan|dev|review|test, read from its stage
 task_doc_section  id, task_id (CASCADE), document_id (CASCADE), anchor (as linked), created_by,
               created_at -- UNIQUE (task_id, document_id, anchor); task_doc_link
 project_area  id, project_id, name, color (a palette key), position, created_at

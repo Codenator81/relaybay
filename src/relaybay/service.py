@@ -48,6 +48,7 @@ from relaybay.domain.annotations import Annotation
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import BacklogItem
+from relaybay.domain.blockers import TASK_KEY_RE, BlockLink, blocker_line, blocks_text
 from relaybay.domain.card import (
     NO_SESSION,
     RUNNING_IN,
@@ -220,6 +221,7 @@ from relaybay.domain.switcher import (
 )
 from relaybay.domain.task_fields import (
     APPEND_NAMES,
+    BLOCKED_BY,
     BY_NAME,
     DESCRIPTION_ADD,
     FIELD_NAMES,
@@ -517,6 +519,8 @@ class TaskDetail:
     from_backlog: BacklogItem | None = None  # the item "To plan" created this task from
     findings: list[BacklogItem] = field(default_factory=list)  # items this task is the origin of
     code: TaskCode = field(default_factory=lambda: TaskCode([], [], []))
+    blocked_by: list[BlockLink] = field(default_factory=list)  # the cards blocking it
+    blocks: list[BlockLink] = field(default_factory=list)  # the cards it blocks
     checks: dict[int, list[ReportCheck]] = field(default_factory=dict)  # `verified:` marks
     marks_from: int = 0  # reports with a smaller id were written before marks existed
     # The session card (design 0025): its state line, the session it is about (the bound one,
@@ -3144,6 +3148,7 @@ class Service:
         cache: DocCache = {}
         state = self.card_state(task)
         session = await self.card_session(task)
+        blocked_by, blocks = await self.task_blocks(task)
         return TaskDetail(
             state=state,
             card_session=session,
@@ -3172,6 +3177,8 @@ class Service:
             from_backlog=next(iter(await repo.list_backlog(self._r, task_id=task.id)), None),
             findings=await repo.list_backlog(self._r, origin_task_id=task.id, limit=50),
             code=await self.task_code(task),
+            blocked_by=blocked_by,
+            blocks=blocks,
         )
 
     async def _task_sections(self, task: Task, cache: DocCache) -> list[TaskSection]:
@@ -4366,7 +4373,10 @@ class Service:
             await repo.update_task(tx.conn, task.id, columns, tx.now)
             await self._sync_tracker(tx, task, columns)
         how = "owner" if default_actor in BOARD_ACTORS else "agent"
-        linked = await self._write_code_links(tx, task, links, actor, how) if links else {}
+        code = {k: v for k, v in links.items() if k != BLOCKED_BY}
+        linked = await self._write_code_links(tx, task, code, actor, how) if code else {}
+        if links.get(BLOCKED_BY):
+            linked |= await self._write_blockers(tx, task, links[BLOCKED_BY], actor)
         ids = {"project_id": task.project_id, "task_id": task.id, "session_id": session_id}
         if "stage" in diff:
             await tx.event(
@@ -4471,6 +4481,85 @@ class Service:
             if target is not None:
                 await link_repo(target)  # a pull request in a repository: the task touches it
         return {k: v for k, v in out.items() if v}
+
+    async def _write_blockers(
+        self, tx: _Tx, task: Task, entries: list[str], actor: str
+    ) -> dict[str, Any]:
+        """Add or remove (`-key`) the cards blocking the task, of any project. Refused: a key no
+        card has, the task itself, a blocker already blocked (directly or through others) by the
+        task. Returns the event's `changes`: `{"blocked_by": {"added": [...], "removed": [...]}}`.
+        """
+        out: dict[str, list[str]] = {}
+        for entry in entries:
+            remove = entry.startswith("-")
+            key = (entry[1:] if remove else entry).strip()
+            if not TASK_KEY_RE.fullmatch(key):
+                raise ValidationError(
+                    f"{BLOCKED_BY}: {entry!r} is not a card key; name the card by its key,"
+                    " e.g. 'acme-shop-12'."
+                )
+            blocker = await repo.get_task_by_key(tx.conn, key.lower())
+            if blocker is None:
+                raise ValidationError(f"{BLOCKED_BY}: no card {key!r} on the board.")
+            if remove:
+                if await repo.delete_task_block(tx.conn, task.id, blocker.id):
+                    out.setdefault("removed", []).append(blocker.key)
+                continue
+            if blocker.id == task.id:
+                raise ValidationError(f"{BLOCKED_BY}: {task.key} cannot be blocked by itself.")
+            chain = await self._block_chain(tx.conn, blocker.id, task.id)
+            if chain is not None:
+                keys = [(await self.get_task(i, tx.conn)).key for i in chain]
+                raise ValidationError(
+                    f"{BLOCKED_BY}: {task.key} cannot be blocked by {blocker.key}, a cycle:"
+                    f" {' is blocked by '.join(keys)}."
+                )
+            if await repo.insert_task_block(tx.conn, task.id, blocker.id, actor, tx.now):
+                out.setdefault("added", []).append(blocker.key)
+        return {BLOCKED_BY: out} if out else {}
+
+    async def _block_chain(
+        self, conn: aiosqlite.Connection, start: int, target: int
+    ) -> list[int] | None:
+        """The ids from `start` to `target` along "is blocked by" links, both ends included; None
+        when `start` does not wait for `target` at all."""
+        came_from: dict[int, int | None] = {start: None}
+        frontier = [start]
+        while frontier:
+            found = await repo.blocker_ids_of(conn, frontier)
+            frontier = []
+            for task_id, blockers in found.items():
+                for blocker_id in blockers:
+                    if blocker_id in came_from:
+                        continue
+                    came_from[blocker_id] = task_id
+                    if blocker_id == target:
+                        chain: list[int] = []
+                        at: int | None = blocker_id
+                        while at is not None:
+                            chain.append(at)
+                            at = came_from[at]
+                        return chain[::-1]
+                    frontier.append(blocker_id)
+        return None
+
+    async def task_blocks(
+        self, task: Task, conn: aiosqlite.Connection | None = None
+    ) -> tuple[list[BlockLink], list[BlockLink]]:
+        """(the cards blocking the task, the cards it blocks)."""
+        conn = conn or self._r
+        return (
+            await repo.task_blockers(conn, task_id=task.id),
+            await repo.task_blocked(conn, task.id),
+        )
+
+    async def active_blockers(self, project_id: int) -> dict[int, list[BlockLink]]:
+        """task id -> the cards still blocking it, for the board's chips: one read per project."""
+        out: dict[int, list[BlockLink]] = {}
+        for link in await repo.task_blockers(self._r, project_id=project_id):
+            if link.active:
+                out.setdefault(link.task_id, []).append(link)
+        return out
 
     async def _auto_link_repos(self, session: Session, cwd: str) -> None:
         """A session bound to a task works in `cwd`: link the task to the project repository whose
@@ -7237,6 +7326,7 @@ class Service:
         backlog_items = subj.backlog_for_card(
             await repo.list_open_backlog(self._r, project_id), task.id, subject, linked
         )
+        blocked_by, blocks = await self.task_blocks(task)
         data = digests.TaskData(
             task=task,
             plan=await self._load_plan(self._r, task),
@@ -7252,6 +7342,8 @@ class Service:
                 for c in (await self.task_code(task)).repos
                 if c.worktree
             ],
+            blocker_lines=[blocker_line(b, self.board_url) for b in blocked_by],
+            blocking=blocks_text(blocks),
             doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX], cache),
             doc_links_total=len(links),
             rules_line=rules_line(await self._rules(self._r, project)),

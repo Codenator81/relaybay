@@ -148,8 +148,9 @@ TASK_FIELDS: tuple[TaskField, ...] = (
 BY_NAME: dict[str, TaskField] = {f.name: f for f in TASK_FIELDS}
 FIELD_NAMES: tuple[str, ...] = tuple(BY_NAME)
 
-# Not columns of the task: links to the project's repositories and to pull requests, added or
-# removed entry by entry in the same writes (task_update, task_patch).
+# Not columns of the task: links to the project's repositories, to pull requests and to the cards
+# blocking it, added or removed entry by entry in the same writes (task_update, task_patch).
+BLOCKED_BY = "blocked_by"
 LINK_FIELDS: tuple[TaskField, ...] = (
     TaskField(
         "repos",
@@ -167,6 +168,14 @@ LINK_FIELDS: tuple[TaskField, ...] = (
         " 'web https://host/acme/web/pull/12'. '-url' removes one. Without a name, a link whose"
         " path names a project repository is tied to it.",
         "'-url' removes one",
+    ),
+    TaskField(
+        BLOCKED_BY,
+        "list",
+        "Cards this task waits for, by key, of any project on the board: 'acme-shop-12';"
+        " '-key' removes one. A blocker blocks while it is in plan, dev, review or test; at live"
+        " or done it no longer does. A card blocking itself or a cycle is refused.",
+        "'-key' removes one",
     ),
 )
 LINK_NAMES: tuple[str, ...] = tuple(f.name for f in LINK_FIELDS)
