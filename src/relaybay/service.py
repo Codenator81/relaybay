@@ -1649,10 +1649,32 @@ class Service:
         value = _clean_text(value, "session", NAME_MAX)
         if value is None:
             return None
+        if cc_id is not None and parse_session_id(value) is None:
+            held = await self._desktop_of_hook_id(tx, value, cc_id)
+            if held is not None:
+                return held
         found = await self._resolve_session(tx, value, title)
         if found is not None and cc_id is not None:
             found = await self._link_hook_session(tx, found, cc_id)
         return found
+
+    async def _desktop_of_hook_id(self, tx: _Tx, name: str, cc_id: str) -> Session | None:
+        """A name the board has never seen, with a hook id exactly linked to a live desktop
+        session: that desktop session is the caller (it was started by a launch and does not
+        know its local_ id), not a new row named by it that would then be told the id is
+        another session's. A known name keeps its own row and the warning."""
+        held = await repo.get_session_by_cc(tx.conn, resumable_id(cc_id) or cc_id)
+        if (
+            held is None
+            or not held.cc_exact
+            or held.external_id is None
+            or held.status == "ended"
+            or await repo.get_session_by_alias(tx.conn, name) is not None
+            or await repo.get_session_by_name(tx.conn, name) is not None
+        ):
+            return None
+        await repo.touch_session(tx.conn, held.id, tx.now)
+        return held
 
     async def _resolve_session(self, tx: _Tx, value: str, title: str | None) -> Session | None:
         title = _clean_text(title, "session_title", NAME_MAX)
@@ -4844,6 +4866,10 @@ class Service:
             tx.conn, task_id, repo_id, session.name, "auto", tx.now
         ):
             changes["repos"] = {"added": []}
+        if branch is not None and await repo.branch_holder(tx.conn, repo_id, branch, task_id):
+            # Another open card's branch checked out in a shared working copy (a read-only
+            # session looking at it): neither its branch nor that folder is this card's.
+            branch = worktree = None
         new_branch = branch is not None and await repo.set_task_repo_branch(
             tx.conn, task_id, repo_id, branch
         )

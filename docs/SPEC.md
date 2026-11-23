@@ -1684,7 +1684,9 @@ and cannot hand over its window's card. Who started the tool is otherwise not ch
    calling session; a row the hooks had created for it by guess hands over its status and is
    removed. An id that another live (not ended) session already linked exactly is not moved: the
    write succeeds and its response gets `Warning: hook_session <id> belongs to another session
-   (<name>); not relinked.` `task_bind_session` never links a hook id (the caller may be binding
+   (<name>); not relinked.` A readable `session` name the board has never seen, passed with a
+   hook id exactly linked to a live desktop session, is that desktop session (a launched session
+   that does not know its `local_` id): no new row, no warning. `task_bind_session` never links a hook id (the caller may be binding
    another session); it answers with a note when one is passed. A bare Claude Code id passed as
    `session` that the hooks know (exactly linked, or the hooks' own row) resolves to that session
    with the note `Note: <id> is the hook session id of <name>; that session was used. …`, instead of
@@ -1715,7 +1717,9 @@ looks, in one indexed read, at the repositories of the tasks the session is boun
 such task the repository whose path is the folder or holds it (the closest one; a leading `~` or
 `~/` is the user's home, `~name` is never expanded and matches only as written; compared with the
 machine's case rules, nothing on disk is read) is linked with `how: auto` when it is not linked
-yet, with the branch checked out there. While the task has no worktree for that repository, the
+yet, with the branch checked out there, unless another card not in done already holds that
+branch in that repository (a shared working copy on another card's branch): then only the
+repository is linked, with no branch and no worktree. While the task has no worktree for that repository, the
 hook fills it ([§1](#spec-task-code)): the top of the working copy holding `cwd` (the nearest
 folder with a `.git` folder or file, looked for no higher than the repository's path; none found:
 the repository's path), so moving between folders of one checkout writes nothing, and a worktree

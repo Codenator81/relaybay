@@ -622,6 +622,21 @@ async def session_repo_candidates(
     ]
 
 
+async def branch_holder(
+    conn: aiosqlite.Connection, repo_id: int, branch: str, task_id: int
+) -> str | None:
+    """The key of another card not in done whose link to the repository already holds
+    `branch`, or None."""
+    row = await _one(
+        conn,
+        "SELECT t.key FROM task_repo tr JOIN task t ON t.id = tr.task_id"
+        " WHERE tr.project_repo_id = ? AND tr.branch = ?"
+        " AND tr.task_id != ? AND t.stage != 'done' ORDER BY t.id LIMIT 1",
+        (repo_id, branch, task_id),
+    )
+    return None if row is None else str(row["key"])
+
+
 async def set_task_repo_branch(
     conn: aiosqlite.Connection, task_id: int, repo_id: int, branch: str
 ) -> bool:

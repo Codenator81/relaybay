@@ -10,6 +10,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
+from relaybay.db import repo
 from relaybay.db.connection import connect, migrate
 from relaybay.domain.code import (
     REPO_NAME_RE,
@@ -225,6 +226,36 @@ async def test_hook_records_the_branch_of_each_repo(
     await service.record_hook({**hook, "cwd": f"{ROOT}/web", "hook_event_name": "Stop"})
     code = (await service.task_detail(task.key)).code
     assert code.repos[0].branch == "fix/web-two"
+
+
+async def test_a_shared_checkout_on_another_cards_branch_is_not_this_cards_branch(
+    service: Service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read-only session in a working copy where another open card's branch is checked out
+    links the repository only: not that branch, not that folder."""
+    await service.upsert_project("acme-shop", repos=[{"name": "web", "path": f"{ROOT}/web"}])
+    holder = await service.create_task("acme-shop", "Bank form", stage="test")
+    await service.update_task(holder.key, {"repos": ["web"]})
+    [web] = await repo.list_project_repos(service._r, holder.project_id)
+    async with service._tx() as tx:
+        await repo.set_task_repo_branch(tx.conn, holder.id, web.id, "feature/bank-form")
+
+    async def branch_at(folder: str) -> str | None:
+        return "feature/bank-form"
+
+    monkeypatch.setattr(service, "_branch_at", branch_at)
+    reader = await service.create_task(
+        "acme-shop", "Merge order", stage="dev", session=DESKTOP, hook_session=CC
+    )
+    hook = {"session_id": CC, "cwd": f"{ROOT}/web/src", "hook_event_name": "Stop"}
+    await service.record_hook(hook)
+    code = (await service.task_detail(reader.key)).code
+    assert [(r.repo.name, r.branch, r.worktree) for r in code.repos] == [("web", None, None)]
+    # Once the holder is done, the branch is free to link.
+    await service.update_task(holder.key, {"stage": "done", "progress": "Merged."})
+    await service.record_hook(hook)
+    code = (await service.task_detail(reader.key)).code
+    assert [(r.repo.name, r.branch) for r in code.repos] == [("web", "feature/bank-form")]
 
 
 async def test_a_failing_auto_link_never_fails_the_hook(
