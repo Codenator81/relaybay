@@ -2520,7 +2520,7 @@ file document of the project reads yet makes that file the file document `task-<
 `task`, writes through relaybay off, the same path checks as `doc_update(source_path)`); the answer
 says so in one line with the board link, or why not (a refused or missing file, the name
 `task-<key>` already taken). The task write itself never fails over it, and the file is only read.
-The board's own task form does not do this: its document field stays as typed.
+The board's task form has no document field: `doc_path` is set through MCP (and by import).
 
 <a id="spec-documents-repo"></a>
 
@@ -2613,10 +2613,12 @@ The write does not commit; a file in a git working tree shows the diff of the re
 **An outside change** (an editor, a script, a session's own file tools) is never prevented: the
 read that sees the new hash writes `document.updated` with `outside: true` and the changed anchors,
 and sets `document.file_changed_by` `outside`, `file_changed_at` and `file_changed_sections` (the
-anchors of every outside change since the last write through relaybay, at most 20). While it is
-`outside`, `doc_outline`, `doc_get`, the `doc_search` hits of the document (once) and the
-linked-section lines of `task_context` add `Note: <doc> was changed outside relaybay at <time>:
-sections a, b (version N).`; the next write through relaybay clears it. The answers of `doc_get`
+anchors of every outside change since the last write through relaybay, at most 20: the added
+and changed sections the file still has, the removed ones as `-anchor`, named as a section again
+when it comes back). While it is `outside`, `doc_outline`, `doc_get`, the `doc_search` hits of the
+document (once) and the linked-section lines of `task_context` add `Note: <doc> was changed
+outside relaybay at <time>: sections a, b; removed c (version N).`; the next write through
+relaybay clears it. The answers of `doc_get`
 and `doc_outline` name the version and `writes through relaybay: on` or `off`. The board's page of
 a file document stays read-only.
 

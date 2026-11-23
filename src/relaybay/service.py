@@ -5462,11 +5462,14 @@ class Service:
                 # not a change of the file: no event then.
                 changed = current.file_hash is not None and digest != current.file_hash
                 changes = doc_index.changed_anchors(old, rows)
-                named = [a for v in changes.values() for a in v]
-                if changed and current.file_changed_by == "outside":
-                    # Outside changes since the last write through relaybay add up.
-                    earlier = (current.file_changed_sections or "").split(",")
-                    named = list(dict.fromkeys([*filter(None, earlier), *named]))
+                earlier = (
+                    (current.file_changed_sections or "").split(",")
+                    if changed and current.file_changed_by == "outside"
+                    else []
+                )
+                # Outside changes since the last write through relaybay add up; the note names
+                # only sections the file still has, and the removed ones apart.
+                named = doc_index.outside_sections(earlier, changes, rows)
                 await repo.set_file_state(
                     tx.conn,
                     doc.id,
