@@ -1549,6 +1549,15 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " document's file on or off (default off); with body '-' that is all it does."
             ),
         ] = None,
+        delete: Annotated[
+            bool,
+            Field(
+                description="Delete the document: base_version must be the current version,"
+                " body is ignored (pass '-'), reason says why. An export is written first; a"
+                " file document's file stays on disk. spec and status documents: the owner or a"
+                " coordinator only (spec-<task key> also the session bound to that task)."
+            ),
+        ] = False,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -1561,7 +1570,20 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         '-' (no text of its own). A file document (source_path) whose writes through relaybay
         are on is written in its file: only the replaced lines change, its line endings stay;
         a change made to the file outside relaybay is a new version first. With writes off it
-        is refused: edit the file."""
+        is refused: edit the file. With delete the document is deleted (see delete)."""
+        if delete:
+            gone, path = await run(
+                service.delete_document(
+                    project,
+                    doc,
+                    reason,
+                    base_version,
+                    session=session,
+                    session_title=session_title,
+                    hook_session=hook_session,
+                )
+            )
+            return fmt.document_deleted(gone, path.name)
         saved = await run(
             service.update_document(
                 project,

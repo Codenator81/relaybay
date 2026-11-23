@@ -23,7 +23,7 @@
     "review.step_rejected", "attachment.added", "attachment.updated", "attachment.removed",
     "plan.set", "plan.step_added", "plan.step_updated", "plan.accepted", "session.todo_updated",
     "session.message", "session.launched", "session.surface_set", "session.terminal_opened",
-    "document.updated", "memory.added", "memory.updated", "block.updated",
+    "document.updated", "document.deleted", "memory.added", "memory.updated", "block.updated",
     "annotation.added", "annotation.updated", "annotation.removed", "annotation.replied",
     "backlog.added", "backlog.updated", "backlog.planned",
     "concurrency.over", "inbox.worktrees_seen",
@@ -53,7 +53,8 @@
     "task.session_bound", "task.session_unbound"
   ];
   var DOCS_KINDS = [
-    "document.updated", "decision.added", "memory.added", "memory.updated", "project.pulse_set"
+    "document.updated", "document.deleted", "decision.added", "memory.added", "memory.updated",
+    "project.pulse_set"
   ];
   var live = null;
   var lastId = 0;

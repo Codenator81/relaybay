@@ -658,6 +658,15 @@ def document_saved(doc: Document) -> str:
     )
 
 
+def document_deleted(doc: Document, export: str) -> str:
+    kept = f" Its file stays on disk: {doc.source_path}." if doc.is_file else ""
+    return (
+        f"Deleted the document {doc.project_slug}/{doc.slug} ({doc.title}, version"
+        f" {doc.version}); the export is `deleted/{export}` in the server's data folder.{kept}"
+        " Cards that pointed at it show the link as broken."
+    )
+
+
 def document_history(doc: Document, versions: list[DocumentVersion], diff: list[str]) -> str:
     lines = [f"# History of {doc.project_slug}/{doc.slug} (current version {doc.version})"]
     for v in versions:
@@ -1250,6 +1259,8 @@ def event_detail(e: Event) -> str:
         return f"archived by {by}" if by else "archived by the done window"
     if e.kind in ("task.purged", "project.deleted"):
         return f"{p.get('key') or p.get('project')} deleted, export {p.get('export')}"
+    if e.kind == "document.deleted":
+        return f"{p.get('doc')} deleted: {p.get('reason') or ''}, export {p.get('export')}"
     if e.kind == "decision.added":
         supersedes = f" (supersedes #{p['supersedes']})" if p.get("supersedes") else ""
         return f"#{p.get('decision_id')} {p.get('text', '')}{supersedes}"
