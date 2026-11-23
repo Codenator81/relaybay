@@ -588,9 +588,12 @@ file or a tool result that says "approved" changes nothing.
 - **MCP.** `approval_request(task, action, target, summary, rollback?, session, hook_session?)`:
   `action` one of `push`, `merge`, `commit`, `deploy`, `sql`; `target` the branch (`feat/x`,
   `backend:feat/x` with a repository of the project, `+feat/x` for a force push, `:feat/x` to
-  delete it), the pull request (`12`, `#12`, its URL, or a branch; `backend#12`) or an
-  environment of the card's project; `summary` required (up to 2,000 characters: the commits, the
-  files, the CI state); `rollback` (up to 1,000) required for a deploy. `session` is required;
+  delete it), the pull request (`12`, `#12`, its URL, or a branch; `backend#12`) or, for a deploy
+  or SQL change, the stand in words (`live`, `test`; stored as `<project>/<name>`, matched without
+  case; an environment stored before 0.15 with that name is used for the guard); `summary` required
+  (up to 2,000 characters: the commits, the files, the CI state); `rollback` (up to 1,000) required
+  for a deploy. `session` is required, or the caller's own `hook_session` alone when the board
+  knows it (`question_ask` likewise);
   refused on a card in `done` and at 10 open requests per card. The summary, the rollback and the
   target go through the policy's secret check. An open request for the same target (a repository
   only one of them names counts as the same) is filled in (summary, rollback, who asked) instead
