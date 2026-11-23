@@ -1290,7 +1290,10 @@ export) and, for a project, the sessions' `rule_seen` marks (in the export).
   is cleared), messages between sessions, and its events (their `task_id` is cleared; the payload
   still names the key). The event `task.purged` (actor `relaybay`, on Activity and, with
   "changes", on the Audit page) names the key, title, archive mark, the export (`deleted/<file>`)
-  and the row count per table.
+  and the row count per table. Keys are never given out again, so a read of a key that no longer
+  exists (`task_get`, `task_context` and every other tool that takes a card) looks for that event
+  and answers `Task <key> was deleted from the archive on <date>; its export: deleted/<file>.`
+  (`export file not recorded` when the event names none) instead of `not found`.
 - *An archived project, on request.* The Settings page (`/p/<project>/settings`) of an archived project has, next to Archive, **Delete
   project**: the slug typed into the form and one confirmation (`POST /p/<project>/project/delete`,
   form field `confirm`, cookie + CSRF; a wrong slug, a project not in the archive or an export
@@ -1306,6 +1309,8 @@ export) and, for a project, the sessions' `rule_seen` marks (in the export).
   from `project_list`, the board, All boards, the Inbox, the digests, `portfolio_digest`, search and
   Activity. The event `project.deleted` (no project id, the actor who asked) names the slug, name,
   task count, export and row counts; it is on Activity and, with "changes", on the Audit page.
+- *A project document, on request:* the same export, named `<UTC time>-<project>-doc-<name>.json`
+  ([§8](#spec-documents-delete)).
 
 <a id="spec-board-inbox"></a>
 
@@ -2267,6 +2272,12 @@ key, a JWT, or a value that is not a reference in one of these places: URL crede
 `redis-cli`; an assignment whose name contains `pass`, `pwd`, `token`, `secret` or `key`
 (`PGPASSWORD=…`, `API_KEY='…'`, `--from-literal=password=…`); `name: value` written as prose only
 for the `pass` / `pwd` / `token` / `secret` / `api_key` family and values of 6 characters or more.
+An assignment with nothing after `=` is a parameter name, not a value: `name=` followed by the end
+of the text, a line break, `&`, `)`, `<` (a placeholder such as `<token>`, which also lets a value
+written in angle brackets pass) or a closing backtick passes (`/admin-invitation?token=`,
+`?token=&next=1`, an env-file line `KEY=`); spaces after `=` end the value only for a URL's query
+parameter (`?token= …`). A value after `=` on the same line, quoted or after spaces
+(`?token=a1b2…`, ``password=`x` ``, `password= "x"`) is refused as before.
 Quoted values count whole. The journal masks exactly these places, from the same table
 (`_SECRET_SPOTS`), whatever the policy switches off. A value that is a reference as a whole
 always passes, and so does a value, or a detected secret, that one of the policy's `secrets.allow`
@@ -2706,6 +2717,30 @@ merge; a section that is gone by then turns the form into a whole-document edit,
 answers 400 with the text kept. **New document** on Docs & rules creates one (name, kind, title,
 optional repository link, text, reason) the same way.
 
+<a id="spec-documents-delete"></a>
+
+**Deleting a document.** `doc_update(delete=true)` deletes a project document; there is no tool of
+its own. `base_version` must be the current version (a stale one is refused as a conflict that
+names the current version, nothing deleted), `body` is ignored (pass `"-"`) and `reason` is
+required (secret-scanned). Any session may delete a document, except one of kind `spec` or `status`,
+which holds the project's rules: that one only the owner on the board or a coordinator session
+(the check of `task_archive`) deletes, and a change document named `spec-<task key>` (deleted after
+its task is deployed) also the session bound to that task of the project; the refusal says who may.
+In one transaction relaybay writes the export ([§2](#spec-archive-purge)) with the document's row,
+all its versions, its sections, the cards' section links (`task_doc_section`) and its
+`import_item` records (`document` in the export names it), then deletes them with the search rows
+of the document and its sections. A file document loses only its rows: its file on disk is never
+touched. The event `document.deleted` (the actor, `doc`, `title`, `doc_kind`, `version`,
+`reason`, `file` for a file document, `export`, row counts) is on Activity, refreshes Docs & rules
+and, with "changes", is on the Audit page. A card whose document field pointed at it shows the
+link as `no such document` ([below](#spec-documents-links)). The name is free again afterwards.
+The document page has **Delete document** (folded): an optional reason (default `deleted on the
+board`), the document's name typed again and one confirmation (`POST
+/p/<project>/docs/<doc>/delete`, fields `confirm`, `base_version`, `reason`; board cookie and
+CSRF, no Bearer). A wrong name, a stale version or an export that could not be written comes back
+to the document page with the reason; done, it goes to Docs & rules with the export's name; a
+repeat after the deletion says `There is no document <doc> (any more).`
+
 <a id="spec-documents-links"></a>
 
 **Links to sections.** `relaybay://doc/<project>/<doc>` with an optional `#<anchor>`, in a task's
@@ -2788,12 +2823,13 @@ notes and decisions are left out unless asked for.
 **Docs & rules page** (`/p/<slug>/docs`): a search box over the index; the project's derived pulse
 line and its pulse note with the note's age ([below](#spec-digest-pulse)); the project's documents
 grouped by kind, the well-known kinds first, then the others by name (title, name, version, last
-change, "lives in the repository"), and **New document** ([above](#spec-documents-edit)); decisions (current, superseded ones collapsed with
+change, "lives in the repository", "file missing since …" for a file document whose file is gone),
+and **New document** ([above](#spec-documents-edit)); decisions (current, superseded ones collapsed with
 "superseded by #n"); memory notes of the project plus global and role notes (superseded ones
 collapsed); blocks of the project and global ones, each with an edit form for the owner (text,
 description, limit, owner-only; CSRF and the board cookie like other forms, a refused write keeps
 the typed text); the effective rules (`rules_get` rendered). Documents, decisions and notes
-refresh live on `document.updated`, `decision.added`, `memory.*`, and the pulse on
+refresh live on `document.updated`, `document.deleted`, `decision.added`, `memory.*`, and the pulse on
 `project.pulse_set`; blocks and search results stay as
 the owner left them. A document page renders the markdown safely with heading anchors (an explicit
 anchor's line is not shown, its name leads to the heading), a table of contents next to the text

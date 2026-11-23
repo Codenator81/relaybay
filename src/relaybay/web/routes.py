@@ -188,6 +188,7 @@ EVENT_KINDS = (
     "annotation.removed",
     "annotation.replied",
     "document.updated",
+    "document.deleted",
     "memory.added",
     "memory.updated",
     "block.updated",
@@ -2099,9 +2100,56 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             hits=hits,
             search_error=search_error,
             message=flash.get("message"),
+            error=flash.get("error"),
             last_event_id=last_event_id,
         )
         return shown_once(request, response)
+
+    @router.post("/p/{slug}/docs/{doc}/delete")
+    async def delete_document(
+        request: Request,
+        slug: str,
+        doc: str,
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+        confirm: Annotated[str, Form()] = "",
+        base_version: Annotated[str, Form()] = "",
+        reason: Annotated[str, Form()] = "",
+    ) -> Response:
+        """The document page's "Delete document", with the document's name typed again."""
+        board_only(request, csrf)
+        back = f"/p/{slug}/docs/{doc}#delete"
+        try:
+            found = await service.document_meta(slug, doc)
+        except NotFoundError:
+            await service.get_project(slug)  # an unknown project stays a 404
+            # A second submit after the deletion (back button, double click).
+            return flash_redirect(
+                request, f"/p/{slug}/docs", message=f"There is no document {doc} (any more)."
+            )
+        if confirm.strip().lower() != found.slug:
+            return flash_redirect(
+                request,
+                back,
+                error=f"Deleting {found.slug} cannot be undone: confirm with its name,"
+                f" {found.slug}. Nothing was deleted.",
+            )
+        base = base_version.strip()
+        try:
+            gone, path = await service.delete_document(
+                slug,
+                found.slug,
+                reason.strip() or "deleted on the board",
+                int(base) if base.isdigit() else -1,
+                by_owner=True,
+            )
+        except DomainError as exc:  # changed meanwhile, or the export could not be written
+            return flash_redirect(request, back, error=str(exc))
+        return flash_redirect(
+            request,
+            f"/p/{gone.project_slug}/docs",
+            message=f"Deleted the document {gone.slug}; its export is deleted/{path.name} in the"
+            " data folder.",
+        )
 
     async def document_edit_page(
         request: Request,

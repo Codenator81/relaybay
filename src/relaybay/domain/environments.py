@@ -84,6 +84,9 @@ _SECRET_VALUE_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 # A value after a flag or `=`: quoted, or up to whitespace (backslash escapes included).
 _VALUE = r"(\"[^\"]*\"|'[^']*'|(?:\\.|[^\s\"'\\])+)"
+# What ends an empty URL parameter or opens a placeholder right after `name=` (a quote never
+# starts the unquoted value; whitespace and a backtick are handled apart).
+_EMPTY_VALUE_ENDS = "&)<"
 # Places where a secret value follows: (pattern with group 1 = what stays, group 2 = the value,
 # a command that must be in the text for the pattern to count). Validation refuses a value
 # that is not a reference; redaction masks it. One table for both, so they never disagree.
@@ -223,6 +226,27 @@ def _passes(value: str, rules: SecretRules) -> bool:
     return not value or is_reference(value) or rules.allows(value)
 
 
+def _empty_parameter(match: re.Match[str]) -> bool:
+    """`token=` with nothing after it (`/invite?token=`, `token=&next=1`, `token=<token>`): a
+    parameter name or a placeholder, not a value. The pattern's value group would otherwise take
+    the next word or the closing mark; a quoted value it takes is a real one."""
+    separator = match.group(2)
+    if not separator.startswith("="):
+        return False
+    value = match.group(3)
+    if value[:1] in ("'", '"'):
+        return False  # a quoted value is a real one, whatever space comes before it
+    if separator != "=":
+        # A line break right after `=` is an env-file line `KEY=` with no value, and a URL's
+        # query parameter (`?token= ...`, `&token= ...`) ends at a space. Elsewhere a value on the
+        # same line after spaces is a real one: `password= hunter2`.
+        before = match.string[match.start() - 1 : match.start()]
+        return "\n" in separator or before in ("?", "&")
+    if value[0] == "`":  # the end of a code span, unless a value follows: password=`x`
+        return not value[1:2].isalnum()
+    return value[0] in _EMPTY_VALUE_ENDS
+
+
 def secret_spans(text: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> Iterator[SecretSpan]:
     """Every secret the enabled detectors find in `text`, in detector order: its detector and
     where it is (a private key runs to its END line, or to the end of the text). One pass per
@@ -248,7 +272,7 @@ def secret_spans(text: str, rules: SecretRules = DEFAULT_SECRET_RULES) -> Iterat
     if "secret-assignment" not in rules.disabled:
         for match in _ASSIGNMENT_RE.finditer(text):
             value = _unquoted(match.group(3))
-            if _passes(value, rules):
+            if _passes(value, rules) or _empty_parameter(match):
                 continue
             if "=" in match.group(2) or (
                 len(value) >= 6 and _PROSE_SECRET_RE.search(match.group(1))

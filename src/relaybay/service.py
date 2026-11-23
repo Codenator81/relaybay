@@ -344,6 +344,7 @@ AUDIT_CHANGE_KINDS = (
     "task.unarchived",
     "task.purged",
     "project.deleted",
+    "document.deleted",
     "approval.requested",
     "approval.decided",
     "approval.used",
@@ -1369,6 +1370,16 @@ PROJECT_DELETE_ACTIVE = (
     " Nothing changed."
 )
 EXPORT_FAILED = "Could not write the export to {folder}: {exc}. Nothing was deleted."
+# Documents of these kinds hold the project's rules: deleting one is the owner's or a
+# coordinator's call, except a task's change document `spec-<task key>` (DOC_CHANGE_PREFIX).
+DOC_DELETE_GUARDED_KINDS = ("spec", "status")
+DOC_CHANGE_PREFIX = "spec-"
+DOC_DELETE_NOT_ALLOWED = (
+    "{project}/{doc} is a {kind} document: only the owner on the board or a coordinator session"
+    " named in the server's config deletes it (a desktop id also needs its own hook_session); a"
+    " change document spec-<task key> may also be deleted by the session bound to that task."
+    " Nothing was deleted."
+)
 PROJECT_DELETE_CONFIRM = (
     "Deleting {slug} cannot be undone: confirm with the project's slug, {slug}. Nothing changed."
 )
@@ -3050,6 +3061,14 @@ class Service:
             else await repo.get_task_by_key(conn, text.lower())
         )
         if task is None:
+            purged = None if text.isdigit() else await repo.purge_event(conn, text.lower())
+            if purged is not None:
+                export = purged.payload.get("export")
+                where = f"its export: {export}" if export else "export file not recorded"
+                raise NotFoundError(
+                    f"Task {purged.payload.get('key') or text} was deleted from the archive on"
+                    f" {purged.ts[:10]}; {where}."
+                )
             raise NotFoundError(f"Task {text!r} not found.")
         return task
 
@@ -3638,8 +3657,10 @@ class Service:
         *,
         reason: str,
         actor: str,
+        document: str | None = None,
     ) -> Path:
-        """Inside the deleting transaction: a failed write rolls the deletion back."""
+        """Inside the deleting transaction: a failed write rolls the deletion back. `document`
+        names a deleted project document; its export is named `<project>-doc-<name>`."""
         keys = {t["id"]: t["key"] for t in rows.get("task", [])}
         attachments = [{**a, "task_key": keys[a["task_id"]]} for a in rows.get("attachment", [])]
         files = self._export_files(slug, attachments)
@@ -3651,15 +3672,123 @@ class Service:
             "reason": reason,
             "project": slug,
             "task": key,
+            **({"document": document} if document else {}),
             "tables": rows,
         }
-        name = export_name(tx.now, slug, key, zipped=bool(files))
+        suffix = f"doc-{document}" if document else key
+        name = export_name(tx.now, slug, suffix, zipped=bool(files))
         try:
             return await asyncio.to_thread(
                 write_export, self.deleted_dir, name, content, files, staged
             )
         except OSError as exc:
             raise ValidationError(EXPORT_FAILED.format(folder=self.deleted_dir, exc=exc)) from exc
+
+    async def delete_document(
+        self,
+        project: str,
+        doc: str,
+        reason: str,
+        base_version: int,
+        *,
+        by_owner: bool = False,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> tuple[mem.Document, Path]:
+        """Delete a project document (doc_update with delete, or the board's Delete): only at
+        its current version, with a reason. Its versions, sections, search rows and card section
+        links go in one transaction after an export of them is written; a file document's file
+        on disk is never touched. Returns the document as it was and the export."""
+        slug = _clean_doc_slug(doc)
+        why = _clean_text(reason, "reason", mem.REASON_MAX)
+        if not why:
+            raise ValidationError("reason must say why the document is deleted.")
+        base = _clean_version(base_version)
+        path: Path | None = None
+        try:
+            async with self._tx() as tx:
+                proj, found = await self._document(tx.conn, project, slug)
+                _scan(await self._secret_rules(tx.conn, proj), reason=why)
+                if base != found.version:
+                    raise ConflictError(
+                        f"{proj.slug}/{found.slug} is at version {found.version}, not {base}:"
+                        " it changed since you read it. Read it again (doc_get) and send the"
+                        f" deletion with base_version {found.version}. Nothing was deleted."
+                    )
+                if not by_owner and not await self._may_delete_document(
+                    tx.conn, proj, found, session, hook_session
+                ):
+                    raise ValidationError(
+                        DOC_DELETE_NOT_ALLOWED.format(
+                            project=proj.slug, doc=found.slug, kind=found.kind
+                        )
+                    )
+                actor, session_id = "owner", None
+                if not by_owner:
+                    sess = await self._session(tx, session, session_title, hook_session)
+                    actor, session_id = (sess.name, sess.id) if sess else ("mcp", None)
+                rows = await repo.cascade_rows(tx.conn, "document", [found.id])
+                imports = await repo.import_rows(tx.conn, rows)
+                if imports:
+                    rows["import_item"] = imports
+                path = await self._write_deletion_export(
+                    tx, proj.slug, None, rows, None, reason=why, actor=actor, document=found.slug
+                )
+                await repo.unindex(tx.conn, rows, self.search_fts)
+                await repo.forget_imports(tx.conn, imports)
+                await repo.delete_document(tx.conn, found.id)
+                await tx.event(
+                    "document.deleted",
+                    actor,
+                    project_id=proj.id,
+                    session_id=session_id,
+                    project=proj.slug,
+                    doc=found.slug,
+                    title=found.title,
+                    doc_kind=found.kind,
+                    version=found.version,
+                    reason=why[:200],
+                    **({"file": found.source_path} if found.is_file else {}),
+                    export=f"{DELETED_FOLDER}/{path.name}",
+                    rows={table: len(items) for table, items in rows.items()},
+                )
+        except BaseException:
+            _discard(path)  # rolled back: the export of a deletion that did not happen
+            raise
+        assert path is not None
+        logger.info("Deleted the document %s/%s; its export is %s", found.project_slug, slug, path)
+        return found, path
+
+    async def _may_delete_document(
+        self,
+        conn: aiosqlite.Connection,
+        proj: Project,
+        doc: mem.Document,
+        session: str | None,
+        hook_session: str | None,
+    ) -> bool:
+        """A session deletes any document but a spec or status one, which needs a coordinator,
+        or for `spec-<task key>` the session bound to that task of the project."""
+        if doc.kind not in DOC_DELETE_GUARDED_KINDS:
+            return True
+        if await self._is_coordinator(conn, session, hook_session):
+            return True
+        key = doc.slug.removeprefix(DOC_CHANGE_PREFIX)
+        needle = (session or "").strip()
+        if key == doc.slug or not needle:
+            return False
+        task = await repo.get_task_by_key(conn, key)
+        caller = await self._known_session(needle, conn)
+        if task is None or task.project_id != proj.id or caller is None:
+            return False
+        if parse_session_id(needle) is not None and not (
+            caller.cc_exact and (hook_session or "").strip() == caller.cc_session_id
+        ):
+            # A desktop id shows on the card: as for a coordinator, it counts only with that
+            # session's own hook id, which no tool prints.
+            return False
+        return (await repo.open_binding(conn, task.id) or task.session_id) == caller.id
 
     @staticmethod
     def _wanted_repos(

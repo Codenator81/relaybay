@@ -4158,6 +4158,17 @@ async def running_sessions(conn: aiosqlite.Connection, since: str) -> int:
     return int(row[0]) if row else 0
 
 
+async def purge_event(conn: aiosqlite.Connection, key: str) -> Event | None:
+    """The `task.purged` event of the task with this key (keys are never given out again)."""
+    row = await _one(
+        conn,
+        "SELECT * FROM event WHERE kind = 'task.purged'"
+        " AND lower(json_extract(payload, '$.key')) = ? ORDER BY id DESC LIMIT 1",
+        (key,),
+    )
+    return _event(row) if row else None
+
+
 async def last_event_of_kind(conn: aiosqlite.Connection, kind: str) -> str | None:
     row = await _one(conn, "SELECT ts FROM event WHERE kind = ? ORDER BY id DESC LIMIT 1", (kind,))
     return row[0] if row else None
@@ -4361,6 +4372,12 @@ async def delete_project(conn: aiosqlite.Connection, project_id: int) -> None:
     )
     await conn.execute("DELETE FROM rule_seen WHERE project_id = ?", (project_id,))
     await conn.execute("DELETE FROM project WHERE id = ?", (project_id,))
+
+
+async def delete_document(conn: aiosqlite.Connection, document_id: int) -> None:
+    """Its versions, sections and card section links go with the foreign keys; the search rows
+    have none (`unindex`)."""
+    await conn.execute("DELETE FROM document WHERE id = ?", (document_id,))
 
 
 def _ids(rows: dict[str, list[dict[str, Any]]], table: str) -> list[int]:

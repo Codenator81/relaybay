@@ -17,18 +17,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `review_step_update(remark=...)` adds the session's comment under the step on the board without changing its status.
 - Blockers between cards (migration 0061): `blocked_by` in `task_update` and `task_patch` takes card keys of any project (`-key` removes one); an unknown key, the card itself and a cycle are refused. A blocker blocks while it is in plan, dev, review or test. `task_context` and `task_get` list the blockers with their stage and board link and the cards a card blocks; the board shows a `blocked by <key> · <stage>` chip and Blocked by / Blocks rows in the task dialog. The archive purge exports the links of a deleted card.
 - Merge order of the cards in `test`: after the test cards that block them, otherwise by the owner's order of the column, with warnings for a repository two test cards share and for a blocker not yet in test. `project_digest` and `project_snapshot` show it as `## Merge order (test)`, and the board's test column as a **Merge order** fold, when two or more cards are in test.
+- Deleting a project document: `doc_update(delete=true)` at the current `base_version` with a reason, and **Delete document** on the document page with the name typed again. Documents of kind `spec` and `status` only for the owner or a coordinator session, a change document `spec-<task key>` also for the session bound to that task. An export (`deleted/<time>-<project>-doc-<name>.json`) is written first; a file document's file stays on disk. Event `document.deleted`.
+- `task_get`, `task_context` and the other card tools answer for a key the archive purge deleted with the date and its export file instead of "not found".
 
 ### Changed
 
 - A card's document field holding the path of a file that a file document of the project reads leads to that document on the board and in `task_context`, like a `relaybay://doc` link.
 - GitHub-style anchors (`#2-kyc--kyb--veriff`) find the same section as relaybay's (`#2-kyc-kyb-veriff`) in `doc_get`, document links and the document page, so links written inside a document for GitHub land on their heading.
 - The task dialog's Overview and the task page put what waits for you first: open approvals and questions, unread agent replies, then Next (next step, waiting on, blockers, cancelled), the plan's steps, the Last report (now a fold like its neighbours), deploy notes, description and progress; task details, the session, decisions, findings, the document and the histories come folded at the bottom. A done or archived card leads with its last report and code. Blocks with nothing in them are left out instead of showing "No reports yet" and the like; a card without comments folds the comment box into Add comment.
+- Docs & rules marks a file document whose file is gone with "file missing since ..." instead of "missing".
 
 ### Fixed
 
 - A report on a card in `live` or `done` no longer clears the tracker's work-log mark; a move back to an earlier stage still does.
 - A section opened by its anchor is no longer hidden under the sticky top bar, and signing in keeps the `#anchor` of the link that led to the sign-in page.
 - The note about a file document changed outside relaybay names only sections the file still has; removed ones are listed apart (`removed checkout`) and named again when they come back.
+- The secret scan no longer refuses a URL parameter without a value (`/admin-invitation?token=`, `?token=&next=1`, `token=<token>`); a parameter with a value is still refused.
 
 ## [0.15.2] - 2026-11-23
 
