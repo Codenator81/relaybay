@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A launched session that writes with a readable `session` name and its own `hook_session` is taken as the desktop session that hook id belongs to: no new session row and no "belongs to another session" warning on every write.
+- A session working in a shared checkout where another open card's branch is checked out no longer links that branch and folder to its own card; only the repository is linked.
+
 ## [0.16.0] - 2026-11-23
 
 ### Added
