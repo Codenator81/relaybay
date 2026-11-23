@@ -339,8 +339,50 @@ async def test_requests_are_checked_like_questions(svc: Service) -> None:
         )
     with pytest.raises(ValidationError, match="names its branch"):
         await svc.request_approval("acme-shop-1", "push", "$X", "x", session="a")
-    with pytest.raises(Exception, match="no environment"):
-        await svc.request_approval("acme-shop-1", "sql", "staging", "x", session="a")
+    with pytest.raises(ValidationError, match="does not know hook_session"):
+        await svc.request_approval(
+            "acme-shop-1", "push", "feat", "x", hook_session=str(uuid.uuid4())
+        )
+
+
+async def test_a_deploy_without_stored_environments_is_a_plain_target(svc: Service) -> None:
+    """Environments left the board in 0.15: a deploy or sql request names its stand in words."""
+    run = await started_run(svc)
+    a, _hint, updated = await svc.request_approval(
+        "acme-shop-1",
+        "deploy",
+        "live",
+        "web 1.4 to live",
+        rollback="kubectl rollout undo deploy/web",
+        session=run.session_name,
+    )
+    assert not updated and a.status == "open"
+    assert a.environment_id is None and a.environment == "acme-shop/live"
+    again, _hint, updated = await svc.request_approval(
+        "acme-shop-1",
+        "deploy",
+        "LIVE",
+        "web 1.4 to live, retried",
+        rollback="kubectl rollout undo deploy/web",
+        session=run.session_name,
+    )
+    assert updated and again.id == a.id
+    sql, _hint, _updated = await svc.request_approval(
+        "acme-shop-1", "sql", "staging", "one update", session=run.session_name
+    )
+    assert sql.environment == "acme-shop/staging"
+    with pytest.raises(ValidationError, match="rollback"):
+        await svc.request_approval(
+            "acme-shop-1", "deploy", "test", "web to test", session=run.session_name
+        )
+
+
+async def test_the_own_hook_session_alone_names_who_asks(svc: Service) -> None:
+    run = await started_run(svc)
+    a, _hint, _updated = await svc.request_approval(
+        "acme-shop-1", "push", "feat/checkout", "two commits", hook_session=RUN_CC
+    )
+    assert a.requested_by == run.session_name
 
 
 # --- a desktop session -----------------------------------------------------------------------

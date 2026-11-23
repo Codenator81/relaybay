@@ -1318,7 +1318,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 description="Where: for push and commit the branch (feat/x, or backend:feat/x"
                 " with the repository; +feat/x for a force push, :feat/x to delete the"
                 " branch); for merge the PR (12, #12 or its URL); for deploy and sql the"
-                " environment's name (test, live)."
+                " stand, in words: test, live, prod (a plain name, no setup needed)."
             ),
         ],
         summary: Annotated[

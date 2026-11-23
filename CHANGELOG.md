@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `approval_request` for a `deploy` or `sql` names its stand in words (`live`, `test`) again: since environments left the board in 0.15 every such request was refused with "has no environment". An environment stored before 0.15 is still used when its name matches.
+- `approval_request` and `question_ask` take the caller's own `hook_session` alone as who asks when the board knows that id; before, a call without `session` was refused.
+
 ## [0.16.0] - 2026-11-23
 
 ### Added

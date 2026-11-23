@@ -493,7 +493,7 @@ Ask the owner to approve one action on a card: it shows in the owner's Inbox and
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `action` | string | yes | push, merge, commit, deploy or sql: what you want to do. |
-| `target` | string | yes | Where: for push and commit the branch (feat/x, or backend:feat/x with the repository; +feat/x for a force push, :feat/x to delete the branch); for merge the PR (12, #12 or its URL); for deploy and sql the environment's name (test, live). |
+| `target` | string | yes | Where: for push and commit the branch (feat/x, or backend:feat/x with the repository; +feat/x for a force push, :feat/x to delete the branch); for merge the PR (12, #12 or its URL); for deploy and sql the stand, in words: test, live, prod (a plain name, no setup needed). |
 | `summary` | string | yes | What goes where: the commits, the files, the CI state. Never a password or token. |
 | `rollback` | string or null | no | The command that undoes it: required for a deploy. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |

@@ -974,6 +974,15 @@ def _task_diff(task: Task, clean: dict[str, Any]) -> dict[str, Any]:
     return diff
 
 
+def _no_value(value: str | None) -> bool:
+    return (value or "").strip() in ("", "-")
+
+
+def _no_caller(session: str | None, hook_session: str | None) -> bool:
+    """Neither a session nor a hook session names who asks."""
+    return _no_value(session) and _no_value(hook_session)
+
+
 async def _hook_id_session(conn: aiosqlite.Connection, value: str) -> Session | None:
     """The session a bare Claude Code id belongs to: its exact link, or the hooks' own row."""
     cc_id = resumable_id(value)
@@ -1692,6 +1701,29 @@ class Service:
                 await repo.touch_session(tx.conn, existing.id, tx.now, changes)
             found = await repo.get_session_by_external_id(tx.conn, external_id)
         return found
+
+    async def _caller(
+        self,
+        tx: _Tx,
+        session: str | None,
+        title: str | None,
+        hook_session: str | None,
+        tool: str,
+    ) -> Session:
+        """The session that asks (question_ask, approval_request): `session`, or else the
+        session the caller's own `hook_session` belongs to."""
+        if not _no_value(session):
+            caller = await self._session(tx, session, title, hook_session)
+            assert caller is not None
+            return caller
+        held = await _hook_id_session(tx.conn, hook_session or "")
+        if held is None:
+            raise ValidationError(
+                f"{tool}: the board does not know hook_session {hook_session!r}; pass your desktop"
+                " id (local_...) or name as session. Nothing done."
+            )
+        await repo.touch_session(tx.conn, held.id, tx.now)
+        return held
 
     async def _session_of_hook_id(self, tx: _Tx, value: str) -> Session | None:
         """A bare Claude Code id passed as `session`: the session its hooks are linked to, with a
@@ -11629,9 +11661,10 @@ class Service:
     ) -> tuple[Question, str]:
         """`question_ask`: a question for the owner on a card, with its default, asked by the
         calling session for itself. Returns the question and what the agent does next."""
-        if (session or "").strip() in ("", "-"):
+        if _no_caller(session, hook_session):
             raise ValidationError(
-                "question_ask needs your session: the answer goes back to who asked. Nothing asked."
+                "question_ask needs your session (session, or your own hook_session): the answer"
+                " goes back to who asked. Nothing asked."
             )
         what = qrules.clean_kind(kind)
         body = qrules.clean_text(text)
@@ -11674,8 +11707,7 @@ class Service:
                     f"{task.key} already has {qrules.OPEN_MAX} open questions: wait for the owner,"
                     " or withdraw one with question_withdraw. Nothing asked."
                 )
-            caller = await self._session(tx, session, session_title, hook_session)
-            assert caller is not None
+            caller = await self._caller(tx, session, session_title, hook_session, "question_ask")
             question_id = await repo.insert_question(
                 tx.conn,
                 {
@@ -12317,10 +12349,10 @@ class Service:
         """`approval_request`: the agent asks the owner to approve one action on a card. An open
         request for the same action and target is updated instead of a second one. Returns the
         request, what the agent does next and whether it was an update."""
-        if (session or "").strip() in ("", "-"):
+        if _no_caller(session, hook_session):
             raise ValidationError(
-                "approval_request needs your session: the decision goes back to who asked."
-                " Nothing requested."
+                "approval_request needs your session (session, or your own hook_session): the"
+                " decision goes back to who asked. Nothing requested."
             )
         what = arules.clean_action(action)
         aimed = arules.parse_target(what, target)
@@ -12334,19 +12366,19 @@ class Service:
             project = await self.get_project(task.project_slug, tx.conn)
             rules = await self._secret_rules(tx.conn, project)
             _scan(rules, summary=body, rollback=undo, target=str(target))
-            caller = await self._session(tx, session, session_title, hook_session)
-            assert caller is not None
+            caller = await self._caller(
+                tx, session, session_title, hook_session, "approval_request"
+            )
             env_id: int | None = None
             env_text: str | None = None
             if env_name is not None:
+                # A stand stored before 0.15 still drives the guard; any other target is plain
+                # text (environments were removed from the board in 0.15).
                 env = await repo.find_environment(tx.conn, project.id, env_name)
                 if env is None:
-                    names = [e.name for e in await repo.list_environments(tx.conn, [project.id])]
-                    raise NotFoundError(
-                        f"{project.slug} has no environment {env_name!r}"
-                        f" (it has: {', '.join(names) or 'none'}). Nothing requested."
-                    )
-                env_id, env_text = env.id, f"{project.slug}/{env.name}"
+                    env_text = f"{project.slug}/{env_name}"
+                else:
+                    env_id, env_text = env.id, f"{project.slug}/{env.name}"
             if repository is not None:
                 known = [r.name for r in await repo.list_project_repos(tx.conn, project.id)]
                 match = next((n for n in known if n.casefold() == repository.casefold()), None)
