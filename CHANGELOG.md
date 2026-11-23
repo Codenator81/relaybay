@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - MCP answers give the board link of a document or section for a person to open, `http://127.0.0.1:8765/p/<project>/docs/<doc>#<anchor>`, next to the `relaybay://doc` names: `doc_list`, `doc_outline` (one line), `doc_get`, `doc_search` hits, the document pointers of `task_context` and `task_doc_link`, and the `doc` field of `task_get`. The address comes from `host` and `port`, or from the new setting `board_url` (`RELAYBAY_BOARD_URL`) for a LAN name.
 - A card whose `doc_path` is a local `.md` file gets that file as its file document `task-<key>` (read only, writes through relaybay off) on `task_create`, `task_update` or `task_patch`; the answer names it with its board link, or says why not.
+- Card fields through `task_patch` and the board form (migration 0060): `deploy_notes` (what a deploy needs: migration, flag, script, rollback) with `deploy_done`, which a change of the notes clears unless it is passed too; `cancelled` (the reason; setting it stamps the time, `-` clears both; the card is not moved, the answer says so). `task_context`, `task_get` and the board show them, the card gets a `cancelled` chip, and a `deploy` approval request shows the card's deploy notes in its answer and on the board.
+- `description_add` in `task_patch` appends a paragraph to the description instead of replacing it.
+- A worktree per linked repository: the hooks store the folder a bound session works in, and a `repos` entry `name <absolute path>` sets it by hand. `task_get`, `task_context` and the board's Code row (with its own Open in VS Code icon) show it.
+- `review_step_update(remark=...)` adds the session's comment under the step on the board without changing its status.
 
 ### Changed
 
@@ -19,6 +23,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A report on a card in `live` or `done` no longer clears the tracker's work-log mark; a move back to an earlier stage still does.
 - A section opened by its anchor is no longer hidden under the sticky top bar, and signing in keeps the `#anchor` of the link that led to the sign-in page.
 
 ## [0.15.2] - 2026-11-23

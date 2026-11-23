@@ -155,6 +155,10 @@ def _task(row: aiosqlite.Row) -> Task:
         archived_by=row["archived_by"],
         unarchived_at=row["unarchived_at"],
         archived_from=row["archived_from"],
+        deploy_notes=row["deploy_notes"],
+        deploy_done=bool(row["deploy_done"]),
+        cancelled=row["cancelled"],
+        cancelled_at=row["cancelled_at"],
         area_id=row["area_id"],
         area=row["area_name"],
         area_color=row["area_color"],
@@ -441,6 +445,7 @@ async def task_repo_links(
             r["how"],
             r["added_at"],
             r["branch"],
+            r["worktree"],
         )
         for r in rows
     ]
@@ -512,19 +517,23 @@ async def delete_task_pr(conn: aiosqlite.Connection, task_id: int, url: str) -> 
 
 async def session_repo_candidates(
     conn: aiosqlite.Connection, session_id: int
-) -> list[tuple[int, int, str, bool, str | None]]:
-    """(task id, repository id, path, already linked, the branch stored on the link) for the
-    repositories of every task the session is bound to now: one read on the hook path."""
+) -> list[tuple[int, int, str, bool, str | None, str | None]]:
+    """(task id, repository id, path, already linked, the branch and the worktree stored on the
+    link) for the repositories of every task the session is bound to now: one read on the hook
+    path."""
     rows = await _all(
         conn,
         "SELECT b.task_id, r.id AS repo_id, r.path, tr.task_id IS NOT NULL AS linked,"
-        " tr.branch FROM task_session b JOIN task t ON t.id = b.task_id"
+        " tr.branch, tr.worktree FROM task_session b JOIN task t ON t.id = b.task_id"
         " JOIN project_repo r ON r.project_id = t.project_id"
         " LEFT JOIN task_repo tr ON tr.task_id = b.task_id AND tr.project_repo_id = r.id"
         " WHERE b.session_id = ? AND b.unbound_at IS NULL",
         (session_id,),
     )
-    return [(r["task_id"], r["repo_id"], r["path"], bool(r["linked"]), r["branch"]) for r in rows]
+    return [
+        (r["task_id"], r["repo_id"], r["path"], bool(r["linked"]), r["branch"], r["worktree"])
+        for r in rows
+    ]
 
 
 async def set_task_repo_branch(
@@ -535,6 +544,19 @@ async def set_task_repo_branch(
         "UPDATE task_repo SET branch = ? WHERE task_id = ? AND project_repo_id = ?"
         " AND branch IS NOT ?",
         (branch, task_id, repo_id, branch),
+    )
+    return cur.rowcount > 0
+
+
+async def set_task_repo_worktree(
+    conn: aiosqlite.Connection, task_id: int, repo_id: int, worktree: str
+) -> bool:
+    """Store the folder the task works in for a linked repository; False when it was that
+    already."""
+    cur = await conn.execute(
+        "UPDATE task_repo SET worktree = ? WHERE task_id = ? AND project_repo_id = ?"
+        " AND worktree IS NOT ?",
+        (worktree, task_id, repo_id, worktree),
     )
     return cur.rowcount > 0
 
@@ -4668,7 +4690,8 @@ async def undelivered_answers_of_comments(
 # --- approvals ---------------------------------------------------------------------------------
 
 _APPROVAL_SELECT = """
-SELECT a.*, t.key AS task_key, t.title AS task_title, p.slug AS project_slug
+SELECT a.*, t.key AS task_key, t.title AS task_title, p.slug AS project_slug,
+       t.deploy_notes AS task_deploy_notes, t.deploy_done AS task_deploy_done
 FROM approval a
 JOIN task t ON t.id = a.task_id
 JOIN project p ON p.id = t.project_id
@@ -4713,6 +4736,8 @@ def _approval(row: aiosqlite.Row) -> Approval:
         task_key=row["task_key"],
         task_title=row["task_title"],
         project_slug=row["project_slug"],
+        task_deploy_notes=row["task_deploy_notes"],
+        task_deploy_done=bool(row["task_deploy_done"]),
     )
 
 

@@ -121,6 +121,7 @@
       {%- set stale = t.next_step_stale and not is_done %}
       {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
       {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
+      {% if t.cancelled %}<dt>Cancelled</dt><dd><span class="chip cancelled-chip">cancelled</span> {{ t.cancelled }}{% if t.cancelled_at %} <span class="muted"><time datetime="{{ t.cancelled_at }}" data-age>{{ t.cancelled_at|age }}</time></span>{% endif %}</dd>{% endif %}
       {% if detail.code.board_shown %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}
       {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (tracker_log_required(t) and is_done) %}
       <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}
@@ -158,6 +159,14 @@
     {% if t.progress %}<div class="markdown task-progress">{{ t.progress|markdown(detail.doc_refs) }}</div>
     {% else %}<p class="muted">No progress summary yet.</p>{% endif %}
   </details>
+
+  {% if t.deploy_notes %}
+  <details class="panel fold" data-fold="deploy" open>
+    <summary><h2>Deploy notes</h2></summary>
+    <p class="deploy-state">{% if t.deploy_done %}<span class="chip is-done">done</span>{% else %}<span class="chip waiting">not done yet</span>{% endif %}</p>
+    <div class="markdown task-deploy">{{ t.deploy_notes|markdown(detail.doc_refs) }}</div>
+  </details>
+  {% endif %}
 
   {% if detail.decisions %}
   <details class="panel fold" data-fold="decisions" open>

@@ -38,6 +38,7 @@ class TaskRepo:
     how: str
     added_at: str
     branch: str | None = None  # the task's branch in this repository, seen by the hooks
+    worktree: str | None = None  # the folder the task works in there (a git worktree)
 
 
 @dataclass(slots=True)
@@ -77,6 +78,7 @@ class CodeRepo:
     how: str
     prs: list[TaskPr] = field(default_factory=list)
     branch: str | None = None
+    worktree: str | None = None
 
 
 @dataclass(slots=True)
@@ -130,6 +132,7 @@ def task_code(
             linked[r.id].how,
             [p for p in own_prs if p.repo_id == r.id],
             linked[r.id].branch,
+            linked[r.id].worktree,
         )
         for r in project_repos
         if r.id in linked

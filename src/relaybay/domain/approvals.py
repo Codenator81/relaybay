@@ -212,6 +212,8 @@ class Approval:
     task_key: str = ""
     task_title: str = ""
     project_slug: str = ""
+    task_deploy_notes: str | None = None  # the card's deploy notes, shown on a deploy request
+    task_deploy_done: bool = False
 
     @property
     def is_open(self) -> bool:

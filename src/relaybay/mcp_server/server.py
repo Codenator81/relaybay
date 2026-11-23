@@ -139,7 +139,8 @@ PLAN_STEP_HELP = "The step's number in the plan (1, 2, …)."
 REPOS_HELP = (
     "Repositories of the task's project the task touches, by name, added to its links; '-name'"
     " removes one. An unknown name fails with the project's names. A session bound to the task"
-    " links the repository it works in by itself."
+    " links the repository it works in by itself. 'name <absolute path>' also sets the folder"
+    " (worktree) the task works in there."
 )
 PRS_HELP = (
     "Pull request links (http:// or https://) added to the task, optionally after a repository"
@@ -2143,12 +2144,20 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " rejecting is the owner's, on the board."
             ),
         ] = None,
+        remark: Annotated[
+            str | None,
+            Field(
+                description="A comment under the step on the board (markdown), e.g. what you"
+                " fixed or where to look; it does not change the step's status."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
         """Change one review step: its text, or reopen it after you fixed what the owner
-        rejected. A changed text opens the step again."""
+        rejected. A changed text opens the step again. `remark` adds your comment under the
+        step without changing its status."""
         updated = await run(
             service.update_review_step(
                 task,
@@ -2156,12 +2165,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 title=title,
                 details=details,
                 status=status,
+                remark=remark,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
             )
         )
-        return f"Step {updated.position} '{updated.title}' is {updated.status}."
+        said = " Your remark is under it." if (remark or "").strip() else ""
+        return f"Step {updated.position} '{updated.title}' is {updated.status}.{said}"
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def plan_get(task: TaskRef) -> str:

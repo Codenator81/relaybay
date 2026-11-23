@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, NamedTuple
 from urllib.parse import urlencode
 
@@ -219,7 +219,9 @@ from relaybay.domain.switcher import (
     fuzzy_score,
 )
 from relaybay.domain.task_fields import (
+    APPEND_NAMES,
     BY_NAME,
+    DESCRIPTION_ADD,
     FIELD_NAMES,
     LINK_NAMES,
     MARKDOWN_MAX,
@@ -823,6 +825,43 @@ def _link_entries(value: Any, name: str) -> list[str]:
     return entries
 
 
+def _work_root(folder: str, top: str | None = None) -> str:
+    """The top folder of the git working copy holding `folder` (the nearest one with a `.git`
+    folder or file, a linked worktree included), looking no higher than `top` (the repository's
+    path); none found: `top`, else `folder`. Only stats, no git."""
+    try:
+        here = Path(folder)
+        stop = gitinfo.path_key(top) if top else None
+        for candidate in (here, *here.parents):
+            if (candidate / ".git").exists():
+                return str(candidate)
+            if stop is not None and gitinfo.path_key(str(candidate)) == stop:
+                break
+    except (OSError, ValueError):
+        pass
+    return top or folder
+
+
+def _clean_worktree(value: str, name: str) -> str | None:
+    """The folder of a `repos` entry 'name <absolute path>': None when the entry names only the
+    repository. Absolute in either the POSIX or the Windows form; the disk is not read."""
+    path = value.strip()
+    if not path:
+        return None
+    if len(path) > REPO_PATH_MAX:
+        raise ValidationError(
+            f"repos: the folder of {name} is longer than {REPO_PATH_MAX} characters."
+        )
+    if has_hidden_chars(path):
+        raise ValidationError(f"repos: the folder of {name} holds a control character.")
+    if not (PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()):
+        raise ValidationError(
+            f"repos: {name!r} is followed by {path!r}, not an absolute path: pass"
+            f" '{name} /full/path/to/the/worktree', or the name alone."
+        )
+    return path
+
+
 def _clean_surface(value: Any) -> str | None:
     """`session_surface`: desktop or terminal; None (or '') clears it."""
     if value is not None and not isinstance(value, str):
@@ -942,7 +981,9 @@ async def _not_new_reason(conn: aiosqlite.Connection, known: Session | None, chi
 
 def _unlog_reason(task: Task, diff: dict[str, Any]) -> str | None:
     """New work in `diff` that invalidates the task's work-log mark: a move back out of `live` or
-    `done` to an earlier stage, or a changed progress summary. Metadata edits do not count."""
+    `done` to an earlier stage, or a changed progress summary while the card is not yet in `live`
+    or `done` (a summary rewritten on a shipped card closes it, the log already holds the work).
+    Metadata edits do not count."""
     reasons = []
     stage = diff.get("stage")
     if (
@@ -951,7 +992,7 @@ def _unlog_reason(task: Task, diff: dict[str, Any]) -> str | None:
         and STAGES.index(Stage(stage)) < STAGES.index(task.stage)
     ):
         reasons.append(f"stage moved back from {task.stage.value} to {stage}")
-    if "progress" in diff:
+    if "progress" in diff and task.stage not in (Stage.LIVE, Stage.DONE):
         reasons.append("progress changed")
     return ", ".join(reasons) or None
 
@@ -1055,6 +1096,10 @@ DRAFT_HINT = (
     "Hint: {key}'s plan is a draft for {hours} h: accept it (plan_accept) or ask for changes."
 )
 PLAN_LINK_RE = re.compile(r"(?:report\s*[:#]?\s*|#)?(\d+)", re.IGNORECASE)
+CANCELLED_HINT = (
+    "Hint: {key} is marked cancelled and stays in {stage}: the card is not moved; move it to"
+    " done with task_set_stage when nothing is left to do."
+)
 EMPTY_CHECKLIST_HINT = (
     "Hint: the review checklist of {key} is empty. Write what the owner should check by eye"
     " with review_steps_set (and attach screenshots with attach_file)."
@@ -4159,6 +4204,8 @@ class Service:
         in `changes` add or remove the task's code links in the same transaction;
         `session_surface` says where the calling session runs."""
         links = {k: _link_entries(changes[k], k) for k in LINK_NAMES if k in changes}
+        if DESCRIPTION_ADD in changes and not isinstance(changes[DESCRIPTION_ADD], str | None):
+            raise ValidationError(f"{DESCRIPTION_ADD} must be a string.")
         surface = changes.get(SESSION_SURFACE)
         told = SESSION_SURFACE in changes
         if told:
@@ -4243,13 +4290,19 @@ class Service:
     ) -> Saved:
         """`rules=False`: the stage move is the owner's own archive act, checked by no rule."""
         links = links or {}
-        unknown = set(changes) - set(FIELD_NAMES)
+        unknown = set(changes) - set(FIELD_NAMES) - set(APPEND_NAMES)
         if unknown:
+            allowed = (*FIELD_NAMES, *APPEND_NAMES, *LINK_NAMES, *SESSION_FIELD_NAMES)
             raise ValidationError(
                 f"Unknown task field(s): {', '.join(sorted(unknown))}."
-                f" Allowed: {', '.join((*FIELD_NAMES, *LINK_NAMES, *SESSION_FIELD_NAMES))}."
+                f" Allowed: {', '.join(allowed)}."
             )
-        clean = {name: _clean_field(name, value) for name, value in changes.items()}
+        clean = {
+            name: _clean_field(name, value)
+            for name, value in changes.items()
+            if name not in APPEND_NAMES
+        }
+        added = _clean_text(changes.get(DESCRIPTION_ADD), DESCRIPTION_ADD, MARKDOWN_MAX)
         default_actor = actor
         task = await self.get_task(ref, tx.conn)
         if expected_version is not None and expected_version != task.version:
@@ -4257,11 +4310,19 @@ class Service:
                 f"Task {task.key} is at version {task.version}, not {expected_version}:"
                 " someone changed it meanwhile. Re-read it with task_get and retry."
             )
+        if added:
+            # Appended to the text read inside this transaction, so a parallel writer's
+            # paragraph is kept.
+            base = clean.get("description", task.description)
+            text = f"{base}\n\n{added}" if base else added
+            clean["description"] = _clean_text(text, "description", MARKDOWN_MAX)
         area: ProjectArea | None = None
         if "area" in clean:
             found = await repo.list_areas(tx.conn, task.project_id)
             clean["area"], area = self._area_target(found, task.project_slug, clean["area"])
         diff = _task_diff(task, clean)
+        if "deploy_notes" in diff and "deploy_done" not in clean and task.deploy_done:
+            diff["deploy_done"] = False  # changed notes are a deploy not carried out yet
         if not diff and not any(links.values()):
             return Saved(task, [])
         warnings = await self._stage_warnings(tx, task, diff) if rules else []
@@ -4293,6 +4354,11 @@ class Service:
                     tx, task.project_id, task.project_slug, diff["area"], actor
                 )
             columns["area_id"] = area.id if area else None
+        if "cancelled" in diff:
+            columns["cancelled_at"] = tx.now if diff["cancelled"] else None
+            stage = diff.get("stage", task.stage.value)
+            if diff["cancelled"] and stage != Stage.DONE.value:
+                _note(CANCELLED_HINT.format(key=task.key, stage=stage))
         if "stage" in diff:
             rank = await repo.top_rank(tx.conn, task.project_id, diff["stage"])
             await repo.set_rank(tx.conn, task.id, rank)
@@ -4370,7 +4436,12 @@ class Service:
                 if await repo.delete_task_repo(tx.conn, task.id, r.id):
                     out["repos"].setdefault("removed", []).append(r.name)
             else:
-                await link_repo(find(entry))
+                name, _, folder = entry.partition(" ")
+                r = find(name)
+                await link_repo(r)
+                worktree = _clean_worktree(folder, r.name)
+                if worktree and await repo.set_task_repo_worktree(tx.conn, task.id, r.id, worktree):
+                    out["repos"].setdefault("worktree", {})[r.name] = worktree
         for entry in links.get("prs", []):
             if entry.startswith("-"):
                 url = _clean_url(entry[1:].strip(), "prs")
@@ -4405,32 +4476,38 @@ class Service:
         """A session bound to a task works in `cwd`: link the task to the project repository whose
         path holds it (the closest one) and record the branch checked out there (backlog #99).
         Reads outside any transaction (git through the HEAD-file cache); a write transaction only
-        for a new link or a new branch, and its `task.updated` says `how: auto`, which the
-        digests leave out. Its own transaction: a failure here never undoes the hook's status
-        write."""
-        # task -> (path length, repo, linked, stored branch)
-        best: dict[int, tuple[int, int, bool, str | None]] = {}
-        for task_id, repo_id, path, linked, stored in await repo.session_repo_candidates(
+        for a new link, branch or worktree (the folder `cwd`), and its `task.updated` says
+        `how: auto`, which the digests leave out. Its own transaction: a failure here never
+        undoes the hook's status write."""
+        # task -> (path length, repo, linked, stored branch, stored worktree, repo path)
+        best: dict[int, tuple[int, int, bool, str | None, str | None, str]] = {}
+        for task_id, repo_id, path, linked, stored, folder in await repo.session_repo_candidates(
             self._r, session.id
         ):
             size = holds(path, cwd)
             if size is None:
                 continue
             if task_id not in best or size > best[task_id][0]:
-                best[task_id] = (size, repo_id, linked, stored)
+                best[task_id] = (size, repo_id, linked, stored, folder, path)
         if not best:
             return
         branch = await self._branch_at(cwd)
-        work = [
-            (task_id, repo_id, linked)
-            for task_id, (_, repo_id, linked, stored) in best.items()
-            if not linked or (branch is not None and branch != stored)
-        ]
+        work = []
+        for task_id, (_, repo_id, linked, stored, folder, path) in best.items():
+            # Only an empty worktree is filled: one set by hand (or seen first) stays. The
+            # working copy, not the subfolder the session stands in, and never above the
+            # repository's own path.
+            worktree = (
+                await asyncio.to_thread(_work_root, cwd.strip(), path) if folder is None else None
+            )
+            new_branch = branch if branch is not None and branch != stored else None
+            if not linked or new_branch is not None or worktree is not None:
+                work.append((task_id, repo_id, linked, new_branch, worktree))
         if not work:
             return
         async with self._tx() as tx:
-            for task_id, repo_id, linked in work:
-                await self._auto_link(tx, session, task_id, repo_id, linked, branch)
+            for task_id, repo_id, linked, new_branch, worktree in work:
+                await self._auto_link(tx, session, task_id, repo_id, linked, new_branch, worktree)
 
     async def _branch_at(self, folder: str) -> str | None:
         """The branch checked out in `folder`, or None (no git, a detached HEAD, git too slow
@@ -4451,15 +4528,22 @@ class Service:
         repo_id: int,
         linked: bool,
         branch: str | None,
+        worktree: str | None,
     ) -> None:
         changes: dict[str, Any] = {}
         if not linked and await repo.insert_task_repo(
             tx.conn, task_id, repo_id, session.name, "auto", tx.now
         ):
             changes["repos"] = {"added": []}
-        if branch is not None and await repo.set_task_repo_branch(
+        new_branch = branch is not None and await repo.set_task_repo_branch(
             tx.conn, task_id, repo_id, branch
-        ):
+        )
+        if new_branch:
+            changes.setdefault("repos", {})
+        new_worktree = worktree is not None and await repo.set_task_repo_worktree(
+            tx.conn, task_id, repo_id, worktree
+        )
+        if new_worktree:
             changes.setdefault("repos", {})
         if not changes:
             return  # linked meanwhile, the branch already stored
@@ -4471,8 +4555,10 @@ class Service:
         )
         if "added" in changes["repos"]:
             changes["repos"]["added"] = [name]
-        if branch is not None:
+        if new_branch:
             changes["repos"]["branch"] = {name: branch}
+        if new_worktree:
+            changes["repos"]["worktree"] = {name: worktree}
         await tx.event(
             "task.updated",
             session.name,
@@ -4830,7 +4916,9 @@ class Service:
             clean["size"] = size  # the first report's size sizes a task that has none
         diff = _task_diff(task, clean)
         unlog = None
-        if task.tracker_logged:
+        if task.tracker_logged and task.stage in (Stage.LIVE, Stage.DONE):
+            pass  # a closing report on a shipped card is not new work: the log already holds it
+        elif task.tracker_logged:
             unlog = ", ".join(x for x in ("report added", _unlog_reason(task, diff)) if x)
         writes = {**diff, "tracker_logged": False} if unlog else diff
         if writes:
@@ -7159,6 +7247,11 @@ class Service:
             related_more=max(0, len(related) - limit),
             decisions_unrelated=project_total - len(related),
             backlog_lines=[subj.backlog_line(item) for item in backlog_items],
+            worktrees=[
+                f"{c.repo.name}: {c.worktree}" + (f" (branch {c.branch})" if c.branch else "")
+                for c in (await self.task_code(task)).repos
+                if c.worktree
+            ],
             doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX], cache),
             doc_links_total=len(links),
             rules_line=rules_line(await self._rules(self._r, project)),
@@ -8447,17 +8540,20 @@ class Service:
         title: str | None = None,
         details: str | None = None,
         status: str | None = None,
+        remark: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
     ) -> ReviewStep:
         """An agent's change to one step: its text, or `status='open'` to ask for a new look
-        after a fix. Only the owner accepts or rejects, on the board."""
+        after a fix, and a `remark`: a comment under the step that leaves its status as it is.
+        Only the owner accepts or rejects, on the board."""
         if status is not None and status != "open":
             raise ValidationError(
                 "Agents may only set status 'open' (after a fix); the owner accepts or rejects"
                 " a step on the board."
             )
+        note = clean_markdown(remark, "remark", COMMENT_MAX)
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
             current = await self._step_at(tx, task, step)
@@ -8486,6 +8582,17 @@ class Service:
                     actor,
                     status="open",
                     previous=current.status,
+                )
+            if note:
+                await self._insert_comment(
+                    tx,
+                    task,
+                    author_kind="agent",
+                    author=actor,
+                    session_id=sess.id if sess else None,
+                    body=note,
+                    in_reply_to=None,
+                    step_id=current.id,
                 )
             updated = await repo.get_review_step(tx.conn, current.id)
             assert updated is not None

@@ -24,6 +24,7 @@
   <p class="approval-summary">{{ a.summary }}</p>
   {% if a.rollback %}<p class="approval-rollback"><span class="muted">Rollback:</span> <code>{{ a.rollback }}</code></p>
   {% elif a.action == "deploy" %}<p class="approval-rollback form-error">No rollback command given: a deploy is approved only with one. Refuse it, or wait for the agent to ask again with approval_request.</p>{% endif %}
+  {% if a.action == "deploy" and a.task_deploy_notes %}<div class="approval-deploy"><p class="muted">Deploy notes of the card ({{ "done" if a.task_deploy_done else "not done yet" }}):</p><div class="markdown">{{ a.task_deploy_notes|markdown }}</div></div>{% endif %}
   {% if a.decision_text %}<p class="approval-line"><span class="muted">Your line:</span> {{ a.decision_text }}</p>{% endif %}
   {% if a.is_open %}
   <form class="approval-decide" method="post" action="/approvals/{{ a.id }}/decide"

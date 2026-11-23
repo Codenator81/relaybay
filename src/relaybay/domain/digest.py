@@ -733,9 +733,10 @@ class TaskData:
     decisions_unrelated: int = 0  # current project decisions not related to the card
     related_more: int = 0  # related project decisions not loaded
     backlog_lines: list[str] = field(default_factory=list)  # open items of the card's subject
+    worktrees: list[str] = field(default_factory=list)  # 'web: <folder> (branch x)' per repo
 
 
-def _task_head(task: Task) -> list[str]:
+def _task_head(task: Task, worktrees: list[str] | None = None) -> list[str]:
     state = [f"stage {task.stage.value}"]
     if task.size:
         state.append(f"size {task.size}")
@@ -746,15 +747,25 @@ def _task_head(task: Task) -> list[str]:
     state.append(f"v{task.version}")
     lines = [" · ".join(state)]
     stale = " (stale)" if task.next_step_stale else ""
+    deploy = "done" if task.deploy_done else "not done yet"
+    cancelled = task.cancelled
+    if cancelled and task.cancelled_at:
+        cancelled = f"{cancelled} ({task.cancelled_at[:10]})"
     for label, value in (
         ("Area", task.area),
         ("Next step", f"{task.next_step}{stale}" if task.next_step else None),
         ("Waiting on", task.waiting_on),
         ("Note", task.stage_note),
+        ("Cancelled", cancelled),
         ("Branch", task.branch),
+        *(("Worktree", w) for w in worktrees or []),
         ("Doc", task.doc_path),
         ("About", _clip(task.description, ABOUT_MAX) or None),
         ("Done so far", _clip(task.progress, 1_500) or None),
+        (
+            "Deploy notes",
+            f"{deploy}: {_clip(task.deploy_notes, 600)}" if task.deploy_notes else None,
+        ),
     ):
         if value:
             lines.append(f"{label}: {value}")
@@ -782,7 +793,7 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
     sections = [
         Section(
             f"# {key} — {task.title}",
-            _task_head(task),
+            _task_head(task, data.worktrees),
             f'task_get("{key}")',
             0,
             line_max=FIRST_SECTION_LINE_MAX,
