@@ -368,7 +368,7 @@ bound to it, and the Claude desktop app shows and drives that session. What is l
 
 - **The upgrade** (migration 0049, data only, [§11](#spec-data)) lists the worktrees runs created and did not remove for the Inbox (`app_setting` `removed_runs_worktrees`); cancels the waiting turns of runs and marks the running ones lost; ends every open run (status reason "runs inside the program were removed in 0.12", ended by `relaybay`); withdraws the open questions that have a run (the coordinator's questions without a card among them) and relaybay's own open questions about a kept worktree, with that reason; expires the open and the approved, unused approvals that have a run; stops the open schedule runs ("schedules were removed in 0.12") and disables every schedule not deleted or done; clears every task's "answer received" mark. Questions and approvals of desktop sessions stay open. Reports that turns wrote stay ordinary reports on their cards; the session rows of
   runs stay as ended sessions in their cards' binding history. The tables of runs and schedules
-  stay in the file, unread.
+  were dropped by migrations 0058 and 0059.
 - **Worktrees on disk.** relaybay touches nothing on disk (worktrees, Claude Code's transcripts, a
   coordinator folder). The Inbox lists the worktrees runs created and did not remove, with their
   paths, to be removed with `git worktree remove` when not needed ([§2](#spec-board-inbox)).
@@ -673,7 +673,7 @@ their threads ([§12](#spec-intake)).
 Sessions in the desktop app message each other through the desktop app itself. The Messages page and
 its sidebar item, the task's Messages block, delivery through hooks, the limits, the notifications
 and the Inbox lines are gone; their MCP tools were removed with MCP contract 2
-([§3](#spec-mcp-compat)) and the `session_message` table stays in the file, unread
+([§3](#spec-mcp-compat)) and the `session_message` table was dropped by migration 0059
 ([§11](#spec-data)).
 
 <a id="spec-environments-concept"></a>
@@ -1318,7 +1318,7 @@ they still show.
 reader of Claude Code transcripts and the transcript paths kept for it, token budgets (the Budgets
 block, the task's budget row, budget lines through the hooks, budget notifications) and the brake
 (Stop all, the banner, `relaybay brake on` refusals through the hooks) were built for agents on
-cards; the desktop app shows the plan limits. Their tables stay in the file, unread
+cards; the desktop app shows the plan limits. Their tables were dropped by migration 0059
 ([§11](#spec-data)); their MCP tools were removed with MCP contract 2 ([§3](#spec-mcp-compat)). The
 per-session **No live now** switch and the guard stay ([§7](#spec-no-live)).
 
@@ -3148,15 +3148,12 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0050_session_surface` | Additive: `session.surface` (`desktop`, `terminal` or NULL), `session.entrypoint` (the raw `CLAUDE_CODE_ENTRYPOINT`), `session.start_cwd` (the resume folder) and `task_session.unbound_reason` (`session_end` or NULL), [§1](#spec-session-surface) |
 | `0051_backlog_registry` | Additive, all nullable: `backlog_item.kind` (`bug`, `idea`, `question`, `debt`), `location`, `origin_text`, `triage_note`, `duplicate_of` (another item, `ON DELETE SET NULL`, indexed), `found_on` ([§12](#spec-backlog-model)). Existing items have no kind |
 | `0052_archive_and_launch` | Additive, no backfill: `task.archived_from` (`live` or NULL, [§2](#spec-board-archive-live)) and `session.launched_by` (the starter's session id, `ON DELETE SET NULL`, [§4](#spec-hooks-launch-bind)); `task_session.unbound_reason` may now also be `handed_over`. Rollback: an older release ignores both columns, but its stage changes do not clear `archived_from`, so after a downgrade and a new upgrade a card archived from live and moved on in between may keep a stale `live` there; if the done window later archives it, Back from the archive returns it to live (move it by hand) |
+| `0058_drop_run_tables` | Drops the run tables, unread and unwritten since 0.12: `run`, `run_turn`, `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`, `schedule_run`. `question` and `approval` rebuilt with foreign keys off: every row and column kept, `run_id` and `turn_id` stay as plain numbers without their foreign keys (SQLite refuses writes into a table whose foreign key names a missing table). The backup before a new version ([§13](#spec-backups)) is taken before it runs; rollback is that backup (an older release needs the dropped tables) |
+| `0059_drop_unread_tables` | Drops the rest of what 0.12 left unread and unwritten: `schedule`, `usage_file`, `usage_day`, `usage_message`, `usage_task_day`, `token_budget`, `budget_mark`, `brake`, `session_message`, `intake_source`, `intake_message`, `intake_thread`, and the columns `project.autonomy`, `project.run_retention`, `session.transcript_path`, `task.autonomy`, `task.answer_received_at`, `task.answer_message_id`. `task` and `backlog_item` rebuilt with foreign keys off (a column with a foreign key or a CHECK cannot be dropped in place): every other column, CHECK, index and row kept; `backlog_item.intake_message_id` stays as a plain number. The run columns of `question` and `approval` stay (a CHECK uses `run_id`). Backup and rollback as for 0058 |
 
-The tables and columns of runs, the coordinator run, profiles and schedules (`run`, `run_turn`,
-`run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`,
-`schedule`, `schedule_run`, `project.run_retention` and the run columns of `question` and
-`approval`), of usage and budgets (`usage_file`, `usage_day`, `usage_message`, `usage_task_day`,
-`token_budget`, `budget_mark`, `session.transcript_path`), of the brake (`brake`), of intake
-(`intake_source`, `intake_message`, `intake_thread`, `task.autonomy`, `task.answer_message_id`,
-`project.autonomy`) and of session messages (`session_message`) stay in the file since 0.12, unread; dropping them is a later release's
-migration. The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
+What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
+run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain
+numbers. The archive by age is computed from `closed_at` / `unarchived_at`; only the hand mark is stored. Events are kept forever. Table details:
 [architecture](architecture.md#data-model).
 
 <a id="spec-intake"></a>
@@ -3170,7 +3167,7 @@ itself. Gone: posting messages from watchers, the Inbox groups Intake and Answer
 received" mark (cleared by migration 0049), source trust and task and project autonomy
 (Settings → Intake), Forward to the agent, the task's Intake block, wake-ups through hooks and the
 intake notifications. The `intake_*` tools were removed with MCP contract 2 ([§3](#spec-mcp-compat)) and the
-intake tables stay in the file, unread ([§11](#spec-data)). Backlog items whose origin was intake
+intake tables were dropped by migration 0059 ([§11](#spec-data)). Backlog items whose origin was intake
 stay, their origin shown as plain text.
 
 <a id="spec-backlog"></a>
@@ -3577,6 +3574,20 @@ quits. The SHA-256 from the same release is integrity only: nothing is signed. A
 not the installed one (run from a uv tool, pipx or a checkout) shows its upgrade command instead.
 A second click while a download or an installer runs is ignored, and Windows setup runs one at a
 time (`SetupMutex`).
+
+**Progress and Cancel.** Update says it started in a notification with the installer's size
+("Downloading relaybay X.Y.Z (39 MB)..."). While it downloads, the tray tooltip shows
+`Downloading X.Y.Z: 12 of 39 MB (30 %)` (only the megabytes when the size is not known; redrawn at
+most twice a second), and the tray menu shows a greyed line in place of Update,
+`Downloading X.Y.Z (39 MB): 30 %` in 10 % steps (the menu is rebuilt only for a new step, so one
+held open stays usable), then `Checking the download of X.Y.Z...` during the SHA-256 check, and
+**Cancel update**. Cancel update, or Quit, stops the download at its next read (64 KiB; opening the
+connection or reading `SHA256SUMS.txt` may take up to its 60 s timeout first), also during the
+check: the partial or verified file is deleted, nothing runs, and a notification says that nothing
+was installed (none after Quit). A failed download or check says what failed and that nothing was
+changed; a tray notification longer than Windows takes (255 characters) is cut, the log has it
+whole. Once the installer has started there is nothing to cancel; the installer and
+the backup before a new version work as before.
 
 <a id="spec-backups"></a>
 
