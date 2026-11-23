@@ -74,15 +74,14 @@ def test_the_comment_box_is_outside_every_refetched_fragment(board: TestClient) 
 def test_the_card_order_is_state_report_folds_then_comments(board: TestClient) -> None:
     """The comments sit with the box at the end, like a messenger (owner, 2026-11-20)."""
     service: Service = board.app.state.service
-    task = run_in_app(board, project_task, service)
+    task = run_in_app(board, project_task, service, description="Why: the cart")
     run_in_app(board, service.add_report, task.key, "changed · S · first pass")
     html = dialog(board, task.key)
     marks = [
         'class="panel state-line',
-        'class="panel task-report"',
-        'data-fold="session"',
-        'data-fold="details"',
+        'class="panel fold task-report"',
         'data-fold="description"',
+        'data-fold="details"',
         'class="comment-thread"',
         'class="comment-form"',
     ]

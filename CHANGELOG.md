@@ -22,6 +22,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A card's document field holding the path of a file that a file document of the project reads leads to that document on the board and in `task_context`, like a `relaybay://doc` link.
 - GitHub-style anchors (`#2-kyc--kyb--veriff`) find the same section as relaybay's (`#2-kyc-kyb-veriff`) in `doc_get`, document links and the document page, so links written inside a document for GitHub land on their heading.
+- The task dialog's Overview and the task page put what waits for you first: open approvals and questions, unread agent replies, then Next (next step, waiting on, blockers, cancelled), the plan's steps, the Last report (now a fold like its neighbours), deploy notes, description and progress; task details, the session, decisions, findings, the document and the histories come folded at the bottom. A done or archived card leads with its last report and code. Blocks with nothing in them are left out instead of showing "No reports yet" and the like; a card without comments folds the comment box into Add comment.
 
 ### Fixed
 

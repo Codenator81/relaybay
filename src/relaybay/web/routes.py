@@ -66,7 +66,7 @@ from relaybay.security import (
     session_cookie_value,
     token_id,
 )
-from relaybay.service import HTTP_URL_RE, Inbox, Service, has_hidden_chars
+from relaybay.service import HTTP_URL_RE, Inbox, Service, TaskDetail, has_hidden_chars
 from relaybay.web.markdown import render_document, render_markdown
 from relaybay.web.sse import event_stream
 
@@ -559,6 +559,17 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             raise NotFoundError(f"Task {key!r} not found in {slug!r}.")
         return task
 
+    async def card_detail(key: str) -> TaskDetail:
+        """The task's detail as the session card renders it, its questions and approvals in it:
+        the card leaves out a block with nothing in it. Read first, so the expiry they run is
+        already in the task's open counts."""
+        task = await service.get_task(key)
+        questions = await service.card_questions(task)
+        approvals = await service.card_approvals(task)
+        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+        detail.questions, detail.approvals = questions, approvals
+        return detail
+
     @router.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {
@@ -772,7 +783,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/t/{key}", response_class=HTMLResponse)
     async def task_page(request: Request, key: str):
         last_event_id = await service.last_event_id()  # before the data, see projects_page
-        detail = await service.task_detail(key, reports=TASK_PAGE_REPORTS)
+        detail = await card_detail(key)
         return await page(
             request,
             "task.html",
@@ -1119,7 +1130,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     async def dialog_context(slug: str, key: str, tab: str = "") -> dict[str, Any]:
         task = await find_task(slug, key)
         return {
-            "detail": await service.task_detail(task.key, reports=TASK_PAGE_REPORTS),
+            "detail": await card_detail(task.key),
             "values": {},
             "waiting_values": await service.waiting_on_values(),
             "area_values": await area_names(task.project_slug),
@@ -1137,7 +1148,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     @router.get("/p/{slug}/t/{key}/view", response_class=HTMLResponse)
     async def view_fragment(request: Request, slug: str, key: str):
         task = await find_task(slug, key)
-        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+        detail = await card_detail(task.key)
         return render(request, "_task_view.html", detail=detail)
 
     @router.get("/p/{slug}/t/{key}/form", response_class=HTMLResponse)
@@ -1246,7 +1257,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             if error:
                 return PlainTextResponse(error, status_code=409)
             return RedirectResponse(f"/t/{task.key}", status_code=303)
-        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+        detail = await card_detail(task.key)
         return render(request, "_task_view.html", detail=detail, error=error)
 
     @router.post("/p/{slug}/t/{key}/bind")
@@ -1270,7 +1281,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             error = str(exc)
         if not htmx:
             return RedirectResponse(f"/t/{task.key}", status_code=303)
-        detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+        detail = await card_detail(task.key)
         return render(request, "_task_view.html", detail=detail, error=error)
 
     async def comment_thread(
@@ -2694,7 +2705,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         if target == "view" and "hx-request" not in request.headers:
             return RedirectResponse(f"/t/{task.key}", status_code=303)
         if target == "view":
-            detail = await service.task_detail(task.key, reports=TASK_PAGE_REPORTS)
+            detail = await card_detail(task.key)
             return render(request, "_task_view.html", detail=detail, error=error)
         return JSONResponse({"archived": task.archived_at is not None})
 

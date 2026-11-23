@@ -243,7 +243,8 @@ def test_card_shows_only_essentials(board: TestClient, seeded: str) -> None:
     dialog = board.get(f"/p/acme-shop/t/{seeded}/dialog").text
     assert "&lt;script&gt;" in dialog and "<script>x" not in dialog
     assert "<strong>cart</strong> done" in dialog and "first pass" in dialog
-    assert "No session is bound to this task." in dialog
+    # No session and none to bind: the session block is left out.
+    assert 'data-fold="session"' not in dialog and "No session is bound" not in dialog
 
 
 def test_task_query_renders_the_dialog_open(board: TestClient, seeded: str) -> None:
@@ -266,7 +267,7 @@ def test_task_page_shows_description_progress_and_unbind(board: TestClient, seed
     run_in_app(board, service.update_task, seeded, {"description": "D1", "progress": "P1"})
     page = board.get(f"/t/{seeded}").text
     assert "<h2>Description</h2>" in page and "<p>D1</p>" in page and "<p>P1</p>" in page
-    assert "Unbind session" not in page and "No session is bound" in page
+    assert "Unbind session" not in page and 'data-fold="session"' not in page
 
     run_in_app(board, service.bind_session, seeded, DESKTOP, session_title="Checkout work")
     page = board.get(f"/t/{seeded}").text
@@ -444,25 +445,24 @@ def test_compact_rules_touch_only_task_cards(board: TestClient, seeded: str) -> 
 
 
 def test_the_folds_of_the_task_view(board: TestClient, seeded: str) -> None:
-    """The session card (design 0025): the state line, the last report and the comments are
-    always shown; the session, the task details and the rest fold."""
+    """The session card (design 0025): the state line and the comments are always shown; every
+    other block folds, the ones the owner acts on open, the secondary ones folded."""
     templates = Path(relaybay.__file__).parent / "web" / "templates"
     text = (templates / "_task_view.html").read_text(encoding="utf-8")
     assert '<details class="panel"' not in text
-    sections = re.findall(r'<section class="panel ([a-z-]+)"', text)
     # The comments sit with the box below the view, so what is sent shows at once.
-    assert sections == ["task-report"]
+    assert re.findall(r'<section class="panel ([a-z-]+)"', text) == []
     run_in_app(
         board,
         board.app.state.service.update_task,
         seeded,
         {"description": "D1", "progress": "P1"},
     )
-    always = ("questions", "approvals", "session", "details", "description", "progress")
     for url in (f"/t/{seeded}", f"/p/acme-shop/t/{seeded}/dialog"):
         page = board.get(url).text
-        for key in always:
+        for key in ("report", "description", "progress"):
             assert re.search(rf'<details class="panel fold[^"]*" data-fold="{key}" open', page), key
+        assert re.search(r'<details class="panel fold[^"]*" data-fold="details">', page)
         assert "<summary><h2>Description</h2></summary>" in page
         assert 'data-fold="reports"' not in page and 'data-fold="comments"' not in page
         assert '<section class="panel state-line state-none"' in page
@@ -481,8 +481,8 @@ def test_the_reports_accordion_lives_inside_the_last_report(board: TestClient, s
     service: Service = board.app.state.service
     run_in_app(board, service.add_report, seeded, "verified · M · second")
     page = board.get(f"/t/{seeded}").text
-    block = page.split('<section class="panel task-report"', 1)[1].split("</section>", 1)[0]
-    assert ">Last report</h2>" in block
+    block = page.split('data-fold="report"', 1)[1].split('<details class="panel fold', 1)[0]
+    assert ">Last report</h2></summary>" in block
     assert '<details class="report report-older" data-report="' in block
 
 

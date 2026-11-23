@@ -44,8 +44,6 @@
     <button type="submit" class="btn">Mark replies read</button>
   </form>
   {% endif %}
-  {% elif not ns.step %}
-  <p class="muted">No comments yet.</p>
   {% endif %}
   <p class="muted comment-hint">{% if wait_reason %}A new comment waits: {{ wait_reason }}.{% else %}A new comment reaches {{ t.session_name }} through its hooks on its next prompt or tool call.{% endif %}</p>
 </div>

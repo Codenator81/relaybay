@@ -6,7 +6,7 @@
 {%- set o = detail.open %}
 <section class="panel state-line state-{{ st.key }}" aria-labelledby="state-{{ t.key }}">
   <div class="state-head">
-    <span class="status-dot{% if s and s.status %} dot-{{ s.status }}{% endif %}" aria-hidden="true"></span>
+    <span class="status-dot inline{% if s and s.status %} dot-{{ s.status }}{% endif %}" aria-hidden="true"></span>
     <h2 class="state-word" id="state-{{ t.key }}">{{ st.label }}</h2>
     <span class="state-actions">
       {% if o %}
