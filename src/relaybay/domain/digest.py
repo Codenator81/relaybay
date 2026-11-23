@@ -734,9 +734,13 @@ class TaskData:
     related_more: int = 0  # related project decisions not loaded
     backlog_lines: list[str] = field(default_factory=list)  # open items of the card's subject
     worktrees: list[str] = field(default_factory=list)  # 'web: <folder> (branch x)' per repo
+    blocker_lines: list[str] = field(default_factory=list)  # one per card blocking this one
+    blocking: str | None = None  # 'key, key': the open cards this one blocks
 
 
-def _task_head(task: Task, worktrees: list[str] | None = None) -> list[str]:
+def _task_head(
+    task: Task, worktrees: list[str] | None = None, blocking: str | None = None
+) -> list[str]:
     state = [f"stage {task.stage.value}"]
     if task.size:
         state.append(f"size {task.size}")
@@ -759,6 +763,7 @@ def _task_head(task: Task, worktrees: list[str] | None = None) -> list[str]:
         ("Cancelled", cancelled),
         ("Branch", task.branch),
         *(("Worktree", w) for w in worktrees or []),
+        ("Blocks", blocking),
         ("Doc", task.doc_path),
         ("About", _clip(task.description, ABOUT_MAX) or None),
         ("Done so far", _clip(task.progress, 1_500) or None),
@@ -793,7 +798,7 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
     sections = [
         Section(
             f"# {key} — {task.title}",
-            _task_head(task, data.worktrees),
+            _task_head(task, data.worktrees, data.blocking),
             f'task_get("{key}")',
             0,
             line_max=FIRST_SECTION_LINE_MAX,
@@ -816,6 +821,13 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
         step = reminder_line(other.key, other.stage.value, plan, [], False)
         others.append(_task_line(other) + (f" · {_clip(step, 160)}" if step else ""))
     _section(sections, "## Your other bound tasks", others, "task_context(task)", 2, key=OTHERS_KEY)
+    _section(
+        sections,
+        "## Blocked by",
+        data.blocker_lines,
+        f'task_get("{key}"); task_update("{key}", blocked_by=["-key"]) removes one',
+        2,
+    )
     _section(
         sections,
         "## Unread owner comments",

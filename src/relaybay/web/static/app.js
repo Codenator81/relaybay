@@ -392,6 +392,10 @@
       case "task.stage_changed":
         queue(column(data.from));
         queue(column(data.to));
+        // The cards it blocks show its stage in a chip, wherever they stand.
+        document.querySelectorAll(".blocked-chip[data-blocker]").forEach(function (chip) {
+          if (chip.dataset.blocker === data.key) queue(chip.closest(".card"));
+        });
         break;
       case "task.reordered":
         queue(column(data.stage));

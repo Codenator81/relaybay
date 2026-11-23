@@ -142,6 +142,11 @@ REPOS_HELP = (
     " links the repository it works in by itself. 'name <absolute path>' also sets the folder"
     " (worktree) the task works in there."
 )
+BLOCKED_BY_HELP = (
+    "Cards this task waits for, by key, of any project on the board: 'acme-shop-12'; '-key'"
+    " removes one. A blocker blocks while it is in plan, dev, review or test, and no longer at"
+    " live or done. An unknown key, the task itself and a cycle are refused."
+)
 PRS_HELP = (
     "Pull request links (http:// or https://) added to the task, optionally after a repository"
     " name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose"
@@ -640,6 +645,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         area: Annotated[str | None, Field(description=AREA_HELP + CLEARS)] = None,
         repos: Annotated[list[str] | None, Field(description=REPOS_HELP)] = None,
         prs: Annotated[list[str] | None, Field(description=PRS_HELP)] = None,
+        blocked_by: Annotated[list[str] | None, Field(description=BLOCKED_BY_HELP)] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -649,10 +655,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         hook_session: HookSession = None,
     ) -> str:
         """Change task fields (waiting on, next step, branch, description, progress, the area,
-        the tracker issue and its work-log mark, the repositories it touches and its pull
-        requests, ...). Omitted fields stay as they are; '-' or an empty string clears a field.
-        Keep `progress` current with every report. To move a task between stages use
-        task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next)
+        the tracker issue and its work-log mark, the repositories it touches, its pull requests,
+        the cards blocking it, ...). Omitted fields stay as they are; '-' or an empty string
+        clears a field. Keep `progress` current with every report. To move a task between stages
+        use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next)
         whenever the stage changes or you report."""
         given = {
             "title": title,
@@ -678,6 +684,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             changes["repos"] = repos
         if prs:
             changes["prs"] = prs
+        if blocked_by:
+            changes["blocked_by"] = blocked_by
         if not changes:
             raise ToolError("Nothing to update: pass at least one field.")
         saved = await run(

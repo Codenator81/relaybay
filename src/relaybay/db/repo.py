@@ -12,6 +12,7 @@ from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_js
 from relaybay.domain.approvals import Approval
 from relaybay.domain.areas import ProjectArea
 from relaybay.domain.backlog import NO_KIND, UNASSIGNED, BacklogItem
+from relaybay.domain.blockers import BlockLink
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
 from relaybay.domain.doc_index import IndexedSection
 from relaybay.domain.environments import (
@@ -513,6 +514,91 @@ async def insert_task_pr(
 async def delete_task_pr(conn: aiosqlite.Connection, task_id: int, url: str) -> bool:
     cur = await conn.execute("DELETE FROM task_pr WHERE task_id = ? AND url = ?", (task_id, url))
     return cur.rowcount > 0
+
+
+async def insert_task_block(
+    conn: aiosqlite.Connection, task_id: int, blocker_id: int, created_by: str, now: str
+) -> bool:
+    """False when the task was blocked by that card already."""
+    cur = await conn.execute(
+        "INSERT INTO task_block (task_id, blocker_id, created_by, created_at)"
+        " VALUES (?, ?, ?, ?) ON CONFLICT (task_id, blocker_id) DO NOTHING",
+        (task_id, blocker_id, created_by, now),
+    )
+    return cur.rowcount > 0
+
+
+async def delete_task_block(conn: aiosqlite.Connection, task_id: int, blocker_id: int) -> bool:
+    cur = await conn.execute(
+        "DELETE FROM task_block WHERE task_id = ? AND blocker_id = ?", (task_id, blocker_id)
+    )
+    return cur.rowcount > 0
+
+
+async def blocker_ids_of(conn: aiosqlite.Connection, task_ids: list[int]) -> dict[int, list[int]]:
+    """task id -> the ids of the cards blocking it, for the cycle check's walk."""
+    found: dict[int, list[int]] = {}
+    for start in range(0, len(task_ids), _CHUNK):
+        part = task_ids[start : start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        rows = await _all(
+            conn,
+            f"SELECT task_id, blocker_id FROM task_block WHERE task_id IN ({marks})",
+            tuple(part),
+        )
+        for r in rows:
+            found.setdefault(r["task_id"], []).append(r["blocker_id"])
+    return found
+
+
+_TASK_BLOCK_SELECT = """
+SELECT b.task_id, b.blocker_id, b.created_by, b.created_at,
+       o.key, o.title, o.stage, o.archived_at, p.slug AS project_slug
+FROM task_block b
+JOIN task o ON o.id = b.{other}
+JOIN project p ON p.id = o.project_id
+"""
+
+
+def _block_link(row: aiosqlite.Row) -> BlockLink:
+    return BlockLink(
+        task_id=row["task_id"],
+        blocker_id=row["blocker_id"],
+        key=row["key"],
+        title=row["title"],
+        stage=row["stage"],
+        project_slug=row["project_slug"],
+        archived=row["archived_at"] is not None,
+        created_by=row["created_by"],
+        created_at=row["created_at"],
+    )
+
+
+async def task_blockers(
+    conn: aiosqlite.Connection, *, task_id: int | None = None, project_id: int | None = None
+) -> list[BlockLink]:
+    """The cards blocking one task, or every task of a project; `key` names the blocker."""
+    where, value = (
+        ("b.task_id = ?", task_id)
+        if task_id is not None
+        else ("b.task_id IN (SELECT id FROM task WHERE project_id = ?)", project_id)
+    )
+    rows = await _all(
+        conn,
+        _TASK_BLOCK_SELECT.format(other="blocker_id") + f" WHERE {where} ORDER BY b.id",
+        (value,),
+    )
+    return [_block_link(r) for r in rows]
+
+
+async def task_blocked(conn: aiosqlite.Connection, task_id: int) -> list[BlockLink]:
+    """The cards this task blocks; `key` names the blocked card."""
+    rows = await _all(
+        conn,
+        _TASK_BLOCK_SELECT.format(other="task_id") + " WHERE b.blocker_id = ? ORDER BY b.id",
+        (task_id,),
+    )
+    return [_block_link(r) for r in rows]
 
 
 async def session_repo_candidates(

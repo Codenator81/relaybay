@@ -532,6 +532,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "archive": archive,
             "archive_more": archive_more,
             "code": await service.task_codes(project.id, shown),
+            "blockers": await service.active_blockers(project.id),
             "archived": archived,
             "q": q,
             "stage_filter": stage,
@@ -1087,7 +1088,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     async def card_fragment(request: Request, slug: str, key: str):
         task = await find_task(slug, key)
         code = {task.id: await service.task_code(task)}
-        return render(request, "_card.html", t=task, slug=slug, code=code)
+        blocked_by, _ = await service.task_blocks(task)
+        blockers = {task.id: [b for b in blocked_by if b.active]}
+        return render(request, "_card.html", t=task, slug=slug, code=code, blockers=blockers)
 
     @router.post("/p/{slug}/t/{key}/move")
     async def move_card(
