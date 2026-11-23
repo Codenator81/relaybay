@@ -7,9 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-11-23
+
 ### Changed
 
-- Update from the tray shows how far it got: the notification gives the installer's size, the tray menu and tooltip show `Downloading X.Y.Z: 12 of 39 MB (30 %)` and then `Checking the download...`, and **Cancel update** stops the download (the partial file is deleted, nothing runs). A failed download says that nothing was changed and that Update tries again. The installer and the backup before a new version are unchanged.
+- Update from the tray shows how far it got: the notification gives the installer's size, the tray tooltip shows `Downloading X.Y.Z: 12 of 39 MB (30 %)`, the menu the same in 10 % steps and then `Checking the download...`, and **Cancel update** stops the download, also during the check (the file is deleted, nothing runs). Tray notifications longer than Windows takes are cut. A failed download says that nothing was changed and that Update tries again. The installer and the backup before a new version are unchanged.
 
 ### Removed
 
@@ -1146,7 +1148,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.2
 [0.15.1]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.1
 [0.15.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.0
 [0.14.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.14.0
