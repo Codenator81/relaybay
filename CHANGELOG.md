@@ -25,6 +25,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A report on a card in `live` or `done` no longer clears the tracker's work-log mark; a move back to an earlier stage still does.
 - A section opened by its anchor is no longer hidden under the sticky top bar, and signing in keeps the `#anchor` of the link that led to the sign-in page.
+- The note about a file document changed outside relaybay names only sections the file still has; removed ones are listed apart (`removed checkout`) and named again when they come back.
 
 ## [0.15.2] - 2026-11-23
 

@@ -504,3 +504,28 @@ def test_the_board_refuses_to_save_a_file_document(
         "/p/acme-shop/docs/spec/edit", data=form, headers={"Origin": BASE}, follow_redirects=False
     )
     assert saved.status_code == 303 and path.read_bytes() == SPEC.encode()
+
+
+async def test_the_outside_note_names_only_sections_the_file_has(
+    acme: Service, outside: Path
+) -> None:
+    path = outside / "spec.md"
+    path.write_bytes(SPEC.encode())
+    await add(acme, path)
+    path.write_bytes(SPEC.replace("Pay by card.", "Pay by cash.").encode())
+    later(path)
+    found, _, _ = await acme.document_outline("acme-shop", "spec")
+    assert found.file_changed_sections == "checkout"
+    # The changed section is renamed away and Refunds removed: neither is named as a section.
+    renamed = SPEC.replace("## Checkout\nPay by card.", "## Paying\nPay by cash.")
+    path.write_bytes(renamed.replace("\n\n## Refunds\nIn 14 days.", "").encode())
+    later(path)
+    found, _, _ = await acme.document_outline("acme-shop", "spec")
+    assert found.file_changed_sections == "paying,-checkout,-refunds"
+    note = doc_index.outside_note(found)
+    assert note is not None and ": sections paying; removed checkout, refunds (version" in note
+    # A removed section that comes back is named as a section again.
+    path.write_bytes(SPEC.replace("## Checkout\nPay by card.", "## Paying\nPay by cash.").encode())
+    later(path)
+    found, _, _ = await acme.document_outline("acme-shop", "spec")
+    assert found.file_changed_sections == "paying,refunds,-checkout"
