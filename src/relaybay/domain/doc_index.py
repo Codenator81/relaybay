@@ -525,13 +525,34 @@ def content_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def outside_sections(
+    earlier: list[str], changes: dict[str, list[str]], rows: list[IndexedSection]
+) -> list[str]:
+    """The sections an outside change names, earlier outside changes first: the added and
+    changed ones the file still has, and the removed ones as `-anchor` (dropped again when the
+    section is back)."""
+    present = {r.name for r in rows}
+    out: list[str] = []
+    for name in [*earlier, *changes["added"], *changes["changed"]]:
+        if name and not name.startswith("-") and name in present:
+            out.append(name)
+    for name in [*(e[1:] for e in earlier if e.startswith("-")), *changes["removed"]]:
+        if name and name not in present:
+            out.append(f"-{name}")
+    return list(dict.fromkeys(out))
+
+
 def outside_note(doc: Document) -> str | None:
     """`Note: spec was changed outside relaybay at <time>: sections a, b (version N).` while
     the last change of a file document's file seen by relaybay was not its own."""
     if doc.file_changed_by != "outside":
         return None
-    named = [a for a in (doc.file_changed_sections or "").split(",") if a]
+    names = [a for a in (doc.file_changed_sections or "").split(",") if a]
+    named = [a for a in names if not a.startswith("-")]
+    removed = [a[1:] for a in names if a.startswith("-")]
     sections = f": sections {', '.join(named)}" if named else ""
+    if removed:
+        sections += f"{';' if named else ':'} removed {', '.join(removed)}"
     return (
         f"Note: {doc.slug} was changed outside relaybay at {(doc.file_changed_at or '')[:16]}Z"
         f"{sections} (version {doc.version})."

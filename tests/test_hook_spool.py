@@ -448,6 +448,9 @@ def test_a_dead_server_never_reaches_claude_codes_kill(
         *("-I", "-m", "relaybay.hook_client"),
         *("--url", f"http://127.0.0.1:{port}/hooks/claude-code", "--token-file", str(token)),
     ]
+    # A cold first interpreter start (bytecode compiled, files scanned by antivirus on a fresh
+    # Windows runner) took seconds in CI and is no part of the hook's own budget.
+    subprocess.run([sys.executable, "-I", "-c", "import relaybay.hook_client"], check=True)
     times = []
     for event in ("Stop", "UserPromptSubmit", "Notification", "Stop", "SessionEnd", "Stop") * 2:
         started = time.monotonic()
