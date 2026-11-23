@@ -688,6 +688,17 @@ a.badge.tracker:hover { text-decoration: underline; }
   font-weight: 600;
   text-decoration: line-through;
 }
+/* A card waiting for another one that is not live or done yet. */
+.chip.blocked-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.chip.blocked-chip:hover { text-decoration: underline; }
 .card-next.stale { color: var(--muted); }
 /* The Code row: repositories the task touches, their pull requests, "Open in VS Code". */
 .code-row { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 13px; }

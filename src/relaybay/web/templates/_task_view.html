@@ -122,6 +122,12 @@
       {% if t.next_step %}<dt>Next step</dt><dd{% if is_done or stale %} class="muted"{% endif %}>{{ t.next_step }}{% if stale %} <span class="stale-mark" title="Set before the last stage change">stale</span>{% endif %}</dd>{% endif %}
       {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
       {% if t.cancelled %}<dt>Cancelled</dt><dd><span class="chip cancelled-chip">cancelled</span> {{ t.cancelled }}{% if t.cancelled_at %} <span class="muted"><time datetime="{{ t.cancelled_at }}" data-age>{{ t.cancelled_at|age }}</time></span>{% endif %}</dd>{% endif %}
+      {% if detail.blocked_by %}<dt>Blocked by</dt><dd><ul class="history task-blockers">
+        {%- for b in detail.blocked_by %}<li{% if not b.active %} class="muted"{% endif %}><a class="card-key" href="/p/{{ b.project_slug }}?task={{ b.key }}">{{ b.key }}</a> <span class="stage-pill stage-{{ b.stage }}">{{ label(b.stage) }}</span> {{ b.title }}{% if not b.active %} <span class="muted">(no longer blocks)</span>{% endif %}</li>{% endfor %}
+      </ul></dd>{% endif %}
+      {% if detail.blocks %}<dt>Blocks</dt><dd><ul class="history task-blockers">
+        {%- for b in detail.blocks %}<li{% if b.stage == "done" or b.archived %} class="muted"{% endif %}><a class="card-key" href="/p/{{ b.project_slug }}?task={{ b.key }}">{{ b.key }}</a> <span class="stage-pill stage-{{ b.stage }}">{{ label(b.stage) }}</span> {{ b.title }}</li>{% endfor %}
+      </ul></dd>{% endif %}
       {% if detail.code.board_shown %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}
       {% if t.tracker_ref or t.tracker_name or t.tracker_url or t.tracker_logged or (tracker_log_required(t) and is_done) %}
       <dt>Tracker</dt><dd class="tracker-field">{% include "_tracker.html" %}

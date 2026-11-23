@@ -250,7 +250,7 @@ Link a section of a project document to the card (remove=true unlinks it). The a
 
 ### `task_update`
 
-Change task fields (waiting on, next step, branch, description, progress, the area, the tracker issue and its work-log mark, the repositories it touches and its pull requests, ...). Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. To move a task between stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Change task fields (waiting on, next step, branch, description, progress, the area, the tracker issue and its work-log mark, the repositories it touches, its pull requests, the cards blocking it, ...). Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. To move a task between stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -271,6 +271,7 @@ Change task fields (waiting on, next step, branch, description, progress, the ar
 | `area` | string or null | no | What part of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot lists the project's areas; case does not matter). A new name is added to the project's areas and the answer says so. '-' or '' clears it. |
 | `repos` | list of string or null | no | Repositories of the task's project the task touches, by name, added to its links; '-name' removes one. An unknown name fails with the project's names. A session bound to the task links the repository it works in by itself. 'name <absolute path>' also sets the folder (worktree) the task works in there. |
 | `prs` | list of string or null | no | Pull request links (http:// or https://) added to the task, optionally after a repository name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose path names a project repository is tied to it (and links it). |
+| `blocked_by` | list of string or null | no | Cards this task waits for, by key, of any project on the board: 'acme-shop-12'; '-key' removes one. A blocker blocks while it is in plan, dev, review or test, and no longer at live or done. An unknown key, the task itself and a cycle are refused. |
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |

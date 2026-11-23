@@ -9,6 +9,7 @@ from relaybay.domain import questions as qrules
 from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import BacklogItem
+from relaybay.domain.blockers import blocker_line, blocks_text
 from relaybay.domain.code import ProjectRepo, TaskCode
 from relaybay.domain.digest import age, board_link
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
@@ -1056,6 +1057,7 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
         ("plan", plan_label(t) if t.plan_total else None),
         ("archived", f"{_minute(t.archived_at)} by {t.archived_by}" if t.archived_at else None),
         ("cancelled", cancelled_label(t)),
+        ("blocks", blocks_text(detail.blocks)),
     ):
         if value:
             lines.append(f"- {label}: {value}")
@@ -1070,6 +1072,9 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
     if t.deploy_notes:
         lines.append(f"\n## Deploy notes ({deploy_state(t)})\n{t.deploy_notes}")
     lines.extend(code_lines(detail.code, t.branch))
+    if detail.blocked_by:
+        lines.append("\n## Blocked by")
+        lines.extend(blocker_line(b, board or "") for b in detail.blocked_by)
     if detail.sections:
         lines.append("\n## Linked document sections")
         lines.extend(s.line for s in detail.sections)

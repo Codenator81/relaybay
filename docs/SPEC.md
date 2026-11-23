@@ -76,6 +76,28 @@ keeps it, a relative path is refused. The event adds `"worktree": {"<name>": "<p
 repository's `## Code` line (`· worktree `<path>``), `task_context` as a `Worktree: <name>: <path>
 (branch …)` head line, the board on the Code row ([§6](#spec-board-code)).
 
+<a id="spec-task-blockers"></a>
+
+**Blockers.** A card can wait for other cards: `task_update` / `task_patch` take `blocked_by`
+(`task_block`, migration 0061, one row per pair with who added it and when), a list of card keys of
+any project on the board (`acme-shop-12`, case does not matter) to add; `-key` removes one. Refused
+in the same write, which then changes nothing: a key no card has (the error names it), anything
+that is not a key (a link, words), the card itself, and a cycle: a blocker that already waits for
+the card, directly or through other cards (the error lists the chain, `a is blocked by b is blocked
+by c`). A blocker **blocks** while it is in `plan`, `dev`, `review` or `test`; at `live` or `done`
+(or archived) it no longer does, and moved back to an earlier stage it blocks again. That is read
+from its stage on every read: a stage move writes nothing on the links. `task_create` takes no
+`blocked_by`. Each write is one `task.updated` event with `changes.blocked_by` `{"added": […],
+"removed": […]}`; the task's version does not change for links alone. `task_context` has a `##
+Blocked by` section when the card has blockers, a line each `- <key> · <stage> · the title · <board
+link>` (`<board>/p/<project>?task=<key>`) with ` (no longer blocks)` for one at live or done, and a
+`Blocks: <key>, <key>` head line naming the cards not yet done that the card blocks; `task_get` the
+same `## Blocked by` section and a `blocks` line. The board shows a `blocked by <key> · <stage>`
+chip on the card for each blocker that still blocks (a link to that card), and the task dialog a
+**Blocked by** row (every blocker with its stage; the ones that no longer block muted) and a
+**Blocks** row. Deleting a card (the archive purge, a project delete)
+takes its links in both directions along, and its export holds them.
+
 <a id="spec-areas"></a>
 
 **Areas** ([design 0024](design/0024-card-modes-thread-and-areas.md#areas)). What part of a project a
@@ -820,7 +842,9 @@ state line ([below](#spec-board-state)) next to it (a dot of its own when there 
 nothing for No session; its title lists why it waits for you); then title, waiting on (cut at the
 first colon, the full text in the chip's title; the task dialog shows it in full), branch and
 the next step (two lines, muted with "stale" when stale). Done cards hide waiting on and the next
-step. A task with a checklist shows **Review 2/5** (accepted / all; green when all are accepted,
+step. A card waiting for another one shows a `blocked by <key> · <stage>` chip per blocker that
+still blocks ([§1](#spec-task-blockers)), a link that opens that card (its dialog when it is on the
+same board). A task with a checklist shows **Review 2/5** (accepted / all; green when all are accepted,
 red-tinted while one is rejected), which opens the dialog on its Review tab. A task with a plan
 shows **Plan 2/5** (done / all) with `· draft` while it is not accepted, the number of deviations
 highlighted and `· now: <step in progress>` (one line, cut with an ellipsis), which opens the
@@ -1212,7 +1236,8 @@ export) and, for a project, the sessions' `rule_seen` marks (in the export).
   once a day, each task in its own transaction (one that fails is logged and tried again at the
   next pass; the others go on). It takes with it everything that hangs on the task: reports (and
   their `verified:` marks), comments, review steps, the plan and its revisions, attachments (the
-  files too) with their annotations, approvals, questions, PR and repository links, bindings,
+  files too) with their annotations, approvals, questions, PR and repository links, its blocker
+  links in both directions (`task_block`), bindings,
   tracker history, intake threads, schedules of the task (active ones too), its token budgets and
   brakes, its runs with their turns and events, its usage per day (`usage_task_day`: the usage
   history of the project shrinks by that task's share) and its task decisions (scope `task`). A
@@ -1428,7 +1453,7 @@ takes `archived` ([§2](#spec-project-archive)).
 `task_list` filters by `area` (any project's area of that name without `project`); `task_get`,
 `task_context`, `task_list` and the digests show a task's area, and `project_snapshot` lists the
 project's areas with how many tasks carry each. `project_upsert` takes `repos`, `task_update` takes
-`repos` and `prs` ([§1](#spec-task-code)); `task_patch` reaches them as `fields={"repos": […], "prs": […]}` for a
+`repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_patch` reaches them as `fields={"repos": […], "prs": […], "blocked_by": […]}` for a
 client whose cached schema lacks them, and `relaybay://schema/task` lists them after the fields.
 
 <a id="spec-mcp-resources"></a>
@@ -2765,7 +2790,7 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 |---|---|
 | `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
 | `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
-| `task_context` | identity, fields, description and progress; plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the effective rules line; relevant notes; open backlog items of the card |
+| `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the effective rules line; relevant notes; open backlog items of the card |
 
 **Linked document sections:** first the sections linked to the card with `task_doc_link` (or
 `task_create(sections)`), in the order they were linked; then the task's document field when it is
@@ -3225,6 +3250,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0058_drop_run_tables` | Drops the run tables, unread and unwritten since 0.12: `run`, `run_turn`, `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`, `schedule_run`. `question` and `approval` rebuilt with foreign keys off: every row and column kept, `run_id` and `turn_id` stay as plain numbers without their foreign keys (SQLite refuses writes into a table whose foreign key names a missing table). The backup before a new version ([§13](#spec-backups)) is taken before it runs; rollback is that backup (an older release needs the dropped tables) |
 | `0059_drop_unread_tables` | Drops the rest of what 0.12 left unread and unwritten: `schedule`, `usage_file`, `usage_day`, `usage_message`, `usage_task_day`, `token_budget`, `budget_mark`, `brake`, `session_message`, `intake_source`, `intake_message`, `intake_thread`, and the columns `project.autonomy`, `project.run_retention`, `session.transcript_path`, `task.autonomy`, `task.answer_received_at`, `task.answer_message_id`. `task` and `backlog_item` rebuilt with foreign keys off (a column with a foreign key or a CHECK cannot be dropped in place): every other column, CHECK, index and row kept; `backlog_item.intake_message_id` stays as a plain number. The run columns of `question` and `approval` stay (a CHECK uses `run_id`). Backup and rollback as for 0058 |
 | `0060_card_fields` | `task.deploy_notes`, `task.deploy_done` (0/1, default 0), `task.cancelled` (the reason), `task.cancelled_at`, `task_repo.worktree` ([§1](#spec-task-deploy), [§1](#spec-task-code)). Additive only |
+| `0061_task_block` | `task_block` (`task_id`, `blocker_id`, both `ON DELETE CASCADE` to `task`, `created_by`, `created_at`, unique per pair) with an index on `blocker_id` ([§1](#spec-task-blockers)). Additive only |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain
