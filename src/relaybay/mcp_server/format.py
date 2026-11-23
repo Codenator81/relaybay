@@ -51,6 +51,8 @@ from relaybay.domain.rules import (
 )
 from relaybay.domain.stages import STAGES, Stage
 from relaybay.domain.task_fields import (
+    APPEND_FIELDS,
+    APPEND_NAMES,
     FIELD_NAMES,
     LINK_FIELDS,
     LINK_NAMES,
@@ -385,8 +387,9 @@ def code_lines(code: TaskCode, branch: str | None) -> list[str]:
     for item in code.repos:
         own = item.branch or branch
         on = f" · branch `{own}`" if own else ""
+        folder = f" · worktree `{item.worktree}`" if item.worktree else ""
         prs = "".join(f" · PR {pr.label} {pr.url}" for pr in item.prs)
-        lines.append(f"- {_repo_label(item.repo)}{on}{prs} (linked: {item.how})")
+        lines.append(f"- {_repo_label(item.repo)}{on}{folder}{prs} (linked: {item.how})")
     if not code.repos and code.project_repos:
         names = ", ".join(r.name for r in code.project_repos)
         lines.append(
@@ -1052,6 +1055,7 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
         ("size", t.size),
         ("plan", plan_label(t) if t.plan_total else None),
         ("archived", f"{_minute(t.archived_at)} by {t.archived_by}" if t.archived_at else None),
+        ("cancelled", cancelled_label(t)),
     ):
         if value:
             lines.append(f"- {label}: {value}")
@@ -1063,6 +1067,8 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
         lines.append(f"\n## Description\n{t.description}")
     if t.progress:
         lines.append(f"\n## Progress (done so far)\n{t.progress}")
+    if t.deploy_notes:
+        lines.append(f"\n## Deploy notes ({deploy_state(t)})\n{t.deploy_notes}")
     lines.extend(code_lines(detail.code, t.branch))
     if detail.sections:
         lines.append("\n## Linked document sections")
@@ -1083,10 +1089,20 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
     if detail.decisions:
         lines.append("\n## Decisions")
         lines.extend(decision_line(d) for d in detail.decisions)
-    lines.append(
-        f"\nEditable fields: {', '.join((*FIELD_NAMES, *LINK_NAMES, *SESSION_FIELD_NAMES))}"
-    )
+    editable = (*FIELD_NAMES, *APPEND_NAMES, *LINK_NAMES, *SESSION_FIELD_NAMES)
+    lines.append(f"\nEditable fields: {', '.join(editable)}")
     return "\n".join(lines)
+
+
+def deploy_state(t: Task) -> str:
+    return "done" if t.deploy_done else "not done yet"
+
+
+def cancelled_label(t: Task) -> str | None:
+    """The reason with the time it was set, for a cancelled card; else None."""
+    if not t.cancelled:
+        return None
+    return t.cancelled + (f" ({_minute(t.cancelled_at)})" if t.cancelled_at else "")
 
 
 def task_schema() -> str:
@@ -1098,7 +1114,7 @@ def task_schema() -> str:
         "| field | type | description | clearing |",
         "|---|---|---|---|",
     ]
-    for f in (*TASK_FIELDS, *LINK_FIELDS, *SESSION_FIELDS):
+    for f in (*TASK_FIELDS, *APPEND_FIELDS, *LINK_FIELDS, *SESSION_FIELDS):
         limit = f" Up to {f.max_length} characters." if f.max_length else ""
         lines.append(f"| `{f.name}` | {f.type} | {f.description}{limit} | {f.clear} |")
     return "\n".join(lines)
@@ -1644,4 +1660,15 @@ def approvals(task: Task | None, items: list[Approval], status: str | None) -> s
 
 def approval_requested(task: Task, a: Approval, hint: str, updated: bool) -> str:
     verb = "updated" if updated else "requested"
-    return f"Approval #{a.id} {verb} on **{task.key}**: {a.what}. {hint}"
+    text = f"Approval #{a.id} {verb} on **{task.key}**: {a.what}. {hint}"
+    if a.action != "deploy":
+        return text
+    if not task.deploy_notes:
+        return (
+            f"{text}\nThe card has no deploy notes: write what the deploy needs (migration, flag,"
+            " script, rollback) with task_patch(fields={'deploy_notes': ...})."
+        )
+    state = deploy_state(task)
+    return (
+        f"{text}\nDeploy notes of the card ({state}), shown with the request:\n{task.deploy_notes}"
+    )

@@ -99,7 +99,7 @@ async def test_other_stage_moves_keep_the_mark(service: Service, start: str, tar
 
 
 async def test_report_unlogs(service: Service) -> None:
-    key = await logged_task(service)
+    key = await logged_task(service, "dev")
     since = await service.last_event_id()
     task, _ = await service.add_report(key, "changed · S · hotfix")
     assert not task.tracker_logged
@@ -119,7 +119,7 @@ async def test_report_unlogs(service: Service) -> None:
 
 
 async def test_progress_change_unlogs_in_one_write(service: Service) -> None:
-    key = await logged_task(service)
+    key = await logged_task(service, stage="test")
     before = await service.get_task(key)
     since = await service.last_event_id()
     task = await service.update_task(key, {"progress": "More work"})
@@ -159,7 +159,7 @@ async def test_unlogged_task_gets_no_event(service: Service) -> None:
 
 
 async def test_mcp_task_get_shows_history_and_snapshot_stays_short(service: Service) -> None:
-    key = await logged_task(service)
+    key = await logged_task(service, "dev")
     await service.update_task(
         key,
         {"tracker_ref": "ENG-2", "tracker_url": "https://t.example/2", "tracker_logged": True},

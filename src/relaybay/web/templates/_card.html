@@ -36,6 +36,7 @@
   {#- Waiting on the owner is already the state word "Waits for you" above; the chip is only for
       someone else (a person, a role, another session). -#}
   {%- set waits_on_other = t.waiting_on and is_open and ("waiting on " ~ t.waiting_on.strip()) not in st.reasons %}
+  {% if t.cancelled %}<span class="chip cancelled-chip" title="Cancelled: {{ t.cancelled }}">cancelled</span>{% endif %}
   {% if t.review_total %}
   {%- set done = t.review_accepted == t.review_total %}
   <a class="chip review-chip{% if done %} is-done{% elif t.review_rejected %} has-rejected{% endif %}" href="/p/{{ slug }}?task={{ t.key }}&amp;tab=review" data-task="{{ t.key }}" data-tab="review"

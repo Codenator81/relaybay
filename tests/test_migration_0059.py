@@ -71,7 +71,7 @@ async def test_0059_drops_the_unread_tables_and_columns(tmp_path: Path) -> None:
         task_columns = await columns(conn, "task")
         before_indexes = await indexes(conn)
 
-        assert await migrate(conn) == 59
+        assert await migrate(conn, upto=59) == 59
         tables = {r[0] for r in await rows(conn, "SELECT name FROM sqlite_master")}
         assert not DROPPED & tables
         for table, gone in COLUMNS.items():
@@ -90,7 +90,7 @@ async def test_0059_drops_the_unread_tables_and_columns(tmp_path: Path) -> None:
         await conn.execute("DELETE FROM backlog_item WHERE id = 1")  # the duplicate is let go
         assert await rows(conn, "SELECT duplicate_of FROM backlog_item WHERE id = 2") == [(None,)]
         await conn.commit()
-        assert await migrate(conn) == 59
+        assert await migrate(conn, upto=59) == 59
     finally:
         await conn.close()
 

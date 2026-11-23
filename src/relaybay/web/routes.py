@@ -99,6 +99,9 @@ EDITABLE_FIELDS = (
     "tracker_logged",
     "size",
     "area",
+    "deploy_notes",
+    "deploy_done",
+    "cancelled",
 )
 TASK_PAGE_REPORTS = 10
 SAVE_CONFLICT = (
@@ -1186,6 +1189,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             if changes["tracker_logged"] == task.tracker_logged:
                 # Resent unchanged, it is not an explicit mark: new work may still clear it.
                 del changes["tracker_logged"]
+        if "deploy_done" in values:
+            changes["deploy_done"] = values["deploy_done"] == "1"
+            if changes["deploy_done"] == task.deploy_done:
+                # Resent unchanged: edited deploy notes still clear it.
+                del changes["deploy_done"]
         if changes.get("next_step", "") == task.next_step:
             # The form always resends the next step; only an edited one confirms it as current.
             del changes["next_step"]

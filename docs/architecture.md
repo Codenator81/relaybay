@@ -92,7 +92,8 @@ project       id, slug UNIQUE, name, repo_path, description, task_seq, created_a
               -- repo_path: always the path of the first project_repo (kept for older readers)
 project_repo  id, project_id, name (UNIQUE per project), path (as written),
               kind (app|web|api|lib|other, optional), position, created_at, updated_at
-task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), added_at
+task_repo     id, task_id, project_repo_id, added_by, how (auto|agent|owner), added_at, branch,
+              worktree
               -- UNIQUE (task_id, project_repo_id)
 task_pr       id, task_id, project_repo_id (optional, SET NULL), url (http/https), number,
               title, added_by, added_at -- UNIQUE (task_id, url)
@@ -103,6 +104,7 @@ project_area  id, project_id, name, color (a palette key), position, created_at
 task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
               waiting_on, next_step, branch, doc_path, description, progress, session_id,
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
+              deploy_notes, deploy_done, cancelled, cancelled_at,
               next_step_at, stage_changed_at, created_at, updated_at, closed_at, size (S|M|L),
               plan_status (draft|accepted), plan_accepted_at, plan_accepted_by,
               archived_at, archived_by, unarchived_at (the hand archive of a done task),

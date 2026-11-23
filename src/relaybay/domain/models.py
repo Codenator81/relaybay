@@ -96,6 +96,10 @@ class Task:
     archived_by: str | None = None
     unarchived_at: str | None = None  # the last "Back from the archive"
     archived_from: str | None = None  # 'live': the archive closed it; Back returns it there
+    deploy_notes: str | None = None  # what a deploy needs: migration, flag, script, rollback
+    deploy_done: bool = False
+    cancelled: str | None = None  # the reason the card was given up on
+    cancelled_at: str | None = None
     area_id: int | None = None
     area: str | None = None  # the area's name
     area_color: str | None = None  # its palette key

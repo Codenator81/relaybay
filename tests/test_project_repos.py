@@ -167,7 +167,7 @@ async def test_hook_links_the_closest_repo_of_the_bound_task(service: Service) -
     assert [(r.repo.name, r.how) for r in code.repos] == [("web", "auto")]
     events = [e for e in await service.replay(before, None, 50) if e.kind == "task.updated"]
     assert [(e.payload["changes"], e.payload["how"]) for e in events] == [
-        ({"repos": {"added": ["web"]}}, "auto")
+        ({"repos": {"added": ["web"], "worktree": {"web": f"{ROOT}/web"}}}, "auto")
     ]
     # The same folder again writes nothing new.
     await service.record_hook({**hook, "hook_event_name": "Stop"})
@@ -206,8 +206,20 @@ async def test_hook_records_the_branch_of_each_repo(
     ]
     events = [e for e in await service.replay(before, None, 50) if e.kind == "task.updated"]
     assert [e.payload["changes"] for e in events] == [
-        {"repos": {"added": ["web"], "branch": {"web": "fix/web-side"}}},
-        {"repos": {"added": ["api"], "branch": {"api": "fix/api-side"}}},
+        {
+            "repos": {
+                "added": ["web"],
+                "branch": {"web": "fix/web-side"},
+                "worktree": {"web": f"{ROOT}/web"},
+            }
+        },
+        {
+            "repos": {
+                "added": ["api"],
+                "branch": {"api": "fix/api-side"},
+                "worktree": {"api": f"{ROOT}/api"},
+            }
+        },
     ]
     branches[f"{ROOT}/web"] = "fix/web-two"
     await service.record_hook({**hook, "cwd": f"{ROOT}/web", "hook_event_name": "Stop"})
@@ -366,7 +378,7 @@ async def test_mcp_tools_take_repos_and_prs(service: Service) -> None:
     detail = await call("task_get", task="acme-shop-1")
     assert "## Code" in detail and "PR #12 https://github.com/acme/web/pull/12" in detail
     assert "- api (api) `/home/dev/acme-shop/api` (linked: agent)" in detail
-    assert detail.rstrip().endswith("tracker_logged, repos, prs, session_surface")
+    assert detail.rstrip().endswith("cancelled, description_add, repos, prs, session_surface")
     with pytest.raises(ToolError, match="Its repositories: web, api"):
         await mcp.call_tool("task_update", {"task": "acme-shop-1", "repos": ["shop"]})
     schema = await mcp.read_resource("relaybay://schema/task")

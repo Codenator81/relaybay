@@ -56,7 +56,11 @@ TASK_FIELDS: tuple[TaskField, ...] = (
     TaskField("branch", "text", "Git branch.", TEXT_CLEARS, TEXT_MAX),
     TaskField("doc_path", "text", "Path to a task document.", TEXT_CLEARS, TEXT_MAX),
     TaskField(
-        "description", "markdown", "What to do and why, 1-5 sentences.", TEXT_CLEARS, MARKDOWN_MAX
+        "description",
+        "markdown",
+        "What to do and why, short; description_add appends a paragraph without overwriting.",
+        TEXT_CLEARS,
+        MARKDOWN_MAX,
     ),
     TaskField(
         "progress",
@@ -112,10 +116,32 @@ TASK_FIELDS: tuple[TaskField, ...] = (
     TaskField(
         "tracker_logged",
         "bool",
-        "True once the work log is entered in the tracker. New work (a report, a progress"
-        " change, a move back from live or done) clears it again. A new tracker_ref starts as"
-        " not logged unless tracker_logged is passed in the same write.",
+        "True once the work log is entered in the tracker. New work clears it again: a report"
+        " or a progress change on a card before live, a move back from live or done. A new"
+        " tracker_ref starts as not logged unless tracker_logged is passed in the same write.",
         "false clears it",
+    ),
+    TaskField(
+        "deploy_notes",
+        "markdown",
+        "What a deploy of this card needs: migration, feature flag, script, rollback. Writing it"
+        " clears deploy_done unless deploy_done is passed in the same write.",
+        TEXT_CLEARS,
+        MARKDOWN_MAX,
+    ),
+    TaskField(
+        "deploy_done",
+        "bool",
+        "True once the steps in deploy_notes have been carried out.",
+        "false clears it",
+    ),
+    TaskField(
+        "cancelled",
+        "text",
+        "Why the card was given up on; setting it stamps the time. The card stays in its stage"
+        " (move it to done yourself).",
+        "'-' clears it and its time",
+        TEXT_MAX,
     ),
 )
 
@@ -129,7 +155,9 @@ LINK_FIELDS: tuple[TaskField, ...] = (
         "repos",
         "list",
         "Repositories of the task's project it touches, by name; '-name' removes one. An unknown"
-        " name fails with the project's names (project_upsert(repos=...) sets them).",
+        " name fails with the project's names (project_upsert(repos=...) sets them)."
+        " 'name <absolute path>' also sets the folder (worktree) the task works in there;"
+        " 'name' alone keeps it.",
         "'-name' removes one",
     ),
     TaskField(
@@ -142,6 +170,20 @@ LINK_FIELDS: tuple[TaskField, ...] = (
     ),
 )
 LINK_NAMES: tuple[str, ...] = tuple(f.name for f in LINK_FIELDS)
+
+# Not a column either: appends a paragraph to `description` instead of replacing it, so two
+# writers do not lose each other's lines.
+DESCRIPTION_ADD = "description_add"
+APPEND_FIELDS: tuple[TaskField, ...] = (
+    TaskField(
+        DESCRIPTION_ADD,
+        "markdown",
+        "A paragraph appended to description (after a blank line) instead of overwriting it.",
+        "nothing to clear",
+        MARKDOWN_MAX,
+    ),
+)
+APPEND_NAMES: tuple[str, ...] = tuple(f.name for f in APPEND_FIELDS)
 
 # Not a field of the task either: where the calling session runs, stored on that session. Asked
 # for at session start when the hook could not tell (design 0025).

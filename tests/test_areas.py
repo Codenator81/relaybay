@@ -235,7 +235,14 @@ async def test_migration_from_0047_keeps_every_task(tmp_path: Path) -> None:
         async with conn.execute("SELECT * FROM task ORDER BY id") as cur:
             after = [dict(r) for r in await cur.fetchall()]
         assert len(after) == len(before)
-        added = ("area_id", "archived_from")  # columns of later migrations
+        added = (  # columns of later migrations
+            "area_id",
+            "archived_from",
+            "deploy_notes",
+            "deploy_done",
+            "cancelled",
+            "cancelled_at",
+        )
         untouched = {k: v for k, v in after[1].items() if k not in added}
         dropped = ("autonomy", "answer_received_at", "answer_message_id")  # by 0059
         kept = {k: v for k, v in before[1].items() if k not in dropped}

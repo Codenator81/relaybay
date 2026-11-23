@@ -68,6 +68,13 @@ to it. A pull request tied to a repository also links that repository. Removing 
 the project removes the tasks' links to it; their pull requests stay, tied to none. Each write is
 one `task.updated` event with `changes: {"repos": {"added": […], "removed": […]}, "prs": {…}}`; the
 task's version does not change for links alone. `task_get` shows them under `## Code`.
+A `repos` entry `name <absolute path>` (the name, a space, a POSIX or Windows absolute path; up to
+500 characters; nothing on disk is read) also sets the **worktree** of that repository for the
+task (`task_repo.worktree`, migration 0060): the folder the task works in there; `name` alone
+keeps it, a relative path is refused. The event adds `"worktree": {"<name>": "<path>"}` to
+`changes.repos`. The hooks set it too ([§4](#spec-hooks-repos)). `task_get` shows it on the
+repository's `## Code` line (`· worktree `<path>``), `task_context` as a `Worktree: <name>: <path>
+(branch …)` head line, the board on the Code row ([§6](#spec-board-code)).
 
 <a id="spec-areas"></a>
 
@@ -97,9 +104,27 @@ by name: they follow a rename or a merge and lose the area with a delete.
 **Task.** Belongs to a project and has a key `<slug>-<n>` (`acme-shop-12`), numbered per project.
 Fields: title, stage, stage note, waiting on, next step, branch, document path, description,
 progress, priority, size (`S` / `M` / `L`, [below](#spec-plan-size)), area
-([above](#spec-areas)), the external tracker fields and a `version` that grows with every write. The
-editable fields come from one list (`domain/task_fields.py`) that drives write validation, the
-`relaybay://schema/task` resource and the "Editable fields" line of `task_get`.
+([above](#spec-areas)), the external tracker fields, deploy notes, cancelled and a `version` that
+grows with every write. The editable fields come from one list (`domain/task_fields.py`) that
+drives write validation, the `relaybay://schema/task` resource and the "Editable fields" line of
+`task_get`.
+
+<a id="spec-task-deploy"></a>
+
+**Deploy notes and cancelled** (migration 0060). Set through `task_patch` (and the board form)
+only; `task_update` has no parameters for them. `deploy_notes` (markdown, up to 20,000
+characters) says what a deploy of the card needs: a migration, a feature flag, a script, the
+rollback. `deploy_done` (boolean) marks those steps as carried out; a write that changes
+`deploy_notes` clears it in the same write unless `deploy_done` is passed with it (the board form
+counts its checkbox only when it was changed). `cancelled` is the reason the card was given up on
+(up to 2,000 characters): setting it stamps `cancelled_at`, `'-'` clears both. The card is not
+moved: the answer adds the line `Hint: <key> is marked cancelled and stays in <stage>: …` and the
+card goes to done by an ordinary stage move. `task_context` shows `Cancelled: <reason> (<date>)`
+and `Deploy notes: done|not done yet: <notes>` head lines; `task_get` a `cancelled` line and a
+`## Deploy notes (done|not done yet)` section; the board a **Cancelled** row and a `cancelled`
+chip on the card, and a **Deploy notes** panel with its state. A `deploy` approval request shows
+the card's deploy notes in its answer (or says the card has none) and on its board item
+([below](#spec-approvals)).
 
 <a id="spec-stages"></a>
 
@@ -116,7 +141,9 @@ how and why" text (markdown) and a status `open`, `accepted` or `rejected` with 
 when. Agents write it with `review_steps_set` (it replaces the list: step N keeps its status and
 screenshots while its title and details stay the same, a changed step is `open` again, steps past
 the new end are removed and their screenshots stay on the task) and change one step with
-`review_step_update` (text, or `status: open` to ask for a new look after a fix). Only the owner
+`review_step_update` (text, or `status: open` to ask for a new look after a fix; `remark`, markdown
+up to the comment limit, adds the calling session's comment tied to the step, `comment.step_id`,
+shown in the step's thread on the board, and leaves the step's status as it is). Only the owner
 accepts or rejects, on the board. Each decision is an owner comment linked to the step
 (`comment.step_id`) and reaches the bound session through the comment path ([§4](#spec-hooks)):
 "Step 2 'Login with 2FA' accepted — continue with step 3", "… accepted — all 3 steps accepted",
@@ -529,7 +556,9 @@ file or a tool result that says "approved" changes nothing.
   only one of them names counts as the same) is filled in (summary, rollback, who asked) instead
   of opening a second. `approval_list(task?, status?)`: newest first, open ones of all cards by
   default (`approved`, `refused`, `used`, `expired` or `all`), with the summary, the rollback, the
-  owner's line verbatim and the call that used it. **No MCP tool decides.**
+  owner's line verbatim and the call that used it. **No MCP tool decides.** A `deploy` request's
+  answer adds the card's deploy notes with their state ([§1](#spec-task-deploy)), or a line that the
+  card has none; its board item shows them under the rollback.
 - **The owner's decision.** `POST /approvals/{id}/decide` with `decision` (`approve` or `refuse`), an
   optional line `text` (up to 1,000 characters, one line) and `from` (`card` or `inbox`), board only
   (cookie and CSRF; a Bearer request is refused, `403`). Only an open request is decided; a deploy
@@ -589,7 +618,10 @@ the warning.
 
 <a id="spec-progress"></a>
 
-**Progress, next step, waiting on.** `description` says what to do and why; `progress` is the running
+**Progress, next step, waiting on.** `description` says what to do and why, short; the pseudo-field
+`description_add` of `task_patch` (not a column) appends its text as a new paragraph (a blank line,
+then the text) to the description read in the same transaction, so two writers keep each other's
+lines (the result stays within 20,000 characters, else the write fails); `progress` is the running
 summary of everything done so far (rewritten, not appended). `next_step` is what happens next,
 `waiting_on` who acts next and nothing else: a name or role, with what happens in `next_step`
 (data is never rewritten: a write whose `waiting_on` has more than 4 words gets the answer line
@@ -607,9 +639,11 @@ no-op. The board form confirms it only when its text was edited.
 text), `tracker_url` (`http://` or `https://` only) and `tracker_logged` ("the work log is entered
 there"). Every issue key a task has had is kept in its tracker history; a different `tracker_ref`
 appends an entry, logging and unlogging stamp the current entry. **Automatic unlog:** new work on a
-logged task (a report, a changed `progress`, or a move back out of `live` / `done` to an earlier
-stage) clears the mark in the same transaction with a `task.tracker_unlogged` event carrying the
-reason. Metadata edits keep the mark; an explicit `tracker_logged` in the same write wins; a new
+logged task (a report or a changed `progress` on a card before `live`, or a move back out of
+`live` / `done` to an earlier stage) clears the mark in the same transaction with a
+`task.tracker_unlogged` event carrying the reason. A report or a rewritten `progress` on a card in
+`live` or `done` (through `report_add`, `task_update` or `task_patch` alike) closes it and keeps
+the mark; a move back to an earlier stage still clears it. Metadata edits keep the mark; an explicit `tracker_logged` in the same write wins; a new
 `tracker_ref` starts as not logged unless `tracker_logged` is passed with it.
 
 <a id="spec-decision"></a>
@@ -849,7 +883,8 @@ task dialog shows the chip after the key in its head, and the task view (dialog 
 its card and in the task dialog / page ([§1](#spec-task-code)): one line per linked repository with
 its name, its kind, its branch (the one the hooks saw checked out in that repository while a
 bound session worked there, stored on the link, migration 0057; until then the task's own branch;
-the card drops its separate branch chip once a repository is linked), its
+the card drops its separate branch chip once a repository is linked), its worktree when one is
+set (the folder, with its own **Open in VS Code** icon), its
 pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and an
 **Open in VS Code** icon (`</>`, the path and the words on hover), a `vscode://file/<path>` link
 (backslashes become `/`, a Windows drive stays `C:`, other unsafe characters are percent-encoded; a
@@ -1222,7 +1257,8 @@ export) and, for a project, the sessions' `rule_seen` marks (in the export).
 - **Approvals:** the open approval requests of all cards, the oldest first
   ([§1](#spec-approvals)): the card, who asked and how (by the agent, or opened by the guard), its
   age, what and where (`push of feat/x
-  in backend`), the summary, the rollback (a deploy without one says so), a line for the agent and
+  in backend`), the summary, the rollback (a deploy without one says so), a deploy's card notes, a
+  line for the agent and
   **Approve** / **Refuse**. A decision swaps the Inbox. Each request counts as one row; its card is
   not counted again under Cards. A half-typed line is held like an answer.
 - **Worktrees left by runs:** after the upgrade to 0.12, the worktrees that runs created and did not
@@ -1604,7 +1640,12 @@ looks, in one indexed read, at the repositories of the tasks the session is boun
 such task the repository whose path is the folder or holds it (the closest one; a leading `~` or
 `~/` is the user's home, `~name` is never expanded and matches only as written; compared with the
 machine's case rules, nothing on disk is read) is linked with `how: auto` when it is not linked
-yet; only a new link opens a write transaction, separate from the hook's status write. A failure
+yet, with the branch checked out there. While the task has no worktree for that repository, the
+hook fills it ([§1](#spec-task-code)): the top of the working copy holding `cwd` (the nearest
+folder with a `.git` folder or file, looked for no higher than the repository's path; none found:
+the repository's path), so moving between folders of one checkout writes nothing, and a worktree
+set by hand is never replaced. Only a new link, branch or worktree opens a write transaction,
+separate from the hook's status write. A failure
 of the link is logged and never fails the hook. Its `task.updated` event carries `how: "auto"`;
 the digests' "changes since" leave such events out, the board refreshes the card as usual.
 
@@ -3181,6 +3222,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0052_archive_and_launch` | Additive, no backfill: `task.archived_from` (`live` or NULL, [§2](#spec-board-archive-live)) and `session.launched_by` (the starter's session id, `ON DELETE SET NULL`, [§4](#spec-hooks-launch-bind)); `task_session.unbound_reason` may now also be `handed_over`. Rollback: an older release ignores both columns, but its stage changes do not clear `archived_from`, so after a downgrade and a new upgrade a card archived from live and moved on in between may keep a stale `live` there; if the done window later archives it, Back from the archive returns it to live (move it by hand) |
 | `0058_drop_run_tables` | Drops the run tables, unread and unwritten since 0.12: `run`, `run_turn`, `run_event`, `run_worktree`, `run_profile`, `project_run_defaults`, `coordinator_wake`, `schedule_run`. `question` and `approval` rebuilt with foreign keys off: every row and column kept, `run_id` and `turn_id` stay as plain numbers without their foreign keys (SQLite refuses writes into a table whose foreign key names a missing table). The backup before a new version ([§13](#spec-backups)) is taken before it runs; rollback is that backup (an older release needs the dropped tables) |
 | `0059_drop_unread_tables` | Drops the rest of what 0.12 left unread and unwritten: `schedule`, `usage_file`, `usage_day`, `usage_message`, `usage_task_day`, `token_budget`, `budget_mark`, `brake`, `session_message`, `intake_source`, `intake_message`, `intake_thread`, and the columns `project.autonomy`, `project.run_retention`, `session.transcript_path`, `task.autonomy`, `task.answer_received_at`, `task.answer_message_id`. `task` and `backlog_item` rebuilt with foreign keys off (a column with a foreign key or a CHECK cannot be dropped in place): every other column, CHECK, index and row kept; `backlog_item.intake_message_id` stays as a plain number. The run columns of `question` and `approval` stay (a CHECK uses `run_id`). Backup and rollback as for 0058 |
+| `0060_card_fields` | `task.deploy_notes`, `task.deploy_done` (0/1, default 0), `task.cancelled` (the reason), `task.cancelled_at`, `task_repo.worktree` ([§1](#spec-task-deploy), [§1](#spec-task-code)). Additive only |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain

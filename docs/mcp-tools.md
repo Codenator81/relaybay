@@ -83,8 +83,9 @@ Conventions:
   restarts its mark). `task_get` lists the entries newest first; snapshots and the card show only
   the current issue.
 - **Automatic unlog** — a logged task that gets new work loses the mark in the same transaction,
-  with an event `task.tracker_unlogged` (payload `reason`): `report_add`, a changed `progress`, or
-  a move back out of `live` or `done` to an earlier stage. Metadata edits (title, branch,
+  with an event `task.tracker_unlogged` (payload `reason`): `report_add` or a changed `progress`
+  on a card before `live`, or a move back out of `live` or `done` to an earlier stage (a report or
+  summary on a card in `live` or `done` closes it and keeps the mark). Metadata edits (title, branch,
   waiting on, next step, other tracker fields) keep it; passing `tracker_logged` in the same write
   wins. A new `tracker_ref` starts as not logged unless `tracker_logged` is passed in the same
   write (a plain `task.updated`; the previous issue's entry keeps its "logged" date). Mark it again
@@ -146,7 +147,7 @@ Conventions:
 | `policy_propose` | `scope` (`global`, `<project>` or `<project>/<environment>`), `patch` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a policy proposal and changes nothing (`policy.proposed`); it shows in the owner's Inbox and in Settings → Policy. The patch is merged into the layer's JSON (objects key by key, other values replace, `null` removes a key) and the result must validate against the [policy schema](reference/policy.md); a tool error names the path otherwise. Accepting applies it (`policy.updated`, `policy.proposal_accepted`), with a confirmation when it widens agents' access on live. |
 
 | `review_steps_set` | `task`, `steps` (`[{"title", "details?"}]`, up to 50), `session?`, `session_title?`, `hook_session?` | Replaces the checklist (see *Review*). Step N keeps its status and screenshots while its title and details stay the same; a changed step is open again; steps past the new end are removed (their screenshots stay on the task). |
-| `review_step_update` | `task`, `step` (number), `title?`, `details?`, `status?` (only `open`), `session?`, `session_title?`, `hook_session?` | Changes one step's text (which reopens it) or reopens it after a fix. Accepting and rejecting is the owner's, on the board. |
+| `review_step_update` | `task`, `step` (number), `title?`, `details?`, `status?` (only `open`), `remark?`, `session?`, `session_title?`, `hook_session?` | Changes one step's text (which reopens it) or reopens it after a fix; `remark` adds a comment under the step and leaves its status. Accepting and rejecting is the owner's, on the board. |
 | `attach_file` | `task`, `path?` or `content_base64?`, `filename?`, `step?` (number), `caption?` (markdown), `session?`, `session_title?`, `hook_session?` | Copies a PNG, JPEG, WebP or GIF (checked by content; SVG and others refused) to the task, optionally to a step. `path` is absolute and inside the project's `repo_path`, the temp folder or `attachment_roots`. Limits `attachments_max_mb` per file and `attachments_task_max_mb` per task. The same image on the same task is stored once (the answer says so). How to produce the file: [Screenshots for review](how-to/screenshots-for-review.md). |
 | `attachment_caption` | `attachment_id`, `caption` (`"-"` clears), `session?`, `session_title?`, `hook_session?` | Changes a screenshot's caption. |
 | `annotation_reply` | `annotation` (the pin's id from the owner's comment or `review_get`), `body` (up to 2000 characters), `session?`, `session_title?`, `hook_session?` | Answers a pin the owner put on a screenshot (`annotation.replied`). The owner reads it in the pin's thread and as an agent reply on the task's thread; the owner's unread comments on that screenshot are marked read. A removed pin or another kind of annotation: a tool error. Secret values are refused. See [Annotations](SPEC.md#spec-annotations). |
