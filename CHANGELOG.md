@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-23
+
 ### Added
 
 - MCP answers give the board link of a document or section for a person to open, `http://127.0.0.1:8765/p/<project>/docs/<doc>#<anchor>`, next to the `relaybay://doc` names: `doc_list`, `doc_outline` (one line), `doc_get`, `doc_search` hits, the document pointers of `task_context` and `task_doc_link`, and the `doc` field of `task_get`. The address comes from `host` and `port`, or from the new setting `board_url` (`RELAYBAY_BOARD_URL`) for a LAN name.
@@ -26,7 +28,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - A card's document field holding the path of a file that a file document of the project reads leads to that document on the board and in `task_context`, like a `relaybay://doc` link.
-- GitHub-style anchors (`#2-kyc--kyb--veriff`) find the same section as relaybay's (`#2-kyc-kyb-veriff`) in `doc_get`, document links and the document page, so links written inside a document for GitHub land on their heading.
+- GitHub-style anchors (`#2-orders--returns--refunds`) find the same section as relaybay's (`#2-orders-returns-refunds`) in `doc_get`, document links and the document page, so links written inside a document for GitHub land on their heading.
 - The task dialog's Overview and the task page put what waits for you first: open approvals and questions, unread agent replies, then Next (next step, waiting on, blockers, cancelled), the plan's steps, the Last report (now a fold like its neighbours), deploy notes, description and progress; task details, the session, decisions, findings, the document and the histories come folded at the bottom. A done or archived card leads with its last report and code. Blocks with nothing in them are left out instead of showing "No reports yet" and the like; a card without comments folds the comment box into Add comment.
 - Docs & rules marks a file document whose file is gone with "file missing since ..." instead of "missing".
 
@@ -1178,7 +1180,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.16.0
 [0.15.2]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.2
 [0.15.1]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.1
 [0.15.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.0

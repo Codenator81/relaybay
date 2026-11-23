@@ -15,7 +15,7 @@ from relaybay.web.markdown import render_document
 from tests.conftest import LiveServer
 from tests.test_mcp import call, connect
 
-SPEC = "# Shop\n\n## 2. KYC / KYB / Veriff\nChecks.\n\n## Who pays: fee = price\nFees.\n"
+SPEC = "# Shop\n\n## 2. Orders / Returns / Refunds\nChecks.\n\n## Who pays: fee = price\nFees.\n"
 TASK_MD = "# acme-shop-1 Gift cards\n\n## Plan\nSteps.\n"
 
 
@@ -61,18 +61,19 @@ def test_board_url_must_be_an_origin(tmp_path: Path) -> None:
 
 
 def test_a_github_style_anchor_names_the_same_heading() -> None:
-    assert mem.github_anchor("2. KYC / KYB / Veriff") == "2-kyc--kyb--veriff"
-    assert mem.find_section(SPEC, "2-kyc--kyb--veriff").anchor == "2-kyc-kyb-veriff"
+    assert mem.github_anchor("2. Orders / Returns / Refunds") == "2-orders--returns--refunds"
+    assert mem.find_section(SPEC, "2-orders--returns--refunds").anchor == "2-orders-returns-refunds"
     assert mem.find_section(SPEC, "who-pays-fee--price").anchor == "who-pays-fee-price"
     rows = doc_index.build(SPEC)[0]
-    assert doc_index.lookup(rows, "#2-KYC--KYB--Veriff").anchor == "2-kyc-kyb-veriff"
-    assert doc_index.lookup(rows, "2-kyc-kyb") is None
+    hit = doc_index.lookup(rows, "#2-Orders--Returns--Refunds")
+    assert hit.anchor == "2-orders-returns-refunds"
+    assert doc_index.lookup(rows, "2-orders-returns") is None
 
 
 def test_the_page_carries_the_github_anchor_as_an_id() -> None:
     html = str(render_document(SPEC))
-    assert 'id="2-kyc-kyb-veriff"' in html
-    assert '<span class="doc-alias" id="2-kyc--kyb--veriff"></span>' in html
+    assert 'id="2-orders-returns-refunds"' in html
+    assert '<span class="doc-alias" id="2-orders--returns--refunds"></span>' in html
     # A heading whose GitHub anchor equals its own gets no extra element.
     assert html.count('id="shop"') == 1
 
@@ -160,9 +161,9 @@ async def test_mcp_answers_carry_board_links(
         outline = await call(client, "doc_outline", project="acme-shop", doc="spec")
         assert f"Board: {board}/spec · a section on the board: {board}/spec#<anchor>" in outline
         read = await call(
-            client, "doc_get", project="acme-shop", doc="spec", section="2-kyc--kyb--veriff"
+            client, "doc_get", project="acme-shop", doc="spec", section="2-orders--returns--refunds"
         )
-        assert f"board {board}/spec#2-kyc-kyb-veriff" in read.split("\n")[0]
+        assert f"board {board}/spec#2-orders-returns-refunds" in read.split("\n")[0]
         hits = await call(client, "doc_search", project="acme-shop", query="fees")
         assert f"{board}/spec#who-pays-fee-price" in hits
         assert f"· board {board}/spec" in await call(client, "doc_list", project="acme-shop")
