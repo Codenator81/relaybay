@@ -18,6 +18,7 @@ stops `relaybay serve` with a message that names the key.
 | `[reports.labels]` | built-in | — | — | Display names of report states and sizes. |
 | `[reports.hints]` | built-in | — | — | Tooltips of report badges. |
 | `desktop_link_template` | `claude://claude.ai/epitaxy/{id}` | `RELAYBAY_DESKTOP_LINK_TEMPLATE` | — | Link for a desktop session id; must contain `{id}`. |
+| `board_url` | from `host` and `port` | `RELAYBAY_BOARD_URL` | — | Address of the board in the links MCP answers give (`http(s)://host[:port]`), e.g. a LAN name; default: the server's own address from `host` and `port`. |
 | `done_window_days` | `7` | `RELAYBAY_DONE_WINDOW_DAYS` | — | Days a done task stays in the done column (whole number >= 1). |
 | `archive_purge_days` | `30` | `RELAYBAY_ARCHIVE_PURGE_DAYS` | — | Days a task stays in the archive (sent there by hand or from live) before relaybay deletes it with its reports, comments, review steps, plan and attachments, after writing an export to `deleted/` of the data directory; checked at the start and once a day (whole number >= 0; 0 never deletes). |
 | `require_tracker_log` | `false` | `RELAYBAY_REQUIRE_TRACKER_LOG` | — | Done tasks without the tracker mark show "not logged" and are never archived. Moving to `done` needs the mark: a `Warning (rules)` line, and `rules_mode = "strict"` refuses the move. |

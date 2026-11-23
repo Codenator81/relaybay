@@ -3,6 +3,7 @@
 import copy
 import logging
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
@@ -119,6 +120,16 @@ class Settings:
             "Link for a desktop session id; must contain `{id}`.",
             key="desktop_link_template",
             env="RELAYBAY_DESKTOP_LINK_TEMPLATE",
+        ),
+    )
+    board_url: str = field(
+        default="",
+        metadata=_doc(
+            "Address of the board in the links MCP answers give (`http(s)://host[:port]`), e.g."
+            " a LAN name; default: the server's own address from `host` and `port`.",
+            key="board_url",
+            env="RELAYBAY_BOARD_URL",
+            default="from `host` and `port`",
         ),
     )
     done_window_days: int = field(
@@ -407,6 +418,11 @@ class Settings:
             host = f"[{host}]"
         return f"http://{host}:{self.port}"
 
+    @property
+    def board_link_base(self) -> str:
+        """Where links in MCP answers lead: `board_url`, else this server's own address."""
+        return self.board_url or self.base_url
+
     def label(self, stage: str) -> str:
         return self.stage_labels.get(stage, stage)
 
@@ -578,6 +594,11 @@ def _apply(settings: Settings, data: dict[str, Any], source: str) -> None:
         if "{id}" not in template:
             raise ValueError(f"{source}: desktop_link_template must contain '{{id}}'")
         settings.desktop_link_template = template
+    if "board_url" in data:
+        url = str(data["board_url"]).strip().rstrip("/")
+        if url and not re.fullmatch(r"https?://[^\s/?#]+", url):
+            raise ValueError(f"{source}: board_url must be http(s)://host[:port], got {url!r}")
+        settings.board_url = url
     if "claude_home" in data:
         settings.claude_home = Path(str(data["claude_home"])).expanduser()
     if "policy_file" in data:

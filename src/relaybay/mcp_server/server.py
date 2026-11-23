@@ -209,10 +209,38 @@ async def run[T](awaitable: Awaitable[T]) -> T:
         raise ToolError(str(exc)) from exc
 
 
+DOC_PATH = (
+    "The task's document: a relaybay://doc link, or a local .md file (an absolute path), which"
+    " becomes the file document task-<key> when no document reads it yet."
+)
+
+
 def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServer:
     mcp = MCPServer(
         name="relaybay", version=__version__, instructions=instructions(service.global_rules)
     )
+
+    async def doc_field_note(
+        key: str,
+        doc_path: object,
+        session: str | None,
+        session_title: str | None,
+        hook_session: str | None,
+    ) -> list[str]:
+        """A write that set the document field to a local Markdown file links it as the
+        card's file document (`Service.link_task_file`); the line says what happened. The task
+        is saved by then: nothing here may turn the answer into an error (and a retry into a
+        second card)."""
+        if not isinstance(doc_path, str) or not doc_path:
+            return []
+        try:
+            note = await service.link_task_file(
+                key, session=session, session_title=session_title, hook_session=hook_session
+            )
+        except Exception:
+            logger.exception("linking the document of %s failed", key)
+            return ["Document field: the file is not a board document (see the server log)."]
+        return [note] if note else []
 
     async def log_rule() -> fmt.LogRule:
         """`require_tracker_log` per task: only in projects that keep a tracker, read now."""
@@ -483,7 +511,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         sections, the latest reports and decisions, and the names of the editable fields (for
         task_patch). Call it before task_update to get the version for expected_version."""
         detail = await run(service.task_detail(task, reports))
-        return fmt.task_detail(detail, await log_rule())
+        return fmt.task_detail(detail, await log_rule(), service.board_url)
 
     @write
     async def task_create(
@@ -495,9 +523,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str | None, Field(description="The next concrete step." + EMPTY)
         ] = None,
         branch: Annotated[str | None, Field(description="Git branch." + EMPTY)] = None,
-        doc_path: Annotated[
-            str | None, Field(description="Path to a task document." + EMPTY)
-        ] = None,
+        doc_path: Annotated[str | None, Field(description=DOC_PATH + EMPTY)] = None,
         description: Annotated[str | None, Field(description=DESCRIPTION_HELP + EMPTY)] = None,
         progress: Annotated[str | None, Field(description=PROGRESS_HELP + EMPTY)] = None,
         tracker_ref: Annotated[str | None, Field(description=TRACKER_REF_HELP + EMPTY)] = None,
@@ -550,8 +576,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 sections=sections or None,
             )
         )
+        filed = await doc_field_note(
+            created.key, cleared(doc_path), session, session_title, hook_session
+        )
         return fmt.with_warnings(
-            fmt.task_saved(created, "Created"), fmt.waiting_on_hint(waiting_on)
+            fmt.task_saved(created, "Created"), [*filed, *fmt.waiting_on_hint(waiting_on)]
         )
 
     @write
@@ -596,9 +625,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             str | None, Field(description="The next concrete step." + CLEARS)
         ] = None,
         branch: Annotated[str | None, Field(description="Git branch." + CLEARS)] = None,
-        doc_path: Annotated[
-            str | None, Field(description="Path to a task document." + CLEARS)
-        ] = None,
+        doc_path: Annotated[str | None, Field(description=DOC_PATH + CLEARS)] = None,
         stage_note: Annotated[
             str | None, Field(description="Note next to the stage." + CLEARS)
         ] = None,
@@ -662,9 +689,12 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
+        filed = await doc_field_note(
+            saved.task.key, changes.get("doc_path"), session, session_title, hook_session
+        )
         return fmt.with_warnings(
             fmt.task_saved(saved.task, "Updated"),
-            [*saved.warnings, *fmt.waiting_on_hint(waiting_on)],
+            [*saved.warnings, *filed, *fmt.waiting_on_hint(waiting_on)],
         )
 
     @write
@@ -705,9 +735,12 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
             )
         )
+        filed = await doc_field_note(
+            saved.task.key, changes.get("doc_path"), session, session_title, hook_session
+        )
         return fmt.with_warnings(
             fmt.task_saved(saved.task, "Updated"),
-            [*saved.warnings, *fmt.waiting_on_hint(fields.get("waiting_on"))],
+            [*saved.warnings, *filed, *fmt.waiting_on_hint(fields.get("waiting_on"))],
         )
 
     @write
@@ -1368,7 +1401,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     async def doc_list(project: ProjectSlug) -> str:
         """The documents of a project (spec, status, brief, runbooks, ADRs) with versions."""
         proj, items = await run(service.list_documents(project))
-        return fmt.documents(proj, items)
+        return fmt.documents(proj, items, service.board_url)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_get(
@@ -1409,7 +1442,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 version=version,
             )
         )
-        return fmt.document_read(found)
+        return fmt.document_read(found, service.board_url)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_outline(
@@ -1428,7 +1461,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         found, rows, parent = await run(
             service.document_outline(project, doc, depth=depth, under=under or None)
         )
-        return fmt.document_outline(found, rows, parent, len(rows))
+        return fmt.document_outline(found, rows, parent, len(rows), service.board_url)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def doc_search(
@@ -1443,7 +1476,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         proj, hits = await run(
             service.search_documents(project, query, doc=doc or None, limit=limit)
         )
-        return fmt.document_hits(proj, hits, query)
+        return fmt.document_hits(proj, hits, query, service.board_url)
 
     @write
     async def doc_update(

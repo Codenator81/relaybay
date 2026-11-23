@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- MCP answers give the board link of a document or section for a person to open, `http://127.0.0.1:8765/p/<project>/docs/<doc>#<anchor>`, next to the `relaybay://doc` names: `doc_list`, `doc_outline` (one line), `doc_get`, `doc_search` hits, the document pointers of `task_context` and `task_doc_link`, and the `doc` field of `task_get`. The address comes from `host` and `port`, or from the new setting `board_url` (`RELAYBAY_BOARD_URL`) for a LAN name.
+- A card whose `doc_path` is a local `.md` file gets that file as its file document `task-<key>` (read only, writes through relaybay off) on `task_create`, `task_update` or `task_patch`; the answer names it with its board link, or says why not.
+
+### Changed
+
+- A card's document field holding the path of a file that a file document of the project reads leads to that document on the board and in `task_context`, like a `relaybay://doc` link.
+- GitHub-style anchors (`#2-kyc--kyb--veriff`) find the same section as relaybay's (`#2-kyc-kyb-veriff`) in `doc_get`, document links and the document page, so links written inside a document for GitHub land on their heading.
+
+### Fixed
+
+- A section opened by its anchor is no longer hidden under the sticky top bar, and signing in keeps the `#anchor` of the link that led to the sign-in page.
+
 ## [0.15.2] - 2026-11-23
 
 ### Changed

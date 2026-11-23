@@ -1204,11 +1204,31 @@ def _doc_ref(link: digests.DocLink, rows: list[IndexedSection] | None) -> mem.Do
     href = f"/p/{link.project}/docs/{link.doc}"
     if not link.anchor:
         return mem.DocRef(href)
-    wanted = link.anchor.casefold()
-    found = next((r for r in rows if r.anchor and wanted in (r.anchor, r.alias)), None)
+    found = doc_index.lookup(rows, link.anchor)
     if found is None:
         return mem.DocRef(href, "no such section")
     return mem.DocRef(f"{href}#{found.anchor}")
+
+
+def _path_key(value: str | None) -> str | None:
+    """An absolute local path as a comparable key (separators and, on Windows, case folded),
+    without touching the disk; None for anything else (a link, a relative path)."""
+    text = (value or "").strip().strip('"')
+    if not text or "://" in text or not Path(text).is_absolute():
+        return None
+    return os.path.normcase(os.path.normpath(text))
+
+
+def _resolved_key(value: str) -> str | None:
+    """`_path_key` of the path with links resolved; None for a network path (never touched
+    here) or one that cannot be resolved."""
+    text = value.strip().strip('"')
+    if text.startswith(("\\\\", "//")) or _path_key(text) is None:
+        return None
+    try:
+        return _path_key(str(Path(text).resolve()))
+    except (OSError, RuntimeError):
+        return None
 
 
 def _clean_section_anchor(value: Any) -> str:
@@ -1301,6 +1321,7 @@ class Service:
         bus: EventBus | None = None,
         *,
         desktop_link_template: str = DEFAULT_DESKTOP_LINK_TEMPLATE,
+        board_url: str = "http://127.0.0.1:8765",
         rules: dict[str, Any] | None = None,
         rules_mode: str = "warn",
         hook_activity_window: float = HOOK_ACTIVITY_WINDOW,
@@ -1378,6 +1399,8 @@ class Service:
         self.attachment_task_max_bytes = attachment_task_max_bytes
         self.bus = bus or EventBus()
         self.desktop_link_template = desktop_link_template
+        # The board's address in the links MCP answers give a person to open.
+        self.board_url = board_url.rstrip("/")
         self._write_conn: aiosqlite.Connection | None = None
         self._read_conn: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
@@ -3093,7 +3116,7 @@ class Service:
             doc_refs=await self.resolve_doc_links(
                 task.description, task.progress, *texts, cache=cache
             ),
-            document=await self._task_document(task.doc_path, cache),
+            document=await self._task_document(task, cache),
             sections=await self._task_sections(task, cache),
             live_actions=await repo.task_events(self._r, task.id, LIVE_ACTION, 20),
             review=await self._load_review(self._r, task.id),
@@ -3117,7 +3140,9 @@ class Service:
             row = doc_index.lookup(rows, item.anchor)
             ref = _doc_ref(link, rows if loaded else None)
             out.append(
-                TaskSection(link, ref, row.title if row else None, link.pointer(found, rows))
+                TaskSection(
+                    link, ref, row.title if row else None, link.pointer(found, rows, self.board_url)
+                )
             )
         return out
 
@@ -5505,8 +5530,78 @@ class Service:
             refs[link.uri] = _doc_ref(link, loaded[1] if loaded else None)
         return refs
 
-    async def _task_document(self, doc_path: str | None, cache: DocCache) -> TaskDocument | None:
-        link = digests.doc_link(doc_path)
+    async def _doc_field_link(self, task: Task) -> digests.DocLink | None:
+        """The card's document field as a document link: a `relaybay://doc` link, or a local
+        file path that a file document of the card's project reads (its source_path), so a
+        card pointing at its TASK.md leads to that document on the board."""
+        link = digests.doc_link(task.doc_path)
+        if link is not None:
+            return link
+        key = _path_key(task.doc_path)
+        if key is None:
+            return None
+        files = await repo.list_file_document_paths(self._r, task.project_id)
+        sources = {_path_key(source): slug for slug, source in files}
+        if key in sources:
+            return digests.DocLink(task.project_slug, sources[key], None)
+        if not files or task.doc_path is None:
+            return None
+        # A source_path is stored resolved: a field naming the file through a link, a junction
+        # or a short name matches once resolved too (a local path only, never a network one).
+        real = await asyncio.to_thread(_resolved_key, task.doc_path)
+        slug = sources.get(real) if real else None
+        return digests.DocLink(task.project_slug, slug, None) if slug else None
+
+    async def link_task_file(
+        self,
+        ref: str | int,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> str | None:
+        """After a write that set the card's document field: a local Markdown file there that no
+        file document of the project reads yet becomes the file document `task-<key>` (kind
+        task, writes through relaybay off), so the card leads to it on the board. The file is
+        only read. Returns a line for the answer, None when nothing applies; a path the file
+        rules refuse leaves the card as it is and the line says why."""
+        task = await self.get_task(ref)
+        key = _path_key(task.doc_path)
+        if key is None or not key.lower().endswith(".md"):
+            return None
+        if await self._doc_field_link(task) is not None:
+            return None
+        slug = f"task-{task.key}"
+        project = await self.get_project(task.project_slug)
+        if await repo.get_document(self._r, project.id, slug) is not None:
+            return (
+                f"Document field: {project.slug} already has a document {slug} that reads"
+                " another file; the card shows the path."
+            )
+        try:
+            await self.update_document(
+                project.slug,
+                slug,
+                "-",
+                f"the document of {task.key}, from its doc_path",
+                0,
+                kind="task",
+                source_path=task.doc_path,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        except (DomainError, OSError) as exc:
+            return (
+                f"Document field: the file is not a board document ({_first_words(str(exc), 200)})."
+            )
+        return (
+            f"Document field: the file is now the document {slug},"
+            f" {digests.board_link(self.board_url, project.slug, slug)}"
+        )
+
+    async def _task_document(self, task: Task, cache: DocCache) -> TaskDocument | None:
+        link = await self._doc_field_link(task)
         if link is None:
             return None
         loaded = await self._linked_doc(link.project, link.doc, cache)
@@ -5632,7 +5727,9 @@ class Service:
                         "sections": {"removed" if remove else "added": [f"{found.slug}#{anchor}"]}
                     },
                 )
-        line = digests.DocLink(project.slug, found.slug, anchor).pointer(found, rows)
+        line = digests.DocLink(project.slug, found.slug, anchor).pointer(
+            found, rows, self.board_url
+        )
         return task, line, changed
 
     async def _create_file_document(
@@ -6972,7 +7069,7 @@ class Service:
             found, rows = loaded if loaded else (None, [])
             if found is not None and found.is_file and found.place is None:
                 found.place = await self._place(self._r, found)
-            lines.append(link.pointer(found, rows))
+            lines.append(link.pointer(found, rows, self.board_url))
             note = doc_index.outside_note(found) if found is not None else None
             if note and found is not None and found.id not in noted:
                 noted.add(found.id)
@@ -7024,7 +7121,7 @@ class Service:
         project = await self.get_project(task.project_slug)
         cache: DocCache = {}
         explicit, linked = await self._linked_sections(task, cache)
-        field_link = digests.doc_link(task.doc_path)
+        field_link = await self._doc_field_link(task)
         links = list(
             dict.fromkeys(
                 [

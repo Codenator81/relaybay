@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
-from relaybay.domain.doc_index import IndexedSection, size_label, whole_size
+from relaybay.domain.doc_index import IndexedSection, lookup, size_label, whole_size
 from relaybay.domain.errors import ValidationError
 from relaybay.domain.memory import Document, MemoryBlock, MemoryNote
 from relaybay.domain.models import Comment, Decision, Project, Task
@@ -653,10 +653,13 @@ class DocLink:
         section = f"#{self.anchor}" if self.anchor else ""
         return f"relaybay://doc/{self.project}/{self.doc}{section}"
 
-    def pointer(self, document: Document | None, rows: list[IndexedSection]) -> str:
+    def pointer(
+        self, document: Document | None, rows: list[IndexedSection], board: str | None = None
+    ) -> str:
         """Where the link points, without the text: the section's title, lines and size, the
         file of a file document and the call that reads it; or why the link is broken. A link
-        without an anchor names the document's size and its outline."""
+        without an anchor names the document's size and its outline. With `board` (the board's
+        address) the line ends with the board link of the document or section."""
         if document is None:
             return f"- broken: {self.uri} (no such document)"
         where = f" · {document.place}" if document.place else ""
@@ -667,9 +670,10 @@ class DocLink:
             return (
                 f'- {self.doc} "{_clip(document.title, 80)}" · {size_label(chars, size)}'
                 f"{where}{problem} · doc_outline({args})"
+                + (f" · {board_link(board, self.project, self.doc)}" if board else "")
             )
         wanted = self.anchor.casefold()
-        row = next((r for r in rows if r.anchor and wanted in (r.anchor, r.alias)), None)
+        row = lookup(rows, wanted)
         if row is None:
             return f"- broken: {self.uri} (no such section)"
         # The card's own name for the section: an explicit anchor outlives a reworded heading.
@@ -677,7 +681,19 @@ class DocLink:
             f'- {self.doc}#{wanted} "{_clip(row.title, 80)}" · lines'
             f" {row.first_line}-{row.last_line} · {size_label(row.chars, row.bytes)}{where}"
             f'{problem} · doc_get({args}, section="{wanted}")'
+            + (
+                f" · {board_link(board, self.project, self.doc, row.alias or row.anchor)}"
+                if board
+                else ""
+            )
         )
+
+
+def board_link(board: str, project: str, doc: str, anchor: str | None = None) -> str:
+    """`http://127.0.0.1:8765/p/acme-shop/docs/spec#gift-cards`: a document (or one of its
+    sections) on the board, for a person to open; `board` is the board's address."""
+    section = f"#{anchor}" if anchor else ""
+    return f"{board.rstrip('/')}/p/{project}/docs/{doc}{section}"
 
 
 def doc_links(*texts: str | None) -> list[DocLink]:

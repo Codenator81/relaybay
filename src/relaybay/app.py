@@ -27,6 +27,7 @@ def create_app(settings: Settings) -> FastAPI:
     service = Service(
         settings.db_path,
         desktop_link_template=settings.desktop_link_template,
+        board_url=settings.board_link_base,
         rules=settings.rules,
         rules_table=settings.rules_table,
         rules_mode=settings.rules_mode,

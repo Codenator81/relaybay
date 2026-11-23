@@ -2432,7 +2432,13 @@ larger one is a file document ([below](#spec-documents-file)). A diff between an
 any other kind is free text (default `doc`). Documents are free markdown: no section is structured,
 and decisions have their own table ([below](#spec-memory-decisions)). A task's document is named
 `task-<ref>` (import makes it so); a task created on the board or through MCP gets one with
-`doc_update` and `task_update(doc_path="relaybay://doc/<project>/task-<ref>")`.
+`doc_update` and `task_update(doc_path="relaybay://doc/<project>/task-<ref>")`. A `task_create`,
+`task_update` or `task_patch` that sets `doc_path` to an absolute path of a local `.md` file that no
+file document of the project reads yet makes that file the file document `task-<key>` (kind
+`task`, writes through relaybay off, the same path checks as `doc_update(source_path)`); the answer
+says so in one line with the board link, or why not (a refused or missing file, the name
+`task-<key>` already taken). The task write itself never fails over it, and the file is only read.
+The board's own task form does not do this: its document field stays as typed.
 
 <a id="spec-documents-repo"></a>
 
@@ -2558,6 +2564,26 @@ document over 200,000 characters (a file document); a smaller one reads whole un
 is passed. `memory_search` keeps one hit per document and adds the anchor of the section that holds
 its line.
 
+**Board links in MCP answers.** Next to the `relaybay://doc` names, the answers give the board
+address a person opens: `<board>/p/<project>/docs/<doc>#<anchor>`, where `<board>` is `board_url`
+(config) or else the server's own `http://<host>:<port>` (a wildcard bind gives `127.0.0.1`).
+`doc_list` adds `board <link>` per document; `doc_outline` one `Board:` line with the document link
+and the section pattern (not a link per heading); `doc_get` names the link of the document or
+section in its header comment; each `doc_search` hit ends with its section's link; the pointers of
+`task_context` (and `task_doc_link`) end with theirs; `task_get` adds it to the `doc` field when
+the field leads to a document. An anchor over 100 characters links the document instead, so a
+capped `doc_get` still fits its cap. A section's link uses its explicit anchor when it has one (the page
+carries it as an id and it outlives a reworded heading), else its heading anchor; letters of any
+language stay as they are.
+
+**GitHub-style anchors.** GitHub and the editors that follow it make an anchor by turning every
+space into a dash without collapsing runs (`## 2. KYC / KYB / Veriff` → `2-kyc--kyb--veriff`;
+relaybay's is `2-kyc-kyb-veriff`). A section asked for by an anchor with two dashes in a row
+(`doc_get(section)`, a `relaybay://doc` link, `task_doc_link`) that no heading or explicit anchor
+has is the heading whose GitHub anchor it is, else the heading whose anchor equals it with the
+runs of dashes made one (a relaybay anchor never holds two dashes in a row, so at most one). The document page gives each heading whose GitHub anchor differs (and is not another
+section's name) an extra id with it, so the links inside a document written for GitHub land too.
+
 <a id="spec-documents-edit"></a>
 
 **Editing on the board.** The document page has **Edit** (the whole markdown) and an `edit` link at
@@ -2582,7 +2608,12 @@ renderer keeps raw HTML off, and the target comes from the slug and anchor chara
 allows. Links are resolved on render: one read per linked document per page, whatever the number of
 links. A task whose document field is exactly such a link shows it as a link in the task dialog and a
 collapsible panel with the document (or the section; the whole document when the section is missing)
-and a link to its history; any other value of the field is shown as text, never fetched or opened.
+and a link to its history. A field holding an absolute local path that a file document of the
+task's project reads (its `source_path`, compared with separators and, on Windows, case folded;
+when that finds none, with the field's links and junctions resolved, never for a network path)
+counts as a link to that document; any other value of the field is
+shown as text, never fetched or opened. A heading reached by an anchor stops clear of the sticky
+top bar, and signing in keeps the `#anchor` the link had.
 
 <a id="spec-memory-decisions"></a>
 
@@ -2695,7 +2726,7 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 
 **Linked document sections:** first the sections linked to the card with `task_doc_link` (or
 `task_create(sections)`), in the order they were linked; then the task's document field when it is
-a `relaybay://doc/...` link, then any `relaybay://doc/<project>/<doc>#<anchor>` in the description
+a `relaybay://doc/...` link (or the file of a file document, above), then any `relaybay://doc/<project>/<doc>#<anchor>` in the description
 or progress, each once. Each becomes a
 pointer without the document's text: `spec#gift-cards "Gift cards" · lines 2140-2610 · 52k chars
 (~15k tokens) · shop:docs/spec.md · doc_get("shop", "spec", section="gift-cards")` (the file only

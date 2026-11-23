@@ -9,7 +9,7 @@ from markdown_it.token import Token
 from markupsafe import Markup
 
 from relaybay.domain.digest import doc_link, doc_link_spans
-from relaybay.domain.memory import DocRef, alias_lines, sections
+from relaybay.domain.memory import DocRef, alias_lines, github_anchor, sections
 
 # Reports come from agents and are untrusted: raw HTML stays escaped; markdown-it's default link
 # validation already refuses javascript:, vbscript: and file: URLs.
@@ -25,10 +25,16 @@ def _heading_open(self: Any, tokens: list[Any], idx: int, options: Any, env: dic
     anchor = env.get("anchors", {}).get(token.map[0]) if token.map else None
     if anchor:
         token.attrSet("id", anchor)
-    alias = env.get("aliases", {}).get(token.map[0]) if token.map else None
-    # An explicit anchor gets an element of its own: a heading carries one id.
-    mark = f'<span class="doc-alias" id="{escapeHtml(alias)}"></span>' if alias else ""
+    names = [env.get(key, {}).get(token.map[0]) if token.map else None for key in _SPARE_IDS]
+    # An explicit anchor (and the GitHub form of the heading's anchor) gets an element of its
+    # own: a heading carries one id.
+    mark = "".join(f'<span class="doc-alias" id="{escapeHtml(n)}"></span>' for n in names if n)
     return mark + str(self.renderToken(tokens, idx, options, env))
+
+
+# The extra ids a heading's line may carry, by env key: its explicit anchor, and the anchor
+# GitHub gives it when that differs, so a link written for GitHub lands on the heading too.
+_SPARE_IDS = ("aliases", "github")
 
 
 def _heading_close(self: Any, tokens: list[Any], idx: int, options: Any, env: dict) -> str:
@@ -137,10 +143,17 @@ def render_document(text: str | None, edit_url: str | None = None) -> Markup:
     found = sections(text or "")
     anchors = {s.start: s.anchor for s in found}
     aliases = {s.start: s.alias for s in found if s.alias}
+    taken = {name for s in found for name in s.names()}
+    github = {}
+    for s in found:
+        name = github_anchor(s.title)
+        if name and name not in taken:
+            taken.add(name)
+            github[s.start] = name
     # The `<a id>` lines are not shown (raw HTML stays escaped); blank, the lines keep their place.
     hidden = alias_lines(text or "")
     shown = "\n".join(
         "" if n in hidden else line for n, line in enumerate((text or "").split("\n"))
     )
-    env = {"edit_url": edit_url, "anchors": anchors, "aliases": aliases}
+    env = {"edit_url": edit_url, "anchors": anchors, "aliases": aliases, "github": github}
     return Markup(_doc_md.render(shown, env))

@@ -1220,3 +1220,11 @@ document.addEventListener("keydown", (event) => {
   document.addEventListener("htmx:load", (event) => watch(event.target || document));
   window.addEventListener("pagehide", send);
 })();
+
+// Sign-in keeps the section a link pointed at: the browser carried the #anchor to /login, and a
+// form posted to an action with that anchor lands back on it after the redirect.
+(function () {
+  "use strict";
+  var form = document.querySelector("form.login-card");
+  if (form && location.hash) form.setAttribute("action", "/login" + location.hash);
+})();
