@@ -376,7 +376,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         include_done: Annotated[bool, Field(description="Also list done tasks.")] = False,
     ) -> str:
         """Compact markdown snapshot of a project: open tasks by stage with waiting-on, next step,
-        branch, the start of the description and progress, last report, plus recent decisions.
+        branch, the start of the description and progress, last report, the merge order of the
+        cards on test (two or more), plus recent decisions.
         Call it at the start of a session to see the state of the project before you pick or
         create a task."""
         snap = await run(service.snapshot(project, include_done))
@@ -441,10 +442,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """One project, for a manager: pulse, tasks by stage with next step and waiting on, open
-        questions, recent decisions, blocks, notes flagged 'verify' or 'never read' and what
-        changed since your last read. Index lines; each section says which tool
-        shows more."""
+        """One project, for a manager: pulse, tasks by stage with next step and waiting on, the
+        merge order of the cards on test (two or more), open questions, recent decisions, blocks,
+        notes flagged 'verify' or 'never read' and what changed since your last read. Index
+        lines; each section says which tool shows more."""
         return await run(
             service.project_digest(
                 project,

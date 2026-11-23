@@ -1,6 +1,25 @@
 <section class="col col-{{ stage }}" id="col-{{ stage }}" data-stage="{{ stage }}"
          hx-get="/p/{{ project.slug }}/col/{{ stage }}{% if view_qs %}?{{ view_qs }}{% endif %}" hx-trigger="rb:refresh" hx-swap="outerHTML">
   <h2 class="col-head"><span class="col-title">{{ label(stage) }}</span><span class="col-count">{{ tasks|length }}</span></h2>
+  {#- All the project's cards on test, whatever the filter: the order is the project's. #}
+  {% if stage == "test" and merge_order and merge_order.shown %}
+  <details class="fold merge-order">
+    <summary>Merge order</summary>
+    <ol>
+      {% for e in merge_order.entries %}
+      <li><a href="/p/{{ project.slug }}?task={{ e.task.key }}">{{ e.task.key }}</a> {{ e.task.title }}
+        {%- if e.repos %} · repos {{ e.repos|join(", ") }}{% endif %}
+        {%- if e.prs %} · PR {{ e.prs|join(", ") }}{% endif %}
+        {%- for b in e.waits %} · waits for {{ b.key }} · {{ b.stage }}{% endfor %}</li>
+      {% endfor %}
+    </ol>
+    {% if merge_order.warnings %}
+    <ul class="merge-warnings">
+      {% for w in merge_order.warnings %}<li>{{ w }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </details>
+  {% endif %}
   <div class="cards">
     {% for t in tasks %}
     {% with slug = project.slug %}{% include "_card.html" %}{% endwith %}

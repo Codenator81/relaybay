@@ -31,6 +31,7 @@ from relaybay.domain.memory import (
     Source,
     sections,
 )
+from relaybay.domain.merge_order import MERGE_ORDER_TITLE
 from relaybay.domain.models import (
     Comment,
     Decision,
@@ -541,6 +542,9 @@ def snapshot(snap: Snapshot, require_log: LogRule = None) -> str:
             task_line(t, snap.last_reports.get(t.id), texts=True, require_log=require_log)
             for t in tasks
         )
+    if snap.merge_order and snap.merge_order.shown:
+        lines.append(f"\n{MERGE_ORDER_TITLE}")
+        lines.extend(snap.merge_order.lines())
     if snap.decisions:
         lines.append("\n## Recent decisions")
         lines.extend(decision_line(d) for d in snap.decisions)
