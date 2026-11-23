@@ -31,6 +31,15 @@ FIRST_READ_HOURS = 24
 # A SessionStart source after which the agent remembers nothing it read before.
 NEW_CONTEXT_SOURCES = ("startup", "clear")
 
+
+def session_card_header(key: str) -> str:
+    """The first line SessionStart puts before a bound card's context (backlog #236)."""
+    return (
+        f"relaybay card context for {key}: the same as task_context, so do not call it now;"
+        " call it later only to refresh."
+    )
+
+
 DECISIONS_MAX = 20
 TASK_DECISIONS_MAX = 10
 NOTES_MAX = 100

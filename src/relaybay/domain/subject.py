@@ -173,10 +173,13 @@ def points_inside(text: str, linked: list[LinkedSection]) -> bool:
 
 
 def backlog_for_card(
-    items: list[BacklogItem], task_id: int, subject: set[str], linked: list[LinkedSection]
+    items: list[BacklogItem], task_id: int, area: str | None, linked: list[LinkedSection]
 ) -> list[BacklogItem]:
-    """The open items that belong to the card: linked to it, of an area that meets its subject,
-    or pointing inside a linked section. Linked ones first, then by priority, then newest."""
+    """The open items that belong to the card: linked to it, of the card's own area (case does
+    not matter), or pointing inside or naming a linked section. An item whose area only shares a
+    word with the card's title is not one of them. Linked ones first, then by priority, then
+    newest."""
+    own_area = (area or "").strip().casefold()
     picked: list[tuple[bool, BacklogItem]] = []
     for item in items:
         if item.status not in OPEN_BACKLOG:
@@ -185,7 +188,7 @@ def backlog_for_card(
         text = "\n".join(x for x in (item.title, item.body_md, item.location) if x)
         if (
             own
-            or (item.area and stems(item.area) & subject)
+            or (own_area and (item.area or "").strip().casefold() == own_area)
             or points_inside(text, linked)
             or names_section(text, linked)
         ):

@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- "Open backlog items" in `task_context` and in the session-start context list only the card's own items, items of the card's own area and items pointing at or naming its linked sections; an item whose area only shared a word with the card's title no longer shows up.
+- The session-start context of a bound card starts with `relaybay card context for <key>: the same as task_context…`, so the agent does not call `task_context` again right away.
+- `doc_search` names a document changed outside relaybay in one short line after the hits instead of the full list of changed sections.
+
 ## [0.16.0] - 2026-11-23
 
 ### Added

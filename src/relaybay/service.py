@@ -7692,7 +7692,7 @@ class Service:
             self._r, project_id=project_id, scope="project"
         )
         backlog_items = subj.backlog_for_card(
-            await repo.list_open_backlog(self._r, project_id), task.id, subject, linked
+            await repo.list_open_backlog(self._r, project_id), task.id, task.area, linked
         )
         blocked_by, blocks = await self.task_blocks(task)
         data = digests.TaskData(
@@ -7766,10 +7766,12 @@ class Service:
                 ordered = await repo.bound_task_ids(self._r, exact.id)
                 tasks = [by_id[i] for i in ordered if i in by_id]
                 if tasks:
-                    budget = min(self.digest_budget_chars, room)
-                    return await self._task_context(
+                    header = digests.session_card_header(tasks[0].key)
+                    budget = max(0, min(self.digest_budget_chars, room) - len(header) - 1)
+                    text, covers = await self._task_context(
                         tasks[0], exact, None, budget, tasks[1:], new_context
                     )
+                    return f"{header}\n{text}", covers
             row = exact or await repo.get_session_by_cc(self._r, hook.cc_session_id)
             cwd = hook.cwd or (row.cwd if row is not None else None)
             projects = await repo.projects_with_repo_path(self._r)

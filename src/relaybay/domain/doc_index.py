@@ -560,6 +560,17 @@ def outside_note(doc: Document) -> str | None:
     )
 
 
+def outside_mark(doc: Document) -> str:
+    """The one-line form of `outside_note` for a list of hits: `Note: spec was changed outside
+    relaybay at <time> (3 sections, version N); doc_get(project, "spec") names them.`"""
+    names = [a for a in (doc.file_changed_sections or "").split(",") if a]
+    count = f"{len(names)} section{'s' if len(names) != 1 else ''}, " if names else ""
+    return (
+        f"Note: {doc.slug} was changed outside relaybay at {(doc.file_changed_at or '')[:16]}Z"
+        f" ({count}version {doc.version}); doc_get(project, {doc.slug!r}) names them."
+    )
+
+
 _BOM = b"\xef\xbb\xbf"
 
 

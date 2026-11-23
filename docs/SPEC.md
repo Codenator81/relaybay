@@ -2653,8 +2653,10 @@ and sets `document.file_changed_by` `outside`, `file_changed_at` and `file_chang
 anchors of every outside change since the last write through relaybay, at most 20: the added
 and changed sections the file still has, the removed ones as `-anchor`, named as a section again
 when it comes back). While it is `outside`, `doc_outline`, `doc_get`, the `doc_search` hits of the
-document (once) and the linked-section lines of `task_context` add `Note: <doc> was changed
-outside relaybay at <time>: sections a, b; removed c (version N).`; the next write through
+document and the linked-section lines of `task_context` add `Note: <doc> was changed
+outside relaybay at <time>: sections a, b; removed c (version N).` (`doc_search` gives one short
+line per changed document after its hits: `Note: <doc> was changed outside relaybay at <time> (N
+sections, version N); doc_get(project, '<doc>') names them.`); the next write through
 relaybay clears it. The answers of `doc_get`
 and `doc_outline` name the version and `writes through relaybay: on` or `off`. The board's page of
 a file document stays read-only.
@@ -3006,8 +3008,8 @@ longer word, anchor or number). A one-word anchor (no dash) counts only as `doc#
 stems already match words.
 
 **Open backlog items** in `task_context`: items with status `new`, `later` or `planned` of the
-card's project that are linked to the card (`task`), or whose area has a stem of the subject, or
-that point inside a linked section: a `path:line` in the location, title or text whose line is in
+card's project that are linked to the card (`task`), or of the card's own area (the same name,
+case does not matter; a word shared with the card's title is not enough), or that point inside a linked section: a `path:line` in the location, title or text whose line is in
 the section's lines (with the subsections) of the same file (a file document; the path matches by
 its file name, or by its end when it names folders; separators and case do not matter, leading
 `./` and `../` are dropped, and an absolute path with a drive letter such as `C:\work\docs\spec.md:5`
@@ -3070,8 +3072,9 @@ hooks wrote. The footer names the event id reached.
 **Session start.** The `SessionStart` answer (every source: startup, clear, compact, resume) adds to
 `additionalContext`, after the hook session line:
 
-- an exactly linked session bound to an open task: `task_context` of its most recently bound task,
-  the other bound open tasks as one index line each. The plan reminder is not sent as well when the
+- an exactly linked session bound to an open task: a first line `relaybay card context for <key>:
+  the same as task_context, so do not call it now; call it later only to refresh.`, then
+  `task_context` of its most recently bound task, the other bound open tasks as one index line each. The plan reminder is not sent as well when the
   budget left its lines in that text; otherwise it goes out after it;
 - any other session whose `cwd` maps to one project: `project_digest` limited to
   `session_context_project_chars` (default 1500), which holds no comment text. Only an exactly linked
