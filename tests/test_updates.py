@@ -536,6 +536,7 @@ def test_update_progress_in_the_menu_and_tooltip_with_cancel(
 ) -> None:
     controller, said = controller_with_update(tmp_path)
     monkeypatch.setattr("relaybay.desktop.app.install_kind", lambda: "desktop-windows")
+    monkeypatch.setattr(updates, "machine_arch", lambda: "x64")  # the asset below, on any runner
     monkeypatch.setattr(
         "relaybay.desktop.app.platformdirs.user_cache_dir", lambda *a, **k: tmp_path
     )
