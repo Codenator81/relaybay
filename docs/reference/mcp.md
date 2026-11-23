@@ -220,7 +220,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `waiting_on` | string or null | no | Only who acts next: a name or role, no text after it; what happens goes to next_step. '-' or '' leaves it empty. |
 | `next_step` | string or null | no | The next concrete step. '-' or '' leaves it empty. |
 | `branch` | string or null | no | Git branch. '-' or '' leaves it empty. |
-| `doc_path` | string or null | no | Path to a task document. '-' or '' leaves it empty. |
+| `doc_path` | string or null | no | The task's document: a relaybay://doc link, or a local .md file (an absolute path), which becomes the file document task-<key> when no document reads it yet. '-' or '' leaves it empty. |
 | `description` | string or null | no | What to do and why, 1-5 sentences of markdown. '-' or '' leaves it empty. |
 | `progress` | string or null | no | Markdown summary of everything done so far on the task (not just the last step). Rewrite it as the work goes on and keep it current with every report. '-' or '' leaves it empty. |
 | `tracker_ref` | string or null | no | Issue key or number in the external tracker, e.g. 'ENG-12'. '-' or '' leaves it empty. |
@@ -259,7 +259,7 @@ Change task fields (waiting on, next step, branch, description, progress, the ar
 | `waiting_on` | string or null | no | Only who acts next: a name or role, no text after it; what happens goes to next_step. '-' or '' clears it. |
 | `next_step` | string or null | no | The next concrete step. '-' or '' clears it. |
 | `branch` | string or null | no | Git branch. '-' or '' clears it. |
-| `doc_path` | string or null | no | Path to a task document. '-' or '' clears it. |
+| `doc_path` | string or null | no | The task's document: a relaybay://doc link, or a local .md file (an absolute path), which becomes the file document task-<key> when no document reads it yet. '-' or '' clears it. |
 | `stage_note` | string or null | no | Note next to the stage. '-' or '' clears it. |
 | `description` | string or null | no | What to do and why, 1-5 sentences of markdown. '-' or '' clears it. |
 | `progress` | string or null | no | Markdown summary of everything done so far on the task (not just the last step). Rewrite it as the work goes on and keep it current with every report. '-' or '' clears it. |

@@ -233,6 +233,18 @@ def heading_anchor(text: str) -> str:
     return re.sub(r"[\s-]+", "-", words).strip("-") or "section"
 
 
+def github_anchor(text: str) -> str:
+    """The anchor GitHub (and editors that follow it) gives a heading: like `heading_anchor`,
+    but every space is a dash and dashes are not collapsed (`## A / B` → `a--b`)."""
+    return re.sub(r"[^\w\- ]", "", text.strip().casefold()).replace(" ", "-")
+
+
+def loose_anchor(anchor: str) -> str:
+    """An anchor written the GitHub way, in relaybay's form: runs of dashes are one dash. A
+    relaybay anchor never holds two dashes in a row, so this names at most one heading."""
+    return re.sub(r"-{2,}", "-", anchor).strip("-")
+
+
 def unique_anchors(titles: list[str]) -> list[str]:
     """Anchors for headings in order; a repeated one gets `-2`, `-3`…"""
     seen: set[str] = set()
@@ -313,7 +325,12 @@ def section_named(found: list[Section], anchor: str) -> Section | None:
     """The section whose anchor or explicit anchor is `anchor` (a leading `#` and case do not
     matter)."""
     wanted = anchor.strip().lstrip("#").casefold()
-    return next((s for s in found if wanted in s.names()), None)
+    exact = next((s for s in found if wanted in s.names()), None)
+    if exact is not None or "--" not in wanted:
+        return exact
+    github = next((s for s in found if github_anchor(s.title) == wanted), None)
+    loose = loose_anchor(wanted)
+    return github or next((s for s in found if s.anchor == loose), None)
 
 
 def find_section(body: str, anchor: str) -> Section:

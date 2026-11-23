@@ -21,6 +21,8 @@ from relaybay.domain.memory import (
     DOC_BODY_MAX,
     Document,
     Section,
+    github_anchor,
+    loose_anchor,
     parse_heading,
     sections,
     unique_anchors,
@@ -233,9 +235,17 @@ def changed_anchors(old: list[IndexedSection], new: list[IndexedSection]) -> dic
 
 
 def lookup(rows: list[IndexedSection], anchor: str) -> IndexedSection | None:
-    """The section a heading anchor or an explicit anchor names; None when there is none."""
+    """The section a heading anchor or an explicit anchor names (a GitHub-style anchor, with
+    runs of dashes, names the same heading); None when there is none."""
     wanted = anchor.strip().lstrip("#").casefold()
-    return next((r for r in rows if r.anchor and wanted in (r.anchor, r.alias)), None)
+    exact = next((r for r in rows if r.anchor and wanted in (r.anchor, r.alias)), None)
+    if exact is not None or "--" not in wanted:
+        return exact
+    # The heading GitHub names so first (the board page gives it that id), then the one whose
+    # anchor is the same with the runs of dashes made one.
+    github = next((r for r in rows if r.anchor and github_anchor(r.title) == wanted), None)
+    loose = loose_anchor(wanted)
+    return github or next((r for r in rows if r.anchor == loose), None)
 
 
 def find(rows: list[IndexedSection], anchor: str) -> IndexedSection:

@@ -305,6 +305,7 @@ for an example):
 ```toml
 port = 8765
 allowed_hosts = ["my-laptop.lan"]   # needed only when you bind to a LAN address
+board_url = "http://my-laptop.lan:8765"  # links MCP answers give; default: http://<host>:<port>
 desktop_link_template = "claude://claude.ai/epitaxy/{id}"  # {id} = desktop session id (local_…)
 done_window_days = 7                # older done tasks are archived
 archive_purge_days = 30             # tasks archived by hand are deleted after this many days (export first); 0 never

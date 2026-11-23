@@ -10,7 +10,7 @@ from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.code import ProjectRepo, TaskCode
-from relaybay.domain.digest import age
+from relaybay.domain.digest import age, board_link
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
 from relaybay.domain.doc_index import (
     SNIPPET_MAX,
@@ -608,13 +608,14 @@ def decision_saved(d: Decision) -> str:
 # --- documents, notes, blocks, search -------------------------------------------------------
 
 
-def documents(project: Project, items: list[Document]) -> str:
+def documents(project: Project, items: list[Document], board: str | None = None) -> str:
     if not items:
         return f"{project.slug} has no documents yet. Create one with doc_update(base_version=0)."
     lines = [f"# Documents of {project.slug}"]
     lines.extend(
         f"- {d.slug} — {d.title} ({d.kind}, version {d.version},"
         f" updated {d.updated_at[:16]}Z) relaybay://doc/{project.slug}/{d.slug}"
+        + (f" · board {board_link(board, project.slug, d.slug)}" if board else "")
         + (f" · lives in the repository: {d.source_url}" if d.source_url else "")
         + (f" · lives in the file {d.source_path}" if d.source_path else "")
         + (f" · file missing since {d.file_missing_at[:16]}Z" if d.file_missing_at else "")
@@ -623,8 +624,9 @@ def documents(project: Project, items: list[Document]) -> str:
     return "\n".join(lines)
 
 
-def document(doc: Document, text: str, section: str | None) -> str:
-    """doc_get: a header line with the version to pass back as base_version, then the text."""
+def document(doc: Document, text: str, section: str | None, link: str = "") -> str:
+    """doc_get: a header line with the version to pass back as base_version (and `link`, the
+    board link part made by `_board_part`), then the text."""
     part = f" section #{section}" if section else ""
     current = (
         f"current version {doc.version}"
@@ -633,7 +635,7 @@ def document(doc: Document, text: str, section: str | None) -> str:
     )
     head = (
         f"<!-- {doc.project_slug}/{doc.slug}{part} · {doc.kind} · {current} · by"
-        f" {doc.author} · pass base_version={doc.version} to doc_update -->"
+        f" {doc.author} · pass base_version={doc.version} to doc_update{link} -->"
     )
     anchors = [s.anchor for s in sections(doc.body)] if not section else []
     tail = [f"\n<!-- sections: {', '.join(anchors)} -->"] if anchors else []
@@ -681,7 +683,20 @@ def _clip_name(name: str, limit: int = 80) -> str:
     return name if len(name) <= limit else name[: limit - 1] + "…"
 
 
-def document_read(read: DocRead) -> str:
+def _board_part(board: str | None, doc: Document, section: IndexedSection | None) -> str:
+    """` · board <link>` for a doc_get header: the document, or the section by its explicit
+    anchor when it has one (it outlives a reworded heading; the page carries it as an id)."""
+    if not board:
+        return ""
+    anchor = (section.alias or section.anchor) if section else None
+    if anchor and len(anchor) > 100:
+        # The header's names are clipped so a capped read always fits; a link cannot be
+        # clipped, so an overlong anchor links the document instead.
+        anchor = None
+    return f" · board {board_link(board, doc.project_slug, doc.slug, anchor)}"
+
+
+def document_read(read: DocRead, board: str | None = None) -> str:
     """doc_get: the header (version or file and hash), the text, and for a capped read the
     outline of what was not shown and the call that reads on. With a cap the whole answer is
     measured as it is written and never longer than the cap: the outline loses headings first,
@@ -689,15 +704,19 @@ def document_read(read: DocRead) -> str:
     doc = read.doc
     args = f'project="{doc.project_slug}", doc="{doc.slug}"'
     anchor = read.section.anchor if read.section else None
+    link = _board_part(board, doc, read.section)
     if not doc.is_file and read.cap is None:
         whole = read.first == 1 and read.last == len(doc.body.split("\n"))
         if read.cut is None and (anchor is not None or whole):
-            return document(doc, read.text, anchor)
+            return document(doc, read.text, anchor, link)
     if doc.is_file:
         named = f" section #{_clip_name(anchor)}" if anchor else ""
-        head = [f"<!-- {doc.project_slug}/{doc.slug}{named} · {doc.kind} -->", *_file_head(doc)]
+        head = [
+            f"<!-- {doc.project_slug}/{doc.slug}{named} · {doc.kind}{link} -->",
+            *_file_head(doc),
+        ]
     else:
-        head = [document(doc, "", _clip_name(anchor) if anchor else None).split("\n")[0]]
+        head = [document(doc, "", _clip_name(anchor) if anchor else None, link).split("\n")[0]]
     if doc.file_problem:
         tail = [_outline_line(read.section)] if read.section else []
         return "\n".join(
@@ -764,13 +783,24 @@ def document_read(read: DocRead) -> str:
 
 
 def document_outline(
-    doc: Document, rows: list[IndexedSection], under: IndexedSection | None, all_rows: int
+    doc: Document,
+    rows: list[IndexedSection],
+    under: IndexedSection | None,
+    all_rows: int,
+    board: str | None = None,
 ) -> str:
     where = f" under #{under.anchor} (lines {under.first_line}-{under.last_line})" if under else ""
     head = [
         f"# Outline of {doc.project_slug}/{doc.slug}{where} · {len(rows)} heading(s) · each:"
         " level, #anchor, title, lines a-b, characters/tokens (~bytes/3.5)"
     ]
+    if board:
+        # One line, not a link per heading: the outline of a large document stays its size.
+        head.append(
+            f"Board: {board_link(board, doc.project_slug, doc.slug)} · a section on the board:"
+            f" {board_link(board, doc.project_slug, doc.slug, '<anchor>')} (the alias when it"
+            " has one)"
+        )
     if doc.is_file:
         head.extend(_file_head(doc))
     if doc.file_problem:
@@ -785,7 +815,9 @@ def document_outline(
     return "\n".join(head)
 
 
-def document_hits(project: Project, hits: list[DocHit], query: str) -> str:
+def document_hits(
+    project: Project, hits: list[DocHit], query: str, board: str | None = None
+) -> str:
     if not hits:
         return f"Nothing found in the documents of {project.slug} for {query!r}."
     lines = [
@@ -799,9 +831,14 @@ def document_hits(project: Project, hits: list[DocHit], query: str) -> str:
             f"{h.doc.slug}#{r.anchor}" if r.anchor else f"{h.doc.slug} (before the first heading)"
         )
         where = f" · {h.doc.place}" if h.doc.place else ""
+        link = (
+            f" · {board_link(board, project.slug, h.doc.slug, r.alias or r.anchor or None)}"
+            if board
+            else ""
+        )
         lines.append(
             f'- {name} "{r.heading_path or h.doc.title}" · line {h.line} · section lines'
-            f" {r.first_line}-{r.last_line} · {size_label(r.chars, r.bytes)}{where}"
+            f" {r.first_line}-{r.last_line} · {size_label(r.chars, r.bytes)}{where}{link}"
         )
         lines.extend(f"    {n}: {_short(text)}" for n, text in h.around)
         note = outside_note(h.doc)
@@ -987,8 +1024,16 @@ def task_list(tasks: list[Task], require_log: LogRule = None) -> str:
     return "\n".join(f"{task_line(t, require_log=require_log)} · stage {t.stage}" for t in tasks)
 
 
-def task_detail(detail: TaskDetail, require_log: LogRule = None) -> str:
+def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | None = None) -> str:
     t = detail.task
+    d = detail.document
+    # The document field with its board link, when it leads to a document (a relaybay link,
+    # or the file of a file document).
+    doc_line = (
+        f"{t.doc_path} · board {board.rstrip('/')}{d.ref.href}"
+        if t.doc_path and board and d is not None and d.ref.href
+        else t.doc_path
+    )
     lines = [
         f"# {t.key} — {t.title}",
         f"- project: {t.project_slug}",
@@ -1000,7 +1045,7 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None) -> str:
         ("waiting on", t.waiting_on),
         ("next step", next_step_label(t)),
         ("branch", t.branch),
-        ("doc", t.doc_path),
+        ("doc", doc_line),
         ("session", session_label(t)),
         ("open in desktop", t.session_link),
         ("tracker", tracker_label(t, bool(require_log and require_log(t)))),

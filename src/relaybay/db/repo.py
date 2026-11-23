@@ -3141,6 +3141,19 @@ async def list_documents(conn: aiosqlite.Connection, project_id: int) -> list[Do
     return [_document(r) for r in rows]
 
 
+async def list_file_document_paths(
+    conn: aiosqlite.Connection, project_id: int
+) -> list[tuple[str, str]]:
+    """(slug, source_path) of the project's file documents, by slug."""
+    rows = await _all(
+        conn,
+        "SELECT slug, source_path FROM document WHERE project_id = ? AND source_path IS NOT NULL"
+        " ORDER BY slug",
+        (project_id,),
+    )
+    return [(r["slug"], r["source_path"]) for r in rows]
+
+
 async def get_document_version(
     conn: aiosqlite.Connection, document_id: int, version: int
 ) -> DocumentVersion | None:
