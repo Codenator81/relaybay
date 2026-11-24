@@ -390,6 +390,8 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
   change documents per card.
 - **0.17.0, coordinator and agents** — tool sets by role, coordinator mode, findings and questions
   in reports, the day time log across projects, approvals in sight on the card.
+- **0.18.0, MCP contract 3** — replaced tools removed at once (no deprecation period while
+  there are no outside users), `task_create` takes `size`, All boards ordered by last activity.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
 

@@ -248,11 +248,12 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | The card dialog's Approvals right under Next with Approve and Refuse in sight, why a decided request has no button, `approval waits` on the board card; `approval_withdraw` | done | — |
 | A repository with a worktree on one line of the Code row | done | — |
 
-## 0.18 — MCP contract 3 (unreleased)
+## 0.18 — MCP contract 3, All boards by activity (released 2026-11-24)
 
 | Item | Status | Design |
 |---|---|---|
 | MCP contract 3: a replaced tool or parameter is removed in the release that replaces it, no deprecation period; `task_set_stage`, `task_patch`, `environments_get`, `environment_propose` and `relaybay://project/{slug}/environments` removed; `task_create(size=…)` | done | [SPEC §3](SPEC.md#spec-mcp-compat) |
+| All boards lists the projects by their last activity, the most recently active first | done | — |
 
 ## 1.0
 
