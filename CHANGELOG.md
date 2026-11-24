@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- All boards lists the projects by their last activity, the most recently active first; the sidebar, the project switcher and the digests keep their order.
+
 ## [0.17.0] - 2026-11-24
 
 ### Added

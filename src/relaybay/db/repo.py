@@ -233,6 +233,15 @@ async def archived_project_ids(conn: aiosqlite.Connection) -> set[int]:
     return {r[0] for r in rows}
 
 
+async def latest_project_events(conn: aiosqlite.Connection) -> dict[int, int]:
+    """The id of every project's newest event, by project id (projects without one: absent)."""
+    rows = await _all(
+        conn,
+        "SELECT project_id, MAX(id) FROM event WHERE project_id IS NOT NULL GROUP BY project_id",
+    )
+    return {r[0]: r[1] for r in rows}
+
+
 async def insert_project(
     conn: aiosqlite.Connection,
     slug: str,

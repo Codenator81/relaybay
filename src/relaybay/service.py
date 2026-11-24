@@ -3224,6 +3224,13 @@ class Service:
         counts = await repo.stage_counts(self._r)
         return [ProjectSummary(p, counts.get(p.id, {})) for p in projects]
 
+    async def projects_by_activity(self) -> list[ProjectSummary]:
+        """`list_projects` with the most recently active project first (its newest event);
+        projects without any event last, each group by slug."""
+        latest = await repo.latest_project_events(self._r)
+        projects = await self.list_projects()
+        return sorted(projects, key=lambda s: -latest.get(s.project.id, 0))
+
     async def get_project(self, slug: str, conn: aiosqlite.Connection | None = None) -> Project:
         project = await repo.get_project(conn or self._r, slug.strip().lower())
         if project is None:

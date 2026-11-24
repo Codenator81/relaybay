@@ -909,6 +909,14 @@ sidebar is shown when storage is unavailable). Below 760 px the sidebar is a dra
 same button and closed by Esc, a click outside or following a link. Items whose feature does not
 exist yet are not shown. A project in the archive ([§2](#spec-project-archive)) is not listed.
 
+<a id="spec-all-boards-order"></a>
+
+**All boards order.** All boards (`/` and its live fragment) lists the projects by their last
+activity: the project whose newest event (a card write, a report, a comment, a time-log mark, any
+event of the project) is the most recent comes first; a project without events goes last, ties by
+slug. Only that page: the sidebar's Projects, the project switcher, `project_list` and
+`portfolio_digest` keep their own order. There is no pinned or manual order (relaybay-45).
+
 <a id="spec-switcher"></a>
 
 **Quick switcher.** Ctrl+K (Cmd+K on macOS), or the Search button in the top bar on every signed-in
