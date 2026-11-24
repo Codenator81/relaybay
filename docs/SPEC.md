@@ -1460,7 +1460,18 @@ everything else is escaped. No CDN: htmx and its SSE extension are vendored.
 
 ## 3. MCP contract
 
-Streamable HTTP at exactly `/mcp` in the server process (official `mcp` SDK 2.x, `MCPServer`).
+Streamable HTTP at exactly `/mcp` in the server process (official `mcp` SDK 2.x, `MCPServer`), and
+the role endpoints `/mcp/agent`, `/mcp/coordinator` and `/mcp/reader` (one server per role, same
+tools, token and security; `mcp_server/roles.py`): each lists its role's tools in `tools/list` and
+sends its own instructions; a tool not listed still runs when called by name. A role's list never
+holds a deprecated name; the agent's covers every moment of a card (start, plan, work, documents,
+question, decision, finding, report, review, approval, closing); the coordinator's is every current
+tool but `review_steps_set`, `review_step_update` and `annotation_reply`; the reader's is
+`task_context`, `task_get`, `plan_get`, `review_get`, `attachment_get`, `comments_list`,
+`decision_list`, `rules_get`, `backlog_list` and the `doc_list` / `doc_outline` / `doc_get` /
+`doc_search` reads. The instructions of a role name only tools of its list, and every tool a hint
+in an answer names is in the agent's list unless it names someone else's act (tested). `relaybay
+setup` accepts a user entry at `/mcp` or a role endpoint.
 Every request needs `Authorization: Bearer <token>`. Tool results are short markdown for the model;
 domain failures (unknown task, version conflict, invalid stage, rule refusal) are tool errors whose
 message says what to do. Parameters and outputs of every tool: [MCP tools reference](mcp-tools.md).

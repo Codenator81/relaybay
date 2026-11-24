@@ -2,7 +2,7 @@
 
 import functools
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
@@ -11,6 +11,7 @@ from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
 from mcp.types import INVALID_PARAMS, ToolAnnotations
+from mcp.types import Tool as MCPTool
 from pydantic import Field
 from starlette.routing import BaseRoute
 
@@ -19,7 +20,7 @@ from relaybay.domain import backlog
 from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
 from relaybay.domain.task_fields import BY_NAME as TASK_FIELD_BY_NAME
-from relaybay.mcp_server import contract
+from relaybay.mcp_server import contract, roles
 from relaybay.mcp_server import format as fmt
 from relaybay.service import Service, collect_notes
 
@@ -231,9 +232,44 @@ DOC_PATH = (
 )
 
 
-def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServer:
-    mcp = MCPServer(
-        name="relaybay", version=__version__, instructions=instructions(service.global_rules)
+class RoleServer(MCPServer):
+    """An MCPServer whose tools/list shows only its role's tools (roles.py); a tool left out
+    still runs when called by name. `role=None` is the full set."""
+
+    def __init__(self, role: str | None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.role = role
+
+    async def list_tools(self) -> list[MCPTool]:
+        tools = await super().list_tools()
+        if self.role is None:
+            return tools
+        shown = roles.role_tools(self.role, current_tools({t.name for t in tools}))
+        return [t for t in tools if t.name in shown]
+
+
+def current_tools(names: set[str]) -> set[str]:
+    """The tool names that are not deprecated (old names and stubs stay out of every role)."""
+    gone = {d.tool for d in contract.DEPRECATIONS if d.parameter is None}
+    return names - gone
+
+
+def server_instructions(rules: Rules, role: str | None) -> str:
+    return instructions(rules) if role is None else roles.role_instructions(rules, role)
+
+
+def build_mcp(
+    service: Service, *, require_tracker_log: bool = False, role: str | None = None
+) -> MCPServer:
+    """The MCP server; `role` (roles.ROLES) serves that role's tool list and instructions, None
+    the full set."""
+    if role is not None and role not in roles.ROLES:
+        raise ValueError(f"Unknown role {role!r}.")
+    mcp = RoleServer(
+        role,
+        name="relaybay",
+        version=__version__,
+        instructions=server_instructions(service.global_rules, role),
     )
 
     async def doc_field_note(
@@ -269,11 +305,19 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         # The SDK has no setter: the text it sends on connect is this attribute. Without this a
         # new session would read the report format of config.toml, not of the current version.
         try:
-            mcp._lowlevel_server.instructions = instructions(service.global_rules)
+            mcp._lowlevel_server.instructions = server_instructions(service.global_rules, role)
         except AttributeError as exc:
             logger.warning("Could not refresh the MCP instructions after an SDK change: %s.", exc)
 
-    service.rules_changed = refresh_instructions
+    # Several servers (one per role) share the service: each refreshes its own text.
+    earlier = service.rules_changed
+
+    def rules_changed() -> None:
+        if earlier is not None:
+            earlier()
+        refresh_instructions()
+
+    service.rules_changed = rules_changed
 
     def write(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
         """A write tool: lines the service noted without failing (a hook_session that was not
@@ -1457,7 +1501,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_get(id: Annotated[int, Field(description="The note's id.")]) -> str:
-        """A memory note in full: body, scope, source, dates, version (for memory_update)."""
+        """A memory note in full: body, scope, source, dates, version (to change it later)."""
         return fmt.note(await run(service.get_note(id)))
 
     @mcp.tool(annotations=READ, structured_output=False)
@@ -2706,13 +2750,23 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     return mcp
 
 
-def mcp_routes(mcp: MCPServer, allowed_hosts: list[str]) -> list[BaseRoute]:
-    """Routes that serve the MCP endpoint at exactly `/mcp`.
+def role_path(role: str | None) -> str:
+    """`/mcp` for the full set, `/mcp/<role>` for a role's."""
+    return "/mcp" if role is None else f"/mcp/{role}"
+
+
+def mcp_routes(
+    servers: MCPServer | Mapping[str, MCPServer], allowed_hosts: list[str]
+) -> list[BaseRoute]:
+    """Routes that serve each MCP endpoint at exactly its path (`/mcp`, `/mcp/agent`, ...); a
+    single server is served at `/mcp`.
 
     The routes are added to the main app instead of `Mount("/mcp", ...)`, which would answer
-    `/mcp` with a redirect to `/mcp/`. The caller must run `mcp.session_manager.run()` in its
-    lifespan.
+    `/mcp` with a redirect to `/mcp/`. The caller must run every server's
+    `session_manager.run()` in its lifespan.
     """
+    if isinstance(servers, MCPServer):
+        servers = {"/mcp": servers}
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=[*allowed_hosts, *(f"{h}:*" for h in allowed_hosts)],
@@ -2723,5 +2777,8 @@ def mcp_routes(mcp: MCPServer, allowed_hosts: list[str]) -> list[BaseRoute]:
             for port in ("", ":*")
         ],
     )
-    app = mcp.streamable_http_app(streamable_http_path="/mcp", transport_security=security)
-    return list(app.routes)
+    routes: list[BaseRoute] = []
+    for path, mcp in servers.items():
+        app = mcp.streamable_http_app(streamable_http_path=path, transport_security=security)
+        routes.extend(app.routes)
+    return routes

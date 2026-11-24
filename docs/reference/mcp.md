@@ -532,7 +532,7 @@ Search memory notes, decisions, documents, reports, comments and backlog items. 
 
 ### `memory_get`
 
-A memory note in full: body, scope, source, dates, version (for memory_update).
+A memory note in full: body, scope, source, dates, version (to change it later).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

@@ -246,7 +246,10 @@ claude mcp add --transport http --scope user relaybay http://127.0.0.1:8765/mcp 
 
 `user` scope adds relaybay once for all repositories. See
 [docs/connect-claude-code.md](docs/connect-claude-code.md) for `.mcp.json` and a short instruction
-snippet for your project's `CLAUDE.md` / `AGENTS.md` that tells the agent when to call the tools.
+snippet for your project's `CLAUDE.md` / `AGENTS.md` that tells the agent when to call the tools. A
+coordinator and its agents can connect to role endpoints (`/mcp/agent`, `/mcp/coordinator`,
+`/mcp/reader`) that list only the tools of their role: [Tool sets by
+role](docs/connect-claude-code.md#tool-sets-by-role).
 
 ### Live session status (hooks)
 

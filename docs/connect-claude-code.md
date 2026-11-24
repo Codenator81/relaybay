@@ -39,6 +39,35 @@ To keep the token out of the configuration file, put it in an environment variab
 
 Project-scoped servers from `.mcp.json` ask for approval once in interactive sessions.
 
+### Tool sets by role
+
+`/mcp` is the full set of tools. Three more endpoints list a smaller set with instructions for one
+role; the tools, the token and the board are the same:
+
+| Endpoint | For | Lists |
+|---|---|---|
+| `/mcp` | everyone (the default) | every tool, deprecated names included |
+| `/mcp/agent` | a session that works one card | the tools of each moment of a card: start, plan, work, documents, questions, decisions, findings, approvals, report, review, closing |
+| `/mcp/coordinator` | the session that plans, starts, triages and closes cards | every current tool but the agent's own review checklist work |
+| `/mcp/reader` | review and planning helpers (subagents) | reading tools only (`task_context` moves the caller's read position) |
+
+A role is a tool list and its instructions, not a permission: a tool left out of a list still runs
+when a client calls it by name. Claude Code, though, shows only the listed tools.
+
+To give one project's sessions another role, add a `relaybay` entry in that project with local
+scope; a project or local entry replaces the user-scope entry of the same name in those sessions
+(they do not merge):
+
+```bash
+claude mcp add --transport http --scope local relaybay http://127.0.0.1:8765/mcp/coordinator \
+  --header "Authorization: Bearer <token>"
+```
+
+Local scope keeps the token out of the repository; in a shared `.mcp.json` use `${RELAYBAY_TOKEN}`
+as above. `claude mcp get relaybay` may still print the user entry next to a warning that the
+name is defined in several scopes: `/mcp` inside a session shows the one in use. See
+[Coordinator and agents workflow](how-to/coordinator-workflow.md).
+
 After `relaybay token --rotate`, restart the server (`relaybay serve`, or **Restart server** in
 the desktop program's tray) and update the token in the entry. When the program is the client of
 an external server (`server_mode = "external"`), `token --rotate` is refused: rotate the token

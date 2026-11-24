@@ -35,7 +35,7 @@ TASK_FIELDS: tuple[TaskField, ...] = (
     TaskField(
         "stage",
         "stage",
-        f"One of: {', '.join(STAGES)}. A change is a stage move (same as task_set_stage).",
+        f"One of: {', '.join(STAGES)}. A change is a stage move.",
         "cannot be cleared",
     ),
     TaskField("stage_note", "text", "Short note next to the stage.", TEXT_CLEARS, TEXT_MAX),

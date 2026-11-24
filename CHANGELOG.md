@@ -21,6 +21,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `inspect_only` on a card (`task_create`, `task_update`, `task_patch`; migration 0062): an analysis, a repro or a question answered by reading needs no accepted plan before dev, also in strict mode, and may go straight to done. A report on such a card that says `changed`, `committed` or `pushed` warns that it needs a plan.
 ### Added
 
+- Tool sets by role: `/mcp/agent`, `/mcp/coordinator` and `/mcp/reader` list a role's tools with instructions written for it (the agent's names a tool for every moment of a card, `approval_request` included); `/mcp` stays the full set with unchanged instructions. A role is not a permission: an unlisted tool still runs when called by name. `relaybay setup` accepts a role endpoint; [Connect Claude Code](docs/connect-claude-code.md) shows how to give one project another role with a local-scope entry.
+
 - `task_update` moves the stage and reaches every card field in one write: new parameters `stage`, `deploy_notes`, `deploy_done`, `cancelled` and `fields` (any other field of `relaybay://schema/task` as one object; a field given twice must agree). Its answer says `Moved` when the stage changed.
 
 ### Deprecated

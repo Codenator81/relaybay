@@ -962,6 +962,8 @@ async def test_instructions_follow_the_current_version(tmp_path: Path) -> None:
     app = create_app(settings)
     with TestClient(app, base_url=BASE):
         assert "state · size · what happened" in app.state.mcp.instructions
+        for path in ("/mcp/agent", "/mcp/coordinator"):  # every role follows it too
+            assert "state · size · what happened" in app.state.mcp_servers[path].instructions
 
 
 # --- Settings → Rules --------------------------------------------------------------------------
