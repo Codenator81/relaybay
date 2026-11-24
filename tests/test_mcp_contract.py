@@ -1,20 +1,17 @@
-"""The versioned MCP contract: the checker on synthetic schemas, the deprecation marks, and the
-live server against the committed baseline."""
+"""The versioned MCP contract: the checker on synthetic schemas, the contract version that lets
+a breaking change through, and the live server against the committed baseline."""
 
 import copy
 import json
-from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 import pytest
-from mcp.server import MCPServer
-from pydantic import Field
 
 import relaybay
 from relaybay.domain.rules import DEFAULT_RULES, Rules
 from relaybay.mcp_server import contract
-from relaybay.mcp_server.contract import Deprecation, breaking_changes, uncovered
+from relaybay.mcp_server.contract import breaking_changes
 from relaybay.mcp_server.server import build_mcp, instructions
 from relaybay.service import Service
 from tests.test_release import load_script
@@ -176,89 +173,23 @@ def test_normalize_drops_descriptions_and_resolves_refs() -> None:
     }
 
 
-# --- deprecations -----------------------------------------------------------------
-
-FAKE = Deprecation(
-    tool="task_get",
-    parameter=None,
-    since="0.8.0",
-    remove_not_before=date(2026, 12, 15),
-    replacement="task_context",
-)
+# --- the contract version ---------------------------------------------------------
 
 
-def removed_tool() -> list[contract.Change]:
-    after = copy.deepcopy(BEFORE)
-    after["tools"].pop("task_get")
-    return breaking_changes(BEFORE, after)
+def removed_tool(contract_version: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    old = {**copy.deepcopy(BEFORE), "contract_version": contract_version}
+    new = copy.deepcopy(old)
+    new["tools"].pop("task_get")
+    return old, new
 
 
-def test_a_removal_needs_an_expired_deprecation(monkeypatch: pytest.MonkeyPatch) -> None:
-    changes = removed_tool()
-    assert uncovered(changes, "0.9.0", date(2027, 1, 1)) == changes
-    monkeypatch.setattr(contract, "DEPRECATIONS", [FAKE])
-    assert uncovered(changes, "0.9.0", date(2026, 12, 14)) == changes, "before the date"
-    assert uncovered(changes, "0.8.3", date(2027, 1, 1)) == changes, "same minor version"
-    assert uncovered(changes, "0.9.0", date(2026, 12, 15)) == []
-
-
-def test_a_parameter_deprecation_covers_only_that_parameter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    entry = Deprecation("task_list", "limit", "0.8.0", date(2026, 12, 15), None)
-    monkeypatch.setattr(contract, "DEPRECATIONS", [entry])
-    after = copy.deepcopy(BEFORE)
-    props(after).pop("limit")
-    props(after).pop("tags")
-    left = uncovered(breaking_changes(BEFORE, after), "0.9.0", date(2027, 1, 1))
-    assert [c.text for c in left] == ["task_list: parameter `tags` removed"]
-
-
-async def test_deprecated_marks_the_description_and_the_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    whole = Deprecation("old_tool", None, "0.8.0", date(2026, 12, 15), "new_tool")
-    param = Deprecation("old_param", "mode", "0.8.0", date(2026, 12, 15), None)
-    monkeypatch.setattr(contract, "DEPRECATIONS", [whole, param])
-    mcp = MCPServer(name="test")
-
-    @mcp.tool(structured_output=False)
-    @contract.deprecated()
-    async def old_tool(task: Annotated[str, Field(description="Task key.")]) -> str:
-        """Read a task."""
-        return f"task {task}"
-
-    @mcp.tool(structured_output=False)
-    @contract.deprecated("mode")
-    async def old_param(task: str, mode: str | None = None) -> str:
-        """Change a task."""
-        return "done"
-
-    notice = (
-        "Deprecated: old_tool is deprecated since 0.8.0 and may be removed in a later minor"
-        " version, not before 2026-12-15; use new_tool instead."
-    )
-    tools = {t.name: t for t in await mcp.list_tools()}
-    assert tools["old_tool"].description == f"Read a task.\n\n{notice}"
-    assert tools["old_tool"].input_schema["required"] == ["task"]
-    assert tools["old_tool"].input_schema["properties"]["task"]["description"] == "Task key."
-    assert "parameter `mode` of old_param is deprecated" in tools["old_param"].description
-
-    def text(result: Any) -> str:
-        return "\n".join(c.text for c in result.content)
-
-    assert text(await mcp.call_tool("old_tool", {"task": "a-1"})) == f"task a-1\n{notice}"
-    assert text(await mcp.call_tool("old_param", {"task": "a-1"})) == "done"
-    passed = text(await mcp.call_tool("old_param", {"task": "a-1", "mode": "x"}))
-    assert passed.startswith("done\nDeprecated: parameter `mode` of old_param is deprecated")
-
-
-def test_deprecated_needs_an_entry() -> None:
-    async def nowhere() -> str:
-        return ""
-
-    with pytest.raises(LookupError):
-        contract.deprecated()(nowhere)
+def test_a_breaking_change_needs_a_higher_contract_version() -> None:
+    old, new = removed_tool(contract.CONTRACT_VERSION)
+    assert [c.text for c in contract.refused(old, new)] == ["tool `task_get` removed"]
+    old, new = removed_tool(contract.CONTRACT_VERSION + 1)
+    assert [c.text for c in contract.refused(old, new)] == ["tool `task_get` removed"]
+    old, new = removed_tool(contract.CONTRACT_VERSION - 1)
+    assert contract.refused(old, new) == []
 
 
 # --- the live server ------------------------------------------------------------
@@ -281,24 +212,11 @@ def baseline() -> dict[str, Any]:
 
 async def test_the_server_keeps_the_baseline_contract(tmp_path: Path) -> None:
     old, new = baseline(), await live_surface(tmp_path)
-    changes = breaking_changes(old, new)
-    left = uncovered(changes, relaybay.__version__, datetime.now(UTC).date())
+    left = contract.refused(old, new)
     assert not left, "Breaking MCP changes (see docs/SPEC.md#spec-mcp-compat):\n" + "\n".join(
         c.text for c in left
     )
     assert old["contract_version"] <= contract.CONTRACT_VERSION
-    if changes:
-        assert old["contract_version"] < contract.CONTRACT_VERSION, (
-            "Expired deprecations removed: raise CONTRACT_VERSION."
-        )
-
-
-async def test_every_deprecation_is_marked_on_the_server(tmp_path: Path) -> None:
-    mcp = build_mcp(Service(tmp_path / "relaybay.sqlite"))
-    tools = {t.name: t for t in await mcp.list_tools()}
-    for entry in contract.DEPRECATIONS:
-        if entry.tool in tools:
-            assert entry.notice() in (tools[entry.tool].description or ""), entry
 
 
 async def test_the_contract_resource_and_the_instructions(tmp_path: Path) -> None:
@@ -307,11 +225,10 @@ async def test_the_contract_resource_and_the_instructions(tmp_path: Path) -> Non
     assert text.startswith(f"# relaybay MCP contract\n\nServer {relaybay.__version__}.\n\n")
     assert f"Contract version {contract.CONTRACT_VERSION}." in text
     assert contract.RULE in text
-    for entry in contract.DEPRECATIONS:
-        assert f"| `{entry.tool}` |" in text, entry
-    if not contract.DEPRECATIONS:
-        assert "Deprecations: none." in text
-    assert "(contract v2: relaybay://contract)" in instructions(Rules(DEFAULT_RULES))
+    assert "Deprecat" not in text
+    assert "(relaybay://schema/task; contract v3: relaybay://contract)" in instructions(
+        Rules(DEFAULT_RULES)
+    )
 
 
 def test_rebaseline_refuses_a_breaking_change(
@@ -326,3 +243,20 @@ def test_rebaseline_refuses_a_breaking_change(
     assert gen.rebaseline() == 1
     assert "- tool `gone_tool` removed" in capsys.readouterr().err
     assert json.loads(path.read_text(encoding="utf-8")) == stale
+
+
+def test_rebaseline_takes_a_breaking_change_with_a_raised_contract_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gen = load_script("gen_reference")
+    stale = baseline()
+    stale["contract_version"] = contract.CONTRACT_VERSION - 1
+    stale["tools"]["gone_tool"] = {"input": {"type": "object"}, "annotations": {}}
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(stale), encoding="utf-8")
+    monkeypatch.setattr(gen, "BASELINE", path)
+    monkeypatch.setattr(gen, "ROOT", tmp_path)
+    assert gen.rebaseline() == 0
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["contract_version"] == contract.CONTRACT_VERSION
+    assert "gone_tool" not in written["tools"]

@@ -72,7 +72,7 @@ async def test_cancelled_stamps_its_time_and_clears(service: Service) -> None:
     key = await make_task(service)
     call = caller(service)
     answer = await call(
-        "task_patch", task=key, fields={"cancelled": "The client dropped the feature."}
+        "task_update", task=key, fields={"cancelled": "The client dropped the feature."}
     )
     assert "is marked cancelled and stays in dev" in answer
     task = await service.get_task(key)
@@ -80,7 +80,7 @@ async def test_cancelled_stamps_its_time_and_clears(service: Service) -> None:
     assert task.stage == Stage.DEV
     context = await service.task_context(key)
     assert f"Cancelled: The client dropped the feature. ({task.cancelled_at[:10]})" in context
-    await call("task_patch", task=key, fields={"cancelled": "-"})
+    await call("task_update", task=key, fields={"cancelled": "-"})
     task = await service.get_task(key)
     assert task.cancelled is None and task.cancelled_at is None
 
@@ -216,7 +216,7 @@ async def test_the_tool_list_is_unchanged_and_task_update_takes_the_card_fields(
     assert {"deploy_notes", "deploy_done", "cancelled", "fields", "stage"} <= set(update)
     assert "description_add" not in update
     with pytest.raises(ToolError, match="Unknown task field"):
-        await mcp.call_tool("task_patch", {"task": "x-1", "fields": {"nope": 1}})
+        await mcp.call_tool("task_update", {"task": "x-1", "fields": {"nope": 1}})
 
 
 def test_board_shows_cancelled_and_saves_deploy_fields(board: TestClient, token: str) -> None:

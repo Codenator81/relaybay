@@ -11,5 +11,5 @@ At the end
 7. Add a report with report_add; its first line is `state · size · gist`; state is one of inspected, changed, verified, committed, pushed, blocked; size is one of S, M, L. Finished work goes to done. Move a card to review only when the owner wants to accept it step by step: then write the steps with review_steps_set and attach screenshots with attach_file.
 Always
 - A line 'Warning (rules)' names a rule the write did not meet: fix it. 'rules updated to vN' means re-read relaybay://rules; changes go through rules_propose (rules_update is for coordinator sessions named in the server's config).
-- A parameter your tool lacks: task_update(fields={...}) (relaybay://schema/task; an older client without it: task_patch). A line 'Deprecated: …' names the replacement (contract v2: relaybay://contract).
+- A parameter your tool lacks: task_update(fields={...}) (relaybay://schema/task; contract v3: relaybay://contract).
 - Hosts and access come from the project's own notes; never paste secrets into relaybay. When the guard stops a call, its reason says why (policy_get); ask the owner or use policy_propose.

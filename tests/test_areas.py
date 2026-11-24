@@ -381,9 +381,9 @@ async def test_mcp_create_update_patch_list_and_snapshot(service: Service) -> No
     assert (await service.get_task("acme-shop-1")).area == "api"
     await call("task_update", task="acme-shop-1", area="-")
     assert (await service.get_task("acme-shop-1")).area is None
-    patched = await call("task_patch", task="acme-shop-1", fields={"area": "mobile app"})
+    patched = await call("task_update", task="acme-shop-1", fields={"area": "mobile app"})
     assert "Area 'mobile app' was new" in patched
-    await call("task_patch", task="acme-shop-2", fields={"area": ""})
+    await call("task_update", task="acme-shop-2", fields={"area": ""})
     assert (await service.get_task("acme-shop-2")).area is None
 
     listed = await call("task_list", project="acme-shop", area="MOBILE APP")

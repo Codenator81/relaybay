@@ -88,8 +88,9 @@ uv run python scripts/gen_reference.py --check   # what CI runs
 
 `tests/test_mcp_contract.py` fails when a change breaks the MCP contract (a removed tool or
 parameter, a narrowed type, a new required parameter) against `tests/fixtures/mcp_contract_baseline.json`
-without an expired deprecation ([SPEC](docs/SPEC.md#spec-mcp-compat)); only a release pull request
-rewrites the baseline, with `uv run python scripts/gen_reference.py --rebaseline`.
+unless `CONTRACT_VERSION` in `src/relaybay/mcp_server/contract.py` is above the baseline's
+([SPEC](docs/SPEC.md#spec-mcp-compat)); only a release pull request (or the one that raises `CONTRACT_VERSION`, so the guard stays armed for the rest of the release) rewrites the baseline, with
+`uv run python scripts/gen_reference.py --rebaseline`, which refuses the same changes.
 
 ## Desktop builds
 

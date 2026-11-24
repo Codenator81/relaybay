@@ -123,7 +123,7 @@ coordinator and a session bound to no card are not agents. In this mode:
 With `coordinators` empty none of this applies: texts and behaviour are as described above.
 
 **Updating a running setup to 0.17.** Sessions started before the update keep the tool list they
-loaded: every parameter they know is still accepted (deprecated ones too), new tools and
+loaded: every parameter they know is still accepted, new tools and
 parameters appear after a reconnect or a new session. With `coordinators` already set, the mode
 takes effect at once for those sessions as well: an agent's `task_create`, `backlog_add` and time
 log writes are refused with a line that says where the thing goes instead. To give a session its

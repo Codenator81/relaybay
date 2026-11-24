@@ -53,7 +53,7 @@ def test_task_session_plan_report_review_inbox(stand: Stand) -> None:
                 },
             },
             {
-                "mcp": "task_set_stage",
+                "mcp": "task_update",
                 "arguments": {
                     "task": "${key}",
                     "stage": "review",

@@ -316,7 +316,7 @@ def test_instructions_carry_the_contract() -> None:
         "progress",
         "`state · size · gist`",
         "inspected, changed, verified, committed, pushed, blocked",
-        "task_patch",
+        "task_update(fields={...})",
         "relaybay://rules",
         "Warning (rules)",
         "`hook_session`",
@@ -353,13 +353,13 @@ async def test_mcp_rules_resource_tool_and_warning(live_server: Callable[[], Liv
         assert snapshot.startswith("Rules ") and "relaybay://rules/acme-shop" in snapshot
 
         await call(client, "task_create", project="acme-shop", title="Checkout", stage="live")
-        moved = await call(client, "task_set_stage", task="acme-shop-1", stage="done")
+        moved = await call(client, "task_update", task="acme-shop-1", stage="done")
         assert moved.splitlines()[0].startswith("Moved **acme-shop-1**")
         assert moved.splitlines()[1] == PROGRESS_WARNING
-        patched = await call(client, "task_patch", task="acme-shop-1", fields={"stage": "test"})
+        patched = await call(client, "task_update", task="acme-shop-1", fields={"stage": "test"})
         assert patched.splitlines()[1] == REPORT_WARNING
         await call(client, "report_add", task="acme-shop-1", body="verified · S · ok")
-        clean = await call(client, "task_patch", task="acme-shop-1", fields={"stage": "live"})
+        clean = await call(client, "task_update", task="acme-shop-1", fields={"stage": "live"})
         assert "Warning" not in clean
 
         missing = await client.call_tool("rules_get", {"project": "nope"})

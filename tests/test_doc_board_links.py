@@ -178,7 +178,7 @@ async def test_mcp_answers_carry_board_links(
         other = write(folder / "tasks" / "2" / "TASK.md", TASK_MD)
         await call(client, "task_create", project="acme-shop", title="Second")
         patched = await call(
-            client, "task_patch", task="acme-shop-2", fields={"doc_path": str(other)}
+            client, "task_update", task="acme-shop-2", fields={"doc_path": str(other)}
         )
         assert "the file is now the document task-acme-shop-2" in patched
 

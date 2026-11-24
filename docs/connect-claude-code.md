@@ -46,9 +46,9 @@ role; the tools, the token and the board are the same:
 
 | Endpoint | For | Lists |
 |---|---|---|
-| `/mcp` | everyone (the default) | every tool, deprecated names included |
+| `/mcp` | everyone (the default) | every tool |
 | `/mcp/agent` | a session that works one card | the tools of each moment of a card: start, plan, work, documents, questions, decisions, findings, approvals, report, review, closing |
-| `/mcp/coordinator` | the session that plans, starts, triages and closes cards | every current tool but the agent's own review checklist work |
+| `/mcp/coordinator` | the session that plans, starts, triages and closes cards | every tool but the agent's own review checklist work |
 | `/mcp/reader` | review and planning helpers (subagents) | reading tools only (`task_context` moves the caller's read position) |
 
 A role is a tool list and its instructions, not a permission: a tool left out of a list still runs

@@ -140,6 +140,26 @@ def test_stage_labels_from_config(tmp_path) -> None:
 DESKTOP = "local_00000000-0000-0000-0000-000000000001"
 
 
+def test_all_boards_lists_projects_by_last_activity(board: TestClient) -> None:
+    """relaybay-45: the most recently active project first, projects without events last."""
+    service: Service = board.app.state.service
+    for slug in ("alpha", "bravo", "charlie"):
+        run_in_app(board, service.upsert_project, slug, name=slug.title())
+    run_in_app(board, service.create_task, "alpha", "Older work")
+    task = run_in_app(board, service.create_task, "charlie", "Newer work")
+    run_in_app(board, service.add_report, task.key, "changed · S · done")
+    run_in_app(board, service.create_task, "bravo", "Latest work")
+    run_in_app(board, service.add_report, task.key, "verified · S · checked")
+
+    def order(text: str) -> list[str]:
+        return re.findall(r'class="project-link" href="/p/([a-z]+)"', text)
+
+    assert order(board.get("/").text) == ["charlie", "bravo", "alpha"]
+    assert order(board.get("/fragments/projects").text) == ["charlie", "bravo", "alpha"]
+    sidebar = run_in_app(board, service.list_projects)
+    assert [s.project.slug for s in sidebar] == ["alpha", "bravo", "charlie"], "switcher by slug"
+
+
 def test_card_and_task_page_show_the_desktop_session(board: TestClient, seeded: str) -> None:
     service: Service = board.app.state.service
     run_in_app(board, service.bind_session, seeded, "first-session")

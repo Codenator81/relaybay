@@ -21,8 +21,6 @@ EXPECTED_TOOLS = {
     "task_get",
     "task_create",
     "task_update",
-    "task_patch",
-    "task_set_stage",
     "task_archive",
     "task_unarchive",
     "task_bind_session",
@@ -41,8 +39,13 @@ EXPECTED_TOOLS = {
     "rules_get",
     "backlog_patch",
 }
-# Removed with MCP contract 2.
-REMOVED_TOOLS = {"brake_set", "brake_status", "budget_get", "message_send", "run_start"}
+# Removed with MCP contract 2 and contract 3.
+REMOVED_TOOLS = {"brake_set", "brake_status", "budget_get", "message_send", "run_start"} | {
+    "task_set_stage",
+    "task_patch",
+    "environments_get",
+    "environment_propose",
+}
 
 
 def connect(live: LiveServer, mode: str = "legacy") -> Client:
@@ -79,10 +82,10 @@ async def test_full_flow(live_server: Callable[[], LiveServer]) -> None:
 
         moved = await call(
             client,
-            "task_set_stage",
+            "task_update",
             task="acme-shop-1",
             stage="dev",
-            note="coding",
+            stage_note="coding",
             session="checkout-dev",
         )
         assert "stage dev" in moved and "version 2" in moved
@@ -138,7 +141,7 @@ async def test_errors_are_tool_errors(live_server: Callable[[], LiveServer]) -> 
         )
         assert stale.is_error and "version 2, not 1" in stale.content[0].text
 
-        bad_stage = await client.call_tool("task_set_stage", {"task": "demo-api-1", "stage": "qa"})
+        bad_stage = await client.call_tool("task_update", {"task": "demo-api-1", "stage": "qa"})
         assert bad_stage.is_error and "Unknown stage" in bad_stage.content[0].text
 
 
@@ -305,7 +308,7 @@ async def test_alias_tracker_and_dash_clears(live_server: Callable[[], LiveServe
         await call(client, "task_update", task="acme-shop-1", next_step="-", tracker_url=" - ")
         await call(client, "report_add", task="acme-shop-1", body="note", progress="Cart")
         await call(client, "report_add", task="acme-shop-1", body="note", progress="-")
-        await call(client, "task_set_stage", task="acme-shop-1", stage="done")
+        await call(client, "task_update", task="acme-shop-1", stage="done")
         await call(client, "task_update", task="acme-shop-1", tracker_logged=False)
         detail = await call(client, "task_get", task="acme-shop-1")
         assert "- next step:" not in detail and "## Progress" not in detail
@@ -315,8 +318,7 @@ async def test_alias_tracker_and_dash_clears(live_server: Callable[[], LiveServe
 async def test_task_update_moves_the_stage_and_takes_any_field(
     live_server: Callable[[], LiveServer],
 ) -> None:
-    """relaybay-40: task_update replaces task_set_stage and task_patch; the old names still work
-    and say what replaces them."""
+    """task_update moves the stage and takes any field through `fields`."""
     live = live_server()
     async with connect(live) as client:
         await call(client, "project_upsert", slug="acme-shop")
@@ -351,15 +353,7 @@ async def test_task_update_moves_the_stage_and_takes_any_field(
         detail = await call(client, "task_get", task="acme-shop-1")
         assert "Dup." in detail
 
-        old = await call(client, "task_set_stage", task="acme-shop-1", stage="review")
-        assert (
-            "stage review" in old and "Deprecated: task_set_stage is deprecated since 0.17" in old
-        )
-        assert "use task_update(task, stage=" in old
-        patched = await call(client, "task_patch", task="acme-shop-1", fields={"priority": 1})
-        assert "Deprecated: task_patch is deprecated since 0.17" in patched
         tools = {t.name: t for t in (await client.list_tools()).tools}
-        assert "Deprecated:" in (tools["task_set_stage"].description or "")
         assert {"stage", "fields", "deploy_notes", "deploy_done", "cancelled"} <= set(
             tools["task_update"].input_schema["properties"]
         )
@@ -380,7 +374,7 @@ async def test_stage_and_report_keep_next_step_current(
     async with connect(live) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
         hint = "Also update next_step (what happens next) and waiting_on (who acts next)"
-        for name in ("task_set_stage", "report_add", "task_update"):
+        for name in ("report_add", "task_update"):
             assert hint in " ".join((tools[name].description or "").split())
             props = tools[name].input_schema["properties"]
             assert "next_step" in props and "waiting_on" in props
@@ -389,7 +383,7 @@ async def test_stage_and_report_keep_next_step_current(
         await call(
             client, "task_create", project="demo-api", title="Rate limits", next_step="Plan it"
         )
-        moved = await call(client, "task_set_stage", task="demo-api-1", stage="dev")
+        moved = await call(client, "task_update", task="demo-api-1", stage="dev")
         assert "version 2" in moved
         detail = await call(client, "task_get", task="demo-api-1")
         assert "- next step: Plan it (stale)" in detail
@@ -398,7 +392,7 @@ async def test_stage_and_report_keep_next_step_current(
 
         moved = await call(
             client,
-            "task_set_stage",
+            "task_update",
             task="demo-api-1",
             stage="test",
             next_step="Review the limits",
@@ -417,7 +411,7 @@ async def test_stage_and_report_keep_next_step_current(
         assert "- version: 4" in detail
 
 
-async def test_task_patch_and_schema(live_server: Callable[[], LiveServer]) -> None:
+async def test_task_update_fields_and_schema(live_server: Callable[[], LiveServer]) -> None:
     live = live_server()
     async with connect(live) as client:
         await call(client, "project_upsert", slug="demo-api")
@@ -426,21 +420,21 @@ async def test_task_patch_and_schema(live_server: Callable[[], LiveServer]) -> N
         )
 
         unknown = await client.call_tool(
-            "task_patch", {"task": "demo-api-1", "fields": {"owner": "x", "branch": "y"}}
+            "task_update", {"task": "demo-api-1", "fields": {"owner": "x", "branch": "y"}}
         )
         text = unknown.content[0].text
         assert unknown.is_error and "Unknown task field(s): owner" in text
         assert "Allowed: title, stage," in text and "tracker_logged" in text
-        empty = await client.call_tool("task_patch", {"task": "demo-api-1", "fields": {}})
+        empty = await client.call_tool("task_update", {"task": "demo-api-1", "fields": {}})
         assert empty.is_error and "Nothing to update" in empty.content[0].text
         bad_type = await client.call_tool(
-            "task_patch", {"task": "demo-api-1", "fields": {"tracker_logged": "yes"}}
+            "task_update", {"task": "demo-api-1", "fields": {"tracker_logged": "yes"}}
         )
         assert bad_type.is_error and "true or false" in bad_type.content[0].text
 
         patched = await call(
             client,
-            "task_patch",
+            "task_update",
             task="demo-api-1",
             fields={"stage": "live", "next_step": "Watch", "branch": "-", "waiting_on": None},
             expected_version=1,
@@ -452,23 +446,23 @@ async def test_task_patch_and_schema(live_server: Callable[[], LiveServer]) -> N
 
         await call(
             client,
-            "task_patch",
+            "task_update",
             task="demo-api-1",
             fields={"tracker_ref": "ENG-7", "tracker_name": "Linear", "tracker_logged": True},
         )
-        moved_back = await call(client, "task_patch", task="demo-api-1", fields={"stage": "dev"})
+        moved_back = await call(client, "task_update", task="demo-api-1", fields={"stage": "dev"})
         assert "stage dev" in moved_back
         detail = await call(client, "task_get", task="demo-api-1")
         assert "- tracker: Linear ENG-7 · work log not entered" in detail  # auto-unlogged
         assert "- Linear ENG-7 — logged " in detail and " · unlogged " in detail
-        await call(client, "task_patch", task="demo-api-1", fields={"tracker_logged": True})
-        await call(client, "task_patch", task="demo-api-1", fields={"tracker_ref": "ENG-8"})
+        await call(client, "task_update", task="demo-api-1", fields={"tracker_logged": True})
+        await call(client, "task_update", task="demo-api-1", fields={"tracker_ref": "ENG-8"})
         detail = await call(client, "task_get", task="demo-api-1")
         assert "- tracker: Linear ENG-8 · work log not entered" in detail  # new issue: not logged
         assert "- Linear ENG-8 — not logged" in detail
         await call(
             client,
-            "task_patch",
+            "task_update",
             task="demo-api-1",
             fields={"tracker_ref": "ENG-9", "tracker_logged": True},
         )
@@ -478,12 +472,12 @@ async def test_task_patch_and_schema(live_server: Callable[[], LiveServer]) -> N
         assert last.startswith("Editable fields: title, stage,") and "tracker_logged" in last
 
         stale = await client.call_tool(
-            "task_patch",
+            "task_update",
             {"task": "demo-api-1", "fields": {"title": "x"}, "expected_version": 1},
         )
         assert stale.is_error and "not 1" in stale.content[0].text
         no_title = await client.call_tool(
-            "task_patch", {"task": "demo-api-1", "fields": {"title": "-"}}
+            "task_update", {"task": "demo-api-1", "fields": {"title": "-"}}
         )
         assert no_title.is_error and "title must not be empty" in no_title.content[0].text
 
@@ -503,8 +497,6 @@ async def test_hook_session_links_the_live_status(live_server: Callable[[], Live
             "project_upsert",
             "task_create",
             "task_update",
-            "task_patch",
-            "task_set_stage",
             "task_bind_session",
             "report_add",
             "decision_add",
@@ -536,7 +528,7 @@ async def test_a_long_waiting_on_gets_a_hint_and_is_saved_as_it_is(
     live = live_server()
     async with connect(live) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
-        for name in ("task_create", "task_update", "task_set_stage", "report_add"):
+        for name in ("task_create", "task_update", "report_add"):
             help_text = tools[name].input_schema["properties"]["waiting_on"]
             assert "no text after it" in str(help_text)
 
@@ -547,8 +539,8 @@ async def test_a_long_waiting_on_gets_a_hint_and_is_saved_as_it_is(
         task = "demo-api-1"
         writes = [
             ("task_update", {"waiting_on": long}),
-            ("task_patch", {"fields": {"waiting_on": long}}),
-            ("task_set_stage", {"stage": "plan", "waiting_on": long}),
+            ("task_update", {"fields": {"waiting_on": long}}),
+            ("task_update", {"stage": "plan", "waiting_on": long}),
             ("report_add", {"body": "changed · S · done", "waiting_on": long}),
         ]
         for tool, extra in writes:

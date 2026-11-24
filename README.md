@@ -281,9 +281,9 @@ restarts and the client reconnects: new tools appear, but new parameters of an e
 not. Use `task_update(task, fields={...})` for fields your client does not know yet (the allowed
 names are at the end of `task_get` and in `relaybay://schema/task`), or refresh the schemas by
 reconnecting the server in the client (`/mcp` in the CLI) or starting a new session. See
-[docs/mcp-tools.md](docs/mcp-tools.md#schema-changes-and-long-running-sessions). A release only adds
-to the MCP tools; a removal is announced first by a `Deprecated: …` line
-([contract](docs/mcp-tools.md#contract-and-deprecations)).
+[docs/mcp-tools.md](docs/mcp-tools.md#schema-changes-and-long-running-sessions). Within a contract version a
+release only adds to the MCP tools; a replaced tool or parameter is removed in the release that
+replaces it, which raises the contract version ([contract](docs/mcp-tools.md#contract)).
 The tool reference is in [docs/mcp-tools.md](docs/mcp-tools.md).
 
 ## Configuration

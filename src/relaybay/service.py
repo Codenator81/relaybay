@@ -3224,6 +3224,13 @@ class Service:
         counts = await repo.stage_counts(self._r)
         return [ProjectSummary(p, counts.get(p.id, {})) for p in projects]
 
+    async def projects_by_activity(self) -> list[ProjectSummary]:
+        """`list_projects` with the most recently active project first (its newest event);
+        projects without any event last, each group by slug."""
+        latest = await repo.latest_project_events(self._r)
+        projects = await self.list_projects()
+        return sorted(projects, key=lambda s: -latest.get(s.project.id, 0))
+
     async def get_project(self, slug: str, conn: aiosqlite.Connection | None = None) -> Project:
         project = await repo.get_project(conn or self._r, slug.strip().lower())
         if project is None:
@@ -4386,6 +4393,7 @@ class Service:
         tracker_name: str | None = None,
         tracker_url: str | None = None,
         tracker_logged: bool = False,
+        size: str | None = None,
         area: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
@@ -4421,6 +4429,7 @@ class Service:
             "tracker_name": _clean_field("tracker_name", tracker_name),
             "tracker_url": _clean_field("tracker_url", tracker_url),
             "tracker_logged": _clean_field("tracker_logged", tracker_logged),
+            "size": _clean_field("size", size),
             "inspect_only": _clean_field("inspect_only", inspect_only),
         }
         fields["stage"] = fields["stage"].value

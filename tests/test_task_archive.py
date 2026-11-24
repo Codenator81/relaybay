@@ -141,7 +141,7 @@ async def test_mcp_tools(tmp_path: Path, live_server: Callable[[], LiveServer]) 
             "task_archive", {"task": "acme-shop-1", "session": "lead"}
         )
         assert not_done.is_error and NOT_DONE in not_done.content[0].text
-        await call(client, "task_set_stage", task="acme-shop-1", stage="done", session="lead")
+        await call(client, "task_update", task="acme-shop-1", stage="done", session="lead")
         text = await call(client, "task_archive", task="acme-shop-1", session="lead")
         assert "is in the archive since" in text and "(by lead)" in text
         assert "- archived: " in await call(client, "task_get", task="acme-shop-1")

@@ -1,162 +1,34 @@
 """The versioned MCP contract: what a release may change in the tools, resources and prompts
-that clients have already loaded, and the deprecations that announce a removal.
+that clients have already loaded.
 
-Clients cache a tool's parameter schema, so a release only adds. A removal or a narrowing is
-announced in `DEPRECATIONS` first and may land once the entry has expired; that release raises
-`CONTRACT_VERSION`. `tests/test_mcp_contract.py` holds the live server against the baseline in
+Clients cache a tool's parameter schema, so within a contract version a release only adds. A
+release that removes or narrows something raises `CONTRACT_VERSION`.
+`tests/test_mcp_contract.py` holds the live server against the baseline in
 `tests/fixtures/mcp_contract_baseline.json`, which `scripts/gen_reference.py --rebaseline` writes.
 """
 
-import functools
-import inspect
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
 from typing import Any
 
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 
 RULE = (
     "Within a contract version a release never removes a tool, a parameter, a resource or a"
     " prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or"
     " range), never adds a required parameter to an existing tool and never turns a read-only"
     " tool into a writing one; new behaviour comes as new optional parameters or new tools, and"
-    " `task_update(fields=...)` and `backlog_patch` reach fields a cached schema lacks. A"
-    " removal is announced first: the tool's description and every result of the deprecated"
-    " tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30"
-    " days. The release that removes it raises the contract version."
+    " `task_update(fields=...)` and `backlog_patch` reach fields a cached schema lacks. While"
+    " relaybay has no outside users, a replaced tool or parameter is removed in the same release"
+    " that replaces it, and that release raises the contract version; nothing is kept as"
+    " deprecated."
 )
-
-
-@dataclass(frozen=True)
-class Deprecation:
-    """`tool` is a tool name; for a resource its URI or URI template, for a prompt its name.
-    `parameter` is a tool parameter or prompt argument, None for the whole item."""
-
-    tool: str
-    parameter: str | None
-    since: str
-    remove_not_before: date
-    replacement: str | None
-    # The whole notice instead of the generated one: for a tool whose feature is gone and that
-    # stays only so cached schemas keep working.
-    note: str | None = None
-
-    def notice(self) -> str:
-        if self.note:
-            return self.note
-        what = f"parameter `{self.parameter}` of {self.tool}" if self.parameter else self.tool
-        instead = f"; use {self.replacement} instead" if self.replacement else ""
-        return (
-            f"Deprecated: {what} is deprecated since {self.since} and may be removed in a later"
-            f" minor version, not before {self.remove_not_before.isoformat()}{instead}."
-        )
-
-    def expired(self, version: str, today: date) -> bool:
-        return today >= self.remove_not_before and _minor(version) > _minor(self.since)
-
-
-# Tools of the Stands & access page, removed in 0.15: registered with their parameters, they do
-# nothing; the first later minor release past the date removes them and raises the version.
-REMOVED_SINCE = "0.15"
-REMOVED_NOT_BEFORE = date(2026, 12, 19)
-STUB_RESULT = "Nothing done: this tool does nothing since 0.15."
-ENVIRONMENTS_GONE = (
-    "Deprecated: environments and access were removed in 0.15; environments are kept in the"
-    " project's own notes."
-)
-
-# task_update took over the stage move and the fields as one object in 0.17 (relaybay-40). The
-# date is at least 30 days after that release; the release PR moves it if the release is later.
-MERGED_SINCE = "0.17"
-MERGED_NOT_BEFORE = date(2027, 1, 15)
-
-DEPRECATIONS: list[Deprecation] = [
-    *(
-        Deprecation(t, None, REMOVED_SINCE, REMOVED_NOT_BEFORE, None, ENVIRONMENTS_GONE)
-        for t in (
-            "environments_get",
-            "environment_propose",
-            "relaybay://project/{slug}/environments",
-        )
-    ),
-    Deprecation(
-        "task_set_stage",
-        None,
-        MERGED_SINCE,
-        MERGED_NOT_BEFORE,
-        "task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...)",
-    ),
-    Deprecation(
-        "task_patch", None, MERGED_SINCE, MERGED_NOT_BEFORE, "task_update(task, fields={...})"
-    ),
-]
-
-
-def _minor(version: str) -> tuple[int, int]:
-    major, minor = version.split(".")[:2]
-    return int(major), int(minor)
-
-
-def _entry(tool: str, parameter: str | None) -> Deprecation:
-    for item in DEPRECATIONS:
-        if item.tool == tool and item.parameter == parameter:
-            return item
-    raise LookupError(f"No DEPRECATIONS entry for {tool} parameter {parameter}.")
-
-
-Tool = Callable[..., Awaitable[str]]
-
-
-def deprecated(parameter: str | None = None) -> Callable[[Tool], Tool]:
-    """Mark a tool, or one of its parameters, as deprecated by its `DEPRECATIONS` entry. Put it
-    under the registering decorator. The signature stays; the description gains the notice, and
-    so does the result (for a parameter: when the call passed it)."""
-
-    def wrap(fn: Tool) -> Tool:
-        if inspect.signature(fn).return_annotation is not str:
-            raise TypeError(f"deprecated() needs a tool that returns text, not {fn.__name__}.")
-        if parameter is not None and parameter not in inspect.signature(fn).parameters:
-            raise TypeError(f"{fn.__name__} has no parameter {parameter}.")
-        notice = _entry(fn.__name__, parameter).notice()
-
-        @functools.wraps(fn)
-        async def tool(*args: Any, **kwargs: Any) -> str:
-            text = await fn(*args, **kwargs)
-            if parameter is None or kwargs.get(parameter) is not None:
-                return f"{text}\n{notice}"
-            return text
-
-        tool.__doc__ = f"{(fn.__doc__ or '').rstrip()}\n\n{notice}"
-        return tool
-
-    return wrap
 
 
 def summary() -> list[str]:
-    """The contract as markdown lines: version, rule and deprecations (the resource and the
-    generated reference share it)."""
-    lines = [f"Contract version {CONTRACT_VERSION}.", "", RULE, ""]
-    if not DEPRECATIONS:
-        return [*lines, "Deprecations: none."]
-    lines += [
-        "Deprecations:",
-        "",
-        "| Item | Parameter | Since | Removed not before | Use instead |",
-        "|---|---|---|---|---|",
-    ]
-    for d in DEPRECATIONS:
-        lines.append(
-            f"| `{d.tool}` | {f'`{d.parameter}`' if d.parameter else '—'} | {d.since}"
-            f" | {d.remove_not_before.isoformat()} | {_instead(d)} |"
-        )
-    return lines
-
-
-def _instead(d: Deprecation) -> str:
-    if d.replacement:
-        return d.replacement
-    return d.note.removeprefix("Deprecated: ") if d.note else "—"
+    """The contract as markdown lines: version and rule (the resource and the generated
+    reference share it)."""
+    return [f"Contract version {CONTRACT_VERSION}.", "", RULE]
 
 
 # --- the baseline -------------------------------------------------------------
@@ -239,7 +111,8 @@ def snapshot(
 
 @dataclass(frozen=True)
 class Change:
-    """A breaking change: `tool` and `parameter` match a `Deprecation`."""
+    """A breaking change: the tool, resource or prompt it touches, and the parameter or argument
+    (None for the whole item)."""
 
     tool: str
     parameter: str | None
@@ -379,13 +252,9 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any]) -> list[Change]:
     return found
 
 
-def uncovered(changes: Iterable[Change], version: str, today: date) -> list[Change]:
-    """The changes no expired deprecation covers (an entry without a parameter covers all)."""
-    return [
-        c
-        for c in changes
-        if not any(
-            d.tool == c.tool and d.parameter in (None, c.parameter) and d.expired(version, today)
-            for d in DEPRECATIONS
-        )
-    ]
+def refused(old: dict[str, Any], new: dict[str, Any]) -> list[Change]:
+    """The breaking changes from `old` to `new` that the contract version does not allow: all of
+    them unless `CONTRACT_VERSION` is above the one `old` was written with."""
+    if old["contract_version"] < CONTRACT_VERSION:
+        return []
+    return breaking_changes(old, new)

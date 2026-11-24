@@ -361,7 +361,7 @@ async def test_mcp_review_tools(live_server: Callable[[], LiveServer], tmp_path:
         created = await call(session, "task_create", project="acme-shop", title="Checkout")
         key = "acme-shop-1"
         assert key in created
-        text = await call(session, "task_set_stage", task=key, stage="review")
+        text = await call(session, "task_update", task=key, stage="review")
         assert "review checklist of" in text
         text = await call(session, "review_steps_set", task=key, steps=STEPS)
         assert "3 step(s)" in text

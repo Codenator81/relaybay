@@ -102,20 +102,20 @@ READER_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# The coordinator gets every current tool but the agent's own acceptance work on a card.
+# The coordinator gets every tool but the agent's own acceptance work on a card.
 COORDINATOR_LEFT_OUT: frozenset[str] = frozenset(
     {"review_steps_set", "review_step_update", "annotation_reply"}
 )
 
 
-def role_tools(role: str, current: set[str]) -> frozenset[str]:
-    """The tools a role lists, out of the server's `current` (not deprecated) tools."""
+def role_tools(role: str, registered: set[str]) -> frozenset[str]:
+    """The tools a role lists, out of the tools the server `registered`."""
     if role == AGENT:
-        return AGENT_TOOLS & current
+        return AGENT_TOOLS & registered
     if role == READER:
-        return READER_TOOLS & current
+        return READER_TOOLS & registered
     if role == COORDINATOR:
-        return frozenset(current - COORDINATOR_LEFT_OUT)
+        return frozenset(registered - COORDINATOR_LEFT_OUT)
     raise ValueError(f"Unknown role {role!r}; one of {', '.join(ROLES)}.")
 
 

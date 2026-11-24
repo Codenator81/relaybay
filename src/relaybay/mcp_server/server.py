@@ -81,10 +81,8 @@ def instructions(rules: Rules, coordinated: bool = False) -> str:
             "- A line 'Warning (rules)' names a rule the write did not meet: fix it. 'rules updated"
             " to vN' means re-read relaybay://rules; changes go through rules_propose (rules_update"
             " is for coordinator sessions named in the server's config).",
-            "- A parameter your tool lacks: task_update(fields={...}) (relaybay://schema/task; an"
-            " older client without it: task_patch). A line"
-            f" 'Deprecated: …' names the replacement (contract v{contract.CONTRACT_VERSION}:"
-            " relaybay://contract).",
+            "- A parameter your tool lacks: task_update(fields={...}) (relaybay://schema/task;"
+            f" contract v{contract.CONTRACT_VERSION}: relaybay://contract).",
             "- Hosts and access come from the project's own notes; never paste secrets into"
             " relaybay. When the guard stops a call, its reason says why (policy_get); ask the"
             " owner or use policy_propose.",
@@ -261,7 +259,7 @@ class RoleServer(MCPServer):
         tools = await super().list_tools()
         if self.role is None:
             return tools
-        shown = roles.role_tools(self.role, current_tools({t.name for t in tools}))
+        shown = roles.role_tools(self.role, {t.name for t in tools})
         return [t for t in tools if t.name in shown]
 
     async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
@@ -299,12 +297,6 @@ def unknown_refusal(name: str, unknown: list[str], schema: Mapping[str, Any]) ->
         f" {takes}. Your client's tool list may be older or newer than this server: reconnect"
         f" to refresh it{hatch}."
     )
-
-
-def current_tools(names: set[str]) -> set[str]:
-    """The tool names that are not deprecated (old names and stubs stay out of every role)."""
-    gone = {d.tool for d in contract.DEPRECATIONS if d.parameter is None}
-    return names - gone
 
 
 def server_instructions(rules: Rules, role: str | None, coordinated: bool = False) -> str:
@@ -811,6 +803,7 @@ def build_mcp(
         tracker_name: Annotated[str | None, Field(description=TRACKER_NAME_HELP + EMPTY)] = None,
         tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + EMPTY)] = None,
         tracker_logged: Annotated[bool, Field(description=TRACKER_LOGGED_HELP)] = False,
+        size: Annotated[str | None, Field(description=SIZE_HELP + EMPTY)] = None,
         area: Annotated[str | None, Field(description=AREA_HELP + EMPTY)] = None,
         session: Session = None,
         session_title: SessionTitle = None,
@@ -850,6 +843,7 @@ def build_mcp(
                 tracker_name=cleared(tracker_name),
                 tracker_url=cleared(tracker_url),
                 tracker_logged=tracker_logged,
+                size=cleared(size),
                 area=cleared(area),
                 session=session,
                 session_title=session_title,
@@ -1019,91 +1013,6 @@ def build_mcp(
         return fmt.with_warnings(
             fmt.task_saved(saved.task, "Moved" if moved else "Updated"),
             [*saved.warnings, *filed, *fmt.waiting_on_hint(changes.get("waiting_on"))],
-        )
-
-    @write
-    @contract.deprecated()
-    async def task_patch(
-        task: TaskRef,
-        fields: Annotated[
-            dict[str, Any],
-            Field(
-                description='Task fields to change as one JSON object, e.g. {"branch": "x"}.'
-                " Call task_get or read relaybay://schema/task for the allowed fields; '-', ''"
-                " or null clears an optional text field."
-            ),
-        ],
-        expected_version: Annotated[
-            int | None,
-            Field(description="Fail instead of overwriting if the task changed since you read it."),
-        ] = None,
-        session: Session = None,
-        session_title: SessionTitle = None,
-        hook_session: HookSession = None,
-    ) -> str:
-        """Change any task fields given as one JSON object, with the same rules as task_update
-        and task_set_stage (a `stage` value moves the task). Use it for a field your client's
-        task_update does not offer yet: its parameter list may be older than the server. Call
-        task_get or read relaybay://schema/task for the allowed fields. `session_surface`
-        ("desktop" or "terminal", with your hook_session) is not a task field: it tells relaybay
-        where you run, when your session start asks for it."""
-        changes = {k: cleared(v) if isinstance(v, str) else v for k, v in fields.items()}
-        if not changes:
-            raise ToolError("Nothing to update: pass at least one field in `fields`.")
-        saved = await run(
-            service.update_task_checked(
-                task,
-                changes,
-                expected_version=expected_version,
-                session=session,
-                session_title=session_title,
-                hook_session=hook_session,
-            )
-        )
-        filed = await doc_field_note(
-            saved.task.key, changes.get("doc_path"), session, session_title, hook_session
-        )
-        return fmt.with_warnings(
-            fmt.task_saved(saved.task, "Updated"),
-            [*saved.warnings, *filed, *fmt.waiting_on_hint(fields.get("waiting_on"))],
-        )
-
-    @write
-    @contract.deprecated()
-    async def task_set_stage(
-        task: TaskRef,
-        stage: StageArg,
-        note: Annotated[
-            str | None, Field(description="Short note next to the stage, e.g. 'PR open'.")
-        ] = None,
-        next_step: Annotated[str | None, Field(description=NEXT_STEP_HELP + CLEARS)] = None,
-        waiting_on: Annotated[str | None, Field(description=WAITING_ON_HELP + CLEARS)] = None,
-        session: Session = None,
-        session_title: SessionTitle = None,
-        hook_session: HookSession = None,
-    ) -> str:
-        """Move a task to another stage (plan, dev, review, test, live, done) when its work
-        moves on, e.g. to dev when you start coding, to review when the owner should accept it
-        step by step (fill the checklist with review_steps_set first), to test when it is on the
-        test environment, to done when finished.
-        Any transition is allowed; a move that misses a working rule (see rules_get) adds a
-        'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who
-        acts next) whenever the stage changes or you report."""
-        saved = await run(
-            service.set_stage_checked(
-                task,
-                stage,
-                note=note,
-                next_step=cleared(next_step),
-                waiting_on=cleared(waiting_on),
-                session=session,
-                session_title=session_title,
-                hook_session=hook_session,
-            )
-        )
-        return fmt.with_warnings(
-            fmt.task_saved(saved.task, "Moved"),
-            [*saved.warnings, *fmt.waiting_on_hint(waiting_on)],
         )
 
     @write
@@ -2879,25 +2788,6 @@ def build_mcp(
         return f"Caption of attachment #{item.id} on **{item.task_key}** saved."
 
     @mcp.tool(annotations=READ, structured_output=False)
-    @contract.deprecated()
-    async def environments_get(project: ProjectSlug) -> str:
-        """Removed in 0.15 with the environments: shows nothing."""
-        return contract.STUB_RESULT
-
-    @mcp.tool(annotations=WRITE, structured_output=False)
-    @contract.deprecated()
-    async def environment_propose(
-        project: ProjectSlug,
-        change: Annotated[dict[str, Any], Field(description="Ignored.")],
-        reason: Annotated[str, Field(description="Ignored.")],
-        session: Session = None,
-        session_title: SessionTitle = None,
-        hook_session: HookSession = None,
-    ) -> str:
-        """Removed in 0.15 with the environments: records nothing."""
-        return contract.STUB_RESULT
-
-    @mcp.tool(annotations=READ, structured_output=False)
     async def policy_get(
         project: Annotated[
             str | None,
@@ -2971,15 +2861,6 @@ def build_mcp(
         return data
 
     @mcp.resource(
-        "relaybay://project/{slug}/environments",
-        name="project-environments",
-        description=f"Removed in 0.15 with the environments. {contract.ENVIRONMENTS_GONE}",
-        mime_type="text/markdown",
-    )
-    async def environments_resource(slug: str) -> str:
-        return contract.STUB_RESULT + "\n" + contract.ENVIRONMENTS_GONE
-
-    @mcp.resource(
         "relaybay://project/{slug}",
         name="project-snapshot",
         description="Markdown snapshot of a project (same as project_snapshot).",
@@ -3038,7 +2919,7 @@ def build_mcp(
     @mcp.resource(
         "relaybay://contract",
         name="contract",
-        description="The MCP contract: its version, the compatibility rule and the deprecations.",
+        description="The MCP contract: its version and the compatibility rule.",
         mime_type="text/markdown",
     )
     async def contract_resource() -> str:

@@ -33,8 +33,9 @@ traced. Tests never run the real `claude`.
 
 All three checks must pass before you report a change as done; after changing a command, a
 setting or an MCP tool, regenerate the reference pages (`--check` runs in CI). MCP changes only
-add: `tests/test_mcp_contract.py` holds the server to `tests/fixtures/mcp_contract_baseline.json`,
-which only a release pull request rewrites (`scripts/gen_reference.py --rebaseline`).
+add within a contract version: `tests/test_mcp_contract.py` holds the server to
+`tests/fixtures/mcp_contract_baseline.json`, which only a release pull request or the one that raises `CONTRACT_VERSION`
+rewrites (`scripts/gen_reference.py --rebaseline`; so the guard stays armed for the rest of the release); a removal or a narrowing raises `CONTRACT_VERSION`.
 
 ## Rules
 

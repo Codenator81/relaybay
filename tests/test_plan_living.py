@@ -280,7 +280,7 @@ async def test_mcp_task_update_and_patch_carry_the_closed_plan_warning(
             )
         assert CLOSED not in await call(session, "report_add", task=key, body="verified · S · done")
         assert CLOSED in await call(session, "task_update", task=key, progress="More")
-        assert CLOSED in await call(session, "task_patch", task=key, fields={"progress": "Again"})
+        assert CLOSED in await call(session, "task_update", task=key, fields={"progress": "Again"})
         assert CLOSED in await call(session, "report_add", task=key, body="verified · S · again")
 
 
@@ -393,7 +393,7 @@ async def test_mcp_plan_step_add(live_server: Callable[[], LiveServer]) -> None:
         key = "acme-shop-1"
         await call(session, "plan_set", task=key, steps=STEPS)
         await call(session, "plan_accept", task=key, session="coordinator")
-        await call(session, "task_set_stage", task=key, stage="review")
+        await call(session, "task_update", task=key, stage="review")
         text = await call(
             session, "plan_step_add", task=key, title="Undo button", reason="owner asked"
         )

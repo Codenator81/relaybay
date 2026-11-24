@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from relaybay.app import create_app
@@ -24,6 +25,7 @@ from relaybay.domain.plan import (
     title_diff,
 )
 from relaybay.domain.rules import validate_rules
+from relaybay.mcp_server.server import build_mcp
 from relaybay.security import csrf_token
 from relaybay.service import Service, collect_notes
 from tests.conftest import BASE, LiveServer, run_in_app
@@ -445,6 +447,21 @@ async def test_size_is_a_task_field_and_the_first_report_sets_it(service: Servic
     assert (await service.update_task(task.key, {"size": None})).size is None
 
 
+async def test_task_create_takes_a_size(service: Service) -> None:
+    await service.upsert_project("acme-shop")
+    mcp = build_mcp(service)
+    tools = {t.name: t for t in await mcp.list_tools()}
+    help_text = tools["task_create"].input_schema["properties"]["size"]["description"]
+    assert help_text.startswith("Task size: S, M or L.")
+    await mcp.call_tool("task_create", {"project": "acme-shop", "title": "Cart", "size": "s"})
+    assert (await service.get_task("acme-shop-1")).size == "S"
+    await mcp.call_tool("task_create", {"project": "acme-shop", "title": "Pay", "size": "-"})
+    assert (await service.get_task("acme-shop-2")).size is None
+    with pytest.raises(ToolError, match="size must be one of S, M, L"):
+        await mcp.call_tool("task_create", {"project": "acme-shop", "title": "X", "size": "XL"})
+    assert len(await service.list_tasks(project="acme-shop")) == 2
+
+
 # --- the agent's todo from hooks -----------------------------------------------------------
 
 
@@ -604,7 +621,7 @@ async def test_mcp_plan_tools(live_server: Callable[[], LiveServer]) -> None:
         assert "has no plan yet" in text
         text = await call(session, "plan_set", task=key, steps=STEPS, reason="from PLAN.md")
         assert "3 step(s), 0 done, draft" in text and "plan_accept" in text
-        text = await call(session, "task_set_stage", task=key, stage="dev")
+        text = await call(session, "task_update", task=key, stage="dev")
         assert "The plan is not accepted yet" in text
         text = await call(session, "plan_accept", task=key, session="coordinator")
         assert "accepted: 3 step(s)" in text

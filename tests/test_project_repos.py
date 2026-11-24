@@ -434,7 +434,7 @@ async def test_mcp_tools_take_repos_and_prs(service: Service) -> None:
         repos=["web"],
         prs=["https://github.com/acme/web/pull/12"],
     )
-    await call("task_patch", task="acme-shop-1", fields={"repos": ["api"]})
+    await call("task_update", task="acme-shop-1", fields={"repos": ["api"]})
     detail = await call("task_get", task="acme-shop-1")
     assert "## Code" in detail and "PR #12 https://github.com/acme/web/pull/12" in detail
     assert "- api (api) `/home/dev/acme-shop/api` (linked: agent)" in detail

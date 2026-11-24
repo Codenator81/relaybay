@@ -681,7 +681,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             request,
             "projects.html",
             "boards",
-            projects=(projects := await service.list_projects()),
+            projects=(projects := await service.projects_by_activity()),
             ptimes=await project_time(projects),
             day=day,
             **await daylog_context(day),
@@ -698,7 +698,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return render(
             request,
             "_projects.html",
-            projects=(projects := await service.list_projects()),
+            projects=(projects := await service.projects_by_activity()),
             ptimes=await project_time(projects),
             pulses=await service.pulses(),
             archived_projects=await service.archived_projects(),
