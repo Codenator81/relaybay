@@ -1951,3 +1951,80 @@ summary { cursor: pointer; }
 .comment.from-owner { align-self: flex-end; background: color-mix(in srgb, var(--accent) 22%, transparent); border-bottom-right-radius: 4px; }
 .comment.from-agent { align-self: flex-start; border-bottom-left-radius: 4px; }
 .comment.from-owner .comment-marks { text-align: right; }
+
+/* --- the day time log (design 0028) ------------------------------------- */
+
+/* One colour per project (CRC-32 of the slug mod 8, routes.py daylog colours), solid fills with text that reads on them in both
+   themes; labels are grey. The strip, the chips and the totals use the same classes. */
+.tl-c0 { --tl: #3b5bdb; --tl-text: #ffffff; }
+.tl-c1 { --tl: #237a35; --tl-text: #ffffff; }
+.tl-c2 { --tl: #a65f00; --tl-text: #ffffff; }
+.tl-c3 { --tl: #7048e8; --tl-text: #ffffff; }
+.tl-c4 { --tl: #0c7c80; --tl-text: #ffffff; }
+.tl-c5 { --tl: #c2255c; --tl-text: #ffffff; }
+.tl-c6 { --tl: #c4410c; --tl-text: #ffffff; }
+.tl-c7 { --tl: #5f7a1a; --tl-text: #ffffff; }
+.tl-label { --tl: #6c757d; --tl-text: #ffffff; }
+@media (prefers-color-scheme: dark) {
+  .tl-c0 { --tl: #7b93ff; --tl-text: #0d1020; }
+  .tl-c1 { --tl: #69db7c; --tl-text: #0d1020; }
+  .tl-c2 { --tl: #ffc66d; --tl-text: #0d1020; }
+  .tl-c3 { --tl: #b197fc; --tl-text: #0d1020; }
+  .tl-c4 { --tl: #63e6be; --tl-text: #0d1020; }
+  .tl-c5 { --tl: #faa2c1; --tl-text: #0d1020; }
+  .tl-c6 { --tl: #ffa94d; --tl-text: #0d1020; }
+  .tl-c7 { --tl: #c0eb75; --tl-text: #0d1020; }
+  .tl-label { --tl: #adb5bd; --tl-text: #0d1020; }
+}
+.daylog-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.daylog-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.daylog-total { margin-left: 6px; font-size: 1.75rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.daylog-nav { display: flex; gap: 12px; font-size: 13px; }
+.daylog-empty { margin: 8px 0; }
+.tl-strip { display: block; margin: 12px 0 6px; overflow: visible; }
+.tl-bg { fill: var(--surface-2); }
+.tl-rect { fill: var(--tl); stroke: var(--surface); stroke-width: 1; }
+.tl-key { fill: var(--tl-text); font-size: 12px; font-weight: 600; }
+.tl-seg.is-unclosed .tl-rect { fill-opacity: 0.25; stroke: var(--tl); stroke-dasharray: 4 3; }
+.tl-seg.is-unclosed .tl-key { fill: var(--text); }
+.tl-tick { stroke: var(--border); stroke-width: 1; }
+.tl-hour { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tl-totals { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; padding: 0; list-style: none; }
+.tl-chip {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--tl);
+  color: var(--tl-text);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tl-now { margin: 4px 0; display: flex; align-items: center; gap: 6px; }
+.tl-unclosed { margin: 4px 0; color: var(--warn); font-size: 13px; }
+.daylog-marks { margin: 8px 0; font-size: 13px; }
+.daylog-marks summary { cursor: pointer; color: var(--muted); }
+.tl-marks { margin: 6px 0 0; padding-left: 0; list-style: none; }
+.tl-marks li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 0; }
+.tl-mark-time { font-variant-numeric: tabular-nums; font-weight: 600; }
+.tl-mark-kind { color: var(--muted); min-width: 3.5em; }
+.tl-mark-target { min-width: 0; overflow-wrap: anywhere; }
+.daylog-forms { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.daylog-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.daylog-form input[name="what"] { min-width: 0; width: 14em; max-width: 100%; }
+.project-time { flex-basis: 100%; margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.chip.time-chip {
+  display: inline-block;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.chip.time-chip.is-now { background: var(--accent); color: var(--accent-text); }
+:root[data-compact] .card[data-key]:not(.is-expanded) .time-chip { display: none; }
+.time-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 12px; font-size: 14px; font-variant-numeric: tabular-nums; }

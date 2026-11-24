@@ -36,6 +36,11 @@
   {#- Waiting on the owner is already the state word "Waits for you" above; the chip is only for
       someone else (a person, a role, another session). -#}
   {%- set waits_on_other = t.waiting_on and is_open and ("waiting on " ~ t.waiting_on.strip()) not in st.reasons %}
+  {#- The day time log (design 0028): only a card with time today; `times` may be missing. #}
+  {%- set tm = times.get(t.id) if times else None %}
+  {#- A start time, not a running duration: nothing ticks in the browser, so it never goes stale. #}
+  {% if tm and tm.current %}<span class="chip time-chip is-now" title="Worked on now; time today from the day log">now since {{ tm.since.strftime('%H:%M') }} · today {{ tm.today|hm }}</span>
+  {%- elif tm and tm.today %}<span class="chip time-chip" title="Time today from the day log">today {{ tm.today|hm }}</span>{% endif %}
   {% if t.inspect_only %}<span class="chip" title="Inspect-only: no accepted plan needed">inspect-only</span>{% endif %}
   {% if t.cancelled %}<span class="chip cancelled-chip" title="Cancelled: {{ t.cancelled }}">cancelled</span>{% endif %}
   {#- Only the blockers still open; one at live or done is listed in the task dialog alone. #}

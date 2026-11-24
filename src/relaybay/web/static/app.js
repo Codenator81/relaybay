@@ -57,6 +57,8 @@
     "document.updated", "document.deleted", "decision.added", "memory.added", "memory.updated",
     "project.pulse_set"
   ];
+  // The day time log: a mark changes the time of the cards in `keys`, on any board.
+  function isTimelog(kind) { return kind.indexOf("timelog.") === 0; }
   var live = null;
   var lastId = 0;
   var source = null;
@@ -213,6 +215,48 @@
       releaseHeld();
     }
   });
+  // The `/` day panel is not swapped while its form has the focus or typed text; the refresh
+  // waits until the form is left (or sent: its own answer swaps the panel).
+  var daylogHeld = false;
+  function daylogBusy(daylog) {
+    var form = daylog.querySelector(".daylog-form");
+    if (!form) return false;
+    return form.contains(document.activeElement) ||
+      Array.prototype.some.call(form.querySelectorAll("input[type=text]"),
+        function (f) { return f.value.trim(); });
+  }
+  function daylogRunning() {
+    var daylog = document.getElementById("daylog");
+    return !!(daylog && daylog.querySelector("[data-running]"));
+  }
+  function queueDaylog(throttled) {
+    var daylog = document.getElementById("daylog");
+    if (!daylog) return;
+    if (daylogBusy(daylog)) { daylogHeld = true; return; }
+    if (throttled) queueThrottled(daylog); else queue(daylog);
+  }
+  document.addEventListener("focusout", function (event) {
+    if (!daylogHeld || !event.target.closest || !event.target.closest(".daylog-form")) return;
+    // The focus lands on its next element only after focusout.
+    window.setTimeout(function () {
+      var daylog = document.getElementById("daylog");
+      if (daylogHeld && daylog && !daylogBusy(daylog)) {
+        daylogHeld = false;
+        queue(daylog);
+      }
+    }, 0);
+  });
+  document.addEventListener("htmx:afterSettle", function (event) {
+    if (event.target.id === "daylog") daylogHeld = false;
+  });
+  // Checked again when the refresh fires (a throttled one waits 2 s): the panel's own refetch
+  // is cancelled while its form is in use; its form's own requests go through.
+  document.addEventListener("htmx:beforeRequest", function (event) {
+    var elt = event.detail && event.detail.elt;
+    if (!elt || elt.id !== "daylog" || !daylogBusy(elt)) return;
+    event.preventDefault();
+    daylogHeld = true;
+  });
   // The session card leaves out an empty block (its questions, approvals, unread replies, plan):
   // an event that may fill one refetches the whole view, unless an answer is being typed in it.
   function queueView(key) {
@@ -308,6 +352,14 @@
         }
         return;
       }
+      if (isTimelog(data.kind)) {
+        if ((data.keys || []).indexOf(live.dataset.task) !== -1) {
+          unlessAnswering(document, "task-time", function () {
+            queue(document.querySelector(".task-view"));
+          });
+        }
+        return;
+      }
       if (data.key !== live.dataset.task) return;
       if (isComment(data.kind)) {
         queue(thread(data.key));
@@ -335,7 +387,13 @@
     }
 
     var projects = document.getElementById("projects");
-    if (projects) { queue(projects); return; }
+    if (projects) {
+      queue(projects);
+      // The project rows show today's time: while a span runs the panel follows them.
+      if (isTimelog(data.kind)) queueDaylog(false);
+      else if (daylogRunning()) queueDaylog(true);
+      return;
+    }
     var sessions = document.getElementById("sessions");
     if (sessions) {
       if (SESSION_KINDS.indexOf(data.kind) !== -1) queueThrottled(sessions);
@@ -368,7 +426,7 @@
     var audit = document.getElementById("audit");
     if (audit) {
       if (audit.dataset.live && (data.kind === "live.action" || (audit.dataset.changes &&
-          /^(policy\.|environment\.|session\.no_live_|question\.|approval\.|task\.(un)?archived$)/.test(data.kind)))) {
+          /^(policy\.|environment\.|session\.no_live_|question\.|approval\.|task\.(un)?archived$|timelog\.(fixed|removed)$)/.test(data.kind)))) {
         prependActivity(audit);
       }
       return;
@@ -379,6 +437,14 @@
       return;
     }
     if (!document.getElementById("board")) return;
+    // Before the project filter: a switch moves time from a card of one project to another's.
+    if (isTimelog(data.kind)) {
+      (data.keys || []).forEach(function (key) { queue(card(key)); });
+      if (dialog && dialog.open && (data.keys || []).indexOf(dialog.dataset.key) !== -1) {
+        refreshDialog();
+      }
+      return;
+    }
     // Every page listens to all projects (the Inbox count); the board only to its own.
     if (data.project !== live.dataset.project) return;
     if ((data.kind === "session.status_changed" || data.kind === "session.terminal_opened") &&

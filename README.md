@@ -87,7 +87,8 @@ Check the files with `SHA256SUMS.txt` from the same release if you like.
 `uvx relaybay`, or the Docker image `ghcr.io/codenator81/relaybay`. Details:
 [Install](https://codenator81.github.io/relaybay/getting-started/install/); a server in Docker with the
 program as its client:
-[how-to](https://codenator81.github.io/relaybay/how-to/docker-server-with-desktop-client/).
+[how-to](https://codenator81.github.io/relaybay/how-to/docker-server-with-desktop-client/). In Docker
+the day time log's day is UTC unless you set `TZ` (for example `-e TZ=Europe/Berlin`).
 
 **Documentation:** [codenator81.github.io/relaybay](https://codenator81.github.io/relaybay/) ·
 [Specification](docs/SPEC.md) (how it behaves now) · [Roadmap](docs/ROADMAP.md) ·
@@ -154,6 +155,12 @@ program as its client:
   task has had is kept in its tracker history (task dialog, `/t/<key>`, `task_get`), and new work
   on a logged task (a report, a progress change, a move back from `live` or `done`) clears the
   mark again, so it always means "the log covers everything done".
+- **Day time log** — mark when work starts, switches to another card (of any project) or a free
+  label such as "call", and pauses; `/` shows the day as a strip coloured by project with the day's
+  total, per-project totals, what runs now and the spans left unclosed, the cards show "now" or
+  "today", the task its time today, in total and in the tracker. The coordinator marks it with
+  `timelog_mark` (or the board's "Working on this now"), corrects it with `timelog_fix` and records
+  the minutes entered in the tracker with `worklog_add`. The day is the server machine's local date.
 - **Comments to agents** — write a comment on a task (dialog or task page) and the agent of the
   bound session gets it through its hooks with its next prompt or tool call; the thread shows
   "sent / delivered / read" live, `Stop` reminds the agent (at most twice) until it acknowledges,

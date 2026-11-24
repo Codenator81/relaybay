@@ -276,3 +276,21 @@ async def test_a_fix_is_scanned_under_the_marks_own_project(svc: Service) -> Non
         await svc.fix_time_mark(label.mark.id, f"pasted {JWT}", delete=True)
     gone, _, _ = await svc.fix_time_mark(card.mark.id, f"again {JWT}", delete=True)
     assert gone is None
+
+
+def test_the_strip_labels_at_most_eight_hours() -> None:
+    long_day = [
+        mark(1, at(DAY, 7), tl.START, key="acme-shop-1"),
+        mark(2, at(DAY, 22, 30), tl.PAUSE),
+    ]
+    strip = tl.strip(tl.day_log(long_day, DAY, at(NEXT, 9), TZ), TZ)
+    assert strip is not None and len(strip.ticks) == 17  # 07 to 23, a tick each
+    labels = [label for _, label in strip.ticks if label]
+    assert labels == ["07", "10", "13", "16", "19", "22"] and len(labels) <= tl.TICK_LABELS_MAX
+    [item] = strip.items
+    assert (item.left, strip.ticks[-1][0]) == (0.0, 100.0)
+    short = tl.strip(
+        tl.day_log([*long_day[:1], mark(2, at(DAY, 9), tl.PAUSE)], DAY, at(NEXT, 9), TZ), TZ
+    )
+    assert short is not None and [label for _, label in short.ticks] == ["07", "08", "09"]
+    assert tl.strip(tl.day_log([], DAY, at(NEXT, 9), TZ), TZ) is None

@@ -1,8 +1,8 @@
 # 0028 — The day time log across projects
 
-- Status: **Accepted**. Step 1 (data, domain, service, MCP) is in `[Unreleased]`; step 2 (the
-  board: the day panel on `/`, the card chip, the dialog's Time row, live updates, a
-  `portfolio_digest` line) follows.
+- Status: **Implemented** (unreleased, in `[Unreleased]`): data, domain, service and MCP, then
+  the board (the day panel on `/`, the card chip, the task's Time row, live updates) and a
+  `portfolio_digest` line.
 - One coordinator works on many projects in a day and fills the external tracker's work log at
   the end of it. relaybay already knows the cards; it now also keeps when work moved from one
   card to another, so the day reads at a glance and the minutes for the tracker come from one
@@ -63,15 +63,21 @@ instructions have one line about them, the `/mcp` instructions are unchanged. Ev
 `timelog.marked`, `timelog.fixed`, `timelog.removed` (with `keys`: the cards whose time changed,
 for the board's live update) and `worklog.added`. Reference: [MCP tools](../mcp-tools.md#day-time-log).
 
-## Board (step 2)
+## Board
 
 - `/`: a day panel above the projects: date navigation, a strip of the day's spans (one colour per
   project, grey for labels, gaps for pauses, dashed for unclosed), the day's total and the totals
   per project, the marks with delete, a form to add a mark and a Pause button.
-- A card shows `now 0:35` while it runs, else `today 1h20` when it has time today.
-- The task dialog has a Time row `today · total · in tracker` with "Working on this now" and
-  "Pause".
+- A card shows `now since 13:50 · today 2h10` while it runs, else `today 1h20` when it has time today.
+- The task dialog has a Time line under the session's state, always shown: `today · total · in
+  tracker` with "Working on this now" and "Pause".
+- The strip is an inline SVG: the board's CSP allows no inline styles.
 - Live: `timelog.*` refreshes the cards named in `keys` and the open dialog; the day panel follows.
+
+## Revisit
+
+- Every board render reads all marks of the shown cards and projects to sum their totals
+  (`card_times` over all days). Fine for months of marks; a per-day aggregate when the log grows.
 
 ## Decided points
 

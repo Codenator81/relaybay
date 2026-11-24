@@ -7532,17 +7532,19 @@ class Service:
 
     # --- the day time log (design 0028) ---------------------------------------------------
 
-    def _today(self) -> date:
+    def today(self) -> date:
+        """The local date of the server machine (the time log's day)."""
         return timelog.local_day(datetime.now(UTC), self.timelog_tz)
 
-    def _log_day(self, value: str | date | None) -> date:
+    def log_day(self, value: str | date | None) -> date:
+        """A day of the time log: a date, 'today' (or empty) or 'yesterday'."""
         if isinstance(value, date):
             return value
         text = (value or "").strip().lower()
         if text in ("", "today"):
-            return self._today()
+            return self.today()
         if text == "yesterday":
-            return self._today() - timedelta(days=1)
+            return self.today() - timedelta(days=1)
         try:
             return date.fromisoformat(text)
         except ValueError:
@@ -7565,7 +7567,7 @@ class Service:
         `project`: only that project's cards."""
         if project is not None:
             project = (await self.get_project(project)).slug
-        return await self._day_log(self._r, self._log_day(day), datetime.now(UTC), project)
+        return await self._day_log(self._r, self.log_day(day), datetime.now(UTC), project)
 
     async def task_times(self, project_id: int, tasks: list[Task]) -> dict[int, timelog.CardTime]:
         """The time of a board's cards (today, all days, in the tracker, current): two reads."""
@@ -7609,6 +7611,7 @@ class Service:
         task: str | int | None = None,
         label: str | None = None,
         at: str | None = None,
+        day: date | None = None,
         session: str | None = None,
         session_title: str | None = None,
         hook_session: str | None = None,
@@ -7616,7 +7619,8 @@ class Service:
     ) -> timelog.MarkResult:
         """Write a mark: start, switch or pause (`now`: start or switch to `task`, as the
         board's "Working on this now"). The same mark again within a minute, and `now` on the
-        card being worked on, write nothing and return the mark there is."""
+        card being worked on, write nothing and return the mark there is. `day`: the day an
+        `HH:MM` in `at` is on (the board's panel), default today."""
         kind = str(kind or "").strip().lower()
         clean_label = _clean_text(label, "label", timelog.LABEL_MAX)
         ref = _clean_text(task, "task", NAME_MAX)
@@ -7625,7 +7629,7 @@ class Service:
         async with self._tx() as tx:
             await self._refuse_agent_creation(tx.conn, session, hook_session, TIMELOG_COORDINATOR)
             now = datetime.fromisoformat(tx.now)
-            moment = timelog.parse_at(at, now, tz)
+            moment = timelog.parse_at(at, now, tz, day)
             card = await self.get_task(ref, tx.conn) if ref else None
             proj = await self.get_project(card.project_slug, tx.conn) if card else None
             _scan(await self._secret_rules(tx.conn, proj), label=clean_label)
@@ -7756,6 +7760,7 @@ class Service:
                     keys=_keys(found.task_key, old_prev.task_key if old_prev else None),
                 )
                 day = timelog.local_day(found.at, tz)
+                await self._note_unclosed(tx.conn, now, old_prev)
                 return None, before, await self._day_log(tx.conn, day, now)
             fields: dict[str, Any] = {}
             if at is not None:
@@ -7823,7 +7828,27 @@ class Service:
                 ),
             )
             day = timelog.local_day(fixed.at, tz)
+            await self._note_unclosed(tx.conn, now, old_prev, new_prev, fixed)
             return fixed, before, await self._day_log(tx.conn, day, now)
+
+    async def running_mark(self) -> timelog.TimeMark | None:
+        """The mark whose span runs now (today's newest, not a pause), or None."""
+        newest = await repo.newest_time_mark(self._r)
+        return _running_mark(newest, datetime.now(UTC), self.timelog_tz)
+
+    async def _note_unclosed(
+        self, conn: aiosqlite.Connection, now: datetime, *marks: timelog.TimeMark | None
+    ) -> None:
+        """After a fix or a removal: the marks around it (the fixed one included) whose earlier
+        day's span it leaves unclosed, as mark_time names them."""
+        tz = self.timelog_tz
+        for mark_id in dict.fromkeys(m.id for m in marks if m is not None):
+            fresh = await repo.get_time_mark(conn, mark_id)
+            if fresh is None:
+                continue
+            span = timelog.span_of(fresh, now, tz)
+            if span is not None and span.unclosed:
+                _note(timelog.unclosed_note(fresh, tz))
 
     async def add_worklog(
         self,
@@ -7854,10 +7879,10 @@ class Service:
                 "A negative row corrects an earlier one: give the reason. Nothing changed."
             )
         clean_ref = _clean_text(ref, "ref", timelog.REF_MAX)
-        logged_day = self._log_day(day)
-        if logged_day > self._today():
+        logged_day = self.log_day(day)
+        if logged_day > self.today():
             raise ValidationError(
-                f"day {logged_day.isoformat()} is after today ({self._today().isoformat()},"
+                f"day {logged_day.isoformat()} is after today ({self.today().isoformat()},"
                 " server time). Nothing changed."
             )
         on_day = logged_day.isoformat()
@@ -8088,6 +8113,7 @@ class Service:
             pulses=await self.pulses(),
             report_items=[report_items.item_line(i) for i in items],
             report_items_more=items_total - len(items),
+            time_line=timelog.digest_line(await self.day_log()),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.portfolio_text(data, footer, self._budget(budget))

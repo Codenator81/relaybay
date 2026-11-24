@@ -1,0 +1,94 @@
+{#- The day time log on `/` (design 0028): the day's total, a strip of its spans, totals per
+    project, the marks with delete and a form. Durations come floored to minutes (timelog.hm). -#}
+{%- set day_iso = log.day.isoformat() %}
+<div class="daylog-head">
+  <h2 class="daylog-title">{% if is_today %}Today{% else %}{{ log.day.strftime("%a %d %b %Y") }}{% endif %}
+    <span class="daylog-total">{{ log.total|hm }}</span></h2>
+  <nav class="daylog-nav" aria-label="Day">
+    <a href="/?day={{ prev_day }}" title="The day before">&larr; {{ prev_day }}</a>
+    {% if not is_today %}<a href="/">Today</a>{% endif %}
+    {% if next_day %}<a href="/?day={{ next_day }}" title="The day after">{{ next_day }} &rarr;</a>{% endif %}
+  </nav>
+</div>
+{% if timelog_error %}<p class="form-error" role="alert">{{ timelog_error }}</p>{% endif %}
+{% if not log.segments and not log.marks %}
+<p class="muted daylog-empty">No time marked on this day.</p>
+{% else %}
+{% if strip %}
+{#- SVG, not styled boxes: the board's CSP drops inline styles, geometry attributes stay. -#}
+<svg class="tl-strip" width="100%" height="48" role="img"
+     aria-label="Spans of the day from {{ strip.start.strftime('%H:%M') }} to {{ strip.end.strftime('%H:%M') }}">
+  <rect class="tl-bg" x="0" y="0" width="100%" height="30" rx="6"/>
+  {%- for it in strip.items %}{% set s = it.segment %}
+  {%- set until = "now" if s.running else (s.end.strftime("%H:%M") if s.end else "") %}
+  <svg class="tl-seg {% if s.project %}tl-c{{ colours.get(s.project, 0) }}{% else %}tl-label{% endif %}{% if s.unclosed %} is-unclosed{% endif %}"
+       x="{{ it.left }}%" y="0" width="{{ it.width }}%" height="30">
+    <title>{% if s.unclosed %}{{ s.name }} · since {{ s.start.strftime('%H:%M') }} · unclosed, counts 0h00{% else %}{{ s.name }} · {{ s.start.strftime('%H:%M') }}-{{ until }} · {{ s.seconds|hm }}{% endif %}</title>
+    <rect class="tl-rect" x="0" y="0" width="100%" height="30"/>
+    {%- if it.width >= 6 %}<text class="tl-key" x="4" y="19">{{ s.name }}</text>{% endif %}
+  </svg>
+  {%- endfor %}
+  {%- for pos, hour in strip.ticks %}
+  <line class="tl-tick" x1="{{ pos }}%" x2="{{ pos }}%" y1="30" y2="{{ 36 if hour else 33 }}"/>
+  {%- if hour %}<text class="tl-hour" x="{{ pos }}%" y="47" text-anchor="{{ 'start' if loop.first else ('end' if loop.last else 'middle') }}">{{ hour }}</text>{% endif %}
+  {%- endfor %}
+</svg>
+{% endif %}
+{% if log.by_project %}
+<ul class="tl-totals" aria-label="Time per project">
+  {% for slug, seconds in log.by_project %}
+  <li class="tl-chip {% if slug %}tl-c{{ colours.get(slug, 0) }}{% else %}tl-label{% endif %}">{{ slug or "labels" }} {{ seconds|hm }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{#- `data-running`: app.js refreshes the panel with the project rows while a span runs. #}
+{% if log.current %}<p class="tl-now" data-running><span class="status-dot dot-working" aria-hidden="true"></span> now: <strong>{{ log.current.name }}</strong> since {{ log.current.start.strftime("%H:%M") }}</p>{% endif %}
+{% for u in log.unclosed %}
+<p class="tl-unclosed" role="status">{{ u.name }} since {{ u.start.strftime("%H:%M") }} is unclosed and counts 0h00: add a pause below with the time you stopped{% if not is_today %} (it goes on {{ day_iso }}){% endif %}, or delete the mark.</p>
+{% endfor %}
+<details class="daylog-marks" data-fold="daylog-marks">
+  <summary>Marks of the day ({{ log.marks|length }})</summary>
+  <ol class="tl-marks">
+    {% for m in log.marks %}
+    <li>
+      <span class="tl-mark-time">{{ m.at|tl_clock }}</span>
+      <span class="tl-mark-kind">{{ m.kind }}</span>
+      <span class="tl-mark-target">{% if m.kind == "pause" %}{{ m.label or "" }}{% else %}{{ m.target }}{% endif %}</span>
+      <form class="inline-form" method="post" action="/timelog/{{ m.id }}/delete"
+            hx-post="/timelog/{{ m.id }}/delete" hx-target="#daylog" hx-swap="innerHTML"
+            hx-confirm="Delete the {{ m.kind }} mark at {{ m.at|tl_clock }} ({{ m.target }})? The audit keeps it.">
+        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+        <input type="hidden" name="day" value="{{ day_iso }}">
+        <button type="submit" class="action" aria-label="Delete mark #{{ m.id }}">Delete</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ol>
+</details>
+{% endif %}
+<div class="daylog-forms">
+  <form class="daylog-form" method="post" action="/timelog" hx-post="/timelog" hx-target="#daylog" hx-swap="innerHTML">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="day" value="{{ day_iso }}">
+    <select name="kind" aria-label="Kind of mark">
+      <option value="start">Start</option>
+      <option value="switch">Switch</option>
+      <option value="pause">Pause</option>
+    </select>
+    <select name="target" aria-label="On a card or a label">
+      <option value="card">card</option>
+      <option value="label">label</option>
+    </select>
+    <input type="text" name="what" placeholder="acme-shop-12 or call" aria-label="Card key or label (on a pause: why)" maxlength="120">
+    <input type="text" name="at" placeholder="{{ 'HH:MM (now)' if is_today else 'HH:MM' }}" aria-label="Time (HH:MM{{ ', optional' if is_today else '' }})" inputmode="numeric" size="11" maxlength="5">
+    <button type="submit" class="action">Mark</button>
+  </form>
+  {% if log.current %}
+  <form class="inline-form" method="post" action="/timelog" hx-post="/timelog" hx-target="#daylog" hx-swap="innerHTML">
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    <input type="hidden" name="day" value="{{ day_iso }}">
+    <input type="hidden" name="kind" value="pause">
+    <button type="submit" class="action">Pause</button>
+  </form>
+  {% endif %}
+</div>

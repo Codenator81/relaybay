@@ -430,6 +430,88 @@ def running_at(
     return before if span is not None and not span.unclosed else None
 
 
+def unclosed_note(mark: TimeMark, tz: tzinfo | None) -> str:
+    """What a write says when it leaves an earlier day's span unclosed."""
+    when = local(mark.at, tz)
+    pause = f"timelog_mark(kind='pause', at='{when.date().isoformat()}THH:MM')"
+    return (
+        f"Note: {mark.target} since {when.strftime('%a %H:%M')} stays unclosed (0h00):"
+        f" close it with {pause}."
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StripItem:
+    segment: Segment
+    left: float  # percent of the strip
+    width: float
+
+
+@dataclass(slots=True)
+class Strip:
+    """The board's day strip: the working span of the day, whole hours at both ends."""
+
+    start: datetime
+    end: datetime
+    items: list[StripItem]
+    ticks: list[tuple[float, str]]  # (percent, "14"); "" for a tick drawn without its hour
+
+
+TICK_LABELS_MAX = 8  # hour labels under the strip; the other hours get a tick only
+UNCLOSED_SHOWN_SECONDS = 3600  # how wide the strip draws a span that counts 0
+
+
+def strip(log: DayLog, tz: tzinfo | None) -> Strip | None:
+    """None for a day without spans. Pauses are the gaps between the items."""
+    if not log.segments:
+        return None
+    day_lo, day_hi = (local(t, tz) for t in day_bounds(log.day, tz))
+    first = min(s.start for s in log.segments)
+    ends = [s.end for s in log.segments if s.end is not None]
+    ends += [
+        s.start + timedelta(seconds=UNCLOSED_SHOWN_SECONDS) for s in log.segments if s.unclosed
+    ]
+    last = max([*ends, first + timedelta(minutes=30)])
+    lo = max(day_lo, first.replace(minute=0, second=0, microsecond=0))
+    hi = last.replace(minute=0, second=0, microsecond=0)
+    if hi < last:
+        hi += timedelta(hours=1)
+    hi = min(day_hi, hi)
+    total = (hi - lo).total_seconds() or 1.0
+
+    def pct(moment: datetime) -> float:
+        return round(max(0.0, min(100.0, (moment - lo).total_seconds() * 100 / total)), 3)
+
+    items = []
+    for s in log.segments:
+        end = s.end if s.end is not None else s.start + timedelta(seconds=UNCLOSED_SHOWN_SECONDS)
+        left = pct(s.start)
+        items.append(StripItem(s, left, round(max(0.0, pct(min(end, hi)) - left), 3)))
+    hours = []
+    hour = lo
+    while hour <= hi:
+        hours.append(hour)
+        hour += timedelta(hours=1)
+    step = -(-len(hours) // TICK_LABELS_MAX)  # a long day labels every 2nd or 3rd hour
+    ticks = [
+        (pct(h), local(h, tz).strftime("%H") if i % step == 0 else "") for i, h in enumerate(hours)
+    ]
+    return Strip(lo, hi, items, ticks)
+
+
+def digest_line(log: DayLog) -> str | None:
+    """portfolio_digest's line for today, when it has marks: total, per project, now, unclosed."""
+    if not log.marks and not log.segments:
+        return None
+    parts = ", ".join(f"{p or 'labels'} {hm(s)}" for p, s in log.by_project)
+    line = f"Time today {hm(log.total)}" + (f" ({parts})" if parts else "")
+    if log.current is not None:
+        line += f"; now {log.current.name} since {log.current.start.strftime('%H:%M')}"
+    if log.unclosed:
+        line += f"; {len(log.unclosed)} unclosed"
+    return line + " (timelog_list)"
+
+
 def mark_warnings(
     kind: str,
     at: datetime,
@@ -444,12 +526,7 @@ def mark_warnings(
     if before is not None and before.kind != PAUSE and local_day(before.at, tz) < local_day(at, tz):
         span = span_of(_with_next(before, at, kind), at, tz)
         if span is not None and span.unclosed:
-            when = local(before.at, tz)
-            pause = f"timelog_mark(kind='pause', at='{when.date().isoformat()}THH:MM')"
-            out.append(
-                f"Note: {before.target} since {when.strftime('%a %H:%M')} stays unclosed (0h00):"
-                f" close it with {pause}."
-            )
+            out.append(unclosed_note(before, tz))
     if newest is not None and at < newest.at:
         out.append(
             f"Warning: this mark is before the latest one (#{newest.id} at"

@@ -738,7 +738,7 @@ pause opens a gap until the next mark (code: domain/timelog.py:span_of).
   night (the day was not paused), or a past day's last span with no next mark, counts 0 on its
   start day and is listed `unclosed` with the hint to add the pause with that day's date
   (`at='YYYY-MM-DDTHH:MM'`; only today's view says `HH:MM`) or to fix the mark; it never books the
-  night. A mark that leaves an earlier day's span unclosed says so in its answer (`acme-shop-1 since
+  night. A mark, a fix or a removal that leaves an earlier day's span unclosed says so in its answer (`acme-shop-1 since
   Mon 17:00 stays unclosed (0h00): close it with timelog_mark(kind='pause', at='<that
   day>THH:MM')`).
 - **Durations** are summed in seconds and shown floored to whole minutes as `1h05`, `0h30`
@@ -941,7 +941,7 @@ posts; events `filter.saved`, `filter.deleted`.
 
 | Page | URL | Content |
 |---|---|---|
-| Projects | `/` | Projects with task counts per stage. |
+| Projects | `/` | The day time log ([below](#spec-board-daylog)), then the projects with task counts per stage and, when not 0, their time today, in total and in the tracker. |
 | Project board | `/p/<slug>` | One column per stage on two pages (`?page=2`, [below](#spec-board-paging)); on narrow screens a stage tab bar shows one column at a time. |
 | Task dialog | `/p/<slug>?task=<key>` | The task over the live board (full screen on a phone), tabs Overview and Review (`&tab=review`); closes with Back, Esc or a click outside. |
 | Task page | `/t/<key>` | The same details as the dialog on a page of its own. |
@@ -959,6 +959,31 @@ posts; events `filter.saved`, `filter.deleted`.
 | Policy | `/settings/policy` | The effective policy per scope with the source of each value, preset, layer editors and agent proposals ([§7](#spec-policy-page)). |
 | Rules | `/settings/rules` | The rules per scope, version history with diffs, proposals, roll back ([§6](#spec-rules-page)). |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
+
+<a id="spec-board-daylog"></a>
+
+**Day time log on `/`** ([§1](#spec-time-log)). A panel above the projects, for one day (`?day=YYYY-MM-DD`,
+default today; a later day shows today): the date (`Today` for today) with links to the day
+before, back to today and to the day after (not past today), and the day's total in large type.
+Below it one strip, an inline SVG (the board's Content-Security-Policy drops inline styles; SVG
+geometry attributes are not styles), from the first span's hour to the last one's (whole hours, a
+tick per hour, at most 8 hour labels: every 2nd or 3rd hour on a long day): each span is a block as
+wide as its duration, coloured by its card's project (the CRC-32 of the project's slug mod 8, the
+same for every project, a purged one included; one light and one dark fill per colour), labels
+grey, pauses the gaps between them, an unclosed span faint with a dashed edge, one hour wide; each
+block's tooltip reads `<key or label> · HH:MM-HH:MM · 1h13` (`HH:MM-now` while it runs, `since
+HH:MM · unclosed, counts 0h00`), and a block wide enough shows its key, clipped to the block. Then
+the totals per project as chips in the same colours (`acme-shop 2h40`, `labels 0h50`), `now: <key>
+since HH:MM` while a span runs (a start time, never a running duration: nothing ticks in the
+browser), one line per unclosed span (add a pause with the time, on that day, or delete the mark),
+the day's marks in a fold with **Delete** (asks first; reason `removed on the board`, on the Audit
+page), a form (kind start / switch / pause; **card** or **label** chosen by hand, never guessed
+from the text; the key or label, or a pause's reason; the time `HH:MM` on the panel's day,
+optional only today) and **Pause** while a span runs. A day without marks is
+one muted line and no strip. Writes are the board's (cookie and CSRF token, actor `board`; a
+Bearer client is refused, `403`): `POST /timelog`, `POST /timelog/<id>/delete`; the panel is
+`GET /fragments/daylog?day=` (code: web/routes.py:daylog_context, templates/_daylog.html,
+domain/timelog.py:strip).
 
 <a id="spec-board-paging"></a>
 
@@ -988,7 +1013,9 @@ same board). A task with a checklist shows **Review 2/5** (accepted / all; green
 red-tinted while one is rejected), which opens the dialog on its Review tab. A task with a plan
 shows **Plan 2/5** (done / all) with `· draft` while it is not accepted, the number of deviations
 highlighted and `· now: <step in progress>` (one line, cut with an ellipsis), which opens the
-dialog on its Plan tab.
+dialog on its Plan tab. A card with time in the day log shows a small chip: `now since 13:50 ·
+today 2h10` (accent) while it is the card worked on now, else `today 1h20` when it has time today,
+nothing otherwise ([§1](#spec-time-log)).
 
 <a id="spec-board-questions"></a>
 
@@ -1066,7 +1093,7 @@ the task has neither). A `task.updated` event refreshes the card.
 <a id="spec-board-compact"></a>
 
 **Compact** (a toggle in the board's tools row, on phones too) leaves key, tracker badge, title and
-the waiting-on chip on every task card; the "open in desktop" icon, the Review and Plan badges, the branch and the next step are
+the waiting-on chip on every task card; the "open in desktop" icon, the Review and Plan badges, the time chip, the branch and the next step are
 hidden, and the Code row turns into its count. A chevron button on a card
 (`aria-expanded`, shown only in this mode) expands just that card; a click on the card still opens
 the dialog. Both choices are kept per browser in `localStorage` (the expanded cards by task key, the
@@ -1121,7 +1148,11 @@ reorder) (code: web/templates/_column.html).
 
 **The session card** ([design 0025](design/0025-board-with-the-desktop.md#what-gets-stronger)).
 The task dialog's Overview and the task page put what the owner acts on first. An open card (not
-done, not archived) shows, in this order: the title and the **state line**; what waits for the
+done, not archived) shows, in this order: the title and the **state line**; the **Time** line,
+always and on every card, `Time today 2h10 · total 4h55 · in tracker 1h30` with **Working on this
+now** (start, or switch while another card runs; disabled on the card that runs) and **Pause** while
+this card runs (`POST /p/<slug>/t/<key>/timelog`, the board's write; a pause while another card or
+nothing runs is refused and writes nothing, [§1](#spec-time-log)); what waits for the
 owner: **Approvals** and **Questions** with an open item, **Unread replies** (the agent replies not
 marked read, as the Inbox counts them); **Next** (cancelled mark, next step, waiting on, Blocked by,
 Blocks); **Plan** (done/all and each step with its status; the Plan tab keeps the full plan and
@@ -1573,7 +1604,13 @@ templates. A heartbeat comment is sent every 15 s. On reconnect the browser send
 and the server replays newer events (up to 5000); a client further behind, or ahead of the newest
 event, gets `event: resync` and reloads. Waking from sleep (`visibilitychange`) or coming back
 online forces a reconnect. A subscriber whose queue overflows (256 events) is dropped and catches up
-on reconnect.
+on reconnect. A `timelog.*` event refreshes the cards its `keys` name on any board (a switch moves
+time from one project's card to another's), the open dialog or task page of one of them, and the
+`/` day panel; while a span runs, any event that refreshes the project rows on `/` also refreshes
+the panel (at most every 2 s), so both show the same today. The panel is not swapped while its
+form has the focus or typed text; the refresh waits until the form is left. `worklog.added`
+refreshes its card's dialog, not the panel (which shows no tracker minutes). Nothing ticks in the
+browser: the minutes move on the next event or reload.
 
 <a id="spec-board-markdown"></a>
 
@@ -3117,7 +3154,7 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 
 | Digest | Sections, most important first |
 |---|---|
-| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); open findings and questions of reports to triage (below); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
+| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge; when today has time marks one more line, `Time today 3h20 (acme-shop 2h00, labels 1h20); now acme-shop-12 since 14:05; 1 unclosed (timelog_list)`, [§1](#spec-time-log), code: domain/timelog.py:digest_line); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); open findings and questions of reports to triage (below); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
 | `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open findings and questions of reports to triage (below); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
 | `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the card's change document (`## Change document`, [§8](#spec-change-documents)); the effective rules line; the card's own open findings and questions of its reports (count and at most 5, [§1](#spec-report-items)); relevant notes; open backlog items of the card |
 
