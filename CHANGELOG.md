@@ -26,6 +26,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The approvals-guard test for a slow git read no longer depends on the runner's speed (it ran close to the hook client's 5 s budget on a slow macOS runner).
 - `approval_request` for a `deploy` or `sql` names its stand in words (`live`, `test`) again: since environments left the board in 0.15 every such request was refused with "has no environment". An environment stored before 0.15 is still used when its name matches.
 - `approval_request` and `question_ask` take the caller's own `hook_session` alone as who asks when the board knows that id; before, a call without `session` was refused.
 - "Open backlog items" in `task_context` and in the session-start context list only the card's own items, items of the card's own area and items pointing at or naming its linked sections; an item whose area only shared a word with the card's title no longer shows up.

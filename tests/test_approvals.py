@@ -780,6 +780,11 @@ async def test_a_slow_branch_read_denies_in_time_and_keeps_the_approval(
     run = await started_run(svc)
     a = await approve(svc, run, "push", "feat/checkout")
     seen: list[float] = []
+    # Small budgets, so a slow runner has seconds of slack: with the real ones (1.5 s per read,
+    # 3 s per check) the two reads of this check took 3 s of the hook client's 5 s.
+    per_read, per_check = 0.2, 0.4
+    monkeypatch.setattr(service_module, "GATE_BRANCH_TIMEOUT_SECONDS", per_read)
+    monkeypatch.setattr(service_module, "GATE_GIT_SECONDS", per_check)
 
     def hung(git: str, folder: str, timeout: float = 5.0) -> Any:
         seen.append(timeout)
@@ -792,7 +797,8 @@ async def test_a_slow_branch_read_denies_in_time_and_keeps_the_approval(
     took = time.monotonic() - started
     assert (answer, reason) == ("deny", arules.SLOW_REASON)
     assert took < hook_client.GUARDED_TIMEOUT_SECONDS
-    assert seen and max(seen) <= service_module.GATE_BRANCH_TIMEOUT_SECONDS
+    assert seen and max(seen) <= per_read
+    assert sum(seen) <= per_check + 0.01  # all reads of one check stay within its budget
     kept = await svc.get_approval(a.id)
     assert kept.status == "approved" and not kept.reserved
     assert await repo.open_approvals(svc._r, task_id=1) == []
