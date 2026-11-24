@@ -343,7 +343,7 @@ async def test_coordinated_instructions_name_only_listed_tools(tmp_path: Path) -
     assert agent != roles.agent_instructions(rules)
     assert "task_create" not in agent and "backlog_add" not in agent
     assert "report_add(findings=..., questions=...)" in agent
-    assert "The tracker mark is the coordinator's." in agent
+    assert "the tracker mark is the coordinator's." in agent
     listed = roles.role_tools(roles.AGENT, current_tools(everything))
     assert not named(agent, everything) - listed
     for role in (roles.COORDINATOR, roles.READER):
@@ -394,3 +394,19 @@ async def test_an_agent_cannot_dismiss_its_own_finding(svc: Service) -> None:
         await svc.dismiss_report_item(1, 1, session="worker")
     item = await svc.dismiss_report_item(1, 1, session="lead", reason="known")
     assert item.n == 1
+
+
+async def test_a_coordinator_named_by_its_desktop_id_is_never_an_agent(tmp_path: Path) -> None:
+    """Review of relaybay-40: without its hook proof (no hook_session, or a new id after
+    /clear) a desktop-id coordinator bound to its own card still creates cards."""
+    lead = "local_cccccccc-0000-4000-8000-000000000000"
+    service = await started(tmp_path, coordinators=[lead])
+    try:
+        own = await service.create_task("acme-shop", "Coordination", session=lead)
+        assert own.session_external_id == lead
+        made = await service.create_task("acme-shop", "Next card", session=lead, bind=False)
+        assert made.key != own.key
+        item = await service.add_backlog_item("acme-shop", "Idea", session=lead)
+        assert item.id
+    finally:
+        await service.close()

@@ -1437,6 +1437,10 @@ AGENT_CREATES_NOTHING = (
     " report_add(task={key}, findings=[...]) (a question for the owner: questions=[...])."
     " Nothing created."
 )
+AGENT_DISMISSES_NOTHING = (
+    "In coordinator mode the coordinator triages the findings and questions of reports: leave"
+    " it to it ({key}). Nothing changed."
+)
 TRACKER_MARK_COORDINATOR_NOTE = (
     "Tracker mark: the coordinator's (it sets tracker_logged after the work log)."
 )
@@ -8604,7 +8608,9 @@ class Service:
         why = _clean_text(reason, "reason", report_items.DISMISS_REASON_MAX)
         async with self._tx() as tx:
             if actor != "board":
-                await self._refuse_agent_creation(tx.conn, session, hook_session)
+                await self._refuse_agent_creation(
+                    tx.conn, session, hook_session, AGENT_DISMISSES_NOTHING
+                )
             item = await self._open_report_item(tx.conn, report, kind, n)
             task = await self.get_task(item.task_id, tx.conn)
             if why:
@@ -11484,15 +11490,24 @@ class Service:
             session = await _hook_id_session(conn, cc_id) if cc_id else None
         if session is None or await self._is_coordinator(conn, value, hook_session):
             return []
+        # A desktop-id entry without its hook proof (no hook_session, or a new id after /clear)
+        # is still the coordinator here: taking it for an agent would block its own work.
+        desktops = {parse_session_id(e) for e in self.coordinators} - {None}
+        if session.external_id in desktops:
+            return []
         bound = [await self.get_task(i, conn) for i in await repo.bound_task_ids(conn, session.id)]
         return [t for t in bound if t.stage in OPEN_STAGES]
 
     async def _refuse_agent_creation(
-        self, conn: aiosqlite.Connection, session: str | None, hook_session: str | None
+        self,
+        conn: aiosqlite.Connection,
+        session: str | None,
+        hook_session: str | None,
+        text: str | None = None,
     ) -> None:
         cards = await self._agent_cards(conn, session, hook_session)
         if cards:
-            raise ValidationError(AGENT_CREATES_NOTHING.format(key=cards[0].key))
+            raise ValidationError((text or AGENT_CREATES_NOTHING).format(key=cards[0].key))
 
     async def _coordinator_names(self, conn: aiosqlite.Connection) -> list[str]:
         """The `coordinators` entries and the names of the sessions they name."""

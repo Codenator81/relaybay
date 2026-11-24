@@ -135,7 +135,7 @@ def agent_instructions(rules: Rules, coordinated: bool = False) -> str:
         else "A finding outside your task: backlog_add (backlog_list shows what is known)."
     )
     tracker = (
-        "The tracker mark is the coordinator's."
+        "the tracker mark is the coordinator's."
         if coordinated
         else "set tracker_logged once the work log is entered."
     )
