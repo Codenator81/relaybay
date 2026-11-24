@@ -242,7 +242,7 @@ async def test_exact_link_through_an_alias_and_report_add(service: Service) -> N
     assert (await service.get_task(task.key)).session_status == "idle"
 
     # An id another live session linked itself is not moved; the write says so.
-    other = await service.create_task("acme-shop", "Payment", session=DESKTOP_B)
+    other = await service.create_task("acme-shop", "Payment", stage="dev", session=DESKTOP_B)
     with collect_notes() as notes:
         await service.add_report(
             other.key, "changed · S · retry", session=DESKTOP_B, hook_session=CC_B
