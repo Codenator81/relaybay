@@ -157,7 +157,7 @@ BY_NAME: dict[str, TaskField] = {f.name: f for f in TASK_FIELDS}
 FIELD_NAMES: tuple[str, ...] = tuple(BY_NAME)
 
 # Not columns of the task: links to the project's repositories, to pull requests and to the cards
-# blocking it, added or removed entry by entry in the same writes (task_update, task_patch).
+# blocking it, added or removed entry by entry in the same writes (task_update).
 BLOCKED_BY = "blocked_by"
 LINK_FIELDS: tuple[TaskField, ...] = (
     TaskField(

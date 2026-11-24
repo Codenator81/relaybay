@@ -8,7 +8,7 @@
 Sources: the argument parser (`relaybay.cli.build_parser`), the `Settings` field metadata
 (`relaybay.config`), the live MCP registry (`relaybay.mcp_server.server.build_mcp`) and the
 policy schema and presets (`relaybay.policy`). `--rebaseline` refuses a breaking MCP change
-that no expired deprecation covers, and one that does when the contract version did not grow.
+unless the contract version is above the baseline's.
 """
 
 import argparse
@@ -18,7 +18,6 @@ import json
 import sys
 import tempfile
 from dataclasses import MISSING, fields
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -465,20 +464,17 @@ def baseline() -> dict[str, Any]:
 
 
 def rebaseline() -> int:
-    from relaybay import __version__
     from relaybay.mcp_server import contract
 
     new = baseline()
     if BASELINE.exists():
         old = json.loads(BASELINE.read_text(encoding="utf-8"))
-        changes = contract.breaking_changes(old, new)
-        today = datetime.now(UTC).date()
-        refused = contract.uncovered(changes, __version__, today)
-        if not refused and changes and old["contract_version"] >= contract.CONTRACT_VERSION:
-            refused = changes
-            print("Expired deprecations removed: raise CONTRACT_VERSION.", file=sys.stderr)
+        refused = contract.refused(old, new)
         if refused:
-            print("Breaking MCP changes, baseline not written:", file=sys.stderr)
+            print(
+                "Breaking MCP changes, baseline not written (raise CONTRACT_VERSION):",
+                file=sys.stderr,
+            )
             for change in refused:
                 print(f"- {change.text}", file=sys.stderr)
             return 1

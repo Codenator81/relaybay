@@ -7,9 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `task_create` takes `size` (`S`, `M` or `L`, validated as in `task_update`).
+
 ### Changed
 
+- MCP contract 3: while relaybay has no outside users, a replaced tool or parameter is removed in the same release that replaces it, with no deprecation period and no `Deprecated: …` lines; that release raises the contract version. `relaybay://contract` gives the version and the rule only. `tests/test_mcp_contract.py` and `scripts/gen_reference.py --rebaseline` accept a breaking change only when `CONTRACT_VERSION` is above the baseline's.
 - All boards lists the projects by their last activity, the most recently active first; the sidebar, the project switcher and the digests keep their order.
+
+### Removed
+
+- `task_set_stage` and `task_patch`: use `task_update(stage=..., stage_note=...)` and `task_update(fields={...})`. `environments_get`, `environment_propose` and the resource `relaybay://project/{slug}/environments`, which did nothing since 0.15. A session started before the update gets `Unknown tool: <name>` for them and must be restarted.
 
 ## [0.17.0] - 2026-11-24
 

@@ -1,5 +1,5 @@
 {
-  "contract_version": 2,
+  "contract_version": 3,
   "prompts": {
     "finish_stage": {
       "arguments": {
@@ -18,7 +18,6 @@
     "relaybay://attachments/{attachment_id}/annotated",
     "relaybay://doc/{project}/{doc}",
     "relaybay://project/{slug}",
-    "relaybay://project/{slug}/environments",
     "relaybay://rules/{project}"
   ],
   "resources": [
@@ -1720,80 +1719,6 @@
           "doc",
           "project",
           "reason"
-        ],
-        "type": "object"
-      }
-    },
-    "environment_propose": {
-      "annotations": {
-        "destructive_hint": false,
-        "open_world_hint": false,
-        "read_only_hint": false
-      },
-      "input": {
-        "properties": {
-          "change": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "hook_session": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "project": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          },
-          "session": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "session_title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "change",
-          "project",
-          "reason"
-        ],
-        "type": "object"
-      }
-    },
-    "environments_get": {
-      "annotations": {
-        "open_world_hint": false,
-        "read_only_hint": true
-      },
-      "input": {
-        "properties": {
-          "project": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "project"
         ],
         "type": "object"
       }
@@ -3855,6 +3780,16 @@
               }
             ]
           },
+          "size": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "stage": {
             "anyOf": [
               {
@@ -4061,151 +3996,6 @@
             ]
           }
         },
-        "type": "object"
-      }
-    },
-    "task_patch": {
-      "annotations": {
-        "destructive_hint": false,
-        "open_world_hint": false,
-        "read_only_hint": false
-      },
-      "input": {
-        "properties": {
-          "expected_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "fields": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "hook_session": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "session": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "session_title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "task": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "fields",
-          "task"
-        ],
-        "type": "object"
-      }
-    },
-    "task_set_stage": {
-      "annotations": {
-        "destructive_hint": false,
-        "open_world_hint": false,
-        "read_only_hint": false
-      },
-      "input": {
-        "properties": {
-          "hook_session": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "next_step": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "session": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "session_title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "stage": {
-            "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "waiting_on": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "stage",
-          "task"
-        ],
         "type": "object"
       }
     },

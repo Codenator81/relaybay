@@ -12,7 +12,7 @@ from relaybay.domain.errors import ValidationError
 from relaybay.domain.rules import DEFAULT_RULES, Rules
 from relaybay.domain.waiting_on import normalise
 from relaybay.mcp_server import roles
-from relaybay.mcp_server.server import build_mcp, current_tools, instructions
+from relaybay.mcp_server.server import build_mcp, instructions
 from relaybay.service import Service, collect_notes
 from tests.conftest import LiveServer
 from tests.test_mcp_roles import GOLDEN, all_tools, connect, named
@@ -344,7 +344,7 @@ async def test_coordinated_instructions_name_only_listed_tools(tmp_path: Path) -
     assert "task_create" not in agent and "backlog_add" not in agent
     assert "report_add(findings=..., questions=...)" in agent
     assert "the tracker mark is the coordinator's." in agent
-    listed = roles.role_tools(roles.AGENT, current_tools(everything))
+    listed = roles.role_tools(roles.AGENT, everything)
     assert not named(agent, everything) - listed
     for role in (roles.COORDINATOR, roles.READER):
         assert roles.role_instructions(rules, role, True) == roles.role_instructions(rules, role)

@@ -60,7 +60,7 @@ letter or digit, takes the project's slug. Matching a session's folder to a proj
 repository, with who added it and how: `auto` from the hooks, `agent` over MCP, `owner` on the
 board) and its pull requests (`task_pr`: an http or https link, unique per task, the number taken
 from a `/pull/<n>`, `/pulls/<n>`, `/merge_requests/<n>` or `/pull-requests/<n>` path, optionally
-tied to one repository). `task_update` (and the deprecated `task_patch`) take `repos` (names to add, `-name` removes
+tied to one repository). `task_update` takes `repos` (names to add, `-name` removes
 one; an unknown name fails with the project's names) and `prs` (links to add, each optionally after
 a repository name, `web https://…`; `-<url>` removes one). Without a name, a link whose path names
 one of the project's repositories (`…/<owner>/<repo>/pull/1`, GitLab's `/-/merge_requests`) is tied
@@ -78,7 +78,7 @@ repository's `## Code` line (`· worktree `<path>``), `task_context` as a `Workt
 
 <a id="spec-task-blockers"></a>
 
-**Blockers.** A card can wait for other cards: `task_update` (and the deprecated `task_patch`) take `blocked_by`
+**Blockers.** A card can wait for other cards: `task_update` takes `blocked_by`
 (`task_block`, migration 0061, one row per pair with who added it and when), a list of card keys of
 any project on the board (`acme-shop-12`, case does not matter) to add; `-key` removes one. Refused
 in the same write, which then changes nothing: a key no card has (the error names it), anything
@@ -150,8 +150,8 @@ drives write validation, the `relaybay://schema/task` resource and the "Editable
 
 <a id="spec-task-deploy"></a>
 
-**Deploy notes and cancelled** (migration 0060). Set through `task_update` (`deploy_notes`, `deploy_done`, `cancelled`, or the same names in `fields`;
-`task_patch` does the same, deprecated) and the board form. `deploy_notes` (markdown, up to 20,000
+**Deploy notes and cancelled** (migration 0060). Set through `task_update` (`deploy_notes`, `deploy_done`, `cancelled`, or the same names in `fields`)
+and the board form. `deploy_notes` (markdown, up to 20,000
 characters) says what a deploy of the card needs: a migration, a feature flag, a script, the
 rollback. `deploy_done` (boolean) marks those steps as carried out; a write that changes
 `deploy_notes` clears it in the same write unless `deploy_done` is passed with it (the board form
@@ -225,7 +225,7 @@ answer only once a report of the task came strictly after the plan closed (the n
 newest step's `done_at` and the newest plan revision, so a `plan_set` that drops the last open step
 also closes it); the report and the progress that close the plan never warn. Then it joins a report
 whose state is `changed` in any open stage, or `verified` with the task in `dev`, and a
-`task_update` (or `task_patch`) that changes `progress` on a task in `dev`. It is a warning in `strict` mode too, never a refusal. `plan_step_add` on a
+`task_update` that changes `progress` on a task in `dev`. It is a warning in `strict` mode too, never a refusal. `plan_step_add` on a
 task in `done` is refused (`the task is done: reopen it (task_update(stage=…)) before adding steps.`);
 in `live` it is allowed and the answer adds `<key> is in live: the step does not move it.`.
 
@@ -253,7 +253,7 @@ Never a line for the agent.
 
 <a id="spec-plan-size"></a>
 
-**Task size.** `size` is an optional field (`S`, `M`, `L`; `task_update`, the deprecated `task_patch`, the board
+**Task size.** `size` is an optional field (`S`, `M`, `L`; `task_create`, `task_update`, the board
 form; `-` clears it). A report whose first line names a size sets it when the task has none (a
 `task.updated` in the same transaction); a size already set is kept. `S` tasks may go without an
 accepted plan ([§6](#spec-plan-rule)).
@@ -699,14 +699,14 @@ domain/report_items.py, service.py:dismiss_report_item).
 <a id="spec-progress"></a>
 
 **Progress, next step, waiting on.** `description` says what to do and why, short; the pseudo-field
-`description_add` of `task_update(fields=…)` (not a column; `task_patch` still takes it too) appends its text as a new paragraph (a blank line,
+`description_add` of `task_update(fields=…)` (not a column) appends its text as a new paragraph (a blank line,
 then the text) to the description read in the same transaction, so two writers keep each other's
 lines (the result stays within 20,000 characters, else the write fails); `progress` is the running
 summary of everything done so far (rewritten, not appended). `next_step` is what happens next,
 `waiting_on` who acts next and nothing else: a name or role, with what happens in `next_step`
 (data is never rewritten: a write whose `waiting_on` has more than 4 words gets the answer line
 `Hint: waiting_on is who acts next; put what happens into next_step.`, never a refusal or a
-`Warning (rules)`). `task_update` (and the deprecated `task_set_stage`) and `report_add` take `next_step` and `waiting_on`
+`Warning (rules)`). `task_update` and `report_add` take `next_step` and `waiting_on`
 (and `report_add` takes `progress`) and save them in the same transaction. A next step written
 before the task's last stage change is **stale**: shown muted with a "stale" marker on cards and in
 the task dialog, `(stale)` in MCP output. Writing it again, even with the same text, confirms it
@@ -722,7 +722,7 @@ appends an entry, logging and unlogging stamp the current entry. **Automatic unl
 logged task (a report or a changed `progress` on a card before `live`, or a move back out of
 `live` / `done` to an earlier stage) clears the mark in the same transaction with a
 `task.tracker_unlogged` event carrying the reason. A report or a rewritten `progress` on a card in
-`live` or `done` (through `report_add`, `task_update`, or the deprecated `task_patch`, alike) closes it and keeps
+`live` or `done` (through `report_add` or `task_update`, alike) closes it and keeps
 the mark; a move back to an earlier stage still clears it. Metadata edits keep the mark; an explicit `tracker_logged` in the same write wins; a new
 `tracker_ref` starts as not logged unless `tracker_logged` is passed with it.
 
@@ -813,7 +813,7 @@ agents find, and the tracker work log follows the coordinator's own records:
   requirement applies, `tracker_logged` is false and the card or its project keeps a tracker) with
   `Set tracker_logged first (the work log in the tracker), then archive.` (code:
   service.py:set_archived_mcp).
-- On MCP writes (`task_create`, `task_update`, `task_patch`, `task_set_stage`, `report_add`)
+- On MCP writes (`task_create`, `task_update`, `report_add`)
   `waiting_on` is saved as one of: the first of `owner_names` (what the Inbox and the card state
   match), `coordinator`, `session`, `ci`, `customer:<name>`. Case-insensitive synonyms, also
   followed by `: text`, ` (text)` or ` — text`: every owner name, `owner` and the Russian word for
@@ -1644,9 +1644,9 @@ everything else is escaped. No CDN: htmx and its SSE extension are vendored.
 Streamable HTTP at exactly `/mcp` in the server process (official `mcp` SDK 2.x, `MCPServer`), and
 the role endpoints `/mcp/agent`, `/mcp/coordinator` and `/mcp/reader` (one server per role, same
 tools, token and security; `mcp_server/roles.py`): each lists its role's tools in `tools/list` and
-sends its own instructions; a tool not listed still runs when called by name. A role's list never
-holds a deprecated name; the agent's covers every moment of a card (start, plan, work, documents,
-question, decision, finding, report, review, approval, closing); the coordinator's is every current
+sends its own instructions; a tool not listed still runs when called by name. The agent's list
+covers every moment of a card (start, plan, work, documents,
+question, decision, finding, report, review, approval, closing); the coordinator's is every
 tool but `review_steps_set`, `review_step_update` and `annotation_reply` (the day time log's
 `timelog_mark`, `timelog_list`, `timelog_fix` and `worklog_add` are in it and in no other role's
 list, and its instructions have one line about them); the reader's is
@@ -1661,7 +1661,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`). In [coordinator mode](#spec-coordinator-mode) three points change on `/mcp`: point 2 says a missing card is the coordinator's (ask it in your report, do not create cards), point 5 says `Findings outside your task and questions for the owner go into report_add(findings=..., questions=...): the coordinator triages them; do not create cards or backlog items.` and point 7 adds `The tracker mark is the coordinator's.`; the `/mcp/agent` instructions change the same way (its question line goes into the finding line). The text with `coordinators` empty is frozen by a test (code: mcp_server/server.py:instructions, mcp_server/roles.py:agent_instructions).
+**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks (with the contract version and `relaybay://contract`); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`). In [coordinator mode](#spec-coordinator-mode) three points change on `/mcp`: point 2 says a missing card is the coordinator's (ask it in your report, do not create cards), point 5 says `Findings outside your task and questions for the owner go into report_add(findings=..., questions=...): the coordinator triages them; do not create cards or backlog items.` and point 7 adds `The tracker mark is the coordinator's.`; the `/mcp/agent` instructions change the same way (its question line goes into the finding line). The text with `coordinators` empty is frozen by a test (code: mcp_server/server.py:instructions, mcp_server/roles.py:agent_instructions).
 
 <a id="spec-mcp-tools"></a>
 
@@ -1670,13 +1670,13 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 | Group | Tools |
 |---|---|
 | Projects | `project_list`, `project_upsert`, `project_delete` (coordinators only, [§2](#spec-archive-purge)), `project_snapshot` |
-| Tasks | `task_list`, `task_get`, `task_create`, `task_update` (also moves the stage, sets `deploy_notes`, `deploy_done`, `cancelled` and any other field through `fields`), `task_patch` (deprecated since 0.17, use `task_update`), `task_set_stage` (deprecated since 0.17, use `task_update`), `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
+| Tasks | `task_list`, `task_get`, `task_create`, `task_update` (also moves the stage, sets `deploy_notes`, `deploy_done`, `cancelled` and any other field through `fields`), `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `report_item_dismiss` ([§1](#spec-report-items)), `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption`, `attachment_get`, `annotation_reply` |
 | Plan | `plan_get`, `plan_set`, `plan_step_add`, `plan_step_update`, `plan_accept` |
-| Policy and audit | `policy_get`, `policy_propose`, `audit_list`; `environments_get` and `environment_propose` are stubs since 0.15 ([§7](#spec-environments-mcp)) |
+| Policy and audit | `policy_get`, `policy_propose`, `audit_list` |
 | Catch-up and rules | `events_since`, `rules_get`, `rules_update`, `rules_propose` |
 | Questions | `question_ask`, `question_list`, `question_withdraw` (the asker or a coordinator); none answers ([§1](#spec-questions)) |
 | Approvals | `approval_request`, `approval_list`, `approval_withdraw` (the asker or a coordinator, with a reason); none decides ([§1](#spec-approvals)) |
@@ -1689,28 +1689,27 @@ Read tools are annotated read-only, write tools non-destructive; none reaches ou
 digests are annotated as writes: `session` moves the caller's read position and can create or link
 its session row.
 Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (or `""`) clears an
-optional text field, because models cannot always send an empty string. `task_update`,
-`task_patch` (deprecated) accept `expected_version` and fail instead of overwriting a newer version; otherwise the
-last write wins. `task_create`, `task_update` (and the deprecated `task_patch`) take `area` ([§1](#spec-areas)),
+optional text field, because models cannot always send an empty string. `task_update` accepts
+`expected_version` and fails instead of overwriting a newer version; otherwise the last write
+wins. `task_create` and `task_update` take `area` ([§1](#spec-areas)) and `size` (task size),
 `task_create(bind=false)` creates a card without binding the calling session (it stays the event's
 actor and its `hook_session` is linked as on any write; the default binds), and `project_upsert`
 takes `archived` ([§2](#spec-project-archive)).
 `task_list` filters by `area` (any project's area of that name without `project`); `task_get`,
 `task_context`, `task_list` and the digests show a task's area, and `project_snapshot` lists the
 project's areas with how many tasks carry each. `project_upsert` takes `repos`, `task_update` takes
-`repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_update(fields={"repos": […], "prs": […], "blocked_by": […]})` reaches them (the deprecated `task_patch` too) for a
+`repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_update(fields={"repos": […], "prs": […], "blocked_by": […]})` reaches them for a
 client whose cached schema lacks them, and `relaybay://schema/task` lists them after the fields.
 
 <a id="spec-mcp-resources"></a>
 
 **Resources.** `relaybay://project/{slug}` (same markdown as `project_snapshot`),
-`relaybay://project/{slug}/environments` (a stub since 0.15, [§7](#spec-environments-mcp)),
 `relaybay://rules` and `relaybay://rules/{project}` (same as `rules_get`),
 `relaybay://doc/{project}/{doc}` (a document's current markdown),
 `relaybay://attachments/{attachment_id}/annotated` (a flattened PNG),
 `relaybay://schema/task`
 (the editable task fields as a table: name, type, description, how to clear), `relaybay://contract`
-(the contract version, the rule below and the deprecations, [below](#spec-mcp-compat)).
+(the contract version and the rule below, [below](#spec-mcp-compat)).
 
 <a id="spec-prompts"></a>
 
@@ -1732,54 +1731,52 @@ known rules version is older, a write tool's result also ends with one line, onc
 
 <a id="spec-mcp-compat"></a>
 
-**Compatibility policy (MCP contract v2).** MCP clients keep the parameter schema of a tool they
-already loaded, even across server restarts, so a release only adds: new optional parameters, new
-tools, resources and prompts, a wider type, more enum values. Breaking, and allowed only when an
-expired deprecation covers it: removing a tool, a parameter, a resource (URI or template), a prompt or
-a prompt argument; narrowing what a parameter accepts (a type dropped, `null` included, enum values
-dropped or an enum added, a tighter minimum, maximum or length, a field of an object parameter
-removed or made required); a new required parameter or prompt argument, or an optional one made
-required; a read-only tool that starts to write or a tool that becomes destructive. A field a stale
-schema lacks is reached through `task_update(task, fields={…})` or `backlog_patch(item, fields={…})`;
-there is no such escape hatch for other tools. An argument the tool's schema does not declare (a
-typo, a parameter of another version) is never dropped without a word (`RoleServer.call_tool`): a
-writing tool refuses the call before it runs, so nothing changes, with
-`Unknown parameter(s) for <tool>: <names>. Nothing changed.`, the parameters it takes and a hint to
-reconnect (for a task or backlog tool: or use `task_update(fields={…})` / `backlog_patch`); a read-only tool answers and adds the last line
-`Ignored unknown parameter(s): <names>.` Since a release only adds, every parameter of a released
-contract stays declared, deprecated tools and parameters included.
-
-A deprecation is an entry in `DEPRECATIONS` (`src/relaybay/mcp_server/contract.py`): the tool (or
-resource URI, or prompt) and the parameter, if only one is meant, the version it is deprecated
-since, a date it is removed not before, and the replacement. The window is at least one minor
-version and 30 days: the entry expires once the server's minor version is above `since` and the
-date has come. The tool is marked with `@deprecated` (or `@deprecated("<parameter>")`), which keeps
-the signature and adds the line
-`Deprecated: <tool> is deprecated since <version> and may be removed in a later minor version, not before <date>; use <replacement> instead.`
-(for a parameter ``Deprecated: parameter `<name>` of <tool> is …``) to the tool's description and to
-its result (for a parameter, only when the call passed it). `relaybay://contract` and the
-[MCP reference](reference/mcp.md#contract) list the version, this rule and the deprecations
-(`Deprecations: none.` in 0.8.0 and again under contract 2 until 0.15, which deprecates the
-environment tools, [§7](#spec-environments-mcp)). The release that removes an expired
-item raises `CONTRACT_VERSION` (1 in 0.8.0, 2 since 0.13); additions keep it.
+**Compatibility policy (MCP contract v3).** MCP clients keep the parameter schema of a tool they
+already loaded, even across server restarts, so within a contract version a release only adds: new
+optional parameters, new tools, resources and prompts, a wider type, more enum values. Breaking:
+removing a tool, a parameter, a resource (URI or template), a prompt or a prompt argument;
+narrowing what a parameter accepts (a type dropped, `null` included, enum values dropped or an enum
+added, a tighter minimum, maximum or length, a field of an object parameter removed or made
+required); a new required parameter or prompt argument, or an optional one made required; a
+read-only tool that starts to write or a tool that becomes destructive. While relaybay has no
+outside users, a replaced tool or parameter is removed in the same release that replaces it, with
+no deprecation period and no `Deprecated: …` lines, and that release raises `CONTRACT_VERSION` (1
+in 0.8.0, 2 since 0.13, 3 since 0.18); additions keep it (code: mcp_server/contract.py). A field a
+stale schema lacks is reached through `task_update(task, fields={…})` or
+`backlog_patch(item, fields={…})`; there is no such escape hatch for other tools. An argument the
+tool's schema does not declare (a typo, a parameter of another version) is never dropped without a
+word (`RoleServer.call_tool`): a writing tool refuses the call before it runs, so nothing changes,
+with `Unknown parameter(s) for <tool>: <names>. Nothing changed.`, the parameters it takes and a
+hint to reconnect (for a task or backlog tool: or use `task_update(fields={…})` /
+`backlog_patch`); a read-only tool answers and adds the last line
+`Ignored unknown parameter(s): <names>.` Within a contract version every parameter of the
+baseline stays declared. `relaybay://contract` and the [MCP reference](reference/mcp.md#contract)
+give the version and this rule.
 
 **Contract 2: the 0.12 stubs removed.** 0.12 kept twenty tools and one resource of removed
 features registered as deprecated stubs that did nothing ([§1](#spec-run), [§2](#spec-usage),
 [§12](#spec-intake)): `run_start`, `run_status`, `run_events`, `run_settings`, `schedule_add`,
 `schedule_list`, `schedule_cancel`, `usage_summary`, `budget_get`, `brake_set`, `brake_status`,
 `intake_post`, `intake_list`, `intake_tie`, `intake_dismiss`, `intake_propose`, `intake_sources`,
-`message_send`, `messages_list`, `message_ack` and `relaybay://intake/{source}`. They were announced
-as removable not before 2026-12-17; by the maintainer's decision contract 2 removes them earlier,
-since they did nothing. A client with a cached schema that still calls one gets the tool error
-`Unknown tool: <name>`. The baseline was rewritten for contract 2 outside `--rebaseline`, which refuses a
-removal no expired deprecation covers.
+`message_send`, `messages_list`, `message_ack` and `relaybay://intake/{source}`. By the
+maintainer's decision contract 2 removed them before their announced date, since they did
+nothing. A client with a cached schema that still calls one gets the tool error
+`Unknown tool: <name>`.
+
+**Contract 3 (0.18).** Removed with no deprecation period: `task_set_stage` and `task_patch`
+(`task_update(stage=…, stage_note=…)` and `task_update(fields={…})` replace them), and
+`environments_get`, `environment_propose` and the resource `relaybay://project/{slug}/environments`,
+which did nothing since environments left the board in 0.15 ([§7](#spec-environments-mcp)). A
+session started before the update gets `Unknown tool: <name>` for them and must be restarted (or
+its MCP server reconnected) to load the current list.
 
 `tests/fixtures/mcp_contract_baseline.json` holds the surface clients cache: tool names, input
 schemas without descriptions, titles and defaults, annotations, resource URIs and templates, prompt
-names and arguments. `tests/test_mcp_contract.py` fails on a breaking change against it that no
-expired deprecation covers. Only a release pull request rewrites it, with
-`scripts/gen_reference.py --rebaseline`, which refuses an uncovered breaking change and a covered
-one without a raised contract version; `tests/test_release.py` checks it was written by the current
+names and arguments, and the contract version it was written with. `tests/test_mcp_contract.py`
+fails on a breaking change against it unless `CONTRACT_VERSION` is above the baseline's
+`contract_version`. Only a release pull request, or the pull request that raises `CONTRACT_VERSION` (so the guard stays armed for the rest of the release), rewrites it, with
+`scripts/gen_reference.py --rebaseline`, which refuses the same changes (code:
+mcp_server/contract.py:refused); `tests/test_release.py` checks it was written by the current
 version. MCP protocol: what the pinned SDK (`mcp>=2,<3`) negotiates. Minimum
 supported Claude Code version: 2.0.0, checked by `relaybay doctor` (older releases are not tested;
 unverified); http hooks need 2.1.63 (unverified, see [§4](#spec-hooks)).
@@ -2364,8 +2361,8 @@ version in a `version` line.
 
 <a id="spec-rules-modes"></a>
 
-**Checks and modes:** requirements are checked on stage moves (`task_update` with a stage; the deprecated `task_set_stage` and
-`task_patch` alike; the board form). `rules_mode = "warn"` (default): the move succeeds and
+**Checks and modes:** requirements are checked on stage moves (`task_update` with a stage, also in `fields`;
+`report_add(stage=…)`; the board form). `rules_mode = "warn"` (default): the move succeeds and
 the response, the board form and the `task.stage_changed` event carry the warnings.
 `rules_mode = "strict"`: the move is refused with the reason and nothing changes.
 
@@ -2545,7 +2542,7 @@ and proposal writes are gone (`404` / `405`).
 
 **Proposals: removed in 0.15.** `environment_propose` recorded a proposal for the owner
 (`environment.proposed`, `environment.proposal_accepted`, `environment.proposal_rejected`); since
-0.15 it records nothing ([below](#spec-environments-mcp)), the Inbox no longer lists environment
+0.15 it recorded nothing and contract 3 removed it ([below](#spec-environments-mcp)), the Inbox no longer lists environment
 proposals, and pending ones stay in the table `environment_proposal` undecided. The Audit page and
 `audit_list` still show the old events.
 
@@ -2676,12 +2673,10 @@ all), the task dialog and page show the task's own as **Actions on live**, the *
 
 <a id="spec-environments-mcp"></a>
 
-**MCP.** Since 0.15 `environments_get` and `environment_propose` stay registered with their
-parameters as deprecated tools that do nothing, within contract 2 ([§3](#spec-mcp-compat)): each
-answers `Nothing done: this tool does nothing since 0.15.` and `Deprecated: environments and access
-were removed in 0.15; environments are kept in the project's own notes.`, which also ends its
-description; the resource `relaybay://project/{slug}/environments` answers the same. They are
-removed, and the contract version raised, by the first later minor release from 2026-12-19.
+**MCP.** `environments_get`, `environment_propose` and the resource
+`relaybay://project/{slug}/environments`, which did nothing since 0.15, were removed with contract
+3 in 0.18 ([§3](#spec-mcp-compat)); a call from a stale schema gets `Unknown tool: <name>`.
+Environments are kept in the project's own notes.
 `project_snapshot`, `project_digest` and `task_context` no longer list environments.
 `policy_get(project?, environment?)` returns the effective policy of
 the global scope, a project or an environment: the layer chain and one line per value with the
@@ -2770,7 +2765,7 @@ any other kind is free text (default `doc`). Documents are free markdown: no sec
 and decisions have their own table ([below](#spec-memory-decisions)). A task's document is named
 `task-<ref>` (import makes it so); a task created on the board or through MCP gets one with
 `doc_update` and `task_update(doc_path="relaybay://doc/<project>/task-<ref>")`. A `task_create`,
-`task_update` (or `task_patch`) that sets `doc_path` to an absolute path of a local `.md` file that no
+`task_update` that sets `doc_path` to an absolute path of a local `.md` file that no
 file document of the project reads yet makes that file the file document `task-<key>` (kind
 `task`, writes through relaybay off, the same path checks as `doc_update(source_path)`); the answer
 says so in one line with the board link, or why not (a refused or missing file, the name
@@ -3042,7 +3037,7 @@ document's text.
 with its version, `doc_get` call and board link; a line `- <doc>#<anchor> · <op>` per target and
 op; `- problem: …` per problem; and `Other cards changing the same sections: <key> (<stage>)
 <doc>#<anchor>, …` when another open card changes one of the same sections (by its targets or
-linked sections). Moving a card to done (any stage move: `task_update`, the deprecated `task_set_stage`, the
+linked sections). Moving a card to done (any stage move: `task_update`, `report_add(stage=…)`, the
 board) adds hints, no rule warnings: `Hint: <key> is done but its change document spec-<key> is
 still there: merge it into the spec and delete it: doc_update(…, delete=true).` while the
 document exists, and `Hint: <key> is done but its deploy notes are not carried out: …` while

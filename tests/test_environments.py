@@ -23,7 +23,6 @@ from relaybay.domain.environments import (
     repo_identifier,
 )
 from relaybay.domain.errors import ConfirmationNeeded, ValidationError
-from relaybay.mcp_server import contract
 from relaybay.policy import EffectivePolicy, Layer, preset
 from relaybay.security import csrf_token
 from relaybay.service import Service, collect_notes
@@ -312,7 +311,7 @@ def test_guard_matches_whole_tokens_and_mutating_heuristics() -> None:
     )
     own = {
         "hook_event_name": "PreToolUse",
-        "tool_name": "mcp__relaybay__environment_propose",
+        "tool_name": "mcp__relaybay__task_update",
         "tool_input": {"x": "prod-alias"},
     }
     assert guard.tool_call(own) is None
@@ -928,21 +927,18 @@ def test_journal_on_activity_and_task(board: TestClient) -> None:
 # --- MCP --------------------------------------------------------------------------------------
 
 
-async def test_mcp_environment_tools_are_stubs(live_server: Callable[[], LiveServer]) -> None:
+async def test_mcp_environment_tools_are_gone(live_server: Callable[[], LiveServer]) -> None:
     live = live_server()
     async with mcp_connect(live) as client:
         await call(client, "project_upsert", slug="acme-shop")
-        gone = f"{contract.STUB_RESULT}\n{contract.ENVIRONMENTS_GONE}"
-        assert await call(client, "environments_get", project="acme-shop") == gone
-        change = {"environment": "live", "kind": "live"}
-        proposed = await call(
-            client, "environment_propose", project="acme-shop", change=change, reason="why"
-        )
-        assert proposed == gone
-        resource = await client.read_resource("relaybay://project/acme-shop/environments")
-        assert resource.contents[0].text == gone
-        events = await call(client, "events_since", project="acme-shop")
-        assert "environment.proposed" not in events
+        for name, args in (
+            ("environments_get", {"project": "acme-shop"}),
+            ("environment_propose", {"project": "acme-shop", "change": {}, "reason": "why"}),
+        ):
+            gone = await client.call_tool(name, args)
+            assert gone.is_error and f"Unknown tool: {name}" in gone.content[0].text
+        templates = (await client.list_resource_templates()).resource_templates
+        assert all("environments" not in t.uri_template for t in templates)
 
 
 # --- second review: hosts as shell words, the password family, kind changes --------------

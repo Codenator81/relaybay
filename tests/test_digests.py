@@ -706,9 +706,9 @@ async def test_mcp_digest_tools(live_server: Callable[[], LiveServer]) -> None:
         await call(client, "project_upsert", slug="acme-shop")
         key = "acme-shop-1"
         await call(client, "task_create", project="acme-shop", title="Checkout")
-        moved = await call(client, "task_set_stage", task=key, stage="plan")
+        moved = await call(client, "task_update", task=key, stage="plan")
         assert "Note:" not in moved  # nothing moved
-        moved = await call(client, "task_set_stage", task=key, stage="dev", session="agent")
+        moved = await call(client, "task_update", task=key, stage="dev", session="agent")
         assert "Note: the pulse" not in moved  # the pulse is derived: nothing asks for it
         saved = await call(client, "project_pulse_set", project="acme-shop", text="All\ngood.")
         assert saved == "Pulse of **acme-shop** saved (2 line(s), 9/600 characters)."

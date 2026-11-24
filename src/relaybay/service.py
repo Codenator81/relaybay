@@ -4393,6 +4393,7 @@ class Service:
         tracker_name: str | None = None,
         tracker_url: str | None = None,
         tracker_logged: bool = False,
+        size: str | None = None,
         area: str | None = None,
         session: str | None = None,
         session_title: str | None = None,
@@ -4428,6 +4429,7 @@ class Service:
             "tracker_name": _clean_field("tracker_name", tracker_name),
             "tracker_url": _clean_field("tracker_url", tracker_url),
             "tracker_logged": _clean_field("tracker_logged", tracker_logged),
+            "size": _clean_field("size", size),
             "inspect_only": _clean_field("inspect_only", inspect_only),
         }
         fields["stage"] = fields["stage"].value

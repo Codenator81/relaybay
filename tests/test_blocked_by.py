@@ -141,11 +141,11 @@ async def test_task_context_and_task_get_show_both_directions(service: Service) 
     assert f"- blocks: {a}" in await call("task_get", task=b)
 
 
-async def test_mcp_task_update_and_task_patch_take_blocked_by(service: Service) -> None:
+async def test_mcp_task_update_takes_blocked_by_in_both_forms(service: Service) -> None:
     a, b, c = await cards(service, "Checkout", "Payments", "Receipts")
     call = caller(service)
     await call("task_update", task=a, blocked_by=[b])
-    await call("task_patch", task=a, fields={"blocked_by": [c]})
+    await call("task_update", task=a, fields={"blocked_by": [c]})
     assert await blockers_of(service, a) == [b, c]
     with pytest.raises(ToolError, match="no card 'acme-shop-42'"):
         await call("task_update", task=a, blocked_by=["acme-shop-42"])

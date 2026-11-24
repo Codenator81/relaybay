@@ -9,19 +9,9 @@ descriptions clients receive. How to use them together: [MCP tools](../mcp-tools
 
 Clients read the same text from the resource `relaybay://contract`.
 
-Contract version 2.
+Contract version 3.
 
-Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_update(fields=...)` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
-
-Deprecations:
-
-| Item | Parameter | Since | Removed not before | Use instead |
-|---|---|---|---|---|
-| `environments_get` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
-| `environment_propose` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
-| `relaybay://project/{slug}/environments` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
-| `task_set_stage` | — | 0.17 | 2027-01-15 | task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...) |
-| `task_patch` | — | 0.17 | 2027-01-15 | task_update(task, fields={...}) |
+Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_update(fields=...)` and `backlog_patch` reach fields a cached schema lacks. While relaybay has no outside users, a replaced tool or parameter is removed in the same release that replaces it, and that release raises the contract version; nothing is kept as deprecated.
 
 ## Tools
 
@@ -44,8 +34,6 @@ Deprecations:
 | [`task_create`](#task_create) | write |
 | [`task_doc_link`](#task_doc_link) | write |
 | [`task_update`](#task_update) | write |
-| [`task_patch`](#task_patch) | write |
-| [`task_set_stage`](#task_set_stage) | write |
 | [`task_archive`](#task_archive) | write |
 | [`task_unarchive`](#task_unarchive) | write |
 | [`task_bind_session`](#task_bind_session) | write |
@@ -96,8 +84,6 @@ Deprecations:
 | [`plan_accept`](#plan_accept) | write |
 | [`attach_file`](#attach_file) | write |
 | [`attachment_caption`](#attachment_caption) | write |
-| [`environments_get`](#environments_get) | read |
-| [`environment_propose`](#environment_propose) | write |
 | [`policy_get`](#policy_get) | read |
 | [`policy_propose`](#policy_propose) | write |
 
@@ -291,6 +277,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `tracker_name` | string or null | no | Name of the external tracker, e.g. 'Linear'. '-' or '' leaves it empty. |
 | `tracker_url` | string or null | no | Link to the issue (http:// or https:// only). '-' or '' leaves it empty. |
 | `tracker_logged` | boolean | no | True once the work log is entered in the external tracker. New work clears it again (a report, a progress change, a move back from live or done). A new tracker_ref starts as not logged unless tracker_logged is passed in the same write. Done tasks without it stay on the board marked 'not logged'. Default: `False`. |
+| `size` | string or null | no | Task size: S, M or L. S tasks may go without an accepted plan; a task of unknown size needs one. '-' or '' leaves it empty. |
 | `area` | string or null | no | What part of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot lists the project's areas; case does not matter). A new name is added to the project's areas and the answer says so. '-' or '' leaves it empty. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
@@ -344,34 +331,6 @@ Change task fields and move its stage in one write: the stage, waiting on, next 
 | `cancelled` | string or null | no | Why the card was given up on; setting it stamps the time. The card stays in its stage (move it to done yourself). '-' clears it and its time. |
 | `fields` | object or null | no | Any other task field as one JSON object, e.g. {'priority': 2} (relaybay://schema/task lists them); for a field this tool has no parameter for yet. A field given both here and as a parameter must agree. |
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `task_patch`
-
-Change any task fields given as one JSON object, with the same rules as task_update and task_set_stage (a `stage` value moves the task). Use it for a field your client's task_update does not offer yet: its parameter list may be older than the server. Call task_get or read relaybay://schema/task for the allowed fields. `session_surface` ("desktop" or "terminal", with your hook_session) is not a task field: it tells relaybay where you run, when your session start asks for it. Deprecated: task_patch is deprecated since 0.17 and may be removed in a later minor version, not before 2027-01-15; use task_update(task, fields={...}) instead.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
-| `fields` | object | yes | Task fields to change as one JSON object, e.g. {"branch": "x"}. Call task_get or read relaybay://schema/task for the allowed fields; '-', '' or null clears an optional text field. |
-| `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
-### `task_set_stage`
-
-Move a task to another stage (plan, dev, review, test, live, done) when its work moves on, e.g. to dev when you start coding, to review when the owner should accept it step by step (fill the checklist with review_steps_set first), to test when it is on the test environment, to done when finished. Any transition is allowed; a move that misses a working rule (see rules_get) adds a 'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report. Deprecated: task_set_stage is deprecated since 0.17 and may be removed in a later minor version, not before 2027-01-15; use task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...) instead.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
-| `stage` | string | yes | One of: plan, dev, review, test, live, done. |
-| `note` | string or null | no | Short note next to the stage, e.g. 'PR open'. |
-| `next_step` | string or null | no | What happens next, one line; saved in the same write. A next step set before the last stage change shows as stale. Omit to keep it; '-' or '' clears it. |
-| `waiting_on` | string or null | no | Only who acts next: a name or role, no text after it; what happens goes to next_step. Saved in the same write. Omit to keep it; '-' or '' clears it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -1033,27 +992,6 @@ Change the caption of a screenshot.
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
-### `environments_get`
-
-Removed in 0.15 with the environments: shows nothing. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `project` | string | yes | Project slug such as 'acme-shop'. |
-
-### `environment_propose`
-
-Removed in 0.15 with the environments: records nothing. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `project` | string | yes | Project slug such as 'acme-shop'. |
-| `change` | object | yes | Ignored. |
-| `reason` | string | yes | Ignored. |
-| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
-| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
-| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
-
 ### `policy_get`
 
 The effective policy (levels per environment kind and capability, guard mode and rules, secret rules, test secrets) with, for every value, the layer that set it: preset, config, global file, project, environment. Read it to know why the guard or a secret check answered as it did.
@@ -1081,10 +1019,9 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 | URI | Name | Type | Description |
 |---|---|---|---|
 | `relaybay://attachments/{attachment_id}/annotated` | annotated-screenshot | image/png | The flattened PNG of a screenshot with the owner's markup (same as attachment_get with annotated=true). |
-| `relaybay://contract` | contract | text/markdown | The MCP contract: its version, the compatibility rule and the deprecations. |
+| `relaybay://contract` | contract | text/markdown | The MCP contract: its version and the compatibility rule. |
 | `relaybay://doc/{project}/{doc}` | project-document | text/markdown | A project document's current markdown (same as doc_get). |
 | `relaybay://project/{slug}` | project-snapshot | text/markdown | Markdown snapshot of a project (same as project_snapshot). |
-| `relaybay://project/{slug}/environments` | project-environments | text/markdown | Removed in 0.15 with the environments. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |
 | `relaybay://rules/{project}` | project-rules | text/markdown | A project's working rules: global rules merged with the project override. |
 | `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_update(fields=...): name, type, description, clearing. |

@@ -1,6 +1,6 @@
 """Where a session runs (design 0025): the hook records it from CLAUDE_CODE_ENTRYPOINT, the
-session is asked only when the hook cannot tell, and `session_surface` in task_patch stores its
-answer on the calling session."""
+session is asked only when the hook cannot tell, and `session_surface` in
+task_update(fields=...) stores its answer on the calling session."""
 
 import json
 from typing import Any
@@ -80,7 +80,7 @@ async def test_a_session_with_a_desktop_id_is_never_asked(service: Service) -> N
     assert ASKED not in context
 
 
-async def test_the_session_answers_with_task_patch(service: Service) -> None:
+async def test_the_session_answers_with_task_update_fields(service: Service) -> None:
     task = await bound_task(service, session="acme-shop")
     await service.record_hook(start())
     saved = await service.update_task_checked(

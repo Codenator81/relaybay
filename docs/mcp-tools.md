@@ -11,7 +11,7 @@ set. See [Tool sets by role](connect-claude-code.md#tool-sets-by-role).
 
 ## Server instructions
 
-The server's MCP `instructions` (sent once when a session connects) are a short working contract in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`).
+The server's MCP `instructions` (sent once when a session connects) are a short working contract in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks; hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`).
 
 In coordinator mode (`coordinators` set in the config) the `/mcp` and `/mcp/agent` instructions say that a missing card is the coordinator's, that findings and questions for the owner go into `report_add(findings=..., questions=...)` instead of new cards or backlog items, and that the tracker mark is the coordinator's. In that mode `task_create` and `backlog_add` from an agent (a session bound to an open card that is not a coordinator) are refused, an agent's move to `done` is not held to the tracker mark (the answer says `Tracker mark: the coordinator's …`), `task_archive` refuses a done card that still needs the mark, the day time log's writes (`timelog_mark`, `timelog_fix`, `worklog_add`) from an agent are refused, and `waiting_on` is saved as a fixed role (the first of `owner_names`, `coordinator`, `session`, `ci`, `customer:<name>`) with a note when it changed ([SPEC](SPEC.md#spec-coordinator-mode)).
 
@@ -117,7 +117,6 @@ Conventions:
 | `task_get` | `task`, `reports?` (default 5) | Ends with "Editable fields: …". All fields (a stale next step ends with `(stale)`), description and progress in full, current `version`, the bound session (name and desktop id, link), the tracker issue and work-log mark, session binding history, tracker history, latest reports with their bodies, decisions; `## Linked document sections` lists the sections linked with `task_doc_link` as pointer lines (`broken` when gone); `## Code` lists the linked repositories (kind, path, branch, pull requests, how linked), or all of the project's when none is, and pull requests tied to none. |
 | `events_since` | `since_id?` (default 0), `project?`, `limit?` (default 50, max 500) | Events oldest first and the `since_id` for the next call. |
 | `comments_list` | `task`, `unread_only?` | The task's comments oldest first: owner comments with `sent / delivered … to <session> / read` marks, agents' replies (`unread by the owner` until the owner marks them read). |
-| `environments_get` | `project` | Deprecated since 0.15, does nothing: answers `Nothing done: this tool does nothing since 0.15.` and `Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes.` |
 | `policy_get` | `project?`, `environment?` | The effective policy (see *Policy* below) of the global scope, a project or one of its environments: the layer chain, then one line per value with the layer that set it, e.g. `- levels.live.default = "read"  (preset:default)`, and any ignored broken layer. |
 | `audit_list` | `project?`, `environment?`, `session?` (name, desktop id or hook session id), `decision?` (`allow`, `log`, `warn`, `ask`, `deny`), `days?` (default 7, max 366), `limit?` (default 50, max 500) | Tool calls of agents that touched a live stand, newest first, one line each: id, time, session, project/stand, tool, the redacted command, decision, level, rule, task. Read-only; only live stands are journaled. |
 | `question_list` | `task?`, `status?` (`open`, the default, `answered`, `defaulted`, `withdrawn` or `all`) | Questions to the owner, newest first, of all cards or one: `- #3 acme-shop-1 (look, asked by <session> …): open`, then the text, the options and default, the look URL and test account, and the answer verbatim. Changes nothing but closes questions past their deadline with their default. |
@@ -137,10 +136,8 @@ Conventions:
 | `approval_withdraw` | `approval`, `reason` (required, one line), `session`, `session_title?`, `hook_session?` | Takes back an approval request that is no longer needed (the owner did it by hand): an open one, or an approved one not used yet; only the session that asked or a coordinator. It expires with `withdrawn by <caller>: <reason>`, leaves the Inbox and no longer holds a live card's archive. Returns `Approval #N on <key> withdrawn: merge of PR 12 (withdrawn by …).` |
 | `project_upsert` | `slug`, `name?`, `repo_path?`, `description?`, `archived?`, `repos?`, `session?`, `session_title?`, `hook_session?` | Creates the project, or updates the given fields. `archived=true` sends it to the archive (it leaves `project_list`, the board's sidebar and All boards, the Inbox and the digests; its board and cards are kept), `false` brings it back (event `project.updated` with `changes.archived`); `archived` is for coordinator sessions only (anyone else: `project_upsert(archived) is only for the coordinator sessions …`), the other fields are open to every session. Slugs: lowercase letters, digits, dashes. `repos` is the whole list of the project's repositories in order, `[{"name": "web", "path": "/code/acme/web", "kind": "web"}]` (kind `app`, `web`, `api`, `lib`, `other` or none; without a name the path's last folder); matched by name, so tasks keep their links to a repository that stays; `[]` removes them all. `repo_path` is the first repository's path: alone it sets that path (or adds the repository). |
 | `project_delete` | `slug`, `confirm`, `session?`, `session_title?`, `hook_session?` | Coordinators only (anyone else: `project_delete is only for the coordinator sessions …`). Deletes an archived project for good: its tasks with their reports, comments, plans and attachments, its documents (the rows only; a file document's file stays on disk), backlog, decisions, notes and areas, and its events. `confirm` must be the slug again (otherwise `Deleting <slug> cannot be undone: confirm with the project's slug, <slug>. Nothing changed.`); a project not in the archive is refused (`<slug> is not in the archive: …`). An export of everything deleted is written first to `deleted/` in the server's data folder; event `project.deleted` (no project id) names it. Returns `Deleted the project **<slug>** …; the export is deleted/<file> in the server's data folder.` |
-| `task_create` | `project`, `title`, `stage?` (default `plan`), `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?` (default false), `area?`, `session?`, `session_title?`, `hook_session?`, `bind?` (default true), `sections?` | Creates a task with the next key of the project (`acme-shop-1`, `acme-shop-2`, …). `sections`: a list of `doc#anchor` of the project's documents linked to the card as `task_doc_link` links one, all checked before the card is created. `area` names what part of the project it belongs to (matched without regard to case); a new name is added to the project's areas (at most 24, 32 characters a name) and the answer says so and lists them. With `session`, the task is bound to it, unless `bind=false`: a card made for someone else stays unbound (the caller is still the event's actor). |
-| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage?`, `stage_note?`, `deploy_notes?`, `deploy_done?`, `cancelled?`, `fields?` (JSON object), `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `size?` (`S`, `M`, `L`), `area?` (as in `task_create`; `"-"` clears it), `repos?`, `prs?`, `blocked_by?`, `expected_version?`, `session?`, `session_title?`, `hook_session?` | Patches fields; `"-"` or `""` clears a text field. With `expected_version`, fails instead of overwriting when the task changed meanwhile. `repos`: names of the project's repositories the task touches, added to its links (`-name` removes one; an unknown name fails with the project's names). `prs`: pull request links added to the task, each optionally after a repository name (`web https://host/acme/web/pull/12`; `-<url>` removes one); a link whose path names a project repository is tied to it and links it. A session bound to the task links the repository it works in by itself. `blocked_by`: keys of cards (any project) this task waits for (`-key` removes one); an unknown key, the task itself and a cycle are refused; a blocker blocks while in `plan`, `dev`, `review` or `test` (see [Blockers](SPEC.md#spec-task-blockers)). `stage` moves the task with the same rules, hints and `Warning (rules)` lines as the former `task_set_stage` (`stage_note` is shown next to the stage; moving to `done` sets the closed time and adds the `Hint:` lines described there); the answer starts with `Moved` when the stage changed, else `Updated`. `deploy_notes`, `deploy_done` and `cancelled` are the [deploy notes and cancelled](SPEC.md#spec-task-deploy) fields. `fields`: any other task field from `relaybay://schema/task` (for example `description_add`, `session_surface`, `priority`), the way `task_patch` took them; a field given both as a parameter and in `fields` must agree, else the call fails. |
-| `task_patch` (deprecated since 0.17, use `task_update(task, fields={...})`) | `task`, `fields` (JSON object), `expected_version?`, `session?`, `session_title?`, `hook_session?` | Unchanged behaviour: changes any editable task fields with the same validation as `task_update` (a `stage` value moves the task, auto-unlog applies). Unknown names fail with the list of allowed ones; `"-"`, `""` or `null` clears an optional text field. The allowed fields: the end of `task_get` or `relaybay://schema/task`; `repos` and `prs` (lists, as in `task_update`) reach a client whose cached `task_update` lacks them. |
-| `task_set_stage` (deprecated since 0.17, use `task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...)`) | `task`, `stage`, `note?`, `next_step?`, `waiting_on?`, `session?`, `session_title?`, `hook_session?` | Unchanged behaviour: moves the task (`task_update` does the same with `stage_note` in place of `note`); `note` is shown next to the stage. Moving to `done` sets the closed time; for a card that is not cancelled the answer adds a `Hint:` line while its change document `spec-<key>` still exists (merge it into the spec, then `doc_update(delete=true)`) and while its `deploy_notes` are not marked `deploy_done`. `next_step` and `waiting_on` are saved in the same transaction (`task.stage_changed` + `task.updated`, one version bump); `"-"` clears them. |
+| `task_create` | `project`, `title`, `stage?` (default `plan`), `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?` (default false), `size?` (`S`, `M`, `L`, validated as in `task_update`), `area?`, `session?`, `session_title?`, `hook_session?`, `bind?` (default true), `inspect_only?`, `sections?` | Creates a task with the next key of the project (`acme-shop-1`, `acme-shop-2`, …). `sections`: a list of `doc#anchor` of the project's documents linked to the card as `task_doc_link` links one, all checked before the card is created. `area` names what part of the project it belongs to (matched without regard to case); a new name is added to the project's areas (at most 24, 32 characters a name) and the answer says so and lists them. With `session`, the task is bound to it, unless `bind=false`: a card made for someone else stays unbound (the caller is still the event's actor). |
+| `task_update` | `task`, `title?`, `waiting_on?`, `next_step?`, `branch?`, `doc_path?`, `stage?`, `stage_note?`, `deploy_notes?`, `deploy_done?`, `cancelled?`, `fields?` (JSON object), `description?`, `progress?`, `tracker_ref?`, `tracker_name?`, `tracker_url?`, `tracker_logged?`, `size?` (`S`, `M`, `L`), `area?` (as in `task_create`; `"-"` clears it), `repos?`, `prs?`, `blocked_by?`, `expected_version?`, `session?`, `session_title?`, `hook_session?` | Patches fields; `"-"` or `""` clears a text field. With `expected_version`, fails instead of overwriting when the task changed meanwhile. `repos`: names of the project's repositories the task touches, added to its links (`-name` removes one; an unknown name fails with the project's names). `prs`: pull request links added to the task, each optionally after a repository name (`web https://host/acme/web/pull/12`; `-<url>` removes one); a link whose path names a project repository is tied to it and links it. A session bound to the task links the repository it works in by itself. `blocked_by`: keys of cards (any project) this task waits for (`-key` removes one); an unknown key, the task itself and a cycle are refused; a blocker blocks while in `plan`, `dev`, `review` or `test` (see [Blockers](SPEC.md#spec-task-blockers)). `stage` moves the task with the stage rules, hints and `Warning (rules)` lines (`stage_note` is shown next to the stage; `next_step` and `waiting_on` are saved in the same transaction, one version bump). Moving to `done` sets the closed time; for a card that is not cancelled the answer adds a `Hint:` line while its change document `spec-<key>` still exists (merge it into the spec, then `doc_update(delete=true)`) and while its `deploy_notes` are not marked `deploy_done`; the answer starts with `Moved` when the stage changed, else `Updated`. `deploy_notes`, `deploy_done` and `cancelled` are the [deploy notes and cancelled](SPEC.md#spec-task-deploy) fields. `fields`: any other task field from `relaybay://schema/task` (for example `description_add`, `session_surface`, `priority`; unknown names fail with the list of allowed ones); a field given both as a parameter and in `fields` must agree, else the call fails. |
 | `task_doc_link` | `task`, `doc`, `section`, `remove?` (default false), `session?`, `session_title?`, `hook_session?` | Links a section of a document of the task's project to the card (`section`: a heading anchor or an explicit anchor, as `doc_outline` lists them), checked against the document's current outline (a file document is read first); an unknown anchor fails with the known ones. `remove=true` unlinks it. Returns `Linked to **<key>**:` (or `Already linked to`, `Unlinked from`, `Was not linked to`) and the section's pointer line. `task_context` lists linked sections first and takes the card's subject from them (its open backlog items, the related project decisions); a section that disappears later shows as `broken`. Event `task.updated` with `changes.sections`. |
 | `task_archive` | `task`, `session?`, `session_title?`, `hook_session?` | Coordinators only (anyone else: `task_archive is only for the coordinator sessions …`). Sends a task in `done` or `live` to the archive now (`task.archived`): it leaves the board's columns and stays under "Show archived" and in search; `task_get` shows `- archived: <time> by <who>`. A live task is closed first, in the same step and without the rules (`task.stage_changed` live → done, then `task.archived` with `from: live`). A task in another stage is refused (`Only a done or live task goes to the archive; …`); any later stage change clears the mark. Nothing is deleted. Returns `<key> “<task title>” is in the archive since …`. |
 | `task_unarchive` | `task`, `session?`, `session_title?`, `hook_session?` | Coordinators only. Brings a task back from the archive, by hand or by age (`task.unarchived`): a done one shows in the done column again and the done window starts again from now; one archived from live goes back to `live` (with its `task.stage_changed`). Not archived: changes nothing. Returns `<key> “<task title>” is in the <stage> column, not in the archive.` |
@@ -150,7 +147,6 @@ Conventions:
 | `decision_add` | `project`, `text`, `task?`, `decided_by?`, `source?`, `supersedes?`, `area?`, `session?`, `session_title?`, `hook_session?` | Records a decision of the project (scope `task` with `task`); it appears in the project snapshot and `decision_list`. `source`: `report:12`, `comment:7`, `event:301` or `message:<id>`, optionally followed by display text, or display text alone; a named report, comment or event must exist in the project. `supersedes`: the id of a current decision of the same project this one replaces (see *Memory and documents*). `area`: the area of the project it is about, by name; `task_context` lists a project decision only on the cards it is related to (their area, a linked section it names, or two words of the card's subject). |
 | `comment_ack` | `comment_id?` or `task?`, `session?`, `session_title?`, `hook_session?` | Marks owner comments read: one by id, or every unread one of the task (event `comment.read` each). The board shows them as read and the Stop hook stops reminding. Neither argument, or an id that is not an owner comment: a tool error. |
 | `comment_add` | `task`, `body` (markdown, up to 4000 characters), `in_reply_to?`, `session?`, `session_title?`, `hook_session?` | An agent's reply on the task's thread (author: the calling session; `comment.added`). It marks the owner comment it answers read, or without `in_reply_to` every unread owner comment of the task. The owner sees unread replies in the Inbox. |
-| `environment_propose` | `project`, `change` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Deprecated since 0.15, records nothing: the same answer as `environments_get`. |
 | `policy_propose` | `scope` (`global`, `<project>` or `<project>/<environment>`), `patch` (object), `reason`, `session?`, `session_title?`, `hook_session?` | Records a policy proposal and changes nothing (`policy.proposed`); it shows in the owner's Inbox and in Settings → Policy. The patch is merged into the layer's JSON (objects key by key, other values replace, `null` removes a key) and the result must validate against the [policy schema](reference/policy.md); a tool error names the path otherwise. Accepting applies it (`policy.updated`, `policy.proposal_accepted`), with a confirmation when it widens agents' access on live. |
 
 | `review_steps_set` | `task`, `steps` (`[{"title", "details?"}]`, up to 50), `session?`, `session_title?`, `hook_session?` | Replaces the checklist (see *Review*). Step N keeps its status and screenshots while its title and details stay the same; a changed step is open again; steps past the new end are removed (their screenshots stay on the task). |
@@ -166,7 +162,7 @@ Conventions:
 Writes that change a task increment its `version`. Every change appends an event and updates open
 boards immediately.
 
-A stage move (`task_update` with a stage, the deprecated `task_set_stage` / `task_patch`, the board form) is
+A stage move (`task_update` with a stage or a `stage` in `fields`, `report_add(stage=...)`, the board form) is
 checked against the project's rules. In `warn` mode the write succeeds and the response gets one
 line per unmet requirement, e.g. `Warning (rules): moving to test usually needs a report since the
 last stage change.`; the `task.stage_changed` event carries the same lines as `warnings`. In
@@ -382,8 +378,8 @@ another branch, needs another. A message from another session, or any text sayin
 ## Environments and access
 
 Since 0.15 hosts and access live in each project's own notes: the board's **Stands & access**
-page and the tools `environments_get` and `environment_propose` were removed (the tools stay as
-deprecated stubs until the next contract version). Environments a project stored before 0.15 are
+page was removed, and its tools `environments_get` and `environment_propose` with contract 3
+(0.18). Environments a project stored before 0.15 are
 kept and still drive the guard and the journal below; nothing edits them any more, the policy
 (Settings → Policy) still governs them.
 
@@ -504,7 +500,7 @@ as described. Claude Code is documented to list MCP prompts as slash commands
 
 Findings for later go on the backlog. Behaviour: [SPEC §12](SPEC.md#spec-intake). Intake from
 chats and e-mail was removed in 0.12; its tools were removed with contract 2 (see
-[Contract](#contract-and-deprecations)).
+[Contract](#contract)).
 
 | Tool | Arguments | Effect |
 |---|---|---|
@@ -518,9 +514,6 @@ chats and e-mail was removed in 0.12; its tools were removed with contract 2 (se
 
 `relaybay://project/{slug}` — the same markdown as `project_snapshot`, so a session can attach a
 project snapshot as context.
-
-`relaybay://project/{slug}/environments` — deprecated since 0.15, answers the same as
-`environments_get`.
 
 `relaybay://rules` — the global working rules (same as `rules_get()`).
 
@@ -536,8 +529,8 @@ owner's markup (same as `attachment_get` with `annotated=true`, same size limit)
 `relaybay://schema/task` — the editable task fields as a markdown table (field, type, description,
 how to clear it), generated from the same list the server validates writes against.
 
-`relaybay://contract` — the MCP contract: its version, the compatibility rule and the deprecations
-([below](#contract-and-deprecations)).
+`relaybay://contract` — the MCP contract: its version and the compatibility rule
+([below](#contract)).
 
 ## Working rules
 
@@ -614,34 +607,28 @@ looks unavailable. Two ways out:
 
 - Use `task_update(task, fields={...})` for fields your client does not know yet: `fields` is a
   plain JSON object, validated on the server with the same rules as the other `task_update`
-  parameters (`task_patch` and `task_set_stage` are deprecated since 0.17). The allowed names are
+  parameters. The allowed names are
   listed at the end of `task_get` ("Editable fields: …") and in the resource `relaybay://schema/task` (name, type, description, how to clear).
 - Refresh the schemas: reconnect the server in the client (`/mcp` in the Claude Code CLI) or start
   a new session.
 
-## Contract and deprecations
+## Contract
 
-The tools, resources and prompts follow a versioned contract (version 1 in 0.8.0, 2 since 0.13): a
-release only adds. It never removes a tool, a parameter, a resource or a prompt, never narrows what a parameter
-accepts, never adds a required parameter to an existing tool and never makes a read-only tool write,
-unless the item was deprecated first for at least one minor version and 30 days. A deprecated tool
-or parameter says so in its description and in its result:
-
-```text
-Deprecated: task_foo is deprecated since 0.9.0 and may be removed in a later minor version, not before 2027-01-15; use task_bar instead.
-```
-
-Switch to the replacement when you see it. `relaybay://contract` and the
-[MCP reference](reference/mcp.md#contract) list the version, the rule and the current deprecations
-(none under contract 2). Escape hatches for a stale schema exist only where fields grow:
-`task_update(fields=…)` and `backlog_patch`. The rule in full: [SPEC](SPEC.md#spec-mcp-compat).
+The tools, resources and prompts follow a versioned contract (version 1 in 0.8.0, 2 since 0.13, 3
+since 0.18). Within a contract version a release only adds: it never removes a tool, a parameter,
+a resource or a prompt, never narrows what a parameter accepts, never adds a required parameter to
+an existing tool and never makes a read-only tool write. While relaybay has no outside users, a
+replaced tool or parameter is removed in the same release that replaces it, and that release
+raises the contract version; nothing is kept as deprecated. `relaybay://contract` and the
+[MCP reference](reference/mcp.md#contract) give the version and the rule. Escape hatches for a
+stale schema exist only where fields grow: `task_update(fields=…)` and `backlog_patch`. The rule
+in full: [SPEC](SPEC.md#spec-mcp-compat).
 
 An argument a tool does not take is never dropped without a word: a writing tool refuses the
 call and changes nothing (`Unknown parameter(s) for task_update: nxt_stage. Nothing changed.`,
 followed by the parameters it takes and a hint that the client's tool list may be older or newer
 than the server, with `task_update(fields=…)` or `backlog_patch` for a task or backlog tool), and a read-only tool answers with a last line
-`Ignored unknown parameter(s): ….` Every parameter of a released contract stays known, deprecated
-ones included.
+`Ignored unknown parameter(s): ….` Every parameter of the current contract version stays known.
 
 Contract 2 (0.13) removed the twenty tools and the resource that 0.12 kept as deprecated stubs
 doing nothing ([design 0025](design/0025-board-with-the-desktop.md)): `run_start`, `run_status`,
@@ -651,6 +638,11 @@ doing nothing ([design 0025](design/0025-board-with-the-desktop.md)): `run_start
 `message_ack` and `relaybay://intake/{source}`. They had been announced as removable not before
 2026-12-17; the maintainer shortened that notice. A call from a stale schema answers
 `Unknown tool: <name>`: start a new session (or reconnect the MCP server) to load the current list.
+
+Contract 3 (0.18) removed `task_set_stage` and `task_patch` (replaced by `task_update(stage=…)` and
+`task_update(fields={…})` in 0.17), `environments_get`, `environment_propose` and the resource
+`relaybay://project/{slug}/environments` (doing nothing since 0.15). A session started before the
+update gets `Unknown tool: <name>` for them and must be restarted (or its MCP server reconnected).
 
 ## Example
 
