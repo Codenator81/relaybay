@@ -990,12 +990,16 @@ task dialog shows the chip after the key in its head, and the task view (dialog 
 
 **Code row.** A task whose project has repositories, or that has pull requests, shows a Code row on
 its card and in the task dialog / page ([§1](#spec-task-code)): one line per linked repository with
-its name, its kind, its branch (the one the hooks saw checked out in that repository while a
-bound session worked there, stored on the link, migration 0057; until then the task's own branch;
-the card drops its separate branch chip once a repository is linked), its worktree when one is
-set (the folder, with its own **Open in VS Code** icon), its
-pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and an
-**Open in VS Code** icon (`</>`, the path and the words on hover), a `vscode://file/<path>` link
+its name, its kind, a git branch icon and its branch (the one the hooks saw checked out in that
+repository while a bound session worked there, stored on the link, migration 0057; until then the
+task's own branch; no branch, no icon; the card drops its separate branch chip once a repository
+is linked), a **worktree** mark when one is set, its pull requests (`#123` when the number is
+known, else `PR`; each opens in a new tab) and one **Open in VS Code** icon (`</>`, the path and
+the words on hover). The worktree's path is not printed, so the line stays one line: the mark shows
+it on hover and copies it on a click ("copied" for a moment; without the clipboard a prompt shows
+it), which neither opens the task dialog nor starts a drag; with a worktree the icon opens the
+worktree, not the main checkout, since that is the folder the task works in (code:
+web/templates/_code_row.html, web/static/app.js:copyPath). The icon is a `vscode://file/<path>` link
 (backslashes become `/`, a Windows drive stays `C:`, other unsafe characters are percent-encoded; a
 leading `~` is left to the editor). With no repository linked there is no repository line (until
 0.15 a folded **Repos: all**); `task_get` then names the project's repositories and asks the

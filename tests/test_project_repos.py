@@ -389,6 +389,35 @@ def test_board_repositories_and_code_row(board: TestClient, token: str) -> None:
     assert code.repos == [] and [p.label for p in code.loose_prs] == ["#12"]
 
 
+def test_code_row_shows_a_worktree_as_one_line(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    web = {"name": "web", "path": "C:\\code\\acme\\web"}
+    worktree = "C:\\code\\acme-web-pay"
+    run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop", repos=[web])
+    task = run_in_app(board, service.create_task, "acme-shop", "Checkout", branch="feat/pay")
+    fields = {"repos": [f"web {worktree}"], "prs": ["https://github.com/acme/web/pull/12"]}
+    run_in_app(board, service.update_task, task.key, fields)
+    card = board.get(f"/p/acme-shop/t/{task.key}/card").text
+    view = board.get(f"/p/acme-shop/t/{task.key}/view").text
+    for page in (card, view):
+        line = page.split('<li class="code-repo">', 1)[1].split("</li>", 1)[0]
+        assert 'class="git-icon"' in line and ">feat/pay</code>" in line
+        assert f'class="code-worktree copy-path" data-path="{worktree}"' in line
+        # The path is only in the title and data-path, never the text of the line.
+        assert ">worktree</button>" in line and f">{worktree}<" not in line
+        assert line.count('class="code-open"') == 1
+        assert 'href="vscode://file/C:/code/acme-web-pay"' in line
+        assert "vscode://file/C:/code/acme/web" not in line and ">#12</a>" in line
+
+    other = run_in_app(board, service.create_task, "acme-shop", "Docs")
+    run_in_app(board, service.update_task, other.key, {"repos": ["web"]})
+    card = board.get(f"/p/acme-shop/t/{other.key}/card").text
+    line = card.split('<li class="code-repo">', 1)[1].split("</li>", 1)[0]
+    # Without a worktree the main checkout opens; without a branch there is no git icon.
+    assert 'href="vscode://file/C:/code/acme/web"' in line and "code-worktree" not in line
+    assert "git-icon" not in line and 'class="branch"' not in line
+
+
 async def test_mcp_tools_take_repos_and_prs(service: Service) -> None:
     mcp = build_mcp(service)
 

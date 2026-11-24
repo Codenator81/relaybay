@@ -18,6 +18,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A repository with a worktree takes one line in the Code row of the card, the task dialog and the task page: name, kind, branch, a `worktree` mark, pull requests and one `</>` link, which opens the worktree instead of the main checkout. The path is no longer printed: hovering the mark shows it and clicking copies it ("copied"). The branch shows a git icon before it.
 - Coordinator mode: with `coordinators` set, an agent (a session bound to an open card that is not a coordinator) gets no new cards or backlog items from `task_create` and `backlog_add` (the refusal points to `report_add(findings=..., questions=...)`); its move to `done` is not held to `require_tracker_log` and the answer says the mark is the coordinator's; `task_archive` refuses a done card that still needs the mark; `waiting_on` on MCP writes is saved as the owner, `coordinator`, `session`, `ci` or `customer:<name>` (synonyms map, the text after the who moves to an empty `next_step`, the answer says what was saved). The `/mcp` and `/mcp/agent` instructions say so. With `coordinators` empty nothing changes. [Coordinator and agents workflow](docs/how-to/coordinator-workflow.md) has the role endpoints, the mode, a card's life moment by moment and sample `CLAUDE.md` rules.
 
 ### Deprecated

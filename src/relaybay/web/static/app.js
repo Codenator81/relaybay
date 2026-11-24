@@ -459,8 +459,17 @@
     htmx.process(live);
   }
 
-  // "Copy link" next to "Open in desktop": the clipboard API needs a secure context, which
-  // http://127.0.0.1 is; elsewhere (LAN host) fall back to showing the link selected.
+  // The clipboard API needs a secure context, which http://127.0.0.1 is; elsewhere (LAN host)
+  // onFail runs, and the caller shows the text to copy by hand.
+  function writeClipboard(text, onOk, onFail) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(onOk, onFail);
+    } else {
+      onFail();
+    }
+  }
+
+  // "Copy link" next to "Open in desktop"; without the clipboard the link is shown selected.
   function copyLink(button) {
     var link = button.dataset.link;
     var field = button.parentNode.querySelector(".link-text");
@@ -471,14 +480,10 @@
       field.select();
       button.textContent = "Selected: copy it";
     }
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(link).then(function () {
-        button.textContent = "Copied";
-        window.setTimeout(function () { button.textContent = "Copy link"; }, 1500);
-      }, fallback);
-    } else {
-      fallback();
-    }
+    writeClipboard(link, function () {
+      button.textContent = "Copied";
+      window.setTimeout(function () { button.textContent = "Copy link"; }, 1500);
+    }, fallback);
   }
 
   // "Copy the brief" of the state line: the same clipboard rule as Copy link; the fallback opens
@@ -494,14 +499,22 @@
       field.select();
       button.textContent = "Selected: copy it";
     }
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(field.value).then(function () {
-        button.textContent = "Copied";
-        window.setTimeout(function () { button.textContent = "Copy the brief"; }, 1500);
-      }, fallback);
-    } else {
-      fallback();
-    }
+    writeClipboard(field.value, function () {
+      button.textContent = "Copied";
+      window.setTimeout(function () { button.textContent = "Copy the brief"; }, 1500);
+    }, fallback);
+  }
+
+  // The "worktree" mark of a Code row line (_code_row.html): copies the worktree's path; without
+  // the clipboard the path is shown in a prompt to copy by hand.
+  function copyPath(button) {
+    var path = button.dataset.path;
+    writeClipboard(path, function () {
+      button.textContent = "copied";
+      window.setTimeout(function () { button.textContent = "worktree"; }, 1500);
+    }, function () {
+      window.prompt("Worktree path", path);
+    });
   }
 
   // Open, In terminal, for an ended session: the answer (or the refusal, a 409 with its reason) is
@@ -853,6 +866,12 @@
     if (brief) {
       event.preventDefault();
       copyBrief(brief);
+      return;
+    }
+    var mark = event.target.closest(".copy-path");
+    if (mark) {
+      event.preventDefault();
+      copyPath(mark);
       return;
     }
     var plain = event.button === 0 &&

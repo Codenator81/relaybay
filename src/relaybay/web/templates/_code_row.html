@@ -1,17 +1,18 @@
 {#- The Code row of a task: the repositories it touches with the task's branch, its pull requests
     and an "Open in VS Code" link each (none linked: no repository line); then the pull requests
     tied to no repository, named by the repository in their link. A repository with a worktree
-    shows its folder with its own link. Expects: c (TaskCode), branch
+    shows a "worktree" mark (the path on hover, copied on click, app.js copyPath) and its one
+    editor link opens the worktree instead of the main checkout. Expects: c (TaskCode), branch
     (the task's, shown on a repository whose own branch the hooks have not seen). -#}
 {%- macro pr_links(prs, by_repo=False) -%}
 {%- for pr in prs %}{% set href = pr.url|http_url %}{% if href %} <a class="code-pr" href="{{ href }}" target="_blank" rel="noopener noreferrer" title="{{ pr.title or pr.url }}">{{ pr.repo_label if by_repo else (pr.label if pr.number is not none else "PR") }}</a>{% endif %}{% endfor %}
 {%- endmacro %}
-{%- macro open_link(r) -%}
-<a class="code-open" href="{{ r.path|vscode_url }}" title="Open {{ r.path }} in VS Code" aria-label="Open in VS Code">&lt;/&gt;</a>
+{%- macro open_link(path, label) -%}
+<a class="code-open" href="{{ path|vscode_url }}" title="Open {{ path }} in VS Code" aria-label="{{ label }}">&lt;/&gt;</a>
 {%- endmacro %}
 <ul class="code-row">
   {% for item in c.repos %}
-  <li class="code-repo"><span class="code-name">{{ item.repo.name }}</span>{% if item.repo.kind %} <span class="code-kind">{{ item.repo.kind }}</span>{% endif %}{% set b = item.branch or branch %}{% if b %} <code class="branch" title="Branch in {{ item.repo.name }}">{{ b }}</code>{% endif %}{{ pr_links(item.prs) }} {{ open_link(item.repo) }}{% if item.worktree %} <span class="code-worktree" title="Worktree of {{ item.repo.name }}">{{ item.worktree }}</span> <a class="code-open" href="{{ item.worktree|vscode_url }}" title="Open {{ item.worktree }} in VS Code" aria-label="Open the worktree in VS Code">&lt;/&gt;</a>{% endif %}</li>
+  <li class="code-repo"><span class="code-name">{{ item.repo.name }}</span>{% if item.repo.kind %} <span class="code-kind">{{ item.repo.kind }}</span>{% endif %}{% set b = item.branch or branch %}{% if b %} <svg class="git-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="5" r="1.5"/><path d="M4.5 5v6M11.5 6.5c0 3-7 2-7 4.5"/></svg><code class="branch" title="Branch in {{ item.repo.name }}">{{ b }}</code>{% endif %}{% if item.worktree %} <button type="button" class="code-worktree copy-path" data-path="{{ item.worktree }}" title="{{ item.worktree }} (click to copy)" aria-label="Copy the worktree path of {{ item.repo.name }}">worktree</button>{% endif %}{{ pr_links(item.prs) }} {% if item.worktree %}{{ open_link(item.worktree, "Open the worktree of " ~ item.repo.name ~ " in VS Code") }}{% else %}{{ open_link(item.repo.path, "Open in VS Code") }}{% endif %}</li>
   {% endfor %}
   {% if c.loose_prs %}<li class="code-loose">PRs:{{ pr_links(c.loose_prs, True) }}</li>{% endif %}
 </ul>
