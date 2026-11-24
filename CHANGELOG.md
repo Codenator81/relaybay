@@ -27,6 +27,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `task_update` moves the stage and reaches every card field in one write: new parameters `stage`, `deploy_notes`, `deploy_done`, `cancelled` and `fields` (any other field of `relaybay://schema/task` as one object; a field given twice must agree). Its answer says `Moved` when the stage changed.
 
+### Changed
+
+- Coordinator mode: with `coordinators` set, an agent (a session bound to an open card that is not a coordinator) gets no new cards or backlog items from `task_create` and `backlog_add` (the refusal points to `report_add(findings=..., questions=...)`); its move to `done` is not held to `require_tracker_log` and the answer says the mark is the coordinator's; `task_archive` refuses a done card that still needs the mark; `waiting_on` on MCP writes is saved as the owner, `coordinator`, `session`, `ci` or `customer:<name>` (synonyms map, the text after the who moves to an empty `next_step`, the answer says what was saved). The `/mcp` and `/mcp/agent` instructions say so. With `coordinators` empty nothing changes. [Coordinator and agents workflow](docs/how-to/coordinator-workflow.md) has the role endpoints, the mode, a card's life moment by moment and sample `CLAUDE.md` rules.
+
 ### Deprecated
 
 - `task_set_stage` and `task_patch`: use `task_update(stage=...)` and `task_update(fields={...})`. Both keep working and say so in their description and results; not removed before 2027-01-15.

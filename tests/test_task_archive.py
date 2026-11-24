@@ -454,9 +454,10 @@ async def test_a_live_card_with_an_open_question_or_approval_is_not_archived(
     await svc.withdraw_question(question.id, session="worker")
     assert (await svc.set_archived(asked.key, True, actor="owner")).archived_from == "live"
 
-    approved = await svc.create_task("acme-shop", "Approved", stage="live", session="worker")
+    # Another session: in coordinator mode a session bound to an open card creates no card.
+    approved = await svc.create_task("acme-shop", "Approved", stage="live", session="pusher")
     approval, _, _ = await svc.request_approval(
-        approved.key, "push", "feat/live", "Two commits", session="worker"
+        approved.key, "push", "feat/live", "Two commits", session="pusher"
     )
     with pytest.raises(ValidationError, match="answer, withdraw or use it first"):
         await svc.set_archived(approved.key, True, actor="owner")

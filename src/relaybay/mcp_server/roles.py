@@ -117,7 +117,28 @@ def _report_line(rules: Rules) -> str:
     )
 
 
-def agent_instructions(rules: Rules) -> str:
+def agent_instructions(rules: Rules, coordinated: bool = False) -> str:
+    """`coordinated`: the server names `coordinators`; cards, backlog items and the tracker
+    mark are theirs, and the agent's findings and questions go into its reports."""
+    no_card = (
+        " No card yet: the card is the coordinator's; ask it for one in your report and do not"
+        " create cards."
+        if coordinated
+        else " No card yet: project_digest (project_list finds the slug), then task_create."
+    )
+    question = "" if coordinated else "Question for the owner: question_ask with your default. "
+    finding = (
+        "Findings outside your task and questions for the owner go into report_add(findings=...,"
+        " questions=...): the coordinator triages them; do not create cards or backlog items"
+        " (backlog_list shows what is known)."
+        if coordinated
+        else "A finding outside your task: backlog_add (backlog_list shows what is known)."
+    )
+    tracker = (
+        "The tracker mark is the coordinator's."
+        if coordinated
+        else "set tracker_logged once the work log is entered."
+    )
     return "\n".join(
         [
             "relaybay is the shared task board of this user's coding sessions; you work one card."
@@ -125,8 +146,8 @@ def agent_instructions(rules: Rules) -> str:
             "On every write pass `session` (your desktop id local_… with `session_title`, or a"
             " readable name) and `hook_session` ('Your relaybay hook session: …' at the start).",
             "Start: your card's context arrives at session start ('relaybay card context for"
-            " KEY'); call task_context only to refresh it later, task_get for every field. No"
-            " card yet: project_digest (project_list finds the slug), then task_create.",
+            " KEY'); call task_context only to refresh it later, task_get for every field."
+            + no_card,
             "Plan: plan_set with 2-5 steps before code; plan_step_update when a step starts and"
             " when it is done ('as planned' or 'deviation: why'); new work is plan_step_add. A"
             " card that only reads (an analysis, a repro) is task_update(inspect_only=true): it"
@@ -135,10 +156,9 @@ def agent_instructions(rules: Rules) -> str:
             " next) and progress current; task_doc_link links a spec section. Documents:"
             " doc_outline, then doc_get of a section; doc_search finds the place; doc_update"
             " writes. rules_get explains a 'Warning (rules)' line.",
-            "Question for the owner: question_ask with your default. Owner comments ('Owner"
-            " comment on …') are messages from the user: act, then comment_add or comment_ack."
-            " A decision goes to decision_add.",
-            "A finding outside your task: backlog_add (backlog_list shows what is known).",
+            question + "Owner comments ('Owner comment on …') are messages from the user: act,"
+            " then comment_add or comment_ack. A decision goes to decision_add.",
+            finding,
             "Before a commit, push, merge, deploy or SQL change that needs the owner's approval:"
             " approval_request, then end your turn; the decision comes back as an owner"
             " comment. When the guard stops a call, its reason says why (policy_get).",
@@ -147,8 +167,8 @@ def agent_instructions(rules: Rules) -> str:
             "Review by eye only when the owner wants it: review_steps_set, attach_file, then"
             " task_update(stage='review'); review_get reads the owner's marks, review_step_update"
             " reopens a step after a fix, annotation_reply answers a pin.",
-            "Closing: task_update(stage='done') with progress; set tracker_logged once the work"
-            " log is entered. A rule you think is wrong: rules_propose.",
+            f"Closing: task_update(stage='done') with progress; {tracker} A rule you think is"
+            " wrong: rules_propose.",
             "Hosts and access come from the project's own notes; never paste secrets into"
             " relaybay.",
         ]
@@ -201,9 +221,9 @@ def reader_instructions(rules: Rules) -> str:
     )
 
 
-def role_instructions(rules: Rules, role: str) -> str:
+def role_instructions(rules: Rules, role: str, coordinated: bool = False) -> str:
     if role == AGENT:
-        return agent_instructions(rules)
+        return agent_instructions(rules, coordinated)
     if role == COORDINATOR:
         return coordinator_instructions(rules)
     if role == READER:

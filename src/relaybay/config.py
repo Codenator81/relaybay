@@ -193,8 +193,10 @@ class Settings:
             "Sessions allowed to change the rules directly with `rules_update`: a desktop session"
             " id (`local_…`, the call must also pass that session's own `hook_session`), an alias"
             " or a name. A guard against mistakes, not access control: all MCP clients share one"
-            " token. Empty: every change is a proposal. The environment variable is"
-            " comma-separated.",
+            " token. Empty: every change is a proposal. Set, it also switches on coordinator"
+            " mode: agents create no cards or backlog items and report findings and questions"
+            " instead, the tracker mark is the coordinator's and `waiting_on` names a fixed"
+            " role. The environment variable is comma-separated.",
             key="coordinators",
             env="RELAYBAY_COORDINATORS",
             default="`[]`",

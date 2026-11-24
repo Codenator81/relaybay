@@ -739,6 +739,39 @@ not a feature: it uses the same tools as any session. A session named in `coordi
 config may also use the tools kept for coordinators (`rules_update`, `plan_accept`, `task_archive`,
 `task_unarchive`, backlog triage; [§6](#spec-rules-versions)).
 
+<a id="spec-coordinator-mode"></a>
+
+**Coordinator mode.** A non-empty `coordinators` switches it on (code: service.py:_agent_cards).
+An **agent** is then the caller of a write (its `session`, else its `hook_session`, looked up
+without creating a session row) that is bound to at least one card not in `done` and is not a
+coordinator; the board, a coordinator, an unknown caller and a session bound to no open card are not
+agents. It is a guard against mistakes, not access control. Because the coordinator triages what
+agents find, and the tracker work log follows the coordinator's own records:
+- `task_create` and `backlog_add` from an agent are refused, nothing is created: `In coordinator
+  mode new cards and backlog items come from the coordinator: put this in report_add(task=<key>,
+  findings=[...]) (a question for the owner: questions=[...]). Nothing created.`, `<key>` the
+  caller's most recently bound open card (code: service.py:_refuse_agent_creation).
+- The `require_tracker_log` requirement does not apply to an agent's move to `done`: no warning, no
+  strict refusal; the answer gets `Tracker mark: the coordinator's (it sets tracker_logged after the
+  work log).` A coordinator's and the board's moves are checked as before (code:
+  service.py:_stage_warnings). `task_archive` refuses a done card that still needs the mark (the
+  requirement applies, `tracker_logged` is false and the card or its project keeps a tracker) with
+  `Set tracker_logged first (the work log in the tracker), then archive.` (code:
+  service.py:set_archived_mcp).
+- On MCP writes (`task_create`, `task_update`, `task_patch`, `task_set_stage`, `report_add`)
+  `waiting_on` is saved as one of: the first of `owner_names` (what the Inbox and the card state
+  match), `coordinator`, `session`, `ci`, `customer:<name>`. Case-insensitive synonyms, also
+  followed by `: text`, ` (text)` or ` — text`: every owner name, `owner` and the Russian word for
+  owner; `coordinator`, `master`, every `coordinators` entry and the names of the sessions they
+  name; `session`, `agent`, `developer`, `reviewer`, `dev`; `ci`. Anything else is saved as written.
+  The text after the who goes to `next_step` when the write sets none and the card has none
+  (otherwise it is not kept); the answer gets `waiting_on: "<given>" saved as "<who>"`, plus ` — the
+  rest went to next_step` or ` — the rest was not kept: the card already has a next_step`
+  (code: domain/waiting_on.py:normalise, service.py:_coordinated_waiting_on). The board's writes and
+  the cards a question or an approval request sets to the owner are not touched.
+- The `/mcp` and `/mcp/agent` instructions change in three places ([§3](#spec-mcp-instructions)).
+With `coordinators` empty, none of this applies and every text is as without the mode.
+
 <a id="spec-events"></a>
 
 **Event.** Every write appends a row to the event log in the same transaction as the state change.
@@ -1257,7 +1290,8 @@ approved, unused approval is not archived (a move to done would withdraw or expi
 refusal says `<key> has an open question, an open approval request or an approved, unused
 approval: answer, withdraw or use it first, the archive closes nothing for good. Nothing
 changed.`; the confirmation says so too. `task_archive` / `task_unarchive` do the same for
-coordinators. Only `done` and `live` cards are archived; any other stage is refused with `Only a
+coordinators; `task_archive` also waits for the tracker mark ([coordinator
+mode](#spec-coordinator-mode)). Only `done` and `live` cards are archived; any other stage is refused with `Only a
 done or live task goes to the archive; <key> is in <stage>. Nothing changed.`
 
 <a id="spec-board-archive-bulk"></a>
@@ -1509,7 +1543,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`).
+**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`). In [coordinator mode](#spec-coordinator-mode) three points change on `/mcp`: point 2 says a missing card is the coordinator's (ask it in your report, do not create cards), point 5 says `Findings outside your task and questions for the owner go into report_add(findings=..., questions=...): the coordinator triages them; do not create cards or backlog items.` and point 7 adds `The tracker mark is the coordinator's.`; the `/mcp/agent` instructions change the same way (its question line goes into the finding line). The text with `coordinators` empty is frozen by a test (code: mcp_server/server.py:instructions, mcp_server/roles.py:agent_instructions).
 
 <a id="spec-mcp-tools"></a>
 

@@ -244,6 +244,7 @@ from relaybay.domain.task_fields import (
     TITLE_MAX,
 )
 from relaybay.domain.tasks import DEFAULT_ARCHIVE_PURGE_DAYS, DEFAULT_DONE_WINDOW_DAYS, is_archived
+from relaybay.domain.waiting_on import normalise as normalise_waiting_on
 from relaybay.events import EventBus
 from relaybay.install import install_kind
 from relaybay.policy import (
@@ -1429,6 +1430,17 @@ ARCHIVE_NOT_COORDINATOR = (
     " needs that session's own hook_session. Nothing changed. The owner archives done cards on"
     " the board."
 )
+# Coordinator mode (`coordinators` set): the texts an agent (a bound session that is not a
+# coordinator) gets instead of today's behaviour.
+AGENT_CREATES_NOTHING = (
+    "In coordinator mode new cards and backlog items come from the coordinator: put this in"
+    " report_add(task={key}, findings=[...]) (a question for the owner: questions=[...])."
+    " Nothing created."
+)
+TRACKER_MARK_COORDINATOR_NOTE = (
+    "Tracker mark: the coordinator's (it sets tracker_logged after the work log)."
+)
+ARCHIVE_NEEDS_TRACKER_MARK = "Set tracker_logged first (the work log in the tracker), then archive."
 PURGE_INTERVAL_SECONDS = 24 * 3600.0
 PURGE_ACTOR = "relaybay"
 PROJECT_DELETE_NOT_COORDINATOR = (
@@ -4369,7 +4381,9 @@ class Service:
         fields["stage"] = fields["stage"].value
         default_actor = actor
         async with self._tx() as tx:
+            await self._refuse_agent_creation(tx.conn, session, hook_session)
             proj = await self.get_project(project, tx.conn)
+            await self._coordinated_waiting_on(tx.conn, fields, None, default_actor)
             sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
@@ -4433,13 +4447,19 @@ class Service:
         )
         return saved.task
 
-    async def _stage_warnings(self, tx: _Tx, task: Task, diff: dict[str, Any]) -> list[str]:
+    async def _stage_warnings(
+        self, tx: _Tx, task: Task, diff: dict[str, Any], *, agent: bool = False
+    ) -> list[str]:
         """Rule warnings for the stage move in `diff`; in strict mode an unmet rule refuses the
-        write instead."""
+        write instead. `agent` (coordinator mode, `_agent_cards`): the tracker mark is the
+        coordinator's, so an agent's move is not held to it and the answer says whose it is."""
         if "stage" not in diff:
             return []
         stage = diff["stage"]
         _, missing = await self._stage_check(tx.conn, task, diff)
+        if agent and any(r["kind"] == REQUIRE_TRACKER_LOG for r in missing):
+            missing = [r for r in missing if r["kind"] != REQUIRE_TRACKER_LOG]
+            _note(TRACKER_MARK_COORDINATOR_NOTE)
         if missing and self.rules_mode == "strict":
             raise ValidationError(refusal_text(stage, missing))
         plan_status = task.plan_status if task.plan_total else None
@@ -4468,14 +4488,34 @@ class Service:
             plan_status=plan_status,
         )
         if any(r["kind"] == REQUIRE_TRACKER_LOG for r in missing) and not (
-            values.get("tracker_ref")
-            or values.get("tracker_url")
-            or task.project_id in await self.tracker_projects(conn)
+            await self._keeps_tracker(conn, task, values)
         ):
             # A project that keeps no tracker has no work log to enter.
             missing = [r for r in missing if r["kind"] != REQUIRE_TRACKER_LOG]
             requirements = [r for r in requirements if r["kind"] != REQUIRE_TRACKER_LOG]
         return requirements, missing
+
+    async def _needs_tracker_mark(self, tx: _Tx, task: Task) -> bool:
+        """A done card still waits for its tracker mark: the condition of `_stage_warnings`."""
+        if task.tracker_logged:
+            return False
+        rules = await self._rules(tx.conn, await self.get_project(task.project_slug, tx.conn))
+        required = rules.requirements(Stage.DONE.value)
+        if not any(r["kind"] == REQUIRE_TRACKER_LOG for r in required):
+            return False
+        own = {"tracker_ref": task.tracker_ref, "tracker_url": task.tracker_url}
+        return await self._keeps_tracker(tx.conn, task, own)
+
+    async def _keeps_tracker(
+        self, conn: aiosqlite.Connection, task: Task, values: dict[str, Any]
+    ) -> bool:
+        """Has the card a work log to enter: an issue of its own (`values`, the card with the
+        write applied) or a project that keeps a tracker."""
+        return bool(
+            values.get("tracker_ref")
+            or values.get("tracker_url")
+            or task.project_id in await self.tracker_projects(conn)
+        )
 
     async def update_task_checked(
         self,
@@ -4604,6 +4644,7 @@ class Service:
             base = clean.get("description", task.description)
             text = f"{base}\n\n{added}" if base else added
             clean["description"] = _clean_text(text, "description", MARKDOWN_MAX)
+        await self._coordinated_waiting_on(tx.conn, clean, task.next_step, default_actor)
         area: ProjectArea | None = None
         if "area" in clean:
             found = await repo.list_areas(tx.conn, task.project_id)
@@ -4613,7 +4654,10 @@ class Service:
             diff["deploy_done"] = False  # changed notes are a deploy not carried out yet
         if not diff and not any(links.values()):
             return Saved(task, [])
-        warnings = await self._stage_warnings(tx, task, diff) if rules else []
+        agent = diff.get("stage") == Stage.DONE and default_actor not in BOARD_ACTORS
+        if agent:
+            agent = bool(await self._agent_cards(tx.conn, session, hook_session))
+        warnings = await self._stage_warnings(tx, task, diff, agent=agent) if rules else []
         progress_in_dev = "progress" in diff and task.stage == Stage.DEV
         if progress_in_dev and await self._reported_after_plan_closed(tx, task):
             _note_closed_plan(task)
@@ -5309,6 +5353,7 @@ class Service:
             problem = report_format_problem(body, rules.body["report_format"])
             if problem and self.rules_mode == "strict":
                 raise ValidationError(f"Rules: {problem} Nothing changed.")
+            await self._coordinated_waiting_on(tx.conn, clean, task.next_step, default_actor)
             if found or asked:
                 secrets = await self._secret_rules(tx.conn, project)
                 for n, item in enumerate(found, start=1):
@@ -8249,6 +8294,8 @@ class Service:
             caller = await self._session(tx, session, session_title, hook_session)
             assert caller is not None
             task = await self.get_task(ref, tx.conn)
+            if archived and task.stage == Stage.DONE and await self._needs_tracker_mark(tx, task):
+                raise ValidationError(ARCHIVE_NEEDS_TRACKER_MARK)
             await self._set_archived_tx(tx, task, archived, caller.name, caller.id)
             return await self.get_task(task.id, tx.conn)
 
@@ -8464,6 +8511,8 @@ class Service:
         if (from_report is None) != (finding is None):
             raise ValidationError("from_report and finding go together: the report id and n.")
         async with self._tx() as tx:
+            if not by_owner:
+                await self._refuse_agent_creation(tx.conn, session, hook_session)
             proj = await self.get_project(project, tx.conn)
             source = None
             if from_report is not None:
@@ -11401,6 +11450,72 @@ class Service:
             if aliased is not None and session is not None and aliased.id == session.id:
                 return True
         return False
+
+    async def _agent_cards(
+        self, conn: aiosqlite.Connection, value: str | None, hook_session: str | None
+    ) -> list[Task]:
+        """Coordinator mode: the open cards of a calling agent (a session bound to at least one
+        open card that is not a coordinator), most recently bound first; [] for anyone else, the
+        board and an unknown caller included. Like `_is_coordinator` a guard against mistakes,
+        not access control; no session row is created."""
+        if not self.coordinators:
+            return []
+        needle = (value or "").strip()
+        cc_id = (hook_session or "").strip()
+        if needle:
+            session = await self._known_session(needle, conn)
+        else:
+            session = await _hook_id_session(conn, cc_id) if cc_id else None
+        if session is None or await self._is_coordinator(conn, value, hook_session):
+            return []
+        bound = [await self.get_task(i, conn) for i in await repo.bound_task_ids(conn, session.id)]
+        return [t for t in bound if t.stage in OPEN_STAGES]
+
+    async def _refuse_agent_creation(
+        self, conn: aiosqlite.Connection, session: str | None, hook_session: str | None
+    ) -> None:
+        cards = await self._agent_cards(conn, session, hook_session)
+        if cards:
+            raise ValidationError(AGENT_CREATES_NOTHING.format(key=cards[0].key))
+
+    async def _coordinator_names(self, conn: aiosqlite.Connection) -> list[str]:
+        """The `coordinators` entries and the names of the sessions they name."""
+        names = list(self.coordinators)
+        for entry in self.coordinators:
+            desktop = parse_session_id(entry)
+            if desktop is not None:
+                found = await repo.get_session_by_external_id(conn, desktop)
+            else:
+                found = await repo.get_session_by_alias(conn, entry)
+            if found is not None:
+                names.append(found.name)
+        return names
+
+    async def _coordinated_waiting_on(
+        self,
+        conn: aiosqlite.Connection,
+        clean: dict[str, Any],
+        card_next_step: str | None,
+        actor: str,
+    ) -> None:
+        """Coordinator mode, MCP writes only: `clean["waiting_on"]` becomes one of the fixed
+        values (domain/waiting_on.py); the text after the who goes to next_step when neither
+        the write nor the card has one. The answer gets a note when the value changed."""
+        given = clean.get("waiting_on")
+        if not self.coordinators or actor != "mcp" or not isinstance(given, str):
+            return
+        free = not clean.get("next_step") and ("next_step" in clean or not card_next_step)
+        who, moved, note = normalise_waiting_on(
+            given,
+            owner_names=self.owner_names,
+            coordinator_names=await self._coordinator_names(conn),
+            keep_rest=free,
+        )
+        clean["waiting_on"] = who
+        if moved:
+            clean["next_step"] = _clean_field("next_step", moved)
+        if note:
+            _note(note)
 
     async def _rules_scope(
         self, conn: aiosqlite.Connection, scope: str

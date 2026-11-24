@@ -48,7 +48,10 @@ async def svc(tmp_path: Path) -> AsyncIterator[Service]:
 
 
 async def test_add_list_and_origin(svc: Service) -> None:
-    origin = await svc.create_task("acme-shop", "Checkout", stage="review", session="checkout")
+    # Unbound: in coordinator mode a session bound to an open card adds no backlog item.
+    origin = await svc.create_task(
+        "acme-shop", "Checkout", stage="review", session="checkout", bind=False
+    )
     item = await svc.add_backlog_item(
         "acme-shop", "Badge count", body="It keeps the old count.", area="Cart",
         task=origin.key, session="checkout",

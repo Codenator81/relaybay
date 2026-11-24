@@ -56,7 +56,8 @@ async def full_task(svc: Service, title: str = "Receipts") -> str:
     )
     await svc.set_plan(task.key, ["Write it", "Test it"], session="worker")
     await svc.add_decision("acme-shop", "Receipts as PDF", task=task.key, session="worker")
-    await svc.add_backlog_item("acme-shop", "Receipts in CSV", task=task.key, session="worker")
+    # The coordinator's: in coordinator mode the bound worker adds no backlog item.
+    await svc.add_backlog_item("acme-shop", "Receipts in CSV", task=task.key, session="lead")
     await svc.set_stage(task.key, "done", session="worker")
     return task.key
 

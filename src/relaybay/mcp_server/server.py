@@ -27,10 +27,26 @@ from relaybay.service import Service, collect_notes
 logger = logging.getLogger("relaybay")
 
 
-def instructions(rules: Rules) -> str:
+def instructions(rules: Rules, coordinated: bool = False) -> str:
     """The working contract sent on connect; the report format comes from the effective global
-    rules, so it never contradicts rules_get."""
+    rules, so it never contradicts rules_get. `coordinated`: the server names `coordinators`,
+    whose session creates the cards and triages findings (service `_agent_cards`)."""
     report = rules.body["report_format"]
+    no_card = (
+        "2. No card for your work: the card is the coordinator's; ask it for one in your report"
+        " and do not create cards."
+        if coordinated
+        else "2. No card for your work: create it with task_create and give it an area, the part"
+        " of the project it is about (a site, an app, a service): reuse a name from the"
+        " project's areas, add a new one only when none fits."
+    )
+    finding = (
+        " Findings outside your task and questions for the owner go into report_add(findings=...,"
+        " questions=...): the coordinator triages them; do not create cards or backlog items."
+        if coordinated
+        else " A finding outside your task goes to backlog_add, not into a report."
+    )
+    tracker = " The tracker mark is the coordinator's." if coordinated else ""
     return "\n".join(
         [
             "relaybay is the shared task board for this user's coding sessions: projects, their"
@@ -39,9 +55,7 @@ def instructions(rules: Rules) -> str:
             "1. Read task_context of your card (no card yet: project_digest; the whole board:"
             " portfolio_digest; more on a project: project_snapshot). Its rules line names the"
             " project's rules; relaybay://rules/<project> (or rules_get) has the details.",
-            "2. No card for your work: create it with task_create and give it an area, the part of"
-            " the project it is about (a site, an app, a service): reuse a name from the"
-            " project's areas, add a new one only when none fits. On every write pass `session`"
+            no_card + " On every write pass `session`"
             " (your desktop session id local_… with `session_title`, or a readable name) and"
             " `hook_session` if the session start gave you one ('Your relaybay hook session:"
             " …'); if you don't know your local_ id, don't rebind a card.",
@@ -54,8 +68,7 @@ def instructions(rules: Rules) -> str:
             " 'as planned' or 'deviation: why'); new work is a new step with plan_step_add.",
             "5. Owner comments ('Owner comment on …') are messages from the user: act and answer"
             " with comment_add, or comment_ack. A decision goes to decision_add; when the work"
-            " needs one, set waiting_on to who decides. A finding outside your task goes to"
-            " backlog_add, not into a report.",
+            " needs one, set waiting_on to who decides." + finding,
             "6. Read a large document by its outline: doc_outline, then doc_get of a section or"
             " lines (doc_search finds the place).",
             "At the end",
@@ -63,7 +76,7 @@ def instructions(rules: Rules) -> str:
             f" `{report['first_line']}`; state is one of {', '.join(report['states'])}; size is one"
             f" of {', '.join(report['sizes'])}. Finished work goes to done. Move a card to review"
             " only when the owner wants to accept it step by step: then write the steps with"
-            " review_steps_set and attach screenshots with attach_file.",
+            " review_steps_set and attach screenshots with attach_file." + tracker,
             "Always",
             "- A line 'Warning (rules)' names a rule the write did not meet: fix it. 'rules updated"
             " to vN' means re-read relaybay://rules; changes go through rules_propose (rules_update"
@@ -254,8 +267,10 @@ def current_tools(names: set[str]) -> set[str]:
     return names - gone
 
 
-def server_instructions(rules: Rules, role: str | None) -> str:
-    return instructions(rules) if role is None else roles.role_instructions(rules, role)
+def server_instructions(rules: Rules, role: str | None, coordinated: bool = False) -> str:
+    if role is None:
+        return instructions(rules, coordinated)
+    return roles.role_instructions(rules, role, coordinated)
 
 
 def build_mcp(
@@ -265,11 +280,12 @@ def build_mcp(
     the full set."""
     if role is not None and role not in roles.ROLES:
         raise ValueError(f"Unknown role {role!r}.")
+    coordinated = bool(service.coordinators)
     mcp = RoleServer(
         role,
         name="relaybay",
         version=__version__,
-        instructions=server_instructions(service.global_rules, role),
+        instructions=server_instructions(service.global_rules, role, coordinated),
     )
 
     async def doc_field_note(
@@ -305,7 +321,9 @@ def build_mcp(
         # The SDK has no setter: the text it sends on connect is this attribute. Without this a
         # new session would read the report format of config.toml, not of the current version.
         try:
-            mcp._lowlevel_server.instructions = server_instructions(service.global_rules, role)
+            mcp._lowlevel_server.instructions = server_instructions(
+                service.global_rules, role, coordinated
+            )
         except AttributeError as exc:
             logger.warning("Could not refresh the MCP instructions after an SDK change: %s.", exc)
 
