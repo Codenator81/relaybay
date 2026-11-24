@@ -1721,6 +1721,34 @@ def build_mcp(
         found, items = await run(service.list_approval_requests(task or None, status or None))
         return fmt.approvals(found, items, status)
 
+    @write
+    async def approval_withdraw(
+        approval: Annotated[int, Field(description="The approval's number, e.g. 7 for '#7'.")],
+        reason: Annotated[
+            str,
+            Field(
+                description="Why it is no longer needed, one line, e.g. 'the owner merged the"
+                " PR by hand'. Shown on the card and in the owner's Inbox history."
+            ),
+        ],
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Withdraw an approval request you asked (a coordinator may withdraw any) that is no
+        longer needed: an open one, or an approved one not used yet. It expires with your
+        reason, leaves the owner's Inbox, and no longer holds the card's archive."""
+        gone = await run(
+            service.withdraw_approval(
+                approval,
+                reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.approval_withdrawn(gone)
+
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_search(
         query: Annotated[str, Field(description="Words to look for (word forms match).")],

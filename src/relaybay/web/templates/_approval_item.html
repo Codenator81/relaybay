@@ -13,7 +13,7 @@
   <p class="approval-state">
     {%- if a.is_open -%}<span class="chip approval-waits">waits for you</span>
     {%- elif a.status == "refused" -%}<span class="chip approval-refused">refused <time datetime="{{ a.decided_at }}" data-age>{{ a.decided_at|age }}</time></span>
-    {%- elif a.status == "expired" -%}<span class="chip">expired <time datetime="{{ a.expired_at }}" data-age>{{ a.expired_at|age }}</time></span> <span class="muted">{{ a.expired_reason }}</span>
+    {%- elif a.status == "expired" -%}<span class="chip">expired <time datetime="{{ a.expired_at }}" data-age>{{ a.expired_at|age }}</time></span>{% if place != "card" %} <span class="muted">{{ a.expired_reason }}</span>{% endif %}
     {%- elif a.status == "used" -%}<span class="chip approval-used">approved, used <time datetime="{{ a.used_at }}" data-age>{{ a.used_at|age }}</time></span> <span class="muted">by <code>{{ a.used_by }}</code></span>
     {%- elif a.reserved -%}<span class="chip approval-approved">approved, held for a running call</span> <span class="muted"><code>{{ a.reserved_call }}</code></span>
     {%- else -%}<span class="chip approval-approved">approved <time datetime="{{ a.decided_at }}" data-age>{{ a.decided_at|age }}</time>, not used yet</span>
@@ -26,6 +26,7 @@
   {% elif a.action == "deploy" %}<p class="approval-rollback form-error">No rollback command given: a deploy is approved only with one. Refuse it, or wait for the agent to ask again with approval_request.</p>{% endif %}
   {% if a.action == "deploy" and a.task_deploy_notes %}<div class="approval-deploy"><p class="muted">Deploy notes of the card ({{ "done" if a.task_deploy_done else "not done yet" }}):</p><div class="markdown">{{ a.task_deploy_notes|markdown }}</div></div>{% endif %}
   {% if a.decision_text %}<p class="approval-line"><span class="muted">Your line:</span> {{ a.decision_text }}</p>{% endif %}
+  {% if not a.is_open and place == "card" %}<p class="approval-why muted">No button: {{ approval_no_button(a) }}</p>{% endif %}
   {% if a.is_open %}
   <form class="approval-decide" method="post" action="/approvals/{{ a.id }}/decide"
         hx-post="/approvals/{{ a.id }}/decide" hx-target="{{ '#inbox' if place == 'inbox' else '#approvals-' ~ a.task_key }}" hx-swap="outerHTML" hx-disabled-elt="find button">

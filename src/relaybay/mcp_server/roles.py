@@ -50,7 +50,13 @@ AGENT_MOMENTS: dict[str, tuple[str, ...]] = {
         "attachment_get",
         "annotation_reply",
     ),
-    "approval": ("approval_request", "approval_list", "policy_get", "policy_propose"),
+    "approval": (
+        "approval_request",
+        "approval_list",
+        "approval_withdraw",
+        "policy_get",
+        "policy_propose",
+    ),
     "closing": ("task_update", "rules_propose"),
 }
 
@@ -165,7 +171,9 @@ def agent_instructions(rules: Rules, coordinated: bool = False) -> str:
             finding,
             "Before a commit, push, merge, deploy or SQL change that needs the owner's approval:"
             " approval_request, then end your turn; the decision comes back as an owner"
-            " comment. When the guard stops a call, its reason says why (policy_get).",
+            " comment; a request no longer needed (the owner did it by hand) is"
+            " approval_withdraw with a reason. When the guard stops a call, its reason says why"
+            " (policy_get).",
             f"Report at the end of every stage with report_add; {_report_line(rules)}. Pass"
             " progress, next_step and waiting_on with it, then task_update(stage=...).",
             "Review by eye only when the owner wants it: review_steps_set, attach_file, then"
@@ -195,7 +203,8 @@ def coordinator_instructions(rules: Rules) -> str:
             " decision_add, decision_list.",
             "Backlog: backlog_list, backlog_update to triage, backlog_add for your own findings."
             " The owner's questions and approvals are decided on the board: question_list,"
-            " question_withdraw, approval_list read them.",
+            " question_withdraw, approval_list read them; approval_withdraw (with a reason) takes"
+            " back a request no longer needed.",
             f"Reports: report_add on your own cards; {_report_line(rules)}.",
             "Closing: task_update(tracker_logged=true) after the work log; task_archive (or"
             " task_unarchive) once a card is done. project_pulse_set keeps a project's pulse.",

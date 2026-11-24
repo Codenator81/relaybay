@@ -11,7 +11,12 @@
   {% elif not approvals.closed %}
   <p class="muted">No open request. A push, a merge or a change on a stand waits here for your Approve; agents ask with approval_request, and the guard opens one when it denies a call.</p>
   {% endif %}
-  {% if approvals.closed %}
+  {#- With nothing open the decided ones are the content, shown without a second fold. #}
+  {% if approvals.closed and not approvals.open %}
+  <ul class="approval-list">
+    {% for a in approvals.closed %}{{ approval_item(a, "card") }}{% endfor %}
+  </ul>
+  {% elif approvals.closed %}
   <details class="approval-closed">
     <summary>Decided <span class="muted">({{ approvals.closed|length }})</span></summary>
     <ul class="approval-list">

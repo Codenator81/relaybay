@@ -1434,7 +1434,9 @@ ARCHIVE_STAGES = (Stage.DONE, Stage.LIVE)
 ARCHIVE_BATCH_MAX = 500
 LIVE_ARCHIVE_OPEN_ITEMS = (
     "{key} has an open question, an open approval request or an approved, unused approval:"
-    " answer, withdraw or use it first, the archive closes nothing for good. Nothing changed."
+    " answer, withdraw or use it first, the archive closes nothing for good (a coordinator"
+    " takes back a request no longer needed with approval_withdraw and a reason, a question"
+    " with question_withdraw). Nothing changed."
 )
 # What a file document's row says about its file, taken again after waiting for a write.
 _FILE_STATE = (
@@ -12870,6 +12872,58 @@ class Service:
         for a in await repo.expire_approvals(tx.conn, task.id, reason, tx.now):
             a = await self.get_approval(a.id, tx.conn)
             await self._approval_event(tx, "approval.expired", actor, task, a, reason=reason)
+
+    async def withdraw_approval(
+        self,
+        approval_id: int,
+        reason: str,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+    ) -> Approval:
+        """`approval_withdraw`: the session that asked or a coordinator takes back an open
+        request, or an approved one not used yet, with a reason. It expires (no new status):
+        the board says who withdrew it and why, and nothing of it is left to decide."""
+        why = " ".join((reason or "").split())
+        if not why or why == "-":
+            raise ValidationError(
+                "Say why the request goes: `reason`, e.g. 'merged by the owner in the hosting'."
+                " Nothing changed."
+            )
+        if len(why) > 500:
+            raise ValidationError("The reason is longer than 500 characters. Nothing changed.")
+        async with self._tx() as tx:
+            # Asked before the call's own hook_session is linked, or it would prove itself.
+            coordinator = await self._is_coordinator(tx.conn, session, hook_session)
+            a = await self.get_approval(approval_id, tx.conn)
+            caller = await self._session(tx, session, session_title, hook_session)
+            if caller is None or (caller.id != a.session_id and not coordinator):
+                raise ValidationError(
+                    f"Only the session that asked approval {a.id} ({a.requested_by}) or a"
+                    " coordinator withdraws it. Nothing changed."
+                )
+            if a.status not in ("open", "approved"):
+                raise ValidationError(
+                    f"Approval {a.id} is {a.status}: only an open request or an approved,"
+                    " unused one is withdrawn. Nothing changed."
+                )
+            if a.reserved:
+                raise ValidationError(
+                    f"Approval {a.id} is held for a running call ({a.reserved_call}): wait"
+                    " until it finishes. Nothing changed."
+                )
+            task = await self.get_task(a.task_id, tx.conn)
+            text = f"withdrawn by {caller.name}: {why}"
+            await repo.expire_approval(tx.conn, a.id, text, tx.now)
+            a = await self.get_approval(a.id, tx.conn)
+            await self._approval_event(
+                tx, "approval.expired", caller.name, task, a, reason=text, withdrawn=True
+            )
+            await self._card_after_approval(
+                tx, task, a, f"{a.requested_by} goes on: approval {a.id} withdrawn", caller.name
+            )
+        return a
 
     async def expire_stale_approvals(self) -> int:
         """Approved approvals not used by their `valid_until` expire, visibly. Asked by the

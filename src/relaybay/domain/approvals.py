@@ -239,6 +239,20 @@ class Approval:
         return self.action == "deploy" and not self.rollback
 
 
+def no_button(a: Approval) -> str:
+    """Why a decided or expired request shows no Approve / Refuse, in plain words."""
+    if a.status == "expired":
+        why = a.expired_reason or "it was closed"
+        return f"expired: {why} — nothing to approve."
+    if a.status == "refused":
+        return "you refused it; the agent asks again with approval_request if it still needs it."
+    if a.status == "used":
+        return "approved and used — nothing left to decide."
+    if a.reserved:
+        return "approved; a running call holds it now."
+    return "already approved; it waits for the agent's call."
+
+
 @dataclass(slots=True)
 class ApprovalView:
     """The approvals of a card, or of the Inbox, as the board shows them."""

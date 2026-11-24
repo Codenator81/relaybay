@@ -704,6 +704,17 @@ a.badge.tracker:hover { text-decoration: underline; }
   text-decoration: none;
 }
 .chip.blocked-chip:hover { text-decoration: underline; }
+/* A card with an open approval request: the owner's Approve or Refuse waits in its dialog. */
+.chip.approval-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--warn);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.chip.approval-chip:hover { text-decoration: underline; }
 .card-next.stale { color: var(--muted); }
 /* The Code row: repositories the task touches, their pull requests, "Open in VS Code". */
 .code-row { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 13px; }
@@ -1849,6 +1860,7 @@ body:has(.task-dialog[open]) { overflow: hidden; }
 .approval-summary, .approval-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .approval-rollback code, .approval-state code { overflow-wrap: anywhere; }
 .approval-waits { border: 1px solid var(--warn); }
+.approval-why { font-size: 13px; }
 .approval-decide input[type=text] { width: 100%; }
 .approval-closed > summary { cursor: pointer; font-size: 13px; }
 
