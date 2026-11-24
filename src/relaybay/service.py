@@ -1138,6 +1138,12 @@ REVIEW_DECISIONS = ("accept", "reject", "reopen", "comment")
 NO_PLAN_STAGE_HINT = "Hint: {key} has no plan and no todo yet: " + NO_PLAN_HINT + "."
 CLOSED_PLAN_WARNING = "Warning (rules): " + CLOSED_PLAN + "."
 REWORK_NOTE = "{key} moved from {stage} back to dev ({note})."
+# Work started while the card still sits in plan: nothing moves it by itself.
+STILL_IN_PLAN_HINT = (
+    "Hint: {key} is still in plan while its work has started: move it with"
+    ' task_update(task="{key}", stage="dev").'
+)
+WORK_STATES = ("changed", "verified", "committed", "pushed")
 ALL_DONE_REVIEW_HINT = (
     "Hint: all steps done and the review checklist is set: move the task to review"
     " (task_update(stage=...))."
@@ -5272,6 +5278,8 @@ class Service:
             _note(warning)
         if await self._work_after_closed_plan(tx, task, state):
             _note_closed_plan(task)
+        if task.stage == Stage.PLAN and state in WORK_STATES and "stage" not in clean:
+            _note(STILL_IN_PLAN_HINT.format(key=task.key))
         if size and not task.size and size_task:
             clean["size"] = size  # the first report's size sizes a task that has none
         diff = _task_diff(task, clean)
@@ -9440,6 +9448,8 @@ class Service:
             )
             if current.status == "done" and status == "in_progress":
                 await self._rework(tx, task, f"rework: {current.title}", actor, sess)
+            elif task.stage == Stage.PLAN and status in ("in_progress", "done"):
+                _note(STILL_IN_PLAN_HINT.format(key=task.key))
             steps = await repo.list_plan_steps(tx.conn, task.id)
             closes = status == "done" and current.status != "done"
             ready = task.stage == Stage.DEV and task.review_total > 0

@@ -405,6 +405,32 @@ async def test_an_inspect_only_card_needs_no_accepted_plan(tmp_path: Path) -> No
         await svc.close()
 
 
+async def test_work_on_a_card_still_in_plan_names_the_move_to_dev(service: Service) -> None:
+    """Nothing moves a card out of plan by itself: once its work starts, the answers say how."""
+    from relaybay.service import collect_notes
+
+    key = await planned(service)
+    await service.accept_plan(key)
+    hint = f'move it with task_update(task="{key}", stage="dev")'
+    assert f'task_update(task="{key}", stage="dev") when you start' in await service.task_context(
+        key
+    )
+    with collect_notes() as notes:
+        await service.update_plan_step(key, 1, "in_progress")
+    assert any(hint in n for n in notes)
+    with collect_notes() as notes:
+        await service.add_report(key, "changed · S · first part")
+    assert any(hint in n for n in notes)
+    with collect_notes() as notes:
+        await service.add_report(key, "inspected · S · read")
+    assert not any(hint in n for n in notes)
+    await service.set_stage(key, "dev")
+    with collect_notes() as notes:
+        await service.update_plan_step(key, 1, "done", conformance="as planned")
+    assert not any(hint in n for n in notes)
+    assert "when you start" not in await service.task_context(key)
+
+
 async def test_size_is_a_task_field_and_the_first_report_sets_it(service: Service) -> None:
     await service.upsert_project("acme-shop")
     task = await service.create_task("acme-shop", "Checkout")

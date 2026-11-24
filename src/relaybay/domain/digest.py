@@ -771,6 +771,11 @@ def _task_head(
         state.append(f"review {task.review_accepted}/{task.review_total}")
     state.append(f"v{task.version}")
     lines = [" · ".join(state)]
+    if task.stage.value == "plan" and task.plan_status == "accepted" and task.plan_total:
+        lines.append(
+            f'The plan is accepted: move the card to dev with task_update(task="{task.key}",'
+            ' stage="dev") when you start the work.'
+        )
     stale = " (stale)" if task.next_step_stale else ""
     deploy = "done" if task.deploy_done else "not done yet"
     cancelled = task.cancelled

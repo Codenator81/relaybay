@@ -2475,7 +2475,13 @@ def build_mcp(
         )
         if not accepted:
             return f"The plan of **{row.key}** is already accepted; nothing changed."
-        return f"Plan of **{row.key}** accepted: {len(plan.steps)} step(s)."
+        text = f"Plan of **{row.key}** accepted: {len(plan.steps)} step(s)."
+        if row.stage.value == "plan":
+            text += (
+                " The card is still in plan: its session moves it with"
+                f' task_update(task="{row.key}", stage="dev") when the work starts.'
+            )
+        return text
 
     @write
     async def attach_file(

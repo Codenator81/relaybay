@@ -18,6 +18,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A session working in a shared checkout where another open card's branch is checked out no longer links that branch and folder to its own card; only the repository is linked.
 ### Added
 
+- A card still in `plan` whose work has started (a plan step in progress or done, a report that changed something) gets a hint to move it to dev; `plan_accept` and `task_context` say the same for an accepted plan. Nothing moves the card by itself.
+
 - `inspect_only` on a card (`task_create`, `task_update`, `task_patch`; migration 0062): an analysis, a repro or a question answered by reading needs no accepted plan before dev, also in strict mode, and may go straight to done. A report on such a card that says `changed`, `committed` or `pushed` warns that it needs a plan.
 ### Added
 

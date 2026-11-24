@@ -248,7 +248,7 @@ async def test_closed_plan_is_a_warning_in_strict_mode_too(tmp_path: Path) -> No
     svc = Service(tmp_path / "relaybay.sqlite", rules_mode="strict")
     await svc.start()
     try:
-        key = await planned(svc)
+        key = await planned(svc, stage="dev")
         await all_done(svc, key)
         await svc.add_report(key, "verified · S · all done")
         with collect_notes() as notes:

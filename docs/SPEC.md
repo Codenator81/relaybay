@@ -2063,7 +2063,13 @@ going to do (todo or 2-3 steps with plan_set).` (any size, not a rule warning).
 stage rules checked; the MCP answer adds `acme-shop-12 moved from review back to dev (rework: …).`.
 A task in `dev` stays. When a `plan_step_update` makes every step done on a task in `dev` with a
 review checklist, the answer adds `Hint: all steps done and the review checklist is set: move the
-task to review (task_update(stage=…)).`; nothing moves to review by itself.
+task to review (task_update(stage=…)).`; nothing moves to review by itself. Nothing moves a card
+out of `plan` by itself either: while a card is in `plan`, a `plan_step_update` to `in_progress` or
+`done` and a report whose state is `changed`, `verified`, `committed` or `pushed` (without
+`stage` in the same call) add `Hint: <key> is still in plan while its work has started: move it
+with task_update(task="<key>", stage="dev").`; `plan_accept` on a card in `plan` says the card's
+session moves it to dev when the work starts, and `task_context` of a card in `plan` with an
+accepted plan says the same.
 
 <a id="spec-rules-merge"></a>
 
