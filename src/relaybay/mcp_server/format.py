@@ -1103,6 +1103,7 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
         ("plan", plan_label(t) if t.plan_total else None),
         ("archived", f"{_minute(t.archived_at)} by {t.archived_by}" if t.archived_at else None),
         ("cancelled", cancelled_label(t)),
+        ("kind", "inspect-only: no accepted plan needed" if t.inspect_only else None),
         ("blocks", blocks_text(detail.blocks)),
     ):
         if value:

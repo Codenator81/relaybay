@@ -782,6 +782,7 @@ def _task_head(
         ("Waiting on", task.waiting_on),
         ("Note", task.stage_note),
         ("Cancelled", cancelled),
+        ("Kind", "inspect-only: no accepted plan needed" if task.inspect_only else None),
         ("Branch", task.branch),
         *(("Worktree", w) for w in worktrees or []),
         ("Blocks", blocking),

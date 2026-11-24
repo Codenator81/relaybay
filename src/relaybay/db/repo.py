@@ -632,7 +632,8 @@ async def branch_holder(
         conn,
         "SELECT t.key FROM task_repo tr JOIN task t ON t.id = tr.task_id"
         " WHERE tr.project_repo_id = ? AND tr.branch = ?"
-        " AND tr.task_id != ? AND t.stage != 'done' ORDER BY t.id LIMIT 1",
+        " AND tr.task_id != ? AND t.stage != 'done' AND t.cancelled_at IS NULL"
+        " ORDER BY t.id LIMIT 1",
         (repo_id, branch, task_id),
     )
     return None if row is None else str(row["key"])

@@ -799,7 +799,7 @@ def build_mcp(
         moved = before is not None and before.stage != saved.task.stage
         return fmt.with_warnings(
             fmt.task_saved(saved.task, "Moved" if moved else "Updated"),
-            [*saved.warnings, *filed, *fmt.waiting_on_hint(waiting_on)],
+            [*saved.warnings, *filed, *fmt.waiting_on_hint(changes.get("waiting_on"))],
         )
 
     @write

@@ -385,6 +385,7 @@ async def test_an_inspect_only_card_needs_no_accepted_plan(tmp_path: Path) -> No
         await svc.upsert_project("acme-shop")
         task = await svc.create_task("acme-shop", "Why do refunds fail", inspect_only=True)
         assert task.inspect_only
+        assert "Kind: inspect-only: no accepted plan needed" in await svc.task_context(task.key)
         assert (await svc.set_stage(task.key, "dev")).stage == "dev"
         with collect_notes() as notes:
             await svc.add_report(task.key, "inspected · M · cause found\n\nverified: logs")

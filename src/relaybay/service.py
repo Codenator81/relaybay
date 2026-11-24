@@ -1688,6 +1688,10 @@ class Service:
         ):
             return None
         await repo.touch_session(tx.conn, held.id, tx.now)
+        _note(
+            f"Note: hook_session {held.cc_session_id} is {held.name}'s; that session was used,"
+            f" not a new one named {name!r}."
+        )
         return held
 
     async def _resolve_session(self, tx: _Tx, value: str, title: str | None) -> Session | None:
@@ -1752,11 +1756,12 @@ class Service:
             caller = await self._session(tx, session, title, hook_session)
             assert caller is not None
             return caller
-        held = await _hook_id_session(tx.conn, hook_session or "")
-        if held is None:
+        cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX) or ""
+        held = await _hook_id_session(tx.conn, cc_id)
+        if held is None or held.status == "ended":
             raise ValidationError(
-                f"{tool}: the board does not know hook_session {hook_session!r}; pass your desktop"
-                " id (local_...) or name as session. Nothing done."
+                f"{tool}: the board knows no live session with hook_session {cc_id!r}; pass your"
+                " desktop id (local_...) or name as session. Nothing done."
             )
         await repo.touch_session(tx.conn, held.id, tx.now)
         return held

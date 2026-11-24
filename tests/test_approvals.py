@@ -339,7 +339,7 @@ async def test_requests_are_checked_like_questions(svc: Service) -> None:
         )
     with pytest.raises(ValidationError, match="names its branch"):
         await svc.request_approval("acme-shop-1", "push", "$X", "x", session="a")
-    with pytest.raises(ValidationError, match="does not know hook_session"):
+    with pytest.raises(ValidationError, match="knows no live session with hook_session"):
         await svc.request_approval(
             "acme-shop-1", "push", "feat", "x", hook_session=str(uuid.uuid4())
         )

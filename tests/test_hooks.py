@@ -270,7 +270,8 @@ async def test_a_new_name_with_the_own_hook_id_is_that_desktop_session(service: 
         await service.add_report(
             task.key, "inspected · S · b", session="checkout context test", hook_session=CC_A
         )
-    assert notes == []
+    assert len(notes) == 1 and "that session was used, not a new one named" in notes[0]
+    assert "belongs to another session" not in notes[0]
     names = {s.session.name for s in await service.list_sessions()}
     assert "checkout context test" not in names
     from relaybay.db import repo as db
