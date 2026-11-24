@@ -10,7 +10,7 @@ from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError
 from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
-from mcp.types import INVALID_PARAMS, ToolAnnotations
+from mcp.types import INVALID_PARAMS, CallToolResult, TextContent, ToolAnnotations
 from mcp.types import Tool as MCPTool
 from pydantic import Field
 from starlette.routing import BaseRoute
@@ -259,6 +259,42 @@ class RoleServer(MCPServer):
             return tools
         shown = roles.role_tools(self.role, current_tools({t.name for t in tools}))
         return [t for t in tools if t.name in shown]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
+        """The SDK drops an argument the tool does not take without a word. A write with one
+        is refused before it runs (nothing changes); a read runs and its answer names them."""
+        tool = self._tool_manager.get_tool(name)
+        unknown = unknown_arguments(tool.parameters, arguments) if tool is not None else []
+        writes = tool is not None and not (
+            tool.annotations is not None and tool.annotations.read_only_hint
+        )
+        if unknown and writes:
+            raise ToolError(unknown_refusal(name, unknown, tool.parameters))
+        result = await super().call_tool(name, arguments, context)
+        if unknown and isinstance(result, CallToolResult) and not result.is_error:
+            note = f"Ignored unknown parameter(s): {', '.join(unknown)}."
+            result.content.append(TextContent(type="text", text=note))
+        return result
+
+
+def unknown_arguments(schema: Mapping[str, Any], arguments: Mapping[str, Any]) -> list[str]:
+    """The argument names a tool's input schema does not declare, in the order sent."""
+    known = schema.get("properties") or {}
+    return [k for k in arguments if k not in known]
+
+
+def unknown_refusal(name: str, unknown: list[str], schema: Mapping[str, Any]) -> str:
+    takes = ", ".join(sorted(schema.get("properties") or {}))
+    hatch = ""
+    if name.startswith("task_"):
+        hatch = ", or reach a task field through task_update(fields={...})"
+    elif name.startswith("backlog_"):
+        hatch = ", or reach an item field through backlog_patch(item, fields={...})"
+    return (
+        f"Unknown parameter(s) for {name}: {', '.join(unknown)}. Nothing changed. {name} takes:"
+        f" {takes}. Your client's tool list may be older or newer than this server: reconnect"
+        f" to refresh it{hatch}."
+    )
 
 
 def current_tools(names: set[str]) -> set[str]:

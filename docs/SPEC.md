@@ -1622,7 +1622,13 @@ dropped or an enum added, a tighter minimum, maximum or length, a field of an ob
 removed or made required); a new required parameter or prompt argument, or an optional one made
 required; a read-only tool that starts to write or a tool that becomes destructive. A field a stale
 schema lacks is reached through `task_update(task, fields={…})` or `backlog_patch(item, fields={…})`;
-there is no such escape hatch for other tools.
+there is no such escape hatch for other tools. An argument the tool's schema does not declare (a
+typo, a parameter of another version) is never dropped without a word (`RoleServer.call_tool`): a
+writing tool refuses the call before it runs, so nothing changes, with
+`Unknown parameter(s) for <tool>: <names>. Nothing changed.`, the parameters it takes and a hint to
+reconnect (for a task or backlog tool: or use `task_update(fields={…})` / `backlog_patch`); a read-only tool answers and adds the last line
+`Ignored unknown parameter(s): <names>.` Since a release only adds, every parameter of a released
+contract stays declared, deprecated tools and parameters included.
 
 A deprecation is an entry in `DEPRECATIONS` (`src/relaybay/mcp_server/contract.py`): the tool (or
 resource URI, or prompt) and the parameter, if only one is meant, the version it is deprecated

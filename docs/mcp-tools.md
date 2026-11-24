@@ -618,6 +618,13 @@ Switch to the replacement when you see it. `relaybay://contract` and the
 (none under contract 2). Escape hatches for a stale schema exist only where fields grow:
 `task_update(fields=…)` and `backlog_patch`. The rule in full: [SPEC](SPEC.md#spec-mcp-compat).
 
+An argument a tool does not take is never dropped without a word: a writing tool refuses the
+call and changes nothing (`Unknown parameter(s) for task_update: nxt_stage. Nothing changed.`,
+followed by the parameters it takes and a hint that the client's tool list may be older or newer
+than the server, with `task_update(fields=…)` or `backlog_patch` for a task or backlog tool), and a read-only tool answers with a last line
+`Ignored unknown parameter(s): ….` Every parameter of a released contract stays known, deprecated
+ones included.
+
 Contract 2 (0.13) removed the twenty tools and the resource that 0.12 kept as deprecated stubs
 doing nothing ([design 0025](design/0025-board-with-the-desktop.md)): `run_start`, `run_status`,
 `run_events`, `run_settings`, `schedule_add`, `schedule_list`, `schedule_cancel`, `usage_summary`,
