@@ -5370,7 +5370,7 @@ class Service:
                 session_id=sess.id if sess else None,
                 actor=actor,
                 format_problem=problem,
-                moving=stage is not None,
+                moving=stage not in (None, task.stage.value),
             )
             for kind, items in ((report_items.FINDING, found), (report_items.QUESTION, asked)):
                 if items:
@@ -5393,6 +5393,13 @@ class Service:
                     actor=actor,
                 )
                 task, warnings, moved = saved.task, saved.warnings, saved.task.stage != before
+                if moved:
+                    # The move comes after the report: the report counts for this move, not
+                    # also for the next one (a "report since the stage change" rule).
+                    await tx.conn.execute(
+                        "UPDATE task SET stage_changed_at = ? WHERE id = ?", (now_iso(), task.id)
+                    )
+                    task = await self.get_task(task.id, tx.conn)
             next_stage = None if stage is not None else USUAL_NEXT_STAGE.get(task.stage)
             needs: list[tuple[dict[str, Any], bool]] = []
             if next_stage is not None:
@@ -8526,6 +8533,13 @@ class Service:
                 location = location if location is not None else source.location
                 task = task or source.task_key
             origin_task = await self.get_task(task, tx.conn) if task else None
+            source_task = await self.get_task(source.task_key, tx.conn) if source else None
+            if source_task is not None and source_task.project_slug != proj.slug:
+                raise ValidationError(
+                    f"Report #{source.report_id} is on {source_task.key} of"
+                    f" {source_task.project_slug}, not {proj.slug}: pass"
+                    f' project="{source_task.project_slug}". Nothing added.'
+                )
             sess = (
                 None if by_owner else await self._session(tx, session, session_title, hook_session)
             )
@@ -8589,6 +8603,8 @@ class Service:
         items the digests list. The reason says why (a question: what was decided)."""
         why = _clean_text(reason, "reason", report_items.DISMISS_REASON_MAX)
         async with self._tx() as tx:
+            if actor != "board":
+                await self._refuse_agent_creation(tx.conn, session, hook_session)
             item = await self._open_report_item(tx.conn, report, kind, n)
             task = await self.get_task(item.task_id, tx.conn)
             if why:

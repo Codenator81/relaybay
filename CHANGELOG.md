@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A card still in `plan` whose work has started (a plan step in progress or done, a report that changed something) gets a hint to move it to dev; `plan_accept` and `task_context` say the same for an accepted plan. Nothing moves the card by itself.
+- `inspect_only` on a card (`task_create`, `task_update`, `task_patch`; migration 0062): an analysis, a repro or a question answered by reading needs no accepted plan before dev, also in strict mode, and may go straight to done. A report on such a card that says `changed`, `committed` or `pushed` warns that it needs a plan.
+- Tool sets by role: `/mcp/agent`, `/mcp/coordinator` and `/mcp/reader` list a role's tools with instructions written for it (the agent's names a tool for every moment of a card, `approval_request` included); `/mcp` stays the full set with unchanged instructions. A role is not a permission: an unlisted tool still runs when called by name. `relaybay setup` accepts a role endpoint; [Connect Claude Code](docs/connect-claude-code.md) shows how to give one project another role with a local-scope entry.
+- `task_update` moves the stage and reaches every card field in one write: new parameters `stage`, `deploy_notes`, `deploy_done`, `cancelled` and `fields` (any other field of `relaybay://schema/task` as one object; a field given twice must agree). Its answer says `Moved` when the stage changed.
+- `report_add(stage=...)` ends a stage in one call: the report is written, then the task moves in the same transaction, so a rule asking for a report since the last stage change is met; the move's rule warnings follow, and in `strict` mode a refused move refuses the report too. Without `stage` the answer names what the usual next move needs, e.g. `Next: task_update(stage="test") needs a report since the last stage change (done).`
+- Findings and questions as data (migration 0063): `report_add(findings=[...], questions=[...])` stores up to 10 of each with the report (a finding `{title, body?, location?, kind?, area?}`, a question `{text, default}`), secret-scanned, a wrong shape refused naming the item. None becomes a backlog item by itself: `portfolio_digest` and `project_digest` list the open ones under `## Findings and questions to triage`, `task_context` and `task_get` a card's own. `backlog_add(from_report=, finding=)` triages a finding into a backlog item (its fields fill those not given, so `title` is optional there) and the new tool `report_item_dismiss(report, n, kind?, reason?)` closes one without an item.
+
+### Changed
+
+- Coordinator mode: with `coordinators` set, an agent (a session bound to an open card that is not a coordinator) gets no new cards or backlog items from `task_create` and `backlog_add` (the refusal points to `report_add(findings=..., questions=...)`); its move to `done` is not held to `require_tracker_log` and the answer says the mark is the coordinator's; `task_archive` refuses a done card that still needs the mark; `waiting_on` on MCP writes is saved as the owner, `coordinator`, `session`, `ci` or `customer:<name>` (synonyms map, the text after the who moves to an empty `next_step`, the answer says what was saved). The `/mcp` and `/mcp/agent` instructions say so. With `coordinators` empty nothing changes. [Coordinator and agents workflow](docs/how-to/coordinator-workflow.md) has the role endpoints, the mode, a card's life moment by moment and sample `CLAUDE.md` rules.
+
+### Deprecated
+
+- `task_set_stage` and `task_patch`: use `task_update(stage=...)` and `task_update(fields={...})`. Both keep working and say so in their description and results; not removed before 2027-01-15.
+
 ### Fixed
 
 - `approval_request` for a `deploy` or `sql` names its stand in words (`live`, `test`) again: since environments left the board in 0.15 every such request was refused with "has no environment". An environment stored before 0.15 is still used when its name matches.
@@ -16,28 +33,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `doc_search` names a document changed outside relaybay in one short line after the hits instead of the full list of changed sections.
 - A launched session that writes with a readable `session` name and its own `hook_session` is taken as the desktop session that hook id belongs to: no new session row and no "belongs to another session" warning on every write.
 - A session working in a shared checkout where another open card's branch is checked out no longer links that branch and folder to its own card; only the repository is linked.
-### Added
-
-- A card still in `plan` whose work has started (a plan step in progress or done, a report that changed something) gets a hint to move it to dev; `plan_accept` and `task_context` say the same for an accepted plan. Nothing moves the card by itself.
-
-- `inspect_only` on a card (`task_create`, `task_update`, `task_patch`; migration 0062): an analysis, a repro or a question answered by reading needs no accepted plan before dev, also in strict mode, and may go straight to done. A report on such a card that says `changed`, `committed` or `pushed` warns that it needs a plan.
-### Added
-
-- Tool sets by role: `/mcp/agent`, `/mcp/coordinator` and `/mcp/reader` list a role's tools with instructions written for it (the agent's names a tool for every moment of a card, `approval_request` included); `/mcp` stays the full set with unchanged instructions. A role is not a permission: an unlisted tool still runs when called by name. `relaybay setup` accepts a role endpoint; [Connect Claude Code](docs/connect-claude-code.md) shows how to give one project another role with a local-scope entry.
-
-- `task_update` moves the stage and reaches every card field in one write: new parameters `stage`, `deploy_notes`, `deploy_done`, `cancelled` and `fields` (any other field of `relaybay://schema/task` as one object; a field given twice must agree). Its answer says `Moved` when the stage changed.
-
-### Changed
-
-- Coordinator mode: with `coordinators` set, an agent (a session bound to an open card that is not a coordinator) gets no new cards or backlog items from `task_create` and `backlog_add` (the refusal points to `report_add(findings=..., questions=...)`); its move to `done` is not held to `require_tracker_log` and the answer says the mark is the coordinator's; `task_archive` refuses a done card that still needs the mark; `waiting_on` on MCP writes is saved as the owner, `coordinator`, `session`, `ci` or `customer:<name>` (synonyms map, the text after the who moves to an empty `next_step`, the answer says what was saved). The `/mcp` and `/mcp/agent` instructions say so. With `coordinators` empty nothing changes. [Coordinator and agents workflow](docs/how-to/coordinator-workflow.md) has the role endpoints, the mode, a card's life moment by moment and sample `CLAUDE.md` rules.
-
-### Deprecated
-
-- `task_set_stage` and `task_patch`: use `task_update(stage=...)` and `task_update(fields={...})`. Both keep working and say so in their description and results; not removed before 2027-01-15.
-### Added
-
-- `report_add(stage=...)` ends a stage in one call: the report is written, then the task moves in the same transaction, so a rule asking for a report since the last stage change is met; the move's rule warnings follow, and in `strict` mode a refused move refuses the report too. Without `stage` the answer names what the usual next move needs, e.g. `Next: task_update(stage="test") needs a report since the last stage change (done).`
-- Findings and questions as data (migration 0063): `report_add(findings=[...], questions=[...])` stores up to 10 of each with the report (a finding `{title, body?, location?, kind?, area?}`, a question `{text, default}`), secret-scanned, a wrong shape refused naming the item. None becomes a backlog item by itself: `portfolio_digest` and `project_digest` list the open ones under `## Findings and questions to triage`, `task_context` and `task_get` a card's own. `backlog_add(from_report=, finding=)` triages a finding into a backlog item (its fields fill those not given, so `title` is optional there) and the new tool `report_item_dismiss(report, n, kind?, reason?)` closes one without an item.
 
 ## [0.16.0] - 2026-11-23
 

@@ -305,7 +305,10 @@ async def test_the_board_and_a_plain_server_keep_waiting_on_as_written(
     task = await plain.create_task("acme-shop", "Checkout", session="worker")
     with collect_notes() as notes:
         written, _ = await plain.add_report(
-            task.key, "inspected \u00b7 S \u00b7 done", session="worker", waiting_on="master: triage"
+            task.key,
+            "inspected \u00b7 S \u00b7 done",
+            session="worker",
+            waiting_on="master: triage",
         )
     assert (written.waiting_on, written.next_step, notes) == ("master: triage", None, [])
 
@@ -380,3 +383,14 @@ async def test_mcp_endpoints_in_coordinator_mode(
             "task_create", {"project": "acme-shop", "title": "Side", "session": "worker"}
         )
         assert refused.is_error and REFUSED in refused.content[0].text
+
+
+async def test_an_agent_cannot_dismiss_its_own_finding(svc: Service) -> None:
+    key = await agent_card(svc)
+    await svc.add_report_checked(
+        key, "inspected · S · x", session="worker", findings=[{"title": "Old route"}]
+    )
+    with pytest.raises(ValidationError, match="In coordinator mode"):
+        await svc.dismiss_report_item(1, 1, session="worker")
+    item = await svc.dismiss_report_item(1, 1, session="lead", reason="known")
+    assert item.n == 1

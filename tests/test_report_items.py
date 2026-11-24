@@ -287,3 +287,36 @@ async def test_task_context_and_task_get_show_the_cards_own_open_items(service: 
         await service.dismiss_report_item(1, n)
     assert "Open findings" not in await call("task_context", task=key)
     assert "Open findings" not in await call("task_get", task=key)
+
+
+async def test_one_report_counts_for_its_own_move_only(service: Service) -> None:
+    """Review of relaybay-40: the report that moved the card does not also meet the next move's
+    "report since the stage change" rule."""
+    key = await card(service, stage="dev")
+    call = caller(service)
+    await call("report_add", task=key, body="verified · S · cart fixed", stage="test")
+    text = await call("task_update", task=key, stage="done", progress="Cart fixed.")
+    assert "Moved" in text
+    key2 = await card(service, stage="plan", title="Second")
+    await service.set_plan(key2, [{"title": "One"}])
+    await service.accept_plan(key2)
+    await call("report_add", task=key2, body="verified · S · planned", stage="dev")
+    moved = await call("task_update", task=key2, stage="test")
+    assert "Warning (rules): moving to test usually needs a report" in moved
+
+
+async def test_a_finding_is_triaged_only_into_its_own_project(service: Service) -> None:
+    key = await card(service)
+    await service.upsert_project("demo-api")
+    call = caller(service)
+    await call("report_add", task=key, body="inspected · S · x", findings=FINDINGS)
+    with pytest.raises(ToolError, match="is on acme-shop-1 of acme-shop, not demo-api"):
+        await service_call(call, "backlog_add", project="demo-api", from_report=1, finding=1)
+    assert await open_items(service, key) != []
+
+
+async def service_call(call: Any, tool: str, **arguments: Any) -> str:
+    text = await call(tool, **arguments)
+    if "Nothing added" in text or text.startswith("Error"):
+        raise ToolError(text)
+    return text

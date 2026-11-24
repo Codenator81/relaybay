@@ -402,16 +402,15 @@ def _report_items_section(
                 "task_context(task) lists a card's own",
                 priority,
                 more,
+                floor=1,  # the triage line stays while any of the section does
+                floor_priority=max(0, priority - 1),
             )
         )
 
 
 def report_items_count_line(total: int) -> str:
     """The head of a card's own open items in task_context and task_get."""
-    return (
-        f"{total} open, for the coordinator to triage (backlog_add with from_report,"
-        " or report_item_dismiss)"
-    )
+    return f"{total} open, for the coordinator to triage"
 
 
 def _section(
