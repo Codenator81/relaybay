@@ -61,6 +61,7 @@ Deprecations:
 | [`question_withdraw`](#question_withdraw) | write |
 | [`approval_request`](#approval_request) | write |
 | [`approval_list`](#approval_list) | read |
+| [`approval_withdraw`](#approval_withdraw) | write |
 | [`memory_search`](#memory_search) | read |
 | [`memory_get`](#memory_get) | read |
 | [`doc_list`](#doc_list) | read |
@@ -581,6 +582,18 @@ Approval requests and the owner's decisions, newest first: open ones of all card
 |---|---|---|---|
 | `task` | string or null | no | Task key: only this card's approvals. Optional. |
 | `status` | string or null | no | open (default), approved, refused, used, expired or all. |
+
+### `approval_withdraw`
+
+Withdraw an approval request you asked (a coordinator may withdraw any) that is no longer needed: an open one, or an approved one not used yet. It expires with your reason, leaves the owner's Inbox, and no longer holds the card's archive.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `approval` | integer | yes | The approval's number, e.g. 7 for '#7'. |
+| `reason` | string | yes | Why it is no longer needed, one line, e.g. 'the owner merged the PR by hand'. Shown on the card and in the owner's Inbox history. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 
 ### `memory_search`
 

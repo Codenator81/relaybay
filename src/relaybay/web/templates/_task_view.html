@@ -1,6 +1,7 @@
 {#- The session card, shared by the board's task dialog and the task page (design 0025). An open
     card shows, top to bottom: the state line; what waits for the owner (open approvals and
-    questions, unread agent replies); the next step and what holds the card; the plan; the last
+    questions, unread agent replies); the next step and what holds the card; its approvals
+    (a pending one with its buttons unfolded); the plan; the last
     report; deploy notes; description and progress; then folded secondary blocks. A done or
     archived card leads with its last report and code, the rest folded. A block with nothing in
     it is left out. Expects: detail, optional error. Refetched on live events, so it holds no
@@ -37,10 +38,12 @@
   </div>
 
   {%- set approvals_block %}
-  <details class="panel fold" data-fold="{{ 'approvals' if approvals.open else 'approvals-closed' }}"{% if approvals.open %} open{% endif %}>
-    <summary><h2>Approvals</h2></summary>
+  {% if approvals.open or approvals.closed %}
+  <details class="panel fold task-approvals" data-fold="{{ 'approvals' if approvals.open else 'approvals-closed' }}"{% if approvals.open %} open{% endif %}>
+    <summary><h2>Approvals {% if approvals.open %}<span class="col-count approval-count">{{ approvals.open|length }} waits</span>{% else %}<span class="col-count">{{ approvals.closed|length }} decided</span>{% endif %}</h2></summary>
     {% with error = none %}{% include "_approvals.html" %}{% endwith %}
   </details>
+  {% endif %}
   {%- endset %}
   {%- set questions_block %}
   <details class="panel fold" data-fold="{{ 'questions' if questions.open else 'questions-closed' }}"{% if questions.open %} open{% endif %}>
@@ -49,8 +52,7 @@
   </details>
   {%- endset %}
 
-  {#- a. What waits for the owner, on every card. #}
-  {% if approvals.open %}{{ approvals_block }}{% endif %}
+  {#- a. What waits for the owner, on every card; approvals sit right under Next (below). #}
   {% if questions.open %}{{ questions_block }}{% endif %}
   {% if replies %}
   <details class="panel fold task-unread" data-fold="unread" open>
@@ -170,11 +172,13 @@
   </details>
   {% endif %}
   {{ now_block }}
+  {{ approvals_block }}
   {{ plan_block }}
   {{ deploy_block }}
   {{ text_block }}
   {% else %}
   {{ now_block }}
+  {{ approvals_block }}
   {{ plan_block }}
   {{ report_block }}
   {{ deploy_block }}
@@ -276,7 +280,6 @@
   </details>
   {% endif %}
 
-  {% if not approvals.open and approvals.closed %}{{ approvals_block }}{% endif %}
   {% if not questions.open and questions.closed %}{{ questions_block }}{% endif %}
 
   {% if detail.decisions %}

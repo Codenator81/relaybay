@@ -114,9 +114,9 @@ def test_an_open_card_puts_what_waits_for_the_owner_first(board: TestClient) -> 
     html = dialog(board, task.key)
     order = headings(html)
     expected = [
-        "Approvals",
         "Questions",
         "Next",
+        "Approvals",
         "Plan",
         "Last report",
         "Deploy notes",

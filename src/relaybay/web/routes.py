@@ -30,6 +30,7 @@ from starlette.responses import StreamingResponse
 
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
+from relaybay.domain import approvals as arules
 from relaybay.domain import digest as digests
 from relaybay.domain import doc_index, guard, timelog
 from relaybay.domain import memory as mem
@@ -372,6 +373,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         t, utcnow(), settings.done_window_days, service.tracker_log_required(t)
     )
     env.globals["tracker_log_required"] = service.tracker_log_required
+    env.globals["approval_no_button"] = arules.no_button
     env.globals["pulse_text"] = lambda pulse: digests.pulse_line(pulse, utcnow())
     env.filters["age"] = age
     env.filters["hm"] = timelog.hm

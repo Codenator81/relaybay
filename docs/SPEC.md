@@ -599,7 +599,13 @@ file or a tool result that says "approved" changes nothing.
   only one of them names counts as the same) is filled in (summary, rollback, who asked) instead
   of opening a second. `approval_list(task?, status?)`: newest first, open ones of all cards by
   default (`approved`, `refused`, `used`, `expired` or `all`), with the summary, the rollback, the
-  owner's line verbatim and the call that used it. **No MCP tool decides.** A `deploy` request's
+  owner's line verbatim and the call that used it. **No MCP tool decides.**
+  `approval_withdraw(approval, reason, session, hook_session?)`: the session that asked or a
+  coordinator takes back an open request, or an approved one not used yet (not one held for a
+  running call), that is no longer needed, e.g. the owner merged by hand; `reason` is required (one
+  line, up to 500 characters). It expires with the reason `withdrawn by <caller>: <reason>`
+  (`approval.expired`, no new status), leaves the Inbox, no longer holds the archive of a live card,
+  and the card's `waiting_on` goes back to the asker as after a decision. A `deploy` request's
   answer adds the card's deploy notes with their state ([§1](#spec-task-deploy)), or a line that the
   card has none; its board item shows them under the rollback.
 - **The owner's decision.** `POST /approvals/{id}/decide` with `decision` (`approve` or `refuse`), an
@@ -1031,13 +1037,17 @@ CSRF; a Bearer request is refused, `403`).
 
 <a id="spec-board-approvals"></a>
 
-**Approvals fold.** Below Questions, an **Approvals** fold loaded from
+**Approvals fold.** Right under **Next**, an **Approvals** fold loaded from
 `/p/<slug>/t/<key>/approvals` and refetched on the card's `approval.*` events (not while a line is
 being typed): the card's open requests, the oldest first, as in the Inbox, then the decided ones
 folded: refused, expired (the card went to done), approved "not used yet", or used with when
 and by which call (`Bash: git push
 origin feat/x`), each with when it was delivered ("waits as owner comment #N").
-Approve and Refuse post `/approvals/{id}/decide` ([§1](#spec-approvals)).
+Approve and Refuse post `/approvals/{id}/decide` ([§1](#spec-approvals)). With an open request the
+fold is open and its title counts them (`1 waits`), so Approve and Refuse show without unfolding
+anything; a decided or expired request says why it has no button in plain words, e.g. `No button:
+expired: the card went to done — nothing to approve.` On the board a card with an open request
+shows the chip `approval waits` (with the count when more than one), which opens the dialog.
 
 <a id="spec-board-repos"></a>
 
@@ -1153,15 +1163,16 @@ always and on every card, `Time today 2h10 · total 4h55 · in tracker 1h30` wit
 now** (start, or switch while another card runs; disabled on the card that runs) and **Pause** while
 this card runs (`POST /p/<slug>/t/<key>/timelog`, the board's write; a pause while another card or
 nothing runs is refused and writes nothing, [§1](#spec-time-log)); what waits for the
-owner: **Approvals** and **Questions** with an open item, **Unread replies** (the agent replies not
+owner: **Questions** with an open item, **Unread replies** (the agent replies not
 marked read, as the Inbox counts them); **Next** (cancelled mark, next step, waiting on, Blocked by,
-Blocks); **Plan** (done/all and each step with its status; the Plan tab keeps the full plan and
+Blocks); **Approvals** right under it, open when a request waits, folded when all are decided;
+**Plan** (done/all and each step with its status; the Plan tab keeps the full plan and
 Accept plan); the **Last report** (older ones inside it); **Deploy notes**; **Description** and
 **Done so far**; then, folded: **Task details** (area, stage, branch, code, tracker, document,
-sections, archive, backlog, updated), **Session and its history**, Approvals and Questions holding
-only decided or closed items, Decisions, Findings, Document, Tracker history and Actions on live. A
+sections, archive, backlog, updated), **Session and its history**, Questions holding
+only closed items, Decisions, Findings, Document, Tracker history and Actions on live. A
 done or archived card leads with its summary, the Last report and **Code** (the Code row: branches,
-PRs), open; what waits for the owner still comes first when there is any, Next stays open only
+PRs), open, then Next and Approvals; open questions still come first when there are any, Next stays open only
 for a cancelled card, everything else is folded (code: web/templates/_task_view.html).
 
 A block with nothing in it is left out, never shown with an empty-state sentence: no report, no
@@ -1378,8 +1389,9 @@ being archived from live forgets where it came from: its next archive is an ordi
 Nothing is closed for good: a live card with an open question, an open approval request or an
 approved, unused approval is not archived (a move to done would withdraw or expire them) and the
 refusal says `<key> has an open question, an open approval request or an approved, unused
-approval: answer, withdraw or use it first, the archive closes nothing for good. Nothing
-changed.`; the confirmation says so too. `task_archive` / `task_unarchive` do the same for
+approval: answer, withdraw or use it first, the archive closes nothing for good (a coordinator
+takes back a request no longer needed with approval_withdraw and a reason, a question with
+question_withdraw). Nothing changed.`; the confirmation says so too. `task_archive` / `task_unarchive` do the same for
 coordinators; `task_archive` also waits for the tracker mark ([coordinator
 mode](#spec-coordinator-mode)). Only `done` and `live` cards are archived; any other stage is refused with `Only a
 done or live task goes to the archive; <key> is in <stage>. Nothing changed.`
@@ -1659,7 +1671,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 | Policy and audit | `policy_get`, `policy_propose`, `audit_list`; `environments_get` and `environment_propose` are stubs since 0.15 ([§7](#spec-environments-mcp)) |
 | Catch-up and rules | `events_since`, `rules_get`, `rules_update`, `rules_propose` |
 | Questions | `question_ask`, `question_list`, `question_withdraw` (the asker or a coordinator); none answers ([§1](#spec-questions)) |
-| Approvals | `approval_request`, `approval_list`; none decides ([§1](#spec-approvals)) |
+| Approvals | `approval_request`, `approval_list`, `approval_withdraw` (the asker or a coordinator, with a reason); none decides ([§1](#spec-approvals)) |
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Backlog | `backlog_add`, `backlog_list`, `backlog_update`, `backlog_patch` ([§12](#spec-backlog-mcp)) |

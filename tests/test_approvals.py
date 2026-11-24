@@ -441,10 +441,9 @@ async def test_mcp_requests_lists_and_never_decides(service: Service) -> None:
     await service.upsert_project("acme-shop", repo_path=CWD)
     await service.create_task("acme-shop", "Checkout", stage="dev")
     names = {t.name for t in await mcp.list_tools()}
-    assert {"approval_request", "approval_list"} <= names
-    assert not [
-        n for n in names if "approv" in n and n not in ("approval_request", "approval_list")
-    ]
+    mine = ("approval_request", "approval_list", "approval_withdraw")
+    assert set(mine) <= names
+    assert not [n for n in names if "approv" in n and n not in mine]
     assert not [n for n in names if "decide" in n or "approve" in n]
     asked = await call(
         "approval_request",
@@ -569,6 +568,24 @@ def test_the_inbox_and_the_card_show_requests_and_only_the_board_decides(
     assert "approval.decided" in audit and "approval.requested" in audit
 
 
+def test_approvals_sit_under_next_with_the_buttons_and_say_why_none(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    asked, _, _ = run_in_app(
+        board, service.request_approval, "acme-shop-1", "merge", "12", "x", session=DESKTOP_A
+    )
+    view = board.get("/p/acme-shop/t/acme-shop-1/view").text
+    under = view.index("<h2>Next</h2>")
+    assert under < view.index("<h2>Approvals") < view.index('value="approve"')
+    assert "1 waits" in view
+    assert "approval waits" in board.get("/p/acme-shop").text
+    run_in_app(board, service.set_stage, "acme-shop-1", "done")
+    view = board.get("/p/acme-shop/t/acme-shop-1/view").text
+    assert 'value="approve"' not in view and "1 decided" in view
+    assert "No button: expired: the card went to done — nothing to approve." in view
+    assert "approval waits" not in board.get("/p/acme-shop").text
+    assert asked.id
+
+
 # --- review fixes: what one approval allows -------------------------------------------------
 
 
@@ -670,6 +687,44 @@ async def test_a_card_going_to_done_closes_its_questions_and_requests(svc: Servi
     assert closed[0].expired_reason == "the card went to done"
     assert "approval.expired" in await kinds(svc)
     assert await svc.open_approval_requests() == []
+
+
+async def test_the_asker_or_a_coordinator_withdraws_a_request_with_a_reason(
+    svc: Service,
+) -> None:
+    run = await started_run(svc)
+    first, _, _ = await svc.request_approval(
+        "acme-shop-1", "merge", "12", "x", session=run.session_name
+    )
+    assert (await svc.get_task("acme-shop-1")).waiting_on == svc.owner_names[0]
+    with pytest.raises(ValidationError, match="Say why"):
+        await svc.withdraw_approval(first.id, " - ", session=run.session_name)
+    with pytest.raises(ValidationError, match="Only the session that asked"):
+        await svc.withdraw_approval(first.id, "done", session="someone-else")
+    gone = await svc.withdraw_approval(first.id, "the owner merged it by hand", session="coord")
+    assert gone.status == "expired"
+    assert gone.expired_reason == "withdrawn by coord: the owner merged it by hand"
+    assert await svc.open_approval_requests() == []
+    task = await svc.get_task("acme-shop-1")
+    assert task.waiting_on == run.session_name
+    assert task.next_step == f"{run.session_name} goes on: approval {first.id} withdrawn"
+    with pytest.raises(ValidationError, match="is expired"):
+        await svc.withdraw_approval(first.id, "again", session="coord")
+    # The asker takes back its own approved, unused one; then the live card archives.
+    second, _, _ = await svc.request_approval(
+        "acme-shop-1", "push", "feat/a", "x", session=run.session_name
+    )
+    await svc.decide_approval(second.id, True)
+    await svc.set_stage("acme-shop-1", "live")
+    third, _, _ = await svc.request_approval(
+        "acme-shop-1", "merge", "13", "x", session=run.session_name
+    )
+    with pytest.raises(ValidationError, match="approval_withdraw"):
+        await svc.set_archived("acme-shop-1", True, actor="coord")
+    await svc.withdraw_approval(second.id, "pushed another way", session=run.session_name)
+    await svc.withdraw_approval(third.id, "not needed", session="coord")
+    await svc.set_archived("acme-shop-1", True, actor="coord")
+    assert (await svc.get_task("acme-shop-1")).archived_at is not None
 
 
 async def test_at_the_open_limit_the_reason_does_not_send_to_approval_request(

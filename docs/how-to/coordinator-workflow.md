@@ -114,6 +114,9 @@ coordinator and a session bound to no card are not agents. In this mode:
   common words (`owner`, `master`, `developer`, `reviewer`, the coordinator's names, …) map to
   them, anything else stays as written. Text after the who (`owner: merge the PR`) moves to
   `next_step` when the card has none. The answer names what was saved.
+- **A request nobody needs any more is withdrawn, not left open.** When the owner did the merge by
+  hand, the asking agent or the coordinator calls `approval_withdraw(approval, reason)`: the
+  request expires with the reason, leaves the Inbox and no longer holds a live card's archive.
 - **The instructions say so.** `/mcp` and `/mcp/agent` tell the agent to ask the coordinator for a
   missing card, to put findings and questions into its reports and to leave the tracker mark.
 
@@ -131,7 +134,7 @@ What an agent calls at each moment, and what the answer points to next:
 | Question | `report_add(questions=[...])`; working alone: `question_ask` | the question shows to the owner; the answer comes back as a comment |
 | Decision | `decision_add` | the decision is on the card and in `task_context` |
 | Finding | `report_add(findings=[...])`; working alone: `backlog_add` | where the coordinator sees it |
-| Approval | `approval_request`, then end the turn | the decision arrives as an owner comment |
+| Approval | `approval_request`, then end the turn; `approval_withdraw(reason=…)` when it is no longer needed | the decision arrives as an owner comment |
 | Report | `report_add` | a format warning, newer rules |
 | Review | `review_steps_set`, `attach_file`, `review_step_update` | the owner's marks (`review_get`) |
 | Closing | `task_update(stage="done")` | what is left: change document, deploy notes; the coordinator sets `tracker_logged` and archives |

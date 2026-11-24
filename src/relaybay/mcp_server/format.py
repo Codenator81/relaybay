@@ -1786,6 +1786,10 @@ def approvals(task: Task | None, items: list[Approval], status: str | None) -> s
     return "\n".join([head, *map(approval_line, items)])
 
 
+def approval_withdrawn(a: Approval) -> str:
+    return f"Approval #{a.id} on {a.task_key} withdrawn: {a.what} ({a.expired_reason})."
+
+
 def approval_requested(task: Task, a: Approval, hint: str, updated: bool) -> str:
     verb = "updated" if updated else "requested"
     text = f"Approval #{a.id} {verb} on **{task.key}**: {a.what}. {hint}"
