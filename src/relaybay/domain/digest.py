@@ -19,6 +19,7 @@ from relaybay.domain.memory import Document, MemoryBlock, MemoryNote
 from relaybay.domain.merge_order import MERGE_ORDER_TITLE, MergeOrder
 from relaybay.domain.models import Comment, Decision, Project, Task
 from relaybay.domain.plan import Plan, TodoItem, one_line, reminder_line
+from relaybay.domain.report_items import TRIAGE_LINE
 from relaybay.domain.stages import STAGES
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ BACKLOG_ITEMS_MAX = 8
 CHANGES_MAX = 30
 COMMENT_IDS_MAX = 20
 LINE_MAX = 300
+REPORT_ITEMS_TITLE = "## Findings and questions to triage"
 CHANGES_KEY = "changes"
 PLAN_KEY = "plan"
 OTHERS_KEY = "others"
@@ -387,6 +389,31 @@ def _changes_section(changes: Changes, priority: int, project: str | None = None
     )
 
 
+def _report_items_section(
+    sections: list[Section], lines: list[str], more: int, priority: int
+) -> None:
+    """Open findings and questions of reports, newest first; the triage hint leads, so a budget
+    cut takes items and keeps how to act on the rest."""
+    if lines or more:
+        sections.append(
+            Section(
+                REPORT_ITEMS_TITLE,
+                [TRIAGE_LINE, *lines],
+                "task_context(task) lists a card's own",
+                priority,
+                more,
+            )
+        )
+
+
+def report_items_count_line(total: int) -> str:
+    """The head of a card's own open items in task_context and task_get."""
+    return (
+        f"{total} open, for the coordinator to triage (backlog_add with from_report,"
+        " or report_item_dismiss)"
+    )
+
+
 def _section(
     sections: list[Section],
     title: str,
@@ -423,6 +450,8 @@ class PortfolioData:
     pulses: dict[int, Pulse] = field(default_factory=dict)  # by project id
     # Open cards not listed under "Waiting for the owner" or as stale, with their pull requests.
     open_tasks: list[tuple[Task, list[str]]] = field(default_factory=list)
+    report_items: list[str] = field(default_factory=list)  # open ones, newest first
+    report_items_more: int = 0  # open ones not loaded
 
 
 def open_task_line(task: Task, prs: list[str]) -> str:
@@ -541,6 +570,7 @@ def portfolio_text(data: PortfolioData, footer: Callable[[bool], str], budget: i
         "task_get(task), or the Inbox on the board",
         2,
     )
+    _report_items_section(sections, data.report_items, data.report_items_more, 3)
     _section(
         sections,
         "## Open tasks",
@@ -590,6 +620,8 @@ class ProjectData:
     rules_line: str = ""
     pulse: Pulse | None = None
     merge_order: MergeOrder | None = None
+    report_items: list[str] = field(default_factory=list)  # open ones, newest first
+    report_items_more: int = 0  # open ones not loaded
 
 
 def waits_for_owner(task: Task, owner_names: set[str]) -> bool:
@@ -629,6 +661,7 @@ def project_text(data: ProjectData, footer: Callable[[bool], str], budget: int) 
         "task_context(task)",
         1,
     )
+    _report_items_section(sections, data.report_items, data.report_items_more, 3)
     _section(
         sections,
         "## Recent decisions",
@@ -757,6 +790,8 @@ class TaskData:
     blocker_lines: list[str] = field(default_factory=list)  # one per card blocking this one
     blocking: str | None = None  # 'key, key': the open cards this one blocks
     change_lines: list[str] = field(default_factory=list)  # its change document spec-<key>
+    report_items: list[str] = field(default_factory=list)  # its open ones, newest first
+    report_items_total: int = 0
 
 
 def _task_head(
@@ -903,6 +938,16 @@ def task_text(data: TaskData, footer: Callable[[bool], str], budget: int) -> Ren
         f'doc_get("{slug}", "{change_doc_slug(key)}")',
         8,
     )
+    if data.report_items_total:
+        sections.append(
+            Section(
+                "## Open findings and questions of its reports",
+                [report_items_count_line(data.report_items_total), *data.report_items],
+                f'task_get("{key}")',
+                8,
+                data.report_items_total - len(data.report_items),
+            )
+        )
     _section(
         sections,
         "## Open backlog items",

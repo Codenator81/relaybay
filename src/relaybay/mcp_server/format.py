@@ -12,7 +12,7 @@ from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.blockers import blocker_line, blocks_text
 from relaybay.domain.change_doc import ChangeMark
 from relaybay.domain.code import ProjectRepo, TaskCode
-from relaybay.domain.digest import age, board_link
+from relaybay.domain.digest import age, board_link, report_items_count_line
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
 from relaybay.domain.doc_index import (
     SNIPPET_MAX,
@@ -45,6 +45,7 @@ from relaybay.domain.models import (
 )
 from relaybay.domain.plan import Plan, PlanStep, TodoItem
 from relaybay.domain.questions import Question
+from relaybay.domain.report_items import ReportItem, item_line
 from relaybay.domain.review import Attachment, Review, ReviewStep
 from relaybay.domain.rules import (
     RuleProposal,
@@ -65,7 +66,15 @@ from relaybay.domain.task_fields import (
     TASK_FIELDS,
 )
 from relaybay.policy import EffectivePolicy
-from relaybay.service import DocHit, DocRead, NoteResult, ProjectSummary, Snapshot, TaskDetail
+from relaybay.service import (
+    DocHit,
+    DocRead,
+    NoteResult,
+    ProjectSummary,
+    ReportSaved,
+    Snapshot,
+    TaskDetail,
+)
 
 
 def who_label(name: str, external_id: str | None) -> str:
@@ -1134,6 +1143,10 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
     if detail.tracker_history:
         lines.append("\n## Tracker history (newest first)")
         lines.extend(tracker_entry_line(e) for e in detail.tracker_history)
+    if detail.report_items_total:
+        lines.append("\n## Open findings and questions of its reports")
+        lines.append(report_items_count_line(detail.report_items_total))
+        lines.extend(item_line(i) for i in detail.report_items)
     if detail.reports:
         lines.append("\n## Reports (newest first)")
         for r in detail.reports:
@@ -1602,6 +1615,40 @@ def backlog_items(items: list[BacklogItem]) -> str:
     return "\n".join(
         ["# Backlog (new first, then by priority)", *(f"- {backlog_line(b)}" for b in items)]
     )
+
+
+def report_saved(saved: ReportSaved, stage: str | None) -> list[str]:
+    """report_add's answer: the report line, the items it carries, the stage move it made (with
+    `stage`) or what the usual next move needs (without)."""
+    report = saved.report
+    parsed = " · ".join(x for x in (report.state, report.size) if x)
+    extra = f" ({parsed})" if parsed else ""
+    lines = [f"Report #{report.id} added to **{saved.task.key}**{extra}: {report.summary}"]
+    carried = [
+        f"{n} {what}{'' if n == 1 else 's'}"
+        for n, what in ((saved.findings, "finding"), (saved.questions, "question"))
+        if n
+    ]
+    if carried:
+        lines.append(f"Stored {' and '.join(carried)} for the coordinator to triage.")
+    if stage is not None:
+        current = saved.task.stage.value
+        lines.append(f"Moved to {current}." if saved.moved else f"Already in {current}.")
+        lines.extend(saved.warnings)
+    elif saved.next_stage:
+        move = f'Next: task_update(stage="{saved.next_stage}")'
+        if saved.needs:
+            needs = " and ".join(
+                f"{requirement_label(r)} ({'done' if met else 'missing'})" for r, met in saved.needs
+            )
+            lines.append(f"{move} needs {needs}.")
+        else:
+            lines.append(f"{move}; no rule asks anything for it.")
+    return lines
+
+
+def report_item_dismissed(item: ReportItem) -> str:
+    return f"Dismissed {item.kind} {item.n} of report #{item.report_id} on {item.task_key}."
 
 
 def backlog_saved(item: BacklogItem, verb: str) -> str:

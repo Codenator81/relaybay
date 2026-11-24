@@ -659,6 +659,37 @@ mode a refusal, and never for an S report or one without a size. The first start
 (`report_marks_from`) the first report id after them: older reports show their marks but never
 the warning.
 
+<a id="spec-report-stage"></a>
+
+**Ending a stage in one call.** `report_add(stage=...)` writes the report, then moves the task in
+the same transaction, so a rule asking for a report since the last stage change sees it. The move
+is an ordinary stage change (its rules, `task.stage_changed` by the report's author, its hints):
+its rule warnings follow in the answer, and in `strict` mode a refused move refuses the report
+too, nothing written. The answer adds `Moved to <stage>.` (or `Already in <stage>.`). Without
+`stage` it adds one line naming the usual next move and what the rules ask for it, each marked
+`done` or `missing`: `Next: task_update(stage="test") needs a report since the last stage change
+(done).` The usual next stage is plan→dev, dev→test, review→test, test→done, live→done; a card
+in done gets no line (code: domain/stages.py:USUAL_NEXT_STAGE, service.py:add_report_checked).
+
+<a id="spec-report-items"></a>
+
+**Findings and questions of a report** (`report_item`, migration 0063). `report_add(findings=[…],
+questions=[…])` stores up to 10 of each with the report: a finding `{title, body?, location?,
+kind?, area?}` (the limits and kinds of a backlog item), a question `{text, default}` (`default`
+is what happens if nobody answers; the limits of `question_ask`). Each is numbered `n` from 1 per
+report and kind. A wrong shape (not a list, not an object, an unknown field, a missing required
+field, a kind not in the list, too long, more than 10) refuses the call naming the item,
+`findings[2].title is required`; every text is scanned for secret values like a backlog item;
+either way nothing is written. They are data for the coordinator, never a backlog item by
+themselves: an item is **open** until it is triaged into the backlog (`backlog_add(from_report,
+finding)`, [§12](#spec-backlog-mcp)) or dismissed with `report_item_dismiss(report, n, kind?,
+reason?)` (a finding by default; the reason is scanned; event `report.item_dismissed`). Triaging
+or dismissing an item twice is refused, naming the backlog item or who dismissed it and when.
+`portfolio_digest` and `project_digest` list open items under `## Findings and questions to
+triage` ([§8](#spec-digest-levels)); `task_context` and `task_get` list the card's own, at most 5,
+under `## Open findings and questions of its reports` with their count (code:
+domain/report_items.py, service.py:dismiss_report_item).
+
 <a id="spec-progress"></a>
 
 **Progress, next step, waiting on.** `description` says what to do and why, short; the pseudo-field
@@ -1489,7 +1520,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 | Projects | `project_list`, `project_upsert`, `project_delete` (coordinators only, [§2](#spec-archive-purge)), `project_snapshot` |
 | Tasks | `task_list`, `task_get`, `task_create`, `task_update` (also moves the stage, sets `deploy_notes`, `deploy_done`, `cancelled` and any other field through `fields`), `task_patch` (deprecated since 0.17, use `task_update`), `task_set_stage` (deprecated since 0.17, use `task_update`), `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
 | Sessions | `task_bind_session`, `task_unbind_session` |
-| Reports and decisions | `report_add`, `decision_add` |
+| Reports and decisions | `report_add`, `report_item_dismiss` ([§1](#spec-report-items)), `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption`, `attachment_get`, `annotation_reply` |
 | Plan | `plan_get`, `plan_set`, `plan_step_add`, `plan_step_update`, `plan_accept` |
@@ -2984,9 +3015,18 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 
 | Digest | Sections, most important first |
 |---|---|
-| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
-| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
-| `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the card's change document (`## Change document`, [§8](#spec-change-documents)); the effective rules line; relevant notes; open backlog items of the card |
+| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); open findings and questions of reports to triage (below); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
+| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open findings and questions of reports to triage (below); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
+| `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the card's change document (`## Change document`, [§8](#spec-change-documents)); the effective rules line; the card's own open findings and questions of its reports (count and at most 5, [§1](#spec-report-items)); relevant notes; open backlog items of the card |
+
+**Findings and questions to triage** (`portfolio_digest`: projects not archived;
+`project_digest`: the project): only when there are open report items ([§1](#spec-report-items)).
+The first line is `Triage: backlog_add(project, title, from_report=<id>, finding=<n>) or dismiss
+with report_item_dismiss(report=<id>, n=<n>, kind, reason).` (first so that a budget cut keeps it),
+then one line per item, newest report first, at most 8, the rest counted:
+`- report #12 finding 1 on acme-shop-3: Cart total rounds down · bug`,
+`- report #12 question 1 on acme-shop-3: Keep the old route? (default: keep it)`
+(code: domain/digest.py:_report_items_section).
 
 **Linked document sections:** first the sections linked to the card with `task_doc_link` (or
 `task_create(sections)`), in the order they were linked; then the task's document field when it is
@@ -3449,6 +3489,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0060_card_fields` | `task.deploy_notes`, `task.deploy_done` (0/1, default 0), `task.cancelled` (the reason), `task.cancelled_at`, `task_repo.worktree` ([§1](#spec-task-deploy), [§1](#spec-task-code)). Additive only |
 | `0061_task_block` | `task_block` (`task_id`, `blocker_id`, both `ON DELETE CASCADE` to `task`, `created_by`, `created_at`, unique per pair) with an index on `blocker_id` ([§1](#spec-task-blockers)). Additive only |
 | `0062_task_inspect_only` | `task.inspect_only` (integer, default 0): a card that only reads needs no accepted plan before dev ([rules](#spec-rules)). Additive |
+| `0063_report_item` | `report_item` (`report_id` and `task_id` `ON DELETE CASCADE`, `kind` `finding` or `question`, `n` unique per report and kind, `title` (a question's text), `body`, `location`, `item_kind`, `area`, `question_default`, `backlog_id` `ON DELETE SET NULL` to `backlog_item`, `dismissed_at`, `dismissed_by`, `dismiss_reason`, `created_at`) with an index on `task_id` and a partial index of the open items ([§1](#spec-report-items)). Additive only |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain
@@ -3527,8 +3568,12 @@ list. The task dialog shows "From backlog #N" when the task came from the backlo
 <a id="spec-backlog-mcp"></a>
 
 **MCP.** `backlog_add(project, title, body?, area?, task?, priority?, assignee?, kind?, location?,
-session…)`: status `new`, origin `session` with the origin task when `task` is passed. It always
-writes; when open items (`new`, `later`) of the project have a title similarity (the one of
+from_report?, finding?, session…)`: status `new`, origin `session` with the origin task when `task`
+is passed. With `from_report` (a report id) and `finding` (its `n`), always together, that finding
+of the report ([§1](#spec-report-items)) is triaged into the item: its title, body, location, kind
+and area fill the parameters not given (`title` is required only without it), its card is the
+origin task unless `task` is passed, and the finding is no longer open; a finding already in the
+backlog or dismissed is refused. It always writes; when open items (`new`, `later`) of the project have a title similarity (the one of
 `memory_add`) of 0.6 or more, the answer ends with `Note: similar open items: #12 (0.71) <item title>;
 if it is the same, backlog_update(item=<new>, duplicate_of=12).` (at most three, most similar first).
 `backlog_list(project?, status?, area?, assignee?, query?, kind?, since?, task?, has_location?,

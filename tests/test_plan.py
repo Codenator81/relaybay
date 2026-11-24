@@ -424,7 +424,9 @@ async def test_work_on_a_card_still_in_plan_names_the_move_to_dev(service: Servi
     with collect_notes() as notes:
         await service.add_report(key, "inspected · S · read")
     assert not any(hint in n for n in notes)
-    await service.set_stage(key, "dev")
+    with collect_notes() as notes:  # the report that moves the card names no move
+        saved = await service.add_report_checked(key, "changed · S · started", stage="dev")
+    assert saved.moved and not any(hint in n for n in notes)
     with collect_notes() as notes:
         await service.update_plan_step(key, 1, "done", conformance="as planned")
     assert not any(hint in n for n in notes)

@@ -69,6 +69,7 @@ NAMED_FOR_OTHERS: dict[str, str] = {
     "block_set": "its own answer and block_get's",
     "backlog_patch": "the contract text (relaybay://contract) names the escape hatches",
     "memory_update": "its own description",
+    "report_item_dismiss": "the coordinator triages findings and questions (the digests)",
     "portfolio_digest": "the coordinator's catch-up, named in the full set's instructions",
     "task_unbind_session": "named in task_bind_session's description: the coordinator's act",
 }

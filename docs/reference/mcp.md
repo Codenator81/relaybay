@@ -71,6 +71,7 @@ Deprecations:
 | [`comment_ack`](#comment_ack) | write |
 | [`comment_add`](#comment_add) | write |
 | [`backlog_add`](#backlog_add) | write |
+| [`report_item_dismiss`](#report_item_dismiss) | write |
 | [`backlog_list`](#backlog_list) | read |
 | [`backlog_update`](#backlog_update) | write |
 | [`backlog_patch`](#backlog_patch) | write |
@@ -361,7 +362,7 @@ Remove the bound session from a task, e.g. when a session stops working on it wi
 
 ### `report_add`
 
-Add a report to a task. Call it at the end of every stage with your final report: what changed, how it was checked, what is left. Pass `progress` too, so the task's summary of what is done stays current with every report. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Add a report to a task. Call it at the end of every stage with your final report: what changed, how it was checked, what is left. Pass `progress` too, so the task's summary of what is done stays current with every report. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report. `stage` ends the stage in the same call; findings and questions outside the task go in `findings` and `questions`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -370,6 +371,9 @@ Add a report to a task. Call it at the end of every stage with your final report
 | `progress` | string or null | no | Markdown summary of everything done so far on the task (not just the last step). Rewrite it as the work goes on and keep it current with every report. Saved together with the report; omit to keep it; '-' or '' clears it. |
 | `next_step` | string or null | no | What happens next, one line; saved in the same write. A next step set before the last stage change shows as stale. Omit to keep it; '-' or '' clears it. |
 | `waiting_on` | string or null | no | Only who acts next: a name or role, no text after it; what happens goes to next_step. Saved in the same write. Omit to keep it; '-' or '' clears it. |
+| `stage` | string or null | no | Move the task to this stage in the same write, after the report, so a rule asking for a report since the last stage change is met; the move's rule warnings follow (strict rules refuse the report too). Omit: the answer names what the usual next move needs. |
+| `findings` | list of object or null | no | Findings outside this task, for the coordinator to triage (none becomes a backlog item by itself), at most 10: [{"title": "Cart total rounds down", "body": "...", "location": "web/cart.py:41", "kind": "bug", "area": "checkout"}]. title is required (up to 200 characters); kind is one of bug, idea, question, debt. |
+| `questions` | list of object or null | no | Questions for the coordinator, at most 10: [{"text": "Keep the old route?", "default": "keep it until the next release"}]. Both are required: default is what happens if nobody answers. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -684,7 +688,7 @@ Put a finding outside your task (a bug, a missing feature, a question for later)
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | string | yes | Project slug such as 'acme-shop'. |
-| `title` | string | yes | Short title of the finding. |
+| `title` | string or null | no | Short title of the finding; required unless from_report gives it. |
 | `body` | string or null | no | What and why, markdown. |
 | `area` | string or null | no | Free area, e.g. 'checkout' or 'board'. |
 | `task` | string or null | no | The task you found it in. Optional. |
@@ -692,6 +696,22 @@ Put a finding outside your task (a bug, a missing feature, a question for later)
 | `assignee` | string or null | no | Who it is for, a name or a role: To plan makes it waiting_on. '-' or '' clears it. |
 | `kind` | string or null | no | What it is: bug, idea, question, debt. Optional. '-' or '' clears it. |
 | `location` | string or null | no | Where in the code: 'repo:path:line', 'path:line' or a link, up to 300 characters. Optional. '-' or '' clears it. |
+| `from_report` | integer or null | no | Triage a finding a report carries (report_add findings): the report id; pass `finding` with it. The finding fills title, body, location, kind and area unless given, its task becomes the item's task, and the digests stop listing it. |
+| `finding` | integer or null | no | With from_report: the finding's number, from 1. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `report_item_dismiss`
+
+Close a finding or question a report carries (report_add findings / questions) without a backlog item: the digests stop listing it. A finding worth keeping goes to backlog_add(from_report=, finding=) instead.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `report` | integer | yes | The report id (report #N). |
+| `n` | integer | yes | The item's number in the report, from 1. |
+| `kind` | string | no | finding or question; default finding. Default: `finding`. |
+| `reason` | string or null | no | Why it needs no backlog item; for a question, what was decided. Optional. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

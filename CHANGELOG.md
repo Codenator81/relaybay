@@ -30,6 +30,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Deprecated
 
 - `task_set_stage` and `task_patch`: use `task_update(stage=...)` and `task_update(fields={...})`. Both keep working and say so in their description and results; not removed before 2027-01-15.
+### Added
+
+- `report_add(stage=...)` ends a stage in one call: the report is written, then the task moves in the same transaction, so a rule asking for a report since the last stage change is met; the move's rule warnings follow, and in `strict` mode a refused move refuses the report too. Without `stage` the answer names what the usual next move needs, e.g. `Next: task_update(stage="test") needs a report since the last stage change (done).`
+- Findings and questions as data (migration 0063): `report_add(findings=[...], questions=[...])` stores up to 10 of each with the report (a finding `{title, body?, location?, kind?, area?}`, a question `{text, default}`), secret-scanned, a wrong shape refused naming the item. None becomes a backlog item by itself: `portfolio_digest` and `project_digest` list the open ones under `## Findings and questions to triage`, `task_context` and `task_get` a card's own. `backlog_add(from_report=, finding=)` triages a finding into a backlog item (its fields fill those not given, so `title` is optional there) and the new tool `report_item_dismiss(report, n, kind?, reason?)` closes one without an item.
 
 ## [0.16.0] - 2026-11-23
 

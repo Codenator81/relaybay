@@ -16,7 +16,7 @@ from pydantic import Field
 from starlette.routing import BaseRoute
 
 from relaybay import __version__
-from relaybay.domain import backlog
+from relaybay.domain import backlog, report_items
 from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
 from relaybay.domain.task_fields import BY_NAME as TASK_FIELD_BY_NAME
@@ -1037,6 +1037,35 @@ def build_mcp(
         ] = None,
         next_step: Annotated[str | None, Field(description=NEXT_STEP_HELP + CLEARS)] = None,
         waiting_on: Annotated[str | None, Field(description=WAITING_ON_HELP + CLEARS)] = None,
+        stage: Annotated[
+            str | None,
+            Field(
+                description="Move the task to this stage in the same write, after the report,"
+                " so a rule asking for a report since the last stage change is met; the move's"
+                " rule warnings follow (strict rules refuse the report too). Omit: the answer"
+                " names what the usual next move needs."
+            ),
+        ] = None,
+        findings: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description="Findings outside this task, for the coordinator to triage (none"
+                f" becomes a backlog item by itself), at most {report_items.ITEMS_MAX}:"
+                ' [{"title": "Cart total rounds down", "body": "...", "location":'
+                ' "web/cart.py:41", "kind": "bug", "area": "checkout"}]. title is required'
+                f" (up to {backlog.TITLE_MAX} characters); kind is one of"
+                f" {', '.join(backlog.KINDS)}."
+            ),
+        ] = None,
+        questions: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description="Questions for the coordinator, at most"
+                f' {report_items.ITEMS_MAX}: [{{"text": "Keep the old route?", "default":'
+                ' "keep it until the next release"}]. Both are required: default is what'
+                " happens if nobody answers."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -1044,9 +1073,11 @@ def build_mcp(
         """Add a report to a task. Call it at the end of every stage with your final report: what
         changed, how it was checked, what is left. Pass `progress` too, so the task's summary of
         what is done stays current with every report. Also update next_step (what happens next)
-        and waiting_on (who acts next) whenever the stage changes or you report."""
-        saved, report = await run(
-            service.add_report(
+        and waiting_on (who acts next) whenever the stage changes or you report. `stage` ends
+        the stage in the same call; findings and questions outside the task go in `findings`
+        and `questions`."""
+        saved = await run(
+            service.add_report_checked(
                 task,
                 body,
                 session=session,
@@ -1055,13 +1086,13 @@ def build_mcp(
                 progress=cleared(progress),
                 next_step=cleared(next_step),
                 waiting_on=cleared(waiting_on),
+                stage=stage or None,
+                findings=findings,
+                questions=questions,
             )
         )
-        parsed = " · ".join(x for x in (report.state, report.size) if x)
-        extra = f" ({parsed})" if parsed else ""
         return fmt.with_warnings(
-            f"Report #{report.id} added to **{saved.key}**{extra}: {report.summary}",
-            fmt.waiting_on_hint(waiting_on),
+            "\n".join(fmt.report_saved(saved, stage or None)), fmt.waiting_on_hint(waiting_on)
         )
 
     @write
@@ -1899,7 +1930,10 @@ def build_mcp(
     @write
     async def backlog_add(
         project: ProjectSlug,
-        title: Annotated[str, Field(description="Short title of the finding.")],
+        title: Annotated[
+            str | None,
+            Field(description="Short title of the finding; required unless from_report gives it."),
+        ] = None,
         body: Annotated[str | None, Field(description="What and why, markdown.")] = None,
         area: Annotated[
             str | None, Field(description="Free area, e.g. 'checkout' or 'board'.")
@@ -1911,6 +1945,18 @@ def build_mcp(
         assignee: BacklogAssignee = None,
         kind: BacklogKind = None,
         location: BacklogLocation = None,
+        from_report: Annotated[
+            int | None,
+            Field(
+                description="Triage a finding a report carries (report_add findings): the"
+                " report id; pass `finding` with it. The finding fills title, body, location,"
+                " kind and area unless given, its task becomes the item's task, and the digests"
+                " stop listing it."
+            ),
+        ] = None,
+        finding: Annotated[
+            int | None, Field(description="With from_report: the finding's number, from 1.")
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -1922,7 +1968,7 @@ def build_mcp(
         item = await run(
             service.add_backlog_item(
                 project,
-                title,
+                title or None,
                 body=cleared(body),
                 area=cleared(area),
                 task=task or None,
@@ -1930,6 +1976,8 @@ def build_mcp(
                 assignee=cleared(assignee),
                 kind=cleared(kind),
                 location=cleared(location),
+                from_report=from_report,
+                finding=finding,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
@@ -1937,6 +1985,40 @@ def build_mcp(
         )
         similar = await run(service.similar_backlog(item))
         return fmt.backlog_saved(item, "Added") + fmt.backlog_similar(item, similar)
+
+    @write
+    async def report_item_dismiss(
+        report: Annotated[int, Field(description="The report id (report #N).")],
+        n: Annotated[int, Field(ge=1, description="The item's number in the report, from 1.")],
+        kind: Annotated[
+            str, Field(description="finding or question; default finding.")
+        ] = report_items.FINDING,
+        reason: Annotated[
+            str | None,
+            Field(
+                description="Why it needs no backlog item; for a question, what was decided."
+                " Optional."
+            ),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Close a finding or question a report carries (report_add findings / questions)
+        without a backlog item: the digests stop listing it. A finding worth keeping goes to
+        backlog_add(from_report=, finding=) instead."""
+        item = await run(
+            service.dismiss_report_item(
+                report,
+                n,
+                kind=kind,
+                reason=cleared(reason) or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.report_item_dismissed(item)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def backlog_list(
