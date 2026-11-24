@@ -2034,7 +2034,11 @@ One structured document with a fixed set of keys:
 <a id="spec-plan-rule"></a>
 
 **Work by plan.** `plan_accepted` is met when the task's plan is `accepted` or its size is in
-`unless_size` (default `["S"]`; a task without a size needs the plan). In `warn` mode a move to dev
+`unless_size` (default `["S"]`; a task without a size needs the plan), or when the task is
+`inspect_only` (an analysis, a repro, a question answered by reading; set with `task_create` or
+`task_update`, migration 0062): it goes to dev and done without a plan, and a report on it whose
+state is `changed`, `committed` or `pushed` adds `Warning (rules): <key> is inspect-only, yet this
+report says <state>: …`. In `warn` mode a move to dev
 without it carries `Warning (rules): moving to dev usually needs an accepted plan (not needed for
 size S).` plus `Write it with plan_set (2-5 steps), then ask for acceptance.` or, for a draft,
 `The plan is not accepted yet: the owner accepts it on the board, the coordinator with
@@ -3427,6 +3431,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0059_drop_unread_tables` | Drops the rest of what 0.12 left unread and unwritten: `schedule`, `usage_file`, `usage_day`, `usage_message`, `usage_task_day`, `token_budget`, `budget_mark`, `brake`, `session_message`, `intake_source`, `intake_message`, `intake_thread`, and the columns `project.autonomy`, `project.run_retention`, `session.transcript_path`, `task.autonomy`, `task.answer_received_at`, `task.answer_message_id`. `task` and `backlog_item` rebuilt with foreign keys off (a column with a foreign key or a CHECK cannot be dropped in place): every other column, CHECK, index and row kept; `backlog_item.intake_message_id` stays as a plain number. The run columns of `question` and `approval` stay (a CHECK uses `run_id`). Backup and rollback as for 0058 |
 | `0060_card_fields` | `task.deploy_notes`, `task.deploy_done` (0/1, default 0), `task.cancelled` (the reason), `task.cancelled_at`, `task_repo.worktree` ([§1](#spec-task-deploy), [§1](#spec-task-code)). Additive only |
 | `0061_task_block` | `task_block` (`task_id`, `blocker_id`, both `ON DELETE CASCADE` to `task`, `created_by`, `created_at`, unique per pair) with an index on `blocker_id` ([§1](#spec-task-blockers)). Additive only |
+| `0062_task_inspect_only` | `task.inspect_only` (integer, default 0): a card that only reads needs no accepted plan before dev ([rules](#spec-rules)). Additive |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain

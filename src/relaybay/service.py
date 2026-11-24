@@ -900,6 +900,20 @@ def _clean_surface(value: Any) -> str | None:
     return surface or None
 
 
+INSPECT_ONLY_WRITES = ("changed", "committed", "pushed")
+
+
+def _inspect_only_problem(task: Task, state: str | None) -> str | None:
+    """An inspect-only card reports a change: it went past reading, so it needs a plan."""
+    if not task.inspect_only or state not in INSPECT_ONLY_WRITES:
+        return None
+    return (
+        f"{task.key} is inspect-only, yet this report says {state}: a card that changes code"
+        " needs an accepted plan. Clear it with task_update(inspect_only=false) and write the"
+        " plan (plan_set)."
+    )
+
+
 def _clean_field(name: str, value: Any) -> Any:
     """Validate one task field by its entry in `TASK_FIELDS`; None (or '') clears a text."""
     spec = BY_NAME[name]
@@ -4282,6 +4296,7 @@ class Service:
         session_title: str | None = None,
         hook_session: str | None = None,
         bind: bool = True,
+        inspect_only: bool = False,
         actor: str = "mcp",
         sections: list[str] | None = None,
     ) -> Task:
@@ -4311,6 +4326,7 @@ class Service:
             "tracker_name": _clean_field("tracker_name", tracker_name),
             "tracker_url": _clean_field("tracker_url", tracker_url),
             "tracker_logged": _clean_field("tracker_logged", tracker_logged),
+            "inspect_only": _clean_field("inspect_only", inspect_only),
         }
         fields["stage"] = fields["stage"].value
         default_actor = actor
@@ -5241,7 +5257,11 @@ class Service:
         `size_task` off: the report's size does not size the task (a check's `S`)."""
         state, size, summary = parse_report(body)
         checks = parse_checks(body)
-        problems = (format_problem, verified_marks_problem(size, len(checks)))
+        problems = (
+            format_problem,
+            verified_marks_problem(size, len(checks)),
+            _inspect_only_problem(task, state),
+        )
         warnings = [f"Warning (rules): {p}" for p in problems if p]
         for warning in warnings:
             _note(warning)

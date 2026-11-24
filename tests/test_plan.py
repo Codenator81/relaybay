@@ -374,6 +374,36 @@ async def test_strict_mode_refuses_dev_without_an_accepted_plan(tmp_path: Path) 
         await svc.close()
 
 
+async def test_an_inspect_only_card_needs_no_accepted_plan(tmp_path: Path) -> None:
+    """Backlog #191: an analysis or a repro goes to dev and done without an accepted plan, also
+    in strict mode; a report on it that says it changed something warns."""
+    from relaybay.service import collect_notes
+
+    svc = Service(tmp_path / "relaybay.sqlite", rules_mode="strict")
+    await svc.start()
+    try:
+        await svc.upsert_project("acme-shop")
+        task = await svc.create_task("acme-shop", "Why do refunds fail", inspect_only=True)
+        assert task.inspect_only
+        assert (await svc.set_stage(task.key, "dev")).stage == "dev"
+        with collect_notes() as notes:
+            await svc.add_report(task.key, "inspected · M · cause found\n\nverified: logs")
+        assert notes == []
+        with collect_notes() as notes:
+            await svc.add_report(task.key, "changed · M · fixed too\n\nverified: pytest")
+        assert any("is inspect-only, yet this report says changed" in n for n in notes)
+        await svc.update_task(task.key, {"progress": "Cause found."})
+        assert (await svc.set_stage(task.key, "done")).stage == "done"
+        # A normal card is still refused; the flag clears with false.
+        other = await svc.create_task("acme-shop", "Refund fix")
+        with pytest.raises(ValidationError, match="moving to dev requires an accepted plan"):
+            await svc.set_stage(other.key, "dev")
+        cleared = await svc.update_task(task.key, {"inspect_only": False})
+        assert not cleared.inspect_only
+    finally:
+        await svc.close()
+
+
 async def test_size_is_a_task_field_and_the_first_report_sets_it(service: Service) -> None:
     await service.upsert_project("acme-shop")
     task = await service.create_task("acme-shop", "Checkout")

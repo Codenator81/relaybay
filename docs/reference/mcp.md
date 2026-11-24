@@ -232,6 +232,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 | `bind` | boolean | no | false: you create the card for someone else; it is not bound to your session (a session started for it binds itself, or the launch does). Default: `True`. |
+| `inspect_only` | boolean | no | true for a card that only reads (an analysis, a repro, a question answered by reading): it needs no accepted plan before dev and may go straight to done. A report on it that says changed, committed or pushed warns. Default: `False`. |
 | `sections` | list of string or null | no | Sections of the project's documents to link to the card, each 'doc#anchor' (as task_doc_link links one). Optional. |
 
 ### `task_doc_link`
@@ -272,6 +273,7 @@ Change task fields (waiting on, next step, branch, description, progress, the ar
 | `repos` | list of string or null | no | Repositories of the task's project the task touches, by name, added to its links; '-name' removes one. An unknown name fails with the project's names. A session bound to the task links the repository it works in by itself. 'name <absolute path>' also sets the folder (worktree) the task works in there. |
 | `prs` | list of string or null | no | Pull request links (http:// or https://) added to the task, optionally after a repository name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose path names a project repository is tied to it (and links it). |
 | `blocked_by` | list of string or null | no | Cards this task waits for, by key, of any project on the board: 'acme-shop-12'; '-key' removes one. A blocker blocks while it is in plan, dev, review or test, and no longer at live or done. An unknown key, the task itself and a cycle are refused. |
+| `inspect_only` | boolean or null | no | true for a card that only reads (an analysis, a repro, a question answered by reading): it needs no accepted plan before dev and may go straight to done. A report on it that says changed, committed or pushed warns. |
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |

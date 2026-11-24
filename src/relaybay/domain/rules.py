@@ -285,7 +285,11 @@ def unmet(
         if req["kind"] == REPORT_SINCE_STAGE_CHANGE:
             ok = report_since_stage_change
         elif req["kind"] == PLAN_ACCEPTED:
-            ok = plan_status == "accepted" or values.get("size") in req.get("unless_size", [])
+            ok = (
+                plan_status == "accepted"
+                or values.get("size") in req.get("unless_size", [])
+                or bool(values.get("inspect_only"))
+            )
         elif req["kind"] == REQUIRE_TRACKER_LOG:
             ok = bool(values.get("tracker_logged"))
         else:

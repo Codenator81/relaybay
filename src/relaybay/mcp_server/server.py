@@ -118,6 +118,11 @@ TRACKER_LOGGED_HELP = (
     " logged unless tracker_logged is passed in the same write. Done tasks without it stay on"
     " the board marked 'not logged'."
 )
+INSPECT_ONLY_HELP = (
+    "true for a card that only reads (an analysis, a repro, a question answered by reading): it"
+    " needs no accepted plan before dev and may go straight to done. A report on it that says"
+    " changed, committed or pushed warns."
+)
 NEXT_STEP_HELP = (
     "What happens next, one line; saved in the same write. A next step set before the last stage"
     " change shows as stale. Omit to keep it;"
@@ -548,6 +553,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " your session (a session started for it binds itself, or the launch does)."
             ),
         ] = True,
+        inspect_only: Annotated[bool, Field(description=INSPECT_ONLY_HELP)] = False,
         sections: Annotated[
             list[str] | None,
             Field(
@@ -581,6 +587,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
                 bind=bind,
                 sections=sections or None,
+                inspect_only=inspect_only,
             )
         )
         filed = await doc_field_note(
@@ -647,6 +654,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         repos: Annotated[list[str] | None, Field(description=REPOS_HELP)] = None,
         prs: Annotated[list[str] | None, Field(description=PRS_HELP)] = None,
         blocked_by: Annotated[list[str] | None, Field(description=BLOCKED_BY_HELP)] = None,
+        inspect_only: Annotated[bool | None, Field(description=INSPECT_ONLY_HELP)] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -681,6 +689,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         }
         if tracker_logged is not None:
             changes["tracker_logged"] = tracker_logged
+        if inspect_only is not None:
+            changes["inspect_only"] = inspect_only
         if repos:
             changes["repos"] = repos
         if prs:

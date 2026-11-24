@@ -136,6 +136,14 @@ TASK_FIELDS: tuple[TaskField, ...] = (
         "false clears it",
     ),
     TaskField(
+        "inspect_only",
+        "bool",
+        "True for a card that only reads: an analysis, a repro, a question answered by reading."
+        " It needs no accepted plan before dev and may go straight to done; a report on it that"
+        " says changed, committed or pushed gets a warning.",
+        "false clears it",
+    ),
+    TaskField(
         "cancelled",
         "text",
         "Why the card was given up on; setting it stamps the time. The card stays in its stage"

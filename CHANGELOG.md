@@ -16,6 +16,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `doc_search` names a document changed outside relaybay in one short line after the hits instead of the full list of changed sections.
 - A launched session that writes with a readable `session` name and its own `hook_session` is taken as the desktop session that hook id belongs to: no new session row and no "belongs to another session" warning on every write.
 - A session working in a shared checkout where another open card's branch is checked out no longer links that branch and folder to its own card; only the repository is linked.
+### Added
+
+- `inspect_only` on a card (`task_create`, `task_update`, `task_patch`; migration 0062): an analysis, a repro or a question answered by reading needs no accepted plan before dev, also in strict mode, and may go straight to done. A report on such a card that says `changed`, `committed` or `pushed` warns that it needs a plan.
 
 ## [0.16.0] - 2026-11-23
 

@@ -98,6 +98,7 @@ class Task:
     archived_from: str | None = None  # 'live': the archive closed it; Back returns it there
     deploy_notes: str | None = None  # what a deploy needs: migration, flag, script, rollback
     deploy_done: bool = False
+    inspect_only: bool = False  # changes no code: no accepted plan needed before dev
     cancelled: str | None = None  # the reason the card was given up on
     cancelled_at: str | None = None
     area_id: int | None = None

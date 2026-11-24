@@ -242,6 +242,7 @@ async def test_migration_from_0047_keeps_every_task(tmp_path: Path) -> None:
             "deploy_done",
             "cancelled",
             "cancelled_at",
+            "inspect_only",
         )
         untouched = {k: v for k, v in after[1].items() if k not in added}
         dropped = ("autonomy", "answer_received_at", "answer_message_id")  # by 0059

@@ -158,6 +158,7 @@ def _task(row: aiosqlite.Row) -> Task:
         archived_from=row["archived_from"],
         deploy_notes=row["deploy_notes"],
         deploy_done=bool(row["deploy_done"]),
+        inspect_only=bool(row["inspect_only"]),
         cancelled=row["cancelled"],
         cancelled_at=row["cancelled_at"],
         area_id=row["area_id"],
