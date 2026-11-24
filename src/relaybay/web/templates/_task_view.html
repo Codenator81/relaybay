@@ -22,6 +22,20 @@
 
   {% include "_state_line.html" %}
 
+  {#- The day time log (design 0028): always shown, one line under the session's state. #}
+  {%- set tm = detail.time %}
+  {%- set time_url = "/p/" ~ t.project_slug ~ "/t/" ~ t.key ~ "/timelog" %}
+  <div class="time-line">
+    <span class="time-numbers"><strong>Time</strong> today {{ tm.today|hm }} · total {{ tm.total|hm }} · in tracker {{ tm.tracker|hm_minutes }}{% if tm.current %} <span class="chip time-chip is-now">now since {{ tm.since.strftime("%H:%M") }}</span>{% endif %}</span>
+    {%- for kind, text in [("now", "Working on this now")] + ([("pause", "Pause")] if tm.current else []) %}
+    <form class="inline-form" method="post" action="{{ time_url }}" hx-post="{{ time_url }}" hx-target="closest .task-view" hx-swap="outerHTML">
+      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+      <input type="hidden" name="kind" value="{{ kind }}">
+      <button type="submit" class="action"{% if kind == "now" and tm.current %} disabled title="Already the card worked on now"{% endif %}>{{ text }}</button>
+    </form>
+    {%- endfor %}
+  </div>
+
   {%- set approvals_block %}
   <details class="panel fold" data-fold="{{ 'approvals' if approvals.open else 'approvals-closed' }}"{% if approvals.open %} open{% endif %}>
     <summary><h2>Approvals</h2></summary>

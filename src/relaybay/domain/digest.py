@@ -451,6 +451,7 @@ class PortfolioData:
     open_tasks: list[tuple[Task, list[str]]] = field(default_factory=list)
     report_items: list[str] = field(default_factory=list)  # open ones, newest first
     report_items_more: int = 0  # open ones not loaded
+    time_line: str | None = None  # the day time log today (timelog.digest_line), when it has marks
 
 
 def open_task_line(task: Task, prs: list[str]) -> str:
@@ -550,6 +551,7 @@ def portfolio_text(data: PortfolioData, footer: Callable[[bool], str], budget: i
                 f"{len(data.projects)} project(s) · {open_tasks} open task(s)"
                 f" · {data.inbox.badge} waiting for the owner",
                 *([data.rules_line] if data.rules_line else []),
+                *([data.time_line] if data.time_line else []),
             ],
             "project_digest(project) for one project",
             0,

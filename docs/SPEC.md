@@ -720,6 +720,55 @@ logged task (a report or a changed `progress` on a card before `live`, or a move
 the mark; a move back to an earlier stage still clears it. Metadata edits keep the mark; an explicit `tracker_logged` in the same write wins; a new
 `tracker_ref` starts as not logged unless `tracker_logged` is passed with it.
 
+<a id="spec-time-log"></a>
+
+**Day time log** (`time_mark`, `tracker_worklog`, migration 0064; [design 0028](design/0028-day-time-log.md)).
+The coordinator's log of the working day across projects; relaybay shows the numbers and never
+judges what counts as work. A **mark** is `start`, `switch` or `pause` at a time `at` (stored UTC,
+like every time). `start` and `switch` name exactly one of a card (`task`) and a free `label`
+(work without a card, e.g. `call`); a `pause` names no card and its label says why. Marks are
+ordered by (`at`, id); a non-pause mark opens a **span** that ends at the next mark of any kind, a
+pause opens a gap until the next mark (code: domain/timelog.py:span_of).
+- **Day**: the local date of the server machine (Python's local time; no setting). A span over
+  midnight counts only when it ends on the very next day and lasts at most 4 hours
+  (`MAX_OVERNIGHT_SECONDS`), split between the days; a span over two midnights never counts. In
+  Docker the zone is UTC unless `TZ` is set.
+- **Running**: today's last span runs until now; the answers and the board show it as `now`.
+- **Unclosed**: a span whose next mark (any kind) is on a later day and that is not such a short
+  night (the day was not paused), or a past day's last span with no next mark, counts 0 on its
+  start day and is listed `unclosed` with the hint to add the pause with that day's date
+  (`at='YYYY-MM-DDTHH:MM'`; only today's view says `HH:MM`) or to fix the mark; it never books the
+  night. A mark, a fix or a removal that leaves an earlier day's span unclosed says so in its answer (`acme-shop-1 since
+  Mon 17:00 stays unclosed (0h00): close it with timelog_mark(kind='pause', at='<that
+  day>THH:MM')`).
+- **Durations** are summed in seconds and shown floored to whole minutes as `1h05`, `0h30`
+  (code: domain/timelog.py:hm).
+- `at` is `HH:MM` (today, server time; in `timelog_fix` the mark's own day) or an ISO time (with
+  an offset; without one, server time); unreadable or more than a minute ahead is refused (code:
+  domain/timelog.py:parse_at).
+- **The same mark again** (kind and target of the newest mark, `at` within 60 s) writes nothing and
+  returns that mark; the board's "Working on this now" (`kind` `now`: start, or switch while a span
+  runs) on the card already running is a no-op (code: service.py:mark_time). Odd sequences (a start
+  while a span runs, a switch or pause with nothing running, a mark before the newest one) are
+  written with a note, never refused.
+- **Corrections**: `timelog_fix` changes a mark in place or deletes it, with a required reason;
+  setting the card clears the label and the other way round; events `timelog.fixed` (`before`,
+  `after`, `reason`) and `timelog.removed` (`before`, `reason`) are on the Audit page's changes
+  (code: service.py:fix_time_mark).
+- **In the tracker**: `tracker_worklog` is an append-only ledger of minutes entered in the external
+  tracker per card and local day (`worklog_add`, -1440 to 1440, not 0); a correction is a negative
+  row with a required reason, refused when the card's day would go below 0; a day after today is
+  refused (code:
+  service.py:add_worklog). A card's time is `today · total · in tracker` (code:
+  service.py:task_time, `TaskDetail.time`). `tracker_logged` and `require_tracker_log`
+  ([§1](#spec-tracker)) are unchanged and separate.
+- Labels, refs and reasons are scanned for secret values like other text, under the rules of the
+  card's project (a fix without a new card: the mark's own project). The rows keep the card's
+  key and project with `ON DELETE SET NULL`: a purged card's or a deleted project's marks stay on
+  their days under the key, and a deletion's export does not hold them ([§2](#spec-archive-purge)).
+- Without `coordinators` every caller may write; in [coordinator mode](#spec-coordinator-mode) an
+  agent's write is refused.
+
 <a id="spec-decision"></a>
 
 **Decision.** A short text recorded for a project (scope `project`) or one of its tasks (scope
@@ -769,6 +818,9 @@ agents find, and the tracker work log follows the coordinator's own records:
   rest went to next_step` or ` — the rest was not kept: the card already has a next_step`
   (code: domain/waiting_on.py:normalise, service.py:_coordinated_waiting_on). The board's writes and
   the cards a question or an approval request sets to the owner are not touched.
+- `timelog_mark`, `timelog_fix` and `worklog_add` from an agent are refused, nothing is written:
+  `The day time log is the coordinator's. Nothing changed.` ([§1](#spec-time-log); code:
+  service.py:TIMELOG_COORDINATOR).
 - The `/mcp` and `/mcp/agent` instructions change in three places ([§3](#spec-mcp-instructions)).
 With `coordinators` empty, none of this applies and every text is as without the mode.
 
@@ -791,7 +843,10 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `question.delivered`, `question.withdrawn`, `question.overdue` (with `question_id` and the text,
 [§1](#spec-questions)), `approval.requested`, `approval.decided`, `approval.used` (with
 `approval_id`, `action`, `target` and `what`), `approval.expired`
-([§1](#spec-approvals))
+([§1](#spec-approvals)), `timelog.marked` (`id`, `mark_kind`, `at`, `key` or `label`, `project`,
+`keys`: the cards whose time changed), `timelog.fixed` (`id`, `before`, `after`, `reason`, `keys`),
+`timelog.removed` (`id`, `before`, `reason`, `keys`), `worklog.added` (`id`, `key`, `day`,
+`minutes`, `ref`) ([§1](#spec-time-log))
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 Events of runs, the coordinator run, profiles, schedules, the brake, budgets, intake and session
 messages written before 0.12 (`run.*`, `coordinator.*`, `profile.*`, `schedule.*`, `brake.*`,
@@ -886,7 +941,7 @@ posts; events `filter.saved`, `filter.deleted`.
 
 | Page | URL | Content |
 |---|---|---|
-| Projects | `/` | Projects with task counts per stage. |
+| Projects | `/` | The day time log ([below](#spec-board-daylog)), then the projects with task counts per stage and, when not 0, their time today, in total and in the tracker. |
 | Project board | `/p/<slug>` | One column per stage on two pages (`?page=2`, [below](#spec-board-paging)); on narrow screens a stage tab bar shows one column at a time. |
 | Task dialog | `/p/<slug>?task=<key>` | The task over the live board (full screen on a phone), tabs Overview and Review (`&tab=review`); closes with Back, Esc or a click outside. |
 | Task page | `/t/<key>` | The same details as the dialog on a page of its own. |
@@ -904,6 +959,31 @@ posts; events `filter.saved`, `filter.deleted`.
 | Policy | `/settings/policy` | The effective policy per scope with the source of each value, preset, layer editors and agent proposals ([§7](#spec-policy-page)). |
 | Rules | `/settings/rules` | The rules per scope, version history with diffs, proposals, roll back ([§6](#spec-rules-page)). |
 | Sign-in | `/login` | Token form; also accepts `?token=…` once and sets the cookie. |
+
+<a id="spec-board-daylog"></a>
+
+**Day time log on `/`** ([§1](#spec-time-log)). A panel above the projects, for one day (`?day=YYYY-MM-DD`,
+default today; a later day shows today): the date (`Today` for today) with links to the day
+before, back to today and to the day after (not past today), and the day's total in large type.
+Below it one strip, an inline SVG (the board's Content-Security-Policy drops inline styles; SVG
+geometry attributes are not styles), from the first span's hour to the last one's (whole hours, a
+tick per hour, at most 8 hour labels: every 2nd or 3rd hour on a long day): each span is a block as
+wide as its duration, coloured by its card's project (the CRC-32 of the project's slug mod 8, the
+same for every project, a purged one included; one light and one dark fill per colour), labels
+grey, pauses the gaps between them, an unclosed span faint with a dashed edge, one hour wide; each
+block's tooltip reads `<key or label> · HH:MM-HH:MM · 1h13` (`HH:MM-now` while it runs, `since
+HH:MM · unclosed, counts 0h00`), and a block wide enough shows its key, clipped to the block. Then
+the totals per project as chips in the same colours (`acme-shop 2h40`, `labels 0h50`), `now: <key>
+since HH:MM` while a span runs (a start time, never a running duration: nothing ticks in the
+browser), one line per unclosed span (add a pause with the time, on that day, or delete the mark),
+the day's marks in a fold with **Delete** (asks first; reason `removed on the board`, on the Audit
+page), a form (kind start / switch / pause; **card** or **label** chosen by hand, never guessed
+from the text; the key or label, or a pause's reason; the time `HH:MM` on the panel's day,
+optional only today) and **Pause** while a span runs. A day without marks is
+one muted line and no strip. Writes are the board's (cookie and CSRF token, actor `board`; a
+Bearer client is refused, `403`): `POST /timelog`, `POST /timelog/<id>/delete`; the panel is
+`GET /fragments/daylog?day=` (code: web/routes.py:daylog_context, templates/_daylog.html,
+domain/timelog.py:strip).
 
 <a id="spec-board-paging"></a>
 
@@ -933,7 +1013,9 @@ same board). A task with a checklist shows **Review 2/5** (accepted / all; green
 red-tinted while one is rejected), which opens the dialog on its Review tab. A task with a plan
 shows **Plan 2/5** (done / all) with `· draft` while it is not accepted, the number of deviations
 highlighted and `· now: <step in progress>` (one line, cut with an ellipsis), which opens the
-dialog on its Plan tab.
+dialog on its Plan tab. A card with time in the day log shows a small chip: `now since 13:50 ·
+today 2h10` (accent) while it is the card worked on now, else `today 1h20` when it has time today,
+nothing otherwise ([§1](#spec-time-log)).
 
 <a id="spec-board-questions"></a>
 
@@ -990,12 +1072,16 @@ task dialog shows the chip after the key in its head, and the task view (dialog 
 
 **Code row.** A task whose project has repositories, or that has pull requests, shows a Code row on
 its card and in the task dialog / page ([§1](#spec-task-code)): one line per linked repository with
-its name, its kind, its branch (the one the hooks saw checked out in that repository while a
-bound session worked there, stored on the link, migration 0057; until then the task's own branch;
-the card drops its separate branch chip once a repository is linked), its worktree when one is
-set (the folder, with its own **Open in VS Code** icon), its
-pull requests (`#123` when the number is known, else `PR`; each opens in a new tab) and an
-**Open in VS Code** icon (`</>`, the path and the words on hover), a `vscode://file/<path>` link
+its name, its kind, a git branch icon and its branch (the one the hooks saw checked out in that
+repository while a bound session worked there, stored on the link, migration 0057; until then the
+task's own branch; no branch, no icon; the card drops its separate branch chip once a repository
+is linked), a **worktree** mark when one is set, its pull requests (`#123` when the number is
+known, else `PR`; each opens in a new tab) and one **Open in VS Code** icon (`</>`, the path and
+the words on hover). The worktree's path is not printed, so the line stays one line: the mark shows
+it on hover and copies it on a click ("copied" for a moment; without the clipboard a prompt shows
+it), which neither opens the task dialog nor starts a drag; with a worktree the icon opens the
+worktree, not the main checkout, since that is the folder the task works in (code:
+web/templates/_code_row.html, web/static/app.js:copyPath). The icon is a `vscode://file/<path>` link
 (backslashes become `/`, a Windows drive stays `C:`, other unsafe characters are percent-encoded; a
 leading `~` is left to the editor). With no repository linked there is no repository line (until
 0.15 a folded **Repos: all**); `task_get` then names the project's repositories and asks the
@@ -1007,7 +1093,7 @@ the task has neither). A `task.updated` event refreshes the card.
 <a id="spec-board-compact"></a>
 
 **Compact** (a toggle in the board's tools row, on phones too) leaves key, tracker badge, title and
-the waiting-on chip on every task card; the "open in desktop" icon, the Review and Plan badges, the branch and the next step are
+the waiting-on chip on every task card; the "open in desktop" icon, the Review and Plan badges, the time chip, the branch and the next step are
 hidden, and the Code row turns into its count. A chevron button on a card
 (`aria-expanded`, shown only in this mode) expands just that card; a click on the card still opens
 the dialog. Both choices are kept per browser in `localStorage` (the expanded cards by task key, the
@@ -1062,7 +1148,11 @@ reorder) (code: web/templates/_column.html).
 
 **The session card** ([design 0025](design/0025-board-with-the-desktop.md#what-gets-stronger)).
 The task dialog's Overview and the task page put what the owner acts on first. An open card (not
-done, not archived) shows, in this order: the title and the **state line**; what waits for the
+done, not archived) shows, in this order: the title and the **state line**; the **Time** line,
+always and on every card, `Time today 2h10 · total 4h55 · in tracker 1h30` with **Working on this
+now** (start, or switch while another card runs; disabled on the card that runs) and **Pause** while
+this card runs (`POST /p/<slug>/t/<key>/timelog`, the board's write; a pause while another card or
+nothing runs is refused and writes nothing, [§1](#spec-time-log)); what waits for the
 owner: **Approvals** and **Questions** with an open item, **Unread replies** (the agent replies not
 marked read, as the Inbox counts them); **Next** (cancelled mark, next step, waiting on, Blocked by,
 Blocks); **Plan** (done/all and each step with its status; the Plan tab keeps the full plan and
@@ -1514,7 +1604,13 @@ templates. A heartbeat comment is sent every 15 s. On reconnect the browser send
 and the server replays newer events (up to 5000); a client further behind, or ahead of the newest
 event, gets `event: resync` and reloads. Waking from sleep (`visibilitychange`) or coming back
 online forces a reconnect. A subscriber whose queue overflows (256 events) is dropped and catches up
-on reconnect.
+on reconnect. A `timelog.*` event refreshes the cards its `keys` name on any board (a switch moves
+time from one project's card to another's), the open dialog or task page of one of them, and the
+`/` day panel; while a span runs, any event that refreshes the project rows on `/` also refreshes
+the panel (at most every 2 s), so both show the same today. The panel is not swapped while its
+form has the focus or typed text; the refresh waits until the form is left. `worklog.added`
+refreshes its card's dialog, not the panel (which shows no tracker minutes). Nothing ticks in the
+browser: the minutes move on the next event or reload.
 
 <a id="spec-board-markdown"></a>
 
@@ -1531,7 +1627,9 @@ tools, token and security; `mcp_server/roles.py`): each lists its role's tools i
 sends its own instructions; a tool not listed still runs when called by name. A role's list never
 holds a deprecated name; the agent's covers every moment of a card (start, plan, work, documents,
 question, decision, finding, report, review, approval, closing); the coordinator's is every current
-tool but `review_steps_set`, `review_step_update` and `annotation_reply`; the reader's is
+tool but `review_steps_set`, `review_step_update` and `annotation_reply` (the day time log's
+`timelog_mark`, `timelog_list`, `timelog_fix` and `worklog_add` are in it and in no other role's
+list, and its instructions have one line about them); the reader's is
 `task_context`, `task_get`, `plan_get`, `review_get`, `attachment_get`, `comments_list`,
 `decision_list`, `rules_get`, `backlog_list` and the `doc_list` / `doc_outline` / `doc_get` /
 `doc_search` reads. The instructions of a role name only tools of its list, and every tool a hint
@@ -1565,6 +1663,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Backlog | `backlog_add`, `backlog_list`, `backlog_update`, `backlog_patch` ([§12](#spec-backlog-mcp)) |
+| Day time log | `timelog_mark`, `timelog_list`, `timelog_fix`, `worklog_add` ([§1](#spec-time-log)) |
 
 Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay. The
 digests are annotated as writes: `session` moves the caller's read position and can create or link
@@ -1622,7 +1721,13 @@ dropped or an enum added, a tighter minimum, maximum or length, a field of an ob
 removed or made required); a new required parameter or prompt argument, or an optional one made
 required; a read-only tool that starts to write or a tool that becomes destructive. A field a stale
 schema lacks is reached through `task_update(task, fields={…})` or `backlog_patch(item, fields={…})`;
-there is no such escape hatch for other tools.
+there is no such escape hatch for other tools. An argument the tool's schema does not declare (a
+typo, a parameter of another version) is never dropped without a word (`RoleServer.call_tool`): a
+writing tool refuses the call before it runs, so nothing changes, with
+`Unknown parameter(s) for <tool>: <names>. Nothing changed.`, the parameters it takes and a hint to
+reconnect (for a task or backlog tool: or use `task_update(fields={…})` / `backlog_patch`); a read-only tool answers and adds the last line
+`Ignored unknown parameter(s): <names>.` Since a release only adds, every parameter of a released
+contract stays declared, deprecated tools and parameters included.
 
 A deprecation is an entry in `DEPRECATIONS` (`src/relaybay/mcp_server/contract.py`): the tool (or
 resource URI, or prompt) and the parameter, if only one is meant, the version it is deprecated
@@ -3049,7 +3154,7 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 
 | Digest | Sections, most important first |
 |---|---|
-| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); open findings and questions of reports to triage (below); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
+| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge; when today has time marks one more line, `Time today 3h20 (acme-shop 2h00, labels 1h20); now acme-shop-12 since 14:05; 1 unclosed (timelog_list)`, [§1](#spec-time-log), code: domain/timelog.py:digest_line); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); open findings and questions of reports to triage (below); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
 | `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open findings and questions of reports to triage (below); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
 | `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the card's change document (`## Change document`, [§8](#spec-change-documents)); the effective rules line; the card's own open findings and questions of its reports (count and at most 5, [§1](#spec-report-items)); relevant notes; open backlog items of the card |
 
@@ -3524,6 +3629,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0061_task_block` | `task_block` (`task_id`, `blocker_id`, both `ON DELETE CASCADE` to `task`, `created_by`, `created_at`, unique per pair) with an index on `blocker_id` ([§1](#spec-task-blockers)). Additive only |
 | `0062_task_inspect_only` | `task.inspect_only` (integer, default 0): a card that only reads needs no accepted plan before dev ([rules](#spec-rules)). Additive |
 | `0063_report_item` | `report_item` (`report_id` and `task_id` `ON DELETE CASCADE`, `kind` `finding` or `question`, `n` unique per report and kind, `title` (a question's text), `body`, `location`, `item_kind`, `area`, `question_default`, `backlog_id` `ON DELETE SET NULL` to `backlog_item`, `dismissed_at`, `dismissed_by`, `dismiss_reason`, `created_at`) with an index on `task_id` and a partial index of the open items ([§1](#spec-report-items)). Additive only |
+| `0064_time_log` | `time_mark` (`at`, `kind` `start`, `pause` or `switch`, `task_id`, `project_id` and `session_id` `ON DELETE SET NULL`, `task_key`, `label`, `actor`, `created_at`, `updated_at`; a check that a pause names no card and a start or switch exactly one of card and label) with indexes on (`at`, `id`) and `task_id`; `tracker_worklog` (`task_id`, `project_id`, `session_id` `ON DELETE SET NULL`, `task_key`, `day`, `minutes` -1440 to 1440 and not 0, `ref`, `reason`, `actor`, `created_at`) with an index on (`task_id`, `day`) ([§1](#spec-time-log)). Additive only |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain

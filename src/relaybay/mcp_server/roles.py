@@ -72,6 +72,10 @@ NAMED_FOR_OTHERS: dict[str, str] = {
     "report_item_dismiss": "the coordinator triages findings and questions (the digests)",
     "portfolio_digest": "the coordinator's catch-up, named in the full set's instructions",
     "task_unbind_session": "named in task_bind_session's description: the coordinator's act",
+    "timelog_mark": "the day time log is the coordinator's (its refusal, its answers)",
+    "timelog_list": "the day time log is the coordinator's (its answers)",
+    "timelog_fix": "the day time log is the coordinator's (its answers)",
+    "worklog_add": "the tracker's minutes are the coordinator's (its answers)",
 }
 
 READER_TOOLS: frozenset[str] = frozenset(
@@ -195,6 +199,9 @@ def coordinator_instructions(rules: Rules) -> str:
             f"Reports: report_add on your own cards; {_report_line(rules)}.",
             "Closing: task_update(tracker_logged=true) after the work log; task_archive (or"
             " task_unarchive) once a card is done. project_pulse_set keeps a project's pulse.",
+            "Day time log: timelog_mark at each start, switch and pause (a card or a label),"
+            " timelog_list shows the day, timelog_fix corrects a mark with a reason;"
+            " worklog_add records minutes entered in the tracker.",
             "Memory: memory_add for a fact every session needs (an owner preference, a project"
             " fact), not for a card's decision; memory_search and memory_get read it; block_get"
             " and block_set hold a memory block.",

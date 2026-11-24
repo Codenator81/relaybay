@@ -238,6 +238,12 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | `doc_update(from_path)`: a one-off import of a local file; warnings for links without a target | done | — |
 | The task dialog puts what waits for the owner first and leaves out empty blocks | done | — |
 
+## 0.17 — the day time log (unreleased)
+
+| Item | Status | Design |
+|---|---|---|
+| The day time log across projects: marks on cards or labels, the day's strip and totals on `/`, the card's time, minutes entered in the tracker; coordinator tools `timelog_mark`, `timelog_list`, `timelog_fix`, `worklog_add` | done | [0028](design/0028-day-time-log.md) |
+
 ## 1.0
 
 Stable MCP contract, complete documentation, a migration path from earlier versions, tested on three

@@ -32,6 +32,10 @@ Deprecations:
 | [`project_delete`](#project_delete) | write |
 | [`project_snapshot`](#project_snapshot) | read |
 | [`project_pulse_set`](#project_pulse_set) | write |
+| [`timelog_mark`](#timelog_mark) | write |
+| [`timelog_list`](#timelog_list) | read |
+| [`timelog_fix`](#timelog_fix) | write |
+| [`worklog_add`](#worklog_add) | write |
 | [`portfolio_digest`](#portfolio_digest) | write |
 | [`project_digest`](#project_digest) | write |
 | [`task_context`](#task_context) | write |
@@ -147,6 +151,62 @@ Write the project's pulse note: a short hand-written summary, shown with its dat
 |---|---|---|---|
 | `project` | string | yes | Project slug such as 'acme-shop'. |
 | `text` | string | yes | Where the project stands: at most 5 lines and 600 characters. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `timelog_mark`
+
+Mark the day time log, for the coordinator: when work starts, switches to another card or label, or pauses. A mark opens a span that runs until the next mark; a pause is a gap. The answer names the span the mark closed and the day's total. The same mark again within a minute writes nothing. In coordinator mode an agent's mark is refused.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `kind` | string | yes | start: work begins on a card or a label; switch: moves to another one; pause: work stops (a gap until the next start). |
+| `task` | string or null | no | The card worked on (start, switch), e.g. 'acme-shop-12'. |
+| `label` | string or null | no | Work without a card (start, switch), e.g. 'call' or 'email'; on a pause, why. Not with task. |
+| `at` | string or null | no | When, if not now: HH:MM (today, server time) or an ISO time like 2026-11-24T09:00+02:00; at most a minute ahead. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `timelog_list`
+
+The day time log: the spans and pauses of a day in time order with their durations, the totals per project, card and label, what runs now and the unclosed spans (a past day's last span without a pause counts 0). With task: that card's time (today, total, in the tracker, per day, the tracker rows). With project: its cards on the day.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `day` | string or null | no | A date like 2026-11-24, 'today' (the default) or 'yesterday'. |
+| `task` | string or null | no | One card instead: today, total, in the tracker, per day, rows. |
+| `project` | string or null | no | One project's cards on the day, and its totals. |
+
+### `timelog_fix`
+
+Correct a mark of the day time log in place, or delete it, for the coordinator. The reason is required; the audit keeps the mark before and after. The answer shows the mark's day again.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `mark` | integer | yes | The mark's number (timelog_list shows #N). |
+| `reason` | string | yes | Why the mark was wrong; kept in the audit. |
+| `at` | string or null | no | The right time: HH:MM on the mark's own day (server time), or an ISO time like 2026-11-24T09:00+02:00; at most a minute ahead. |
+| `kind` | string or null | no | The right kind. |
+| `task` | string or null | no | The right card; clears the label. '-' or '' clears it. |
+| `label` | string or null | no | The right label; clears the card. '-' or '' clears it. |
+| `delete` | boolean | no | true deletes the mark. Default: `False`. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `worklog_add`
+
+Record minutes entered in the external tracker for a card, for the coordinator: an append-only ledger, shown as "in tracker" next to the card's time. tracker_logged stays the separate mark that the work log is done.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
+| `minutes` | integer | yes | Minutes entered in the external tracker; a correction is negative (with reason) and may not take the card's day below 0. |
+| `day` | string or null | no | The day they were logged for; default today. |
+| `ref` | string or null | no | The tracker's work log entry or issue, e.g. 'ENG-12'. |
+| `reason` | string or null | no | Why; required for a negative correction. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |

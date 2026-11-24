@@ -19,7 +19,7 @@ import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, NamedTuple
 from urllib.parse import urlencode
@@ -36,7 +36,7 @@ from relaybay.desktop.settings import config_dir
 from relaybay.domain import annotations as ann
 from relaybay.domain import approvals as arules
 from relaybay.domain import areas as area_rules
-from relaybay.domain import backlog, doc_index, guard, intake, report_items
+from relaybay.domain import backlog, doc_index, guard, intake, report_items, timelog
 from relaybay.domain import change_doc as cdoc
 from relaybay.domain import comments as comment_text
 from relaybay.domain import digest as digests
@@ -359,6 +359,8 @@ AUDIT_CHANGE_KINDS = (
     "approval.decided",
     "approval.used",
     "approval.expired",
+    "timelog.fixed",
+    "timelog.removed",
     *HISTORIC_AUDIT_KINDS,
 )
 AUDIT_DAYS_MAX = 366
@@ -395,6 +397,38 @@ def _note(text: str) -> None:
     notes = _NOTES.get()
     if notes is not None and text not in notes:
         notes.append(text)
+
+
+def _utc_iso(moment: datetime) -> str:
+    """A time as stored: UTC ISO with milliseconds, like `now_iso`."""
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds")
+
+
+def _running_mark(
+    newest: timelog.TimeMark | None, now: datetime, tz: tzinfo | None
+) -> timelog.TimeMark | None:
+    """The newest mark when its span is running now (today's, not a pause)."""
+    if newest is None or newest.kind == timelog.PAUSE:
+        return None
+    span = timelog.span_of(newest, now, tz)
+    return newest if span is not None and span.running else None
+
+
+def _mark_id(value: int | str) -> int:
+    text = str(value).strip().lstrip("#")
+    if not text.isdigit():
+        raise ValidationError(f"mark must be a mark number like 12, got {value!r}.")
+    return int(text)
+
+
+def _mark_state(mark: timelog.TimeMark) -> dict[str, Any]:
+    """What a fix or removal event keeps of a mark."""
+    return {"at": _utc_iso(mark.at), "kind": mark.kind, "key": mark.task_key, "label": mark.label}
+
+
+def _keys(*keys: str | None) -> list[str]:
+    """The cards whose time an event changes, once each: what the board refreshes."""
+    return [k for k in dict.fromkeys(keys) if k]
 
 
 REPORT_MARKS_FROM_KEY = "report_marks_from"
@@ -550,6 +584,7 @@ class TaskDetail:
     # card_approvals), task_detail leaves them empty.
     questions: qrules.QuestionView = field(default_factory=qrules.QuestionView)
     approvals: arules.ApprovalView = field(default_factory=arules.ApprovalView)
+    time: timelog.CardTime = field(default_factory=timelog.CardTime)  # the day time log
 
     @property
     def unread_replies(self) -> list[Comment]:
@@ -1437,6 +1472,7 @@ AGENT_CREATES_NOTHING = (
     " report_add(task={key}, findings=[...]) (a question for the owner: questions=[...])."
     " Nothing created."
 )
+TIMELOG_COORDINATOR = "The day time log is the coordinator's. Nothing changed."
 AGENT_DISMISSES_NOTHING = (
     "In coordinator mode the coordinator triages the findings and questions of reports: leave"
     " it to it ({key}). Nothing changed."
@@ -1595,6 +1631,8 @@ class Service:
             raise ValueError(f"session_context must be one of: {modes}.")
         self.owner_names = owner_names if owner_names is not None else ["owner", "me", "you"]
         self.require_tracker_log = require_tracker_log
+        # The day time log's zone: None is the machine's own (tests fix it).
+        self.timelog_tz: tzinfo | None = None
         # Projects that keep a tracker (a card has or had a tracker reference): only there does
         # `require_tracker_log` apply. Read again on the Inbox, the board, MCP reads, stage moves.
         self._tracked: set[int] = set()
@@ -3352,6 +3390,7 @@ class Service:
             blocks=blocks,
             report_items=own_items,
             report_items_total=own_total,
+            time=await self.task_time(task),
         )
 
     async def _task_sections(self, task: Task, cache: DocCache) -> list[TaskSection]:
@@ -7491,6 +7530,404 @@ class Service:
             )
             return await self.get_project(proj.slug, tx.conn)
 
+    # --- the day time log (design 0028) ---------------------------------------------------
+
+    def today(self) -> date:
+        """The local date of the server machine (the time log's day)."""
+        return timelog.local_day(datetime.now(UTC), self.timelog_tz)
+
+    def log_day(self, value: str | date | None) -> date:
+        """A day of the time log: a date, 'today' (or empty) or 'yesterday'."""
+        if isinstance(value, date):
+            return value
+        text = (value or "").strip().lower()
+        if text in ("", "today"):
+            return self.today()
+        if text == "yesterday":
+            return self.today() - timedelta(days=1)
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            raise ValidationError(
+                f"day must be a date like 2026-11-24, 'today' or 'yesterday', got {value!r}."
+            ) from None
+
+    async def _day_log(
+        self, conn: aiosqlite.Connection, day: date, now: datetime, project: str | None = None
+    ) -> timelog.DayLog:
+        start, end = timelog.day_bounds(day, self.timelog_tz)
+        marks = await repo.time_marks_around(conn, _utc_iso(start), _utc_iso(end))
+        return timelog.day_log(marks, day, now, self.timelog_tz, project)
+
+    async def day_log(
+        self, day: str | date | None = None, project: str | None = None
+    ) -> timelog.DayLog:
+        """One local day of the time log: its segments (start, end, seconds, card or label,
+        project, running, unclosed), the totals per project, card and label, the current mark.
+        `project`: only that project's cards."""
+        if project is not None:
+            project = (await self.get_project(project)).slug
+        return await self._day_log(self._r, self.log_day(day), datetime.now(UTC), project)
+
+    async def task_times(self, project_id: int, tasks: list[Task]) -> dict[int, timelog.CardTime]:
+        """The time of a board's cards (today, all days, in the tracker, current): two reads."""
+        ids = [t.id for t in tasks if t.project_id == project_id]
+        marks = await repo.time_marks_for_tasks(self._r, ids)
+        logged = await repo.worklog_sums(self._r, ids)
+        now = datetime.now(UTC)
+        out = {}
+        for task_id in ids:
+            found = timelog.card_times(marks[task_id], now, self.timelog_tz)
+            found.tracker = logged.get(task_id, 0)
+            out[task_id] = found
+        return out
+
+    async def task_time(self, task: Task, days: int = 14) -> timelog.CardTime:
+        """One card's time, with its seconds per day for the latest `days` days with time."""
+        marks = await repo.time_marks_for_tasks(self._r, [task.id])
+        found = timelog.card_times(marks[task.id], datetime.now(UTC), self.timelog_tz, days)
+        found.tracker = (await repo.worklog_sums(self._r, [task.id])).get(task.id, 0)
+        return found
+
+    async def project_times(self, project_ids: list[int]) -> dict[int, timelog.CardTime]:
+        """Per project: its cards' time today and on all days, and the minutes in the tracker."""
+        marks = await repo.time_marks_for_projects(self._r, project_ids)
+        logged = await repo.worklog_project_sums(self._r, project_ids)
+        now = datetime.now(UTC)
+        out = {}
+        for pid in project_ids:
+            found = timelog.card_times(marks[pid], now, self.timelog_tz)
+            found.tracker = logged.get(pid, 0)
+            out[pid] = found
+        return out
+
+    async def worklog_rows(self, task: Task, limit: int = 20) -> list[dict[str, Any]]:
+        return await repo.list_worklog(self._r, task.id, limit)
+
+    async def mark_time(
+        self,
+        kind: str,
+        *,
+        task: str | int | None = None,
+        label: str | None = None,
+        at: str | None = None,
+        day: date | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        actor: str = "mcp",
+    ) -> timelog.MarkResult:
+        """Write a mark: start, switch or pause (`now`: start or switch to `task`, as the
+        board's "Working on this now"). The same mark again within a minute, and `now` on the
+        card being worked on, write nothing and return the mark there is. `day`: the day an
+        `HH:MM` in `at` is on (the board's panel), default today."""
+        kind = str(kind or "").strip().lower()
+        clean_label = _clean_text(label, "label", timelog.LABEL_MAX)
+        ref = _clean_text(task, "task", NAME_MAX)
+        tz = self.timelog_tz
+        default_actor = actor
+        async with self._tx() as tx:
+            await self._refuse_agent_creation(tx.conn, session, hook_session, TIMELOG_COORDINATOR)
+            now = datetime.fromisoformat(tx.now)
+            moment = timelog.parse_at(at, now, tz, day)
+            card = await self.get_task(ref, tx.conn) if ref else None
+            proj = await self.get_project(card.project_slug, tx.conn) if card else None
+            _scan(await self._secret_rules(tx.conn, proj), label=clean_label)
+            newest = await repo.newest_time_mark(tx.conn)
+            if kind == timelog.NOW:
+                if card is None:
+                    raise ValidationError("'now' needs a card. Nothing changed.")
+                running = _running_mark(newest, now, tz)
+                if running is not None and running.task_id == card.id:
+                    return timelog.MarkResult(
+                        running,
+                        False,
+                        None,
+                        [f"Already on {card.key} since {timelog.clock(running.at, tz)}."],
+                        await self._day_log(tx.conn, timelog.local_day(now, tz), now),
+                    )
+                kind = timelog.SWITCH if running is not None else timelog.START
+            timelog.check_target(kind, card.key if card else None, clean_label)
+            if (
+                newest is not None
+                and newest.kind == kind
+                and newest.task_id == (card.id if card else None)
+                and newest.label == clean_label
+                and abs((moment - newest.at).total_seconds()) <= timelog.SAME_MARK_SECONDS
+            ):
+                return timelog.MarkResult(
+                    newest,
+                    False,
+                    None,
+                    [f"Already marked: #{newest.id} at {timelog.clock(newest.at, tz)}."],
+                    await self._day_log(tx.conn, timelog.local_day(newest.at, tz), now),
+                )
+            at_iso = _utc_iso(moment)
+            before = await repo.time_mark_before(tx.conn, at_iso)
+            running_then = timelog.running_at(before, moment, kind, tz)
+            warnings = timelog.mark_warnings(kind, moment, running_then, newest, tz, before)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            mark_id = await repo.insert_time_mark(
+                tx.conn,
+                at=at_iso,
+                kind=kind,
+                task_id=card.id if card else None,
+                task_key=card.key if card else None,
+                project_id=card.project_id if card else None,
+                label=clean_label,
+                actor=actor,
+                session_id=sess.id if sess else None,
+                now=tx.now,
+            )
+            closed = None
+            if before is not None and before.kind != timelog.PAUSE:
+                ended = await repo.get_time_mark(tx.conn, before.id)
+                span = timelog.span_of(ended, now, tz) if ended else None
+                lo, hi = timelog.day_bounds(timelog.local_day(moment, tz), tz)
+                closed = timelog.segment(span, lo, hi, tz) if span else None
+            await tx.event(
+                "timelog.marked",
+                actor,
+                project_id=card.project_id if card else None,
+                task_id=card.id if card else None,
+                session_id=sess.id if sess else None,
+                id=mark_id,
+                mark_kind=kind,
+                at=at_iso,
+                key=card.key if card else None,
+                label=clean_label,
+                project=card.project_slug if card else None,
+                keys=_keys(card.key if card else None, before.task_key if before else None),
+            )
+            mark = await repo.get_time_mark(tx.conn, mark_id)
+            assert mark is not None
+            day = await self._day_log(tx.conn, timelog.local_day(moment, tz), now)
+            return timelog.MarkResult(mark, True, closed, warnings, day)
+
+    async def fix_time_mark(
+        self,
+        mark: int | str,
+        reason: str | None,
+        *,
+        at: str | None = None,
+        kind: str | None = None,
+        task: str | int | None = None,
+        label: str | None = None,
+        delete: bool = False,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        actor: str = "mcp",
+    ) -> tuple[timelog.TimeMark | None, dict[str, Any], timelog.DayLog]:
+        """Correct a mark in place or delete it; the event keeps the mark before (and after)
+        and the reason. `task` and `label` exclude each other: setting one clears the other,
+        '' clears it; a pause names no card. Returns (the mark or None, before, its day)."""
+        why = _clean_text(reason, "reason", timelog.REASON_MAX)
+        if not why:
+            raise ValidationError("A fix needs a reason (why the mark was wrong). Nothing changed.")
+        mark_id = _mark_id(mark)
+        new_label = _clean_text(label, "label", timelog.LABEL_MAX)
+        ref = _clean_text(task, "task", NAME_MAX)
+        tz = self.timelog_tz
+        default_actor = actor
+        async with self._tx() as tx:
+            await self._refuse_agent_creation(tx.conn, session, hook_session, TIMELOG_COORDINATOR)
+            found = await repo.get_time_mark(tx.conn, mark_id)
+            if found is None:
+                raise NotFoundError(f"Time mark #{mark_id} not found.")
+            now = datetime.fromisoformat(tx.now)
+            before = _mark_state(found)
+            old_prev = await repo.time_mark_before(tx.conn, _utc_iso(found.at), exclude=found.id)
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            # The mark's own project: a purged project's mark has none, the global rules apply.
+            own = (
+                await repo.get_project(tx.conn, found.project_slug) if found.project_slug else None
+            )
+            if delete:
+                _scan(await self._secret_rules(tx.conn, own), reason=why)
+                await repo.delete_time_mark(tx.conn, found.id)
+                await tx.event(
+                    "timelog.removed",
+                    actor,
+                    project_id=found.project_id,
+                    task_id=found.task_id,
+                    session_id=sess.id if sess else None,
+                    id=found.id,
+                    before=before,
+                    reason=why,
+                    keys=_keys(found.task_key, old_prev.task_key if old_prev else None),
+                )
+                day = timelog.local_day(found.at, tz)
+                await self._note_unclosed(tx.conn, now, old_prev)
+                return None, before, await self._day_log(tx.conn, day, now)
+            fields: dict[str, Any] = {}
+            if at is not None:
+                # HH:MM is on the mark's own day: a fix is usually of an earlier day.
+                moved = _utc_iso(timelog.parse_at(at, now, tz, timelog.local_day(found.at, tz)))
+                if moved != _utc_iso(found.at):
+                    fields["at"] = moved
+            new_kind = str(kind).strip().lower() if kind is not None else found.kind
+            if new_kind != found.kind:
+                fields["kind"] = new_kind
+            card = None
+            target: dict[str, Any] = {
+                "task_id": found.task_id,
+                "task_key": found.task_key,
+                "project_id": found.project_id,
+                "label": found.label,
+            }
+            no_card = {"task_id": None, "task_key": None, "project_id": None}
+            if ref:
+                card = await self.get_task(ref, tx.conn)
+                target = {
+                    "task_id": card.id,
+                    "task_key": card.key,
+                    "project_id": card.project_id,
+                    "label": None,
+                }
+            elif task is not None:
+                target.update(no_card)
+            if new_label:
+                target["label"] = new_label
+                if not ref:
+                    target.update(no_card)
+            elif label is not None:
+                target["label"] = None
+            if new_kind == timelog.PAUSE:
+                target.update(no_card)
+            timelog.check_target(new_kind, target["task_key"], target["label"])
+            proj = await self.get_project(card.project_slug, tx.conn) if card else own
+            _scan(await self._secret_rules(tx.conn, proj), label=target["label"], reason=why)
+            fields.update({k: v for k, v in target.items() if v != getattr(found, k)})
+            if not fields:
+                raise ValidationError(
+                    f"Nothing to change in mark #{found.id}: pass at, kind, task or label, or"
+                    " delete=true."
+                )
+            await repo.update_time_mark(tx.conn, found.id, fields, tx.now)
+            fixed = await repo.get_time_mark(tx.conn, found.id)
+            assert fixed is not None
+            new_prev = await repo.time_mark_before(tx.conn, _utc_iso(fixed.at), exclude=fixed.id)
+            await tx.event(
+                "timelog.fixed",
+                actor,
+                project_id=fixed.project_id if fixed.task_key else found.project_id,
+                task_id=fixed.task_id or found.task_id,
+                session_id=sess.id if sess else None,
+                id=found.id,
+                before=before,
+                after=_mark_state(fixed),
+                reason=why,
+                keys=_keys(
+                    found.task_key,
+                    fixed.task_key,
+                    old_prev.task_key if old_prev else None,
+                    new_prev.task_key if new_prev else None,
+                ),
+            )
+            day = timelog.local_day(fixed.at, tz)
+            await self._note_unclosed(tx.conn, now, old_prev, new_prev, fixed)
+            return fixed, before, await self._day_log(tx.conn, day, now)
+
+    async def running_mark(self) -> timelog.TimeMark | None:
+        """The mark whose span runs now (today's newest, not a pause), or None."""
+        newest = await repo.newest_time_mark(self._r)
+        return _running_mark(newest, datetime.now(UTC), self.timelog_tz)
+
+    async def _note_unclosed(
+        self, conn: aiosqlite.Connection, now: datetime, *marks: timelog.TimeMark | None
+    ) -> None:
+        """After a fix or a removal: the marks around it (the fixed one included) whose earlier
+        day's span it leaves unclosed, as mark_time names them."""
+        tz = self.timelog_tz
+        for mark_id in dict.fromkeys(m.id for m in marks if m is not None):
+            fresh = await repo.get_time_mark(conn, mark_id)
+            if fresh is None:
+                continue
+            span = timelog.span_of(fresh, now, tz)
+            if span is not None and span.unclosed:
+                _note(timelog.unclosed_note(fresh, tz))
+
+    async def add_worklog(
+        self,
+        task: str | int,
+        minutes: int,
+        *,
+        day: str | None = None,
+        ref: str | None = None,
+        reason: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        actor: str = "mcp",
+    ) -> tuple[int, str, timelog.CardTime]:
+        """Add minutes entered in the external tracker to the card's ledger (append-only); a
+        correction is a negative row with a reason, refused when it would take the card's
+        day below 0. Returns the row id, its day and the card's time."""
+        if isinstance(minutes, bool) or not isinstance(minutes, int):
+            raise ValidationError(f"minutes must be a whole number, got {minutes!r}.")
+        limit = timelog.WORKLOG_MINUTES_MAX
+        if minutes == 0 or abs(minutes) > limit:
+            raise ValidationError(
+                f"minutes must be between -{limit} and {limit} and not 0, got {minutes}."
+            )
+        why = _clean_text(reason, "reason", timelog.REASON_MAX)
+        if minutes < 0 and not why:
+            raise ValidationError(
+                "A negative row corrects an earlier one: give the reason. Nothing changed."
+            )
+        clean_ref = _clean_text(ref, "ref", timelog.REF_MAX)
+        logged_day = self.log_day(day)
+        if logged_day > self.today():
+            raise ValidationError(
+                f"day {logged_day.isoformat()} is after today ({self.today().isoformat()},"
+                " server time). Nothing changed."
+            )
+        on_day = logged_day.isoformat()
+        default_actor = actor
+        async with self._tx() as tx:
+            await self._refuse_agent_creation(tx.conn, session, hook_session, TIMELOG_COORDINATOR)
+            card = await self.get_task(task, tx.conn)
+            proj = await self.get_project(card.project_slug, tx.conn)
+            _scan(await self._secret_rules(tx.conn, proj), ref=clean_ref, reason=why)
+            entered = await repo.worklog_day_sum(tx.conn, card.id, on_day)
+            if entered + minutes < 0:
+                raise ValidationError(
+                    f"{card.key} has {timelog.hm_minutes(entered)} in the tracker on {on_day};"
+                    f" {timelog.hm_minutes(minutes)} would take it below 0. Nothing changed."
+                )
+            sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
+            row_id = await repo.insert_tracker_worklog(
+                tx.conn,
+                task_id=card.id,
+                task_key=card.key,
+                project_id=card.project_id,
+                day=on_day,
+                minutes=minutes,
+                ref=clean_ref,
+                reason=why,
+                actor=actor,
+                session_id=sess.id if sess else None,
+                now=tx.now,
+            )
+            await tx.event(
+                "worklog.added",
+                actor,
+                project_id=card.project_id,
+                task_id=card.id,
+                session_id=sess.id if sess else None,
+                id=row_id,
+                key=card.key,
+                project=card.project_slug,
+                day=on_day,
+                minutes=minutes,
+                ref=clean_ref,
+            )
+        return row_id, on_day, await self.task_time(card)
+
     @staticmethod
     def _reader_name(session: Session) -> str:
         return session.external_id or session.name
@@ -7676,6 +8113,7 @@ class Service:
             pulses=await self.pulses(),
             report_items=[report_items.item_line(i) for i in items],
             report_items_more=items_total - len(items),
+            time_line=timelog.digest_line(await self.day_log()),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.portfolio_text(data, footer, self._budget(budget))

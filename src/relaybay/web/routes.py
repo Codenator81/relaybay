@@ -8,9 +8,10 @@ import ipaddress
 import json
 import logging
 import secrets
+import zlib
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit
@@ -30,7 +31,7 @@ from starlette.responses import StreamingResponse
 from relaybay import __version__, machine_setup
 from relaybay.config import Settings
 from relaybay.domain import digest as digests
-from relaybay.domain import doc_index, guard
+from relaybay.domain import doc_index, guard, timelog
 from relaybay.domain import memory as mem
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
@@ -119,6 +120,8 @@ ACTIVITY_PAGE = 50
 AUDIT_PAGE = 50
 MESSAGES_PAGE = 50
 AUDIT_DAYS = (1, 7, 30, 90, 0)
+TIMELOG_COLOURS = 8  # .tl-c0 ... .tl-c7 in app.css; labels are grey
+BOARD_REMOVED = "removed on the board"  # the reason a board delete of a time mark records
 EVENT_ID_MAX = 2**63 - 1  # the largest integer SQLite binds
 EVENT_KINDS = (
     "project.created",
@@ -135,6 +138,10 @@ EVENT_KINDS = (
     "task.archived",
     "task.unarchived",
     "task.purged",
+    "timelog.marked",
+    "timelog.fixed",
+    "timelog.removed",
+    "worklog.added",
     "report.added",
     "decision.added",
     "session.seen",
@@ -367,6 +374,9 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
     env.globals["tracker_log_required"] = service.tracker_log_required
     env.globals["pulse_text"] = lambda pulse: digests.pulse_line(pulse, utcnow())
     env.filters["age"] = age
+    env.filters["hm"] = timelog.hm
+    env.filters["hm_minutes"] = timelog.hm_minutes
+    env.filters["tl_clock"] = lambda moment: timelog.clock(moment, service.timelog_tz)
     env.filters["markdown"] = render_markdown
     env.filters["document"] = render_document
     env.filters["chars"] = doc_index.chars_label
@@ -533,6 +543,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "archive": archive,
             "archive_more": archive_more,
             "code": await service.task_codes(project.id, shown),
+            "times": await service.task_times(project.id, shown),
             "blockers": await service.active_blockers(project.id),
             "merge_order": await service.merge_order(project),
             "archived": archived,
@@ -655,8 +666,11 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             return login_form(request, next_path, INVALID_TOKEN, status=401)
         return signed_in(request, next_path)
 
+    async def project_time(projects: list[Any]) -> dict[int, timelog.CardTime]:
+        return await service.project_times([s.project.id for s in projects])
+
     @router.get("/", response_class=HTMLResponse)
-    async def projects_page(request: Request, archived: bool = False):
+    async def projects_page(request: Request, archived: bool = False, day: str = ""):
         # Read the event id before the data: an event committed in between is then replayed
         # by the SSE stream instead of being skipped.
         last_event_id = await service.last_event_id()
@@ -665,7 +679,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             request,
             "projects.html",
             "boards",
-            projects=await service.list_projects(),
+            projects=(projects := await service.list_projects()),
+            ptimes=await project_time(projects),
+            day=day,
+            **await daylog_context(day),
             pulses=await service.pulses(),
             archived_projects=await service.archived_projects(),
             show_archived=archived,
@@ -679,7 +696,8 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         return render(
             request,
             "_projects.html",
-            projects=await service.list_projects(),
+            projects=(projects := await service.list_projects()),
+            ptimes=await project_time(projects),
             pulses=await service.pulses(),
             archived_projects=await service.archived_projects(),
         )
@@ -1103,7 +1121,142 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         code = {task.id: await service.task_code(task)}
         blocked_by, _ = await service.task_blocks(task)
         blockers = {task.id: [b for b in blocked_by if b.active]}
-        return render(request, "_card.html", t=task, slug=slug, code=code, blockers=blockers)
+        times = await service.task_times(task.project_id, [task])
+        return render(
+            request,
+            "_card.html",
+            t=task,
+            slug=slug,
+            code=code,
+            blockers=blockers,
+            times=times,
+        )
+
+    # --- the day time log (design 0028) -----------------------------------------------------
+
+    async def daylog_context(day: str = "", error: str | None = None) -> dict[str, Any]:
+        """The `/` day panel: the day's spans as a strip, its totals and marks, the nav."""
+        try:
+            on = service.log_day(day or None)
+        except ValidationError as exc:
+            on, error = service.today(), error or str(exc)
+        today = service.today()
+        if on > today:
+            on = today
+        log = await service.day_log(on)
+        # One rule for every project, a purged one included: a stable colour from the slug.
+        colours = {
+            p: zlib.crc32(p.encode()) % TIMELOG_COLOURS
+            for p in {seg.project for seg in log.segments} | {p for p, _ in log.by_project}
+            if p
+        }
+        return {
+            "log": log,
+            "strip": timelog.strip(log, service.timelog_tz),
+            "colours": colours,
+            "prev_day": (on - timedelta(days=1)).isoformat(),
+            "next_day": (on + timedelta(days=1)).isoformat() if on < today else None,
+            "is_today": on == today,
+            "tz": service.timelog_tz,
+            "timelog_error": error,
+        }
+
+    @router.get("/fragments/daylog", response_class=HTMLResponse)
+    async def daylog_fragment(request: Request, day: str = ""):
+        return render(request, "_daylog.html", **await daylog_context(day))
+
+    async def daylog_answer(
+        request: Request, day: str, write: Callable[[], Awaitable[Any]]
+    ) -> Response:
+        """A write of the day panel: the panel again for htmx (a refusal shown in it), else
+        back to `/` on that day (a refusal is the plain-text answer of every board write)."""
+        htmx = "hx-request" in request.headers
+        error = None
+        try:
+            await write()
+        except DomainError as exc:
+            if not htmx:
+                raise
+            error = str(exc)
+        if not htmx:
+            return RedirectResponse(f"/?{urlencode({'day': day})}" if day else "/", status_code=303)
+        return render(request, "_daylog.html", **await daylog_context(day, error))
+
+    @router.post("/timelog")
+    async def add_time_mark(
+        request: Request,
+        kind: Annotated[str, Form()] = "",
+        target: Annotated[str, Form()] = "card",
+        what: Annotated[str, Form()] = "",
+        at: Annotated[str, Form()] = "",
+        day: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        """The day panel's form and its Pause button: a card or a label as the owner chose it
+        (never guessed from the text); the time is on the panel's day, optional only today."""
+        board_only(request, csrf)
+
+        async def write() -> None:
+            on = service.log_day(day or None)
+            if not at.strip() and on != service.today():
+                raise ValidationError(f"A mark on {on.isoformat()} needs its time (HH:MM).")
+            text = what.strip() or None
+            card = target == "card" and kind != timelog.PAUSE
+            await service.mark_time(
+                kind,
+                task=text if card else None,
+                label=None if card else text,
+                at=at.strip() or None,
+                day=on,
+                actor="board",
+            )
+
+        return await daylog_answer(request, day, write)
+
+    @router.post("/timelog/{mark_id}/delete")
+    async def delete_time_mark(
+        request: Request,
+        mark_id: int,
+        day: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        board_only(request, csrf)
+
+        async def write() -> None:
+            await service.fix_time_mark(mark_id, BOARD_REMOVED, delete=True, actor="board")
+
+        return await daylog_answer(request, day, write)
+
+    @router.post("/p/{slug}/t/{key}/timelog")
+    async def task_time_mark(
+        request: Request,
+        slug: str,
+        key: str,
+        kind: Annotated[str, Form()] = "",
+        csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
+    ) -> Response:
+        """The task view's "Working on this now" (kind now) and "Pause"."""
+        board_only(request, csrf)
+        task = await find_task(slug, key)
+        htmx = "hx-request" in request.headers
+        error = None
+        try:
+            if kind == timelog.PAUSE:
+                running = await service.running_mark()
+                if running is None or running.task_id != task.id:
+                    what = f"{running.target} is running" if running else "nothing is running"
+                    raise ValidationError(f"Not paused: {what}, not {task.key}. Nothing changed.")
+                await service.mark_time(timelog.PAUSE, actor="board")
+            else:
+                await service.mark_time(timelog.NOW, task=task.key, actor="board")
+        except DomainError as exc:
+            if not htmx:
+                raise
+            error = str(exc)
+        if not htmx:
+            return RedirectResponse(f"/t/{task.key}", status_code=303)
+        detail = await card_detail(task.key)
+        return render(request, "_task_view.html", detail=detail, error=error)
 
     @router.post("/p/{slug}/t/{key}/move")
     async def move_card(
