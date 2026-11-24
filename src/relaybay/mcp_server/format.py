@@ -12,12 +12,13 @@ from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.blockers import blocker_line, blocks_text
 from relaybay.domain.change_doc import ChangeMark
 from relaybay.domain.code import ProjectRepo, TaskCode
-from relaybay.domain.digest import age, board_link
+from relaybay.domain.digest import age, board_link, report_items_count_line
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX
 from relaybay.domain.doc_index import (
     SNIPPET_MAX,
     IndexedSection,
     outline_line,
+    outside_mark,
     outside_note,
     size_label,
 )
@@ -44,6 +45,7 @@ from relaybay.domain.models import (
 )
 from relaybay.domain.plan import Plan, PlanStep, TodoItem
 from relaybay.domain.questions import Question
+from relaybay.domain.report_items import ReportItem, item_line
 from relaybay.domain.review import Attachment, Review, ReviewStep
 from relaybay.domain.rules import (
     RuleProposal,
@@ -64,7 +66,15 @@ from relaybay.domain.task_fields import (
     TASK_FIELDS,
 )
 from relaybay.policy import EffectivePolicy
-from relaybay.service import DocHit, DocRead, NoteResult, ProjectSummary, Snapshot, TaskDetail
+from relaybay.service import (
+    DocHit,
+    DocRead,
+    NoteResult,
+    ProjectSummary,
+    ReportSaved,
+    Snapshot,
+    TaskDetail,
+)
 
 
 def who_label(name: str, external_id: str | None) -> str:
@@ -473,7 +483,7 @@ def start_task_prompt(rules: Rules, task: Task | None) -> str:
         f"1. Read {target} and the rules below.",
         "2. Pass `session` (your own id or name) on every write so the board shows who works.",
         "3. Write the plan with plan_set (2-5 steps); S tasks need at least a todo.",
-        "4. Set next_step and waiting_on, then move the task with task_set_stage.",
+        "4. Move the task with task_update(stage=..., next_step=..., waiting_on=...).",
         "5. Fix every line starting with 'Warning (rules)'; re-read the rules when a response says"
         " they were updated.",
         "",
@@ -503,7 +513,7 @@ def finish_stage_prompt(rules: Rules, task: Task | None) -> str:
         moving,
         "4. Before review or test, write what the owner checks by eye with review_steps_set and"
         " attach screenshots with attach_file.",
-        "5. Move the task with task_set_stage and fix any 'Warning (rules)' line.",
+        "5. Move the task with task_update(stage=...) and fix any 'Warning (rules)' line.",
         "",
         rules_text(rules),
     ]
@@ -873,7 +883,7 @@ def document_hits(
         f"# doc_search {project.slug}: {query} · {len(hits)} section(s)",
         "Read a hit: doc_get(project, doc, section=anchor), or lines around the line.",
     ]
-    noted: set[int] = set()
+    changed: dict[int, Document] = {}
     for h in hits:
         r = h.section
         name = (
@@ -890,10 +900,10 @@ def document_hits(
             f" {r.first_line}-{r.last_line} · {size_label(r.chars, r.bytes)}{where}{link}"
         )
         lines.extend(f"    {n}: {_short(text)}" for n, text in h.around)
-        note = outside_note(h.doc)
-        if note and h.doc.id not in noted:
-            noted.add(h.doc.id)
-            lines.append(f"  {note}")
+        if outside_note(h.doc):
+            changed.setdefault(h.doc.id, h.doc)
+    # One short line per changed document after the hits; doc_get gives the full note.
+    lines.extend(outside_mark(d) for d in changed.values())
     return "\n".join(lines)
 
 
@@ -1102,6 +1112,7 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
         ("plan", plan_label(t) if t.plan_total else None),
         ("archived", f"{_minute(t.archived_at)} by {t.archived_by}" if t.archived_at else None),
         ("cancelled", cancelled_label(t)),
+        ("kind", "inspect-only: no accepted plan needed" if t.inspect_only else None),
         ("blocks", blocks_text(detail.blocks)),
     ):
         if value:
@@ -1132,6 +1143,10 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
     if detail.tracker_history:
         lines.append("\n## Tracker history (newest first)")
         lines.extend(tracker_entry_line(e) for e in detail.tracker_history)
+    if detail.report_items_total:
+        lines.append("\n## Open findings and questions of its reports")
+        lines.append(report_items_count_line(detail.report_items_total))
+        lines.extend(item_line(i) for i in detail.report_items)
     if detail.reports:
         lines.append("\n## Reports (newest first)")
         for r in detail.reports:
@@ -1159,7 +1174,7 @@ def task_schema() -> str:
     """The editable task fields as a markdown table (resource `relaybay://schema/task`)."""
     lines = [
         "# Task fields",
-        "Set any of them with task_patch(task, fields={...}); omitted fields stay as they are.",
+        "Set any of them with task_update(task, fields={...}); omitted fields stay as they are.",
         "",
         "| field | type | description | clearing |",
         "|---|---|---|---|",
@@ -1602,6 +1617,40 @@ def backlog_items(items: list[BacklogItem]) -> str:
     )
 
 
+def report_saved(saved: ReportSaved, stage: str | None) -> list[str]:
+    """report_add's answer: the report line, the items it carries, the stage move it made (with
+    `stage`) or what the usual next move needs (without)."""
+    report = saved.report
+    parsed = " · ".join(x for x in (report.state, report.size) if x)
+    extra = f" ({parsed})" if parsed else ""
+    lines = [f"Report #{report.id} added to **{saved.task.key}**{extra}: {report.summary}"]
+    carried = [
+        f"{n} {what}{'' if n == 1 else 's'}"
+        for n, what in ((saved.findings, "finding"), (saved.questions, "question"))
+        if n
+    ]
+    if carried:
+        lines.append(f"Stored {' and '.join(carried)} for the coordinator to triage.")
+    if stage is not None:
+        current = saved.task.stage.value
+        lines.append(f"Moved to {current}." if saved.moved else f"Already in {current}.")
+        lines.extend(saved.warnings)
+    elif saved.next_stage:
+        move = f'Next: task_update(stage="{saved.next_stage}")'
+        if saved.needs:
+            needs = " and ".join(
+                f"{requirement_label(r)} ({'done' if met else 'missing'})" for r, met in saved.needs
+            )
+            lines.append(f"{move} needs {needs}.")
+        else:
+            lines.append(f"{move}; no rule asks anything for it.")
+    return lines
+
+
+def report_item_dismissed(item: ReportItem) -> str:
+    return f"Dismissed {item.kind} {item.n} of report #{item.report_id} on {item.task_key}."
+
+
 def backlog_saved(item: BacklogItem, verb: str) -> str:
     state = ", ".join([item.status, *([item.kind] if item.kind else []), *_backlog_queue(item)])
     text = f"{verb} backlog item #{item.id} in {item.project_slug}: {item.title} ({state})."
@@ -1718,7 +1767,7 @@ def approval_requested(task: Task, a: Approval, hint: str, updated: bool) -> str
     if not task.deploy_notes:
         return (
             f"{text}\nThe card has no deploy notes: write what the deploy needs (migration, flag,"
-            " script, rollback) with task_patch(fields={'deploy_notes': ...})."
+            " script, rollback) with task_update(task, deploy_notes=...)."
         )
     state = deploy_state(task)
     return (

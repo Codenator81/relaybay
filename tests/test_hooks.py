@@ -242,7 +242,7 @@ async def test_exact_link_through_an_alias_and_report_add(service: Service) -> N
     assert (await service.get_task(task.key)).session_status == "idle"
 
     # An id another live session linked itself is not moved; the write says so.
-    other = await service.create_task("acme-shop", "Payment", session=DESKTOP_B)
+    other = await service.create_task("acme-shop", "Payment", stage="dev", session=DESKTOP_B)
     with collect_notes() as notes:
         await service.add_report(
             other.key, "changed · S · retry", session=DESKTOP_B, hook_session=CC_B
@@ -257,6 +257,34 @@ async def test_exact_link_through_an_alias_and_report_add(service: Service) -> N
     await service.add_report(other.key, "changed · S · again", session=DESKTOP_B, hook_session=CC_B)
     await service.record_hook(hook("PreToolUse", CC_B))
     assert (await service.get_task(other.key)).session_status == "working"
+
+
+async def test_a_new_name_with_the_own_hook_id_is_that_desktop_session(service: Service) -> None:
+    """A launched session that does not know its local_ id writes with a readable name and its
+    own hook id: the write is that desktop session's, with no warning (finboo, 2026-11-23)."""
+    from relaybay.service import collect_notes
+
+    task = await bound_task(service)
+    await service.add_report(task.key, "inspected · S · a", session=DESKTOP_A, hook_session=CC_A)
+    with collect_notes() as notes:
+        await service.add_report(
+            task.key, "inspected · S · b", session="checkout context test", hook_session=CC_A
+        )
+    assert len(notes) == 1 and "that session was used, not a new one named" in notes[0]
+    assert "belongs to another session" not in notes[0]
+    names = {s.session.name for s in await service.list_sessions()}
+    assert "checkout context test" not in names
+    from relaybay.db import repo as db
+
+    first, second = await db.list_reports(service._r, task.id, 5)
+    assert first.session_id == second.session_id is not None
+    # A name the board already knows keeps its own row, and the warning stays.
+    other = await service.create_task("acme-shop", "Payment", session="payment-dev")
+    with collect_notes() as notes:
+        await service.add_report(
+            other.key, "inspected · S · c", session="payment-dev", hook_session=CC_A
+        )
+    assert len(notes) == 1 and "belongs to another session" in notes[0]
 
 
 async def test_cwd_fallback_links_the_one_bound_desktop_session(service: Service) -> None:

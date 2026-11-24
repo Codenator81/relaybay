@@ -14,7 +14,8 @@ from relaybay.backup import backup_before_upgrade, record_version
 from relaybay.config import Settings, load_settings
 from relaybay.domain.errors import DomainError, NotFoundError
 from relaybay.domain.review import MB
-from relaybay.mcp_server.server import build_mcp, mcp_routes
+from relaybay.mcp_server.roles import ROLES
+from relaybay.mcp_server.server import build_mcp, mcp_routes, role_path
 from relaybay.security import SecurityMiddleware, load_or_create_token
 from relaybay.service import Service
 from relaybay.web.api import build_api_router
@@ -53,7 +54,14 @@ def create_app(settings: Settings) -> FastAPI:
         max_concurrent_sessions=settings.max_concurrent_sessions,
         archive_purge_days=settings.archive_purge_days,
     )
-    mcp = build_mcp(service, require_tracker_log=settings.require_tracker_log)
+    # `/mcp` is the full set; `/mcp/<role>` a role's tool list and instructions (roles.py).
+    servers = {
+        role_path(role): build_mcp(
+            service, require_tracker_log=settings.require_tracker_log, role=role
+        )
+        for role in (None, *ROLES)
+    }
+    mcp = servers["/mcp"]
 
     service.update.enabled = settings.update_check
 
@@ -72,7 +80,9 @@ def create_app(settings: Settings) -> FastAPI:
         if settings.update_check:
             loops.append(asyncio.create_task(service.update_loop(settings.update_check_hours)))
         try:
-            async with mcp.session_manager.run():
+            async with contextlib.AsyncExitStack() as stack:
+                for server in servers.values():
+                    await stack.enter_async_context(server.session_manager.run())
                 yield
         finally:
             for loop in loops:
@@ -92,9 +102,10 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     app.state.service = service
     app.state.mcp = mcp
+    app.state.mcp_servers = servers
 
     allowed = settings.host_allow_list()
-    app.router.routes.extend(mcp_routes(mcp, allowed))
+    app.router.routes.extend(mcp_routes(servers, allowed))
     app.include_router(
         build_hooks_router(
             service, wake_hold=settings.wake_hold_seconds, wake_poll=settings.wake_poll_seconds

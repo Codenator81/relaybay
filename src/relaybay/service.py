@@ -36,7 +36,7 @@ from relaybay.desktop.settings import config_dir
 from relaybay.domain import annotations as ann
 from relaybay.domain import approvals as arules
 from relaybay.domain import areas as area_rules
-from relaybay.domain import backlog, doc_index, guard, intake
+from relaybay.domain import backlog, doc_index, guard, intake, report_items
 from relaybay.domain import change_doc as cdoc
 from relaybay.domain import comments as comment_text
 from relaybay.domain import digest as digests
@@ -159,6 +159,7 @@ from relaybay.domain.plan import (
 from relaybay.domain.plan import STEP_DETAILS_MAX as PLAN_DETAILS_MAX
 from relaybay.domain.plan import clean_step_title as clean_plan_title
 from relaybay.domain.questions import Question
+from relaybay.domain.report_items import ReportItem
 from relaybay.domain.reports import REPORT_SIZES, ReportCheck, parse_checks, parse_report
 from relaybay.domain.review import (
     CAPTION_MAX,
@@ -211,7 +212,14 @@ from relaybay.domain.sessions import (
     resumable_id,
     surface_of_entrypoint,
 )
-from relaybay.domain.stages import ACCEPTANCE_STAGES, OPEN_STAGES, STAGES, Stage, parse_stage
+from relaybay.domain.stages import (
+    ACCEPTANCE_STAGES,
+    OPEN_STAGES,
+    STAGES,
+    USUAL_NEXT_STAGE,
+    Stage,
+    parse_stage,
+)
 from relaybay.domain.switcher import (
     EMPTY_QUERY_TASKS,
     QUERY_MAX,
@@ -236,6 +244,7 @@ from relaybay.domain.task_fields import (
     TITLE_MAX,
 )
 from relaybay.domain.tasks import DEFAULT_ARCHIVE_PURGE_DAYS, DEFAULT_DONE_WINDOW_DAYS, is_archived
+from relaybay.domain.waiting_on import normalise as normalise_waiting_on
 from relaybay.events import EventBus
 from relaybay.install import install_kind
 from relaybay.policy import (
@@ -525,6 +534,9 @@ class TaskDetail:
     blocked_by: list[BlockLink] = field(default_factory=list)  # the cards blocking it
     blocks: list[BlockLink] = field(default_factory=list)  # the cards it blocks
     checks: dict[int, list[ReportCheck]] = field(default_factory=dict)  # `verified:` marks
+    # Open findings and questions of its reports (at most report_items.CARD_MAX), and how many.
+    report_items: list[ReportItem] = field(default_factory=list)
+    report_items_total: int = 0
     marks_from: int = 0  # reports with a smaller id were written before marks existed
     # The session card (design 0025): its state line, the session it is about (the bound one,
     # or the ended one of the latest binding), its Open menu (None without a session), the brief
@@ -758,6 +770,17 @@ class Saved(NamedTuple):
     warnings: list[str]  # rules the write did not meet (warn mode)
 
 
+class ReportSaved(NamedTuple):
+    task: Task
+    report: Report
+    warnings: list[str]  # rules the stage move did not meet (warn mode)
+    moved: bool  # a `stage` was passed and the task is in it now, not before
+    findings: int
+    questions: int
+    next_stage: str | None  # without `stage`: the usual next stage, if any
+    needs: list[tuple[dict[str, Any], bool]]  # its requirements, each with whether it is met
+
+
 class BindResult(NamedTuple):
     task: Task
     kept: Session | None  # the desktop session a plain name did not replace
@@ -900,6 +923,20 @@ def _clean_surface(value: Any) -> str | None:
     return surface or None
 
 
+INSPECT_ONLY_WRITES = ("changed", "committed", "pushed")
+
+
+def _inspect_only_problem(task: Task, state: str | None) -> str | None:
+    """An inspect-only card reports a change: it went past reading, so it needs a plan."""
+    if not task.inspect_only or state not in INSPECT_ONLY_WRITES:
+        return None
+    return (
+        f"{task.key} is inspect-only, yet this report says {state}: a card that changes code"
+        " needs an accepted plan. Clear it with task_update(inspect_only=false) and write the"
+        " plan (plan_set)."
+    )
+
+
 def _clean_field(name: str, value: Any) -> Any:
     """Validate one task field by its entry in `TASK_FIELDS`; None (or '') clears a text."""
     spec = BY_NAME[name]
@@ -972,6 +1009,15 @@ def _task_diff(task: Task, clean: dict[str, Any]) -> dict[str, Any]:
     if "next_step" in clean and task.next_step and ("stage" in diff or task.next_step_stale):
         diff["next_step"] = clean["next_step"]
     return diff
+
+
+def _no_value(value: str | None) -> bool:
+    return (value or "").strip() in ("", "-")
+
+
+def _no_caller(session: str | None, hook_session: str | None) -> bool:
+    """Neither a session nor a hook session names who asks."""
+    return _no_value(session) and _no_value(hook_session)
 
 
 async def _hook_id_session(conn: aiosqlite.Connection, value: str) -> Session | None:
@@ -1115,9 +1161,15 @@ REVIEW_DECISIONS = ("accept", "reject", "reopen", "comment")
 NO_PLAN_STAGE_HINT = "Hint: {key} has no plan and no todo yet: " + NO_PLAN_HINT + "."
 CLOSED_PLAN_WARNING = "Warning (rules): " + CLOSED_PLAN + "."
 REWORK_NOTE = "{key} moved from {stage} back to dev ({note})."
+# Work started while the card still sits in plan: nothing moves it by itself.
+STILL_IN_PLAN_HINT = (
+    "Hint: {key} is still in plan while its work has started: move it with"
+    ' task_update(task="{key}", stage="dev").'
+)
+WORK_STATES = ("changed", "verified", "committed", "pushed")
 ALL_DONE_REVIEW_HINT = (
     "Hint: all steps done and the review checklist is set: move the task to review"
-    " (task_set_stage)."
+    " (task_update(stage=...))."
 )
 DRAFT_HINTS_MAX = 5
 DRAFT_HINT = (
@@ -1126,7 +1178,7 @@ DRAFT_HINT = (
 PLAN_LINK_RE = re.compile(r"(?:report\s*[:#]?\s*|#)?(\d+)", re.IGNORECASE)
 CANCELLED_HINT = (
     "Hint: {key} is marked cancelled and stays in {stage}: the card is not moved; move it to"
-    " done with task_set_stage when nothing is left to do."
+    ' done with task_update(stage="done") when nothing is left to do.'
 )
 EMPTY_CHECKLIST_HINT = (
     "Hint: the review checklist of {key} is empty. Write what the owner should check by eye"
@@ -1378,6 +1430,21 @@ ARCHIVE_NOT_COORDINATOR = (
     " needs that session's own hook_session. Nothing changed. The owner archives done cards on"
     " the board."
 )
+# Coordinator mode (`coordinators` set): the texts an agent (a bound session that is not a
+# coordinator) gets instead of today's behaviour.
+AGENT_CREATES_NOTHING = (
+    "In coordinator mode new cards and backlog items come from the coordinator: put this in"
+    " report_add(task={key}, findings=[...]) (a question for the owner: questions=[...])."
+    " Nothing created."
+)
+AGENT_DISMISSES_NOTHING = (
+    "In coordinator mode the coordinator triages the findings and questions of reports: leave"
+    " it to it ({key}). Nothing changed."
+)
+TRACKER_MARK_COORDINATOR_NOTE = (
+    "Tracker mark: the coordinator's (it sets tracker_logged after the work log)."
+)
+ARCHIVE_NEEDS_TRACKER_MARK = "Set tracker_logged first (the work log in the tracker), then archive."
 PURGE_INTERVAL_SECONDS = 24 * 3600.0
 PURGE_ACTOR = "relaybay"
 PROJECT_DELETE_NOT_COORDINATOR = (
@@ -1640,10 +1707,36 @@ class Service:
         value = _clean_text(value, "session", NAME_MAX)
         if value is None:
             return None
+        if cc_id is not None and parse_session_id(value) is None:
+            held = await self._desktop_of_hook_id(tx, value, cc_id)
+            if held is not None:
+                return held
         found = await self._resolve_session(tx, value, title)
         if found is not None and cc_id is not None:
             found = await self._link_hook_session(tx, found, cc_id)
         return found
+
+    async def _desktop_of_hook_id(self, tx: _Tx, name: str, cc_id: str) -> Session | None:
+        """A name the board has never seen, with a hook id exactly linked to a live desktop
+        session: that desktop session is the caller (it was started by a launch and does not
+        know its local_ id), not a new row named by it that would then be told the id is
+        another session's. A known name keeps its own row and the warning."""
+        held = await repo.get_session_by_cc(tx.conn, resumable_id(cc_id) or cc_id)
+        if (
+            held is None
+            or not held.cc_exact
+            or held.external_id is None
+            or held.status == "ended"
+            or await repo.get_session_by_alias(tx.conn, name) is not None
+            or await repo.get_session_by_name(tx.conn, name) is not None
+        ):
+            return None
+        await repo.touch_session(tx.conn, held.id, tx.now)
+        _note(
+            f"Note: hook_session {held.cc_session_id} is {held.name}'s; that session was used,"
+            f" not a new one named {name!r}."
+        )
+        return held
 
     async def _resolve_session(self, tx: _Tx, value: str, title: str | None) -> Session | None:
         title = _clean_text(title, "session_title", NAME_MAX)
@@ -1692,6 +1785,30 @@ class Service:
                 await repo.touch_session(tx.conn, existing.id, tx.now, changes)
             found = await repo.get_session_by_external_id(tx.conn, external_id)
         return found
+
+    async def _caller(
+        self,
+        tx: _Tx,
+        session: str | None,
+        title: str | None,
+        hook_session: str | None,
+        tool: str,
+    ) -> Session:
+        """The session that asks (question_ask, approval_request): `session`, or else the
+        session the caller's own `hook_session` belongs to."""
+        if not _no_value(session):
+            caller = await self._session(tx, session, title, hook_session)
+            assert caller is not None
+            return caller
+        cc_id = _clean_text(hook_session, "hook_session", CC_ID_MAX) or ""
+        held = await _hook_id_session(tx.conn, cc_id)
+        if held is None or held.status == "ended":
+            raise ValidationError(
+                f"{tool}: the board knows no live session with hook_session {cc_id!r}; pass your"
+                " desktop id (local_...) or name as session. Nothing done."
+            )
+        await repo.touch_session(tx.conn, held.id, tx.now)
+        return held
 
     async def _session_of_hook_id(self, tx: _Tx, value: str) -> Session | None:
         """A bare Claude Code id passed as `session`: the session its hooks are linked to, with a
@@ -3200,6 +3317,9 @@ class Service:
         state = self.card_state(task)
         session = await self.card_session(task)
         blocked_by, blocks = await self.task_blocks(task)
+        own_items, own_total = await repo.open_report_items(
+            self._r, task_id=task.id, limit=report_items.CARD_MAX
+        )
         return TaskDetail(
             state=state,
             card_session=session,
@@ -3230,6 +3350,8 @@ class Service:
             code=await self.task_code(task),
             blocked_by=blocked_by,
             blocks=blocks,
+            report_items=own_items,
+            report_items_total=own_total,
         )
 
     async def _task_sections(self, task: Task, cache: DocCache) -> list[TaskSection]:
@@ -4228,6 +4350,7 @@ class Service:
         session_title: str | None = None,
         hook_session: str | None = None,
         bind: bool = True,
+        inspect_only: bool = False,
         actor: str = "mcp",
         sections: list[str] | None = None,
     ) -> Task:
@@ -4257,11 +4380,14 @@ class Service:
             "tracker_name": _clean_field("tracker_name", tracker_name),
             "tracker_url": _clean_field("tracker_url", tracker_url),
             "tracker_logged": _clean_field("tracker_logged", tracker_logged),
+            "inspect_only": _clean_field("inspect_only", inspect_only),
         }
         fields["stage"] = fields["stage"].value
         default_actor = actor
         async with self._tx() as tx:
+            await self._refuse_agent_creation(tx.conn, session, hook_session)
             proj = await self.get_project(project, tx.conn)
+            await self._coordinated_waiting_on(tx.conn, fields, None, default_actor)
             sess = await self._session(tx, session, session_title, hook_session)
             session_id = sess.id if sess else None
             actor = sess.name if sess else default_actor
@@ -4325,18 +4451,36 @@ class Service:
         )
         return saved.task
 
-    async def _stage_warnings(self, tx: _Tx, task: Task, diff: dict[str, Any]) -> list[str]:
+    async def _stage_warnings(
+        self, tx: _Tx, task: Task, diff: dict[str, Any], *, agent: bool = False
+    ) -> list[str]:
         """Rule warnings for the stage move in `diff`; in strict mode an unmet rule refuses the
-        write instead."""
+        write instead. `agent` (coordinator mode, `_agent_cards`): the tracker mark is the
+        coordinator's, so an agent's move is not held to it and the answer says whose it is."""
         if "stage" not in diff:
             return []
         stage = diff["stage"]
-        rules = await self._rules(tx.conn, await self.get_project(task.project_slug, tx.conn))
+        _, missing = await self._stage_check(tx.conn, task, diff)
+        if agent and any(r["kind"] == REQUIRE_TRACKER_LOG for r in missing):
+            missing = [r for r in missing if r["kind"] != REQUIRE_TRACKER_LOG]
+            _note(TRACKER_MARK_COORDINATOR_NOTE)
+        if missing and self.rules_mode == "strict":
+            raise ValidationError(refusal_text(stage, missing))
+        plan_status = task.plan_status if task.plan_total else None
+        return [warning_text(stage, req, plan_status) for req in missing]
+
+    async def _stage_check(
+        self, conn: aiosqlite.Connection, task: Task, diff: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The requirements of moving the task to `diff["stage"]` with the other fields of
+        `diff`, and those it does not meet."""
+        stage = diff["stage"]
+        rules = await self._rules(conn, await self.get_project(task.project_slug, conn))
         requirements = rules.requirements(stage)
         if not requirements:
-            return []
+            return [], []
         reported = any(r["kind"] == REPORT_SINCE_STAGE_CHANGE for r in requirements) and (
-            await repo.has_report_since(tx.conn, task.id, task.stage_changed_at)
+            await repo.has_report_since(conn, task.id, task.stage_changed_at)
         )
         values = {name: getattr(task, name) for name in FIELD_NAMES} | diff
         plan_status = task.plan_status if task.plan_total else None
@@ -4348,15 +4492,34 @@ class Service:
             plan_status=plan_status,
         )
         if any(r["kind"] == REQUIRE_TRACKER_LOG for r in missing) and not (
-            values.get("tracker_ref")
-            or values.get("tracker_url")
-            or task.project_id in await self.tracker_projects(tx.conn)
+            await self._keeps_tracker(conn, task, values)
         ):
             # A project that keeps no tracker has no work log to enter.
             missing = [r for r in missing if r["kind"] != REQUIRE_TRACKER_LOG]
-        if missing and self.rules_mode == "strict":
-            raise ValidationError(refusal_text(stage, missing))
-        return [warning_text(stage, req, plan_status) for req in missing]
+            requirements = [r for r in requirements if r["kind"] != REQUIRE_TRACKER_LOG]
+        return requirements, missing
+
+    async def _needs_tracker_mark(self, tx: _Tx, task: Task) -> bool:
+        """A done card still waits for its tracker mark: the condition of `_stage_warnings`."""
+        if task.tracker_logged:
+            return False
+        rules = await self._rules(tx.conn, await self.get_project(task.project_slug, tx.conn))
+        required = rules.requirements(Stage.DONE.value)
+        if not any(r["kind"] == REQUIRE_TRACKER_LOG for r in required):
+            return False
+        own = {"tracker_ref": task.tracker_ref, "tracker_url": task.tracker_url}
+        return await self._keeps_tracker(tx.conn, task, own)
+
+    async def _keeps_tracker(
+        self, conn: aiosqlite.Connection, task: Task, values: dict[str, Any]
+    ) -> bool:
+        """Has the card a work log to enter: an issue of its own (`values`, the card with the
+        write applied) or a project that keeps a tracker."""
+        return bool(
+            values.get("tracker_ref")
+            or values.get("tracker_url")
+            or task.project_id in await self.tracker_projects(conn)
+        )
 
     async def update_task_checked(
         self,
@@ -4485,6 +4648,7 @@ class Service:
             base = clean.get("description", task.description)
             text = f"{base}\n\n{added}" if base else added
             clean["description"] = _clean_text(text, "description", MARKDOWN_MAX)
+        await self._coordinated_waiting_on(tx.conn, clean, task.next_step, default_actor)
         area: ProjectArea | None = None
         if "area" in clean:
             found = await repo.list_areas(tx.conn, task.project_id)
@@ -4494,7 +4658,10 @@ class Service:
             diff["deploy_done"] = False  # changed notes are a deploy not carried out yet
         if not diff and not any(links.values()):
             return Saved(task, [])
-        warnings = await self._stage_warnings(tx, task, diff) if rules else []
+        agent = diff.get("stage") == Stage.DONE and default_actor not in BOARD_ACTORS
+        if agent:
+            agent = bool(await self._agent_cards(tx.conn, session, hook_session))
+        warnings = await self._stage_warnings(tx, task, diff, agent=agent) if rules else []
         progress_in_dev = "progress" in diff and task.stage == Stage.DEV
         if progress_in_dev and await self._reported_after_plan_closed(tx, task):
             _note_closed_plan(task)
@@ -4812,6 +4979,10 @@ class Service:
             tx.conn, task_id, repo_id, session.name, "auto", tx.now
         ):
             changes["repos"] = {"added": []}
+        if branch is not None and await repo.branch_holder(tx.conn, repo_id, branch, task_id):
+            # Another open card's branch checked out in a shared working copy (a read-only
+            # session looking at it): neither its branch nor that folder is this card's.
+            branch = worktree = None
         new_branch = branch is not None and await repo.set_task_repo_branch(
             tx.conn, task_id, repo_id, branch
         )
@@ -5138,32 +5309,118 @@ class Service:
     ) -> tuple[Task, Report]:
         """Append a report; `progress`, `next_step` and `waiting_on`, if given, are saved in the
         same transaction ('' clears them)."""
+        saved = await self.add_report_checked(
+            ref,
+            body,
+            session=session,
+            session_title=session_title,
+            hook_session=hook_session,
+            author=author,
+            progress=progress,
+            next_step=next_step,
+            waiting_on=waiting_on,
+        )
+        return saved.task, saved.report
+
+    async def add_report_checked(
+        self,
+        ref: str | int,
+        body: str,
+        *,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        author: str | None = None,
+        progress: str | None = None,
+        next_step: str | None = None,
+        waiting_on: str | None = None,
+        stage: str | None = None,
+        findings: Any = None,
+        questions: Any = None,
+    ) -> ReportSaved:
+        """`add_report`, plus the report's findings and questions (`report_items`) and, with
+        `stage`, the task's move in the same transaction, after the report so that a rule asking
+        for a report since the last stage change sees it. In strict mode a refused move refuses
+        the report too. Without `stage`, the answer names what the usual next move needs."""
         body = (body or "").strip()
         if not body:
             raise ValidationError("Report body must not be empty.")
         given = {"progress": progress, "next_step": next_step, "waiting_on": waiting_on}
         clean = {k: _clean_field(k, v) for k, v in given.items() if v is not None}
         default_actor = _clean_text(author, "author", NAME_MAX) or "mcp"
+        found = report_items.parse_findings(findings)
+        asked = report_items.parse_questions(questions)
         async with self._tx() as tx:
             task = await self.get_task(ref, tx.conn)
-            rules = await self._rules(tx.conn, await self.get_project(task.project_slug, tx.conn))
+            project = await self.get_project(task.project_slug, tx.conn)
+            rules = await self._rules(tx.conn, project)
             problem = report_format_problem(body, rules.body["report_format"])
             if problem and self.rules_mode == "strict":
                 raise ValidationError(f"Rules: {problem} Nothing changed.")
+            await self._coordinated_waiting_on(tx.conn, clean, task.next_step, default_actor)
+            if found or asked:
+                secrets = await self._secret_rules(tx.conn, project)
+                for n, item in enumerate(found, start=1):
+                    _scan(secrets, **{f"findings[{n}].{k}": v for k, v in item.items()})
+                for n, item in enumerate(asked, start=1):
+                    _scan(secrets, **{f"questions[{n}].{k}": v for k, v in item.items()})
             sess = await self._session(tx, session, session_title, hook_session)
+            actor = sess.name if sess else default_actor
             report_id = await self._write_report(
                 tx,
                 task,
                 body,
                 clean,
                 session_id=sess.id if sess else None,
-                actor=sess.name if sess else default_actor,
+                actor=actor,
                 format_problem=problem,
+                moving=stage not in (None, task.stage.value),
             )
+            for kind, items in ((report_items.FINDING, found), (report_items.QUESTION, asked)):
+                if items:
+                    await repo.insert_report_items(tx.conn, report_id, task.id, kind, items, tx.now)
             report = await repo.get_report(tx.conn, report_id)
             assert report is not None
             task = await self.get_task(task.id, tx.conn)
-        return task, report
+            warnings: list[str] = []
+            moved = False
+            if stage is not None:
+                before = task.stage
+                saved = await self._update_task_tx(
+                    tx,
+                    task.id,
+                    {"stage": stage},
+                    expected_version=None,
+                    session=(sess.external_id or sess.name) if sess else None,
+                    session_title=None,
+                    hook_session=None,
+                    actor=actor,
+                )
+                task, warnings, moved = saved.task, saved.warnings, saved.task.stage != before
+                if moved:
+                    # The move comes after the report: the report counts for this move, not
+                    # also for the next one (a "report since the stage change" rule).
+                    await tx.conn.execute(
+                        "UPDATE task SET stage_changed_at = ? WHERE id = ?", (now_iso(), task.id)
+                    )
+                    task = await self.get_task(task.id, tx.conn)
+            next_stage = None if stage is not None else USUAL_NEXT_STAGE.get(task.stage)
+            needs: list[tuple[dict[str, Any], bool]] = []
+            if next_stage is not None:
+                requirements, missing = await self._stage_check(
+                    tx.conn, task, {"stage": next_stage.value}
+                )
+                needs = [(r, r not in missing) for r in requirements]
+        return ReportSaved(
+            task,
+            report,
+            warnings,
+            moved,
+            len(found),
+            len(asked),
+            next_stage.value if next_stage else None,
+            needs,
+        )
 
     async def _write_report(
         self,
@@ -5176,6 +5433,7 @@ class Service:
         actor: str,
         format_problem: str | None,
         size_task: bool = True,
+        moving: bool = False,
     ) -> int:
         """The writes of one report: the rules warnings
         (`format_problem`, the first line's, checked by the caller; no `verified:` mark on an M or
@@ -5183,12 +5441,18 @@ class Service:
         `size_task` off: the report's size does not size the task (a check's `S`)."""
         state, size, summary = parse_report(body)
         checks = parse_checks(body)
-        problems = (format_problem, verified_marks_problem(size, len(checks)))
+        problems = (
+            format_problem,
+            verified_marks_problem(size, len(checks)),
+            _inspect_only_problem(task, state),
+        )
         warnings = [f"Warning (rules): {p}" for p in problems if p]
         for warning in warnings:
             _note(warning)
         if await self._work_after_closed_plan(tx, task, state):
             _note_closed_plan(task)
+        if task.stage == Stage.PLAN and state in WORK_STATES and not moving:
+            _note(STILL_IN_PLAN_HINT.format(key=task.key))
         if size and not task.size and size_task:
             clean["size"] = size  # the first report's size sizes a task that has none
         diff = _task_diff(task, clean)
@@ -7388,6 +7652,9 @@ class Service:
         rest = digests.open_task_order(
             [t for t in open_tasks if t.id not in listed and t.project_id not in gone]
         )
+        items, items_total = await repo.open_report_items(
+            self._r, exclude_project_ids=gone, limit=report_items.DIGEST_MAX
+        )
         prs: dict[int, list[str]] = {}
         for project_id in dict.fromkeys(t.project_id for t in rest):
             mine = [t for t in rest if t.project_id == project_id]
@@ -7407,6 +7674,8 @@ class Service:
             now=now,
             rules_line=rules_line(self.global_rules),
             pulses=await self.pulses(),
+            report_items=[report_items.item_line(i) for i in items],
+            report_items_more=items_total - len(items),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.portfolio_text(data, footer, self._budget(budget))
@@ -7432,6 +7701,9 @@ class Service:
         )
         notes = await repo.list_notes(self._r, project.id, limit=digests.NOTES_MAX)
         counts = await repo.stage_counts(self._r)
+        items, items_total = await repo.open_report_items(
+            self._r, project_id=project.id, limit=report_items.DIGEST_MAX
+        )
         data = digests.ProjectData(
             project=project,
             counts=counts.get(project.id, {}),
@@ -7450,6 +7722,8 @@ class Service:
             rules_line=rules_line(await self._rules(self._r, project)),
             pulse=(await self.pulses()).get(project.id),
             merge_order=await self.merge_order(project),
+            report_items=[report_items.item_line(i) for i in items],
+            report_items_more=items_total - len(items),
         )
         footer = self._footer(reader, since_event, changes, moves)
         rendered = digests.project_text(data, footer, budget)
@@ -7692,9 +7966,12 @@ class Service:
             self._r, project_id=project_id, scope="project"
         )
         backlog_items = subj.backlog_for_card(
-            await repo.list_open_backlog(self._r, project_id), task.id, subject, linked
+            await repo.list_open_backlog(self._r, project_id), task.id, task.area, linked
         )
         blocked_by, blocks = await self.task_blocks(task)
+        own_items, own_total = await repo.open_report_items(
+            self._r, task_id=task.id, limit=report_items.CARD_MAX
+        )
         data = digests.TaskData(
             task=task,
             plan=await self._load_plan(self._r, task),
@@ -7714,6 +7991,8 @@ class Service:
             blocking=blocks_text(blocks),
             doc_lines=await self._doc_lines(links[: digests.DOC_LINKS_MAX], cache),
             change_lines=await self._change_lines(task, cache),
+            report_items=[report_items.item_line(i) for i in own_items],
+            report_items_total=own_total,
             doc_links_total=len(links),
             rules_line=rules_line(await self._rules(self._r, project)),
             comments=[c for c in unread if c.to_agent],
@@ -7766,10 +8045,12 @@ class Service:
                 ordered = await repo.bound_task_ids(self._r, exact.id)
                 tasks = [by_id[i] for i in ordered if i in by_id]
                 if tasks:
-                    budget = min(self.digest_budget_chars, room)
-                    return await self._task_context(
+                    header = digests.session_card_header(tasks[0].key)
+                    budget = max(0, min(self.digest_budget_chars, room) - len(header) - 1)
+                    text, covers = await self._task_context(
                         tasks[0], exact, None, budget, tasks[1:], new_context
                     )
+                    return f"{header}\n{text}", covers
             row = exact or await repo.get_session_by_cc(self._r, hook.cc_session_id)
             cwd = hook.cwd or (row.cwd if row is not None else None)
             projects = await repo.projects_with_repo_path(self._r)
@@ -8024,6 +8305,8 @@ class Service:
             caller = await self._session(tx, session, session_title, hook_session)
             assert caller is not None
             task = await self.get_task(ref, tx.conn)
+            if archived and task.stage == Stage.DONE and await self._needs_tracker_mark(tx, task):
+                raise ValidationError(ARCHIVE_NEEDS_TRACKER_MARK)
             await self._set_archived_tx(tx, task, archived, caller.name, caller.id)
             return await self.get_task(task.id, tx.conn)
 
@@ -8216,7 +8499,7 @@ class Service:
     async def add_backlog_item(
         self,
         project: str,
-        title: str,
+        title: str | None,
         *,
         body: str | None = None,
         area: str | None = None,
@@ -8229,17 +8512,43 @@ class Service:
         assignee: str | None = None,
         kind: str | None = None,
         location: str | None = None,
+        from_report: Any = None,
+        finding: Any = None,
     ) -> BacklogItem:
         """A finding for later: from a session (origin `session`, with the task it came from
-        when `task` is passed) or written by the owner on the board (origin `owner`)."""
+        when `task` is passed) or written by the owner on the board (origin `owner`). With
+        `from_report` and `finding`, that finding of the report is triaged into the item: its
+        fields fill those not given, its task is the item's task, and it leaves the open ones."""
+        if (from_report is None) != (finding is None):
+            raise ValidationError("from_report and finding go together: the report id and n.")
         async with self._tx() as tx:
+            if not by_owner:
+                await self._refuse_agent_creation(tx.conn, session, hook_session)
             proj = await self.get_project(project, tx.conn)
+            source = None
+            if from_report is not None:
+                source = await self._open_report_item(
+                    tx.conn, from_report, report_items.FINDING, finding
+                )
+                title = title if title is not None else source.title
+                body = body if body is not None else source.body
+                area = area if area is not None else source.area
+                kind = kind if kind is not None else source.item_kind
+                location = location if location is not None else source.location
+                task = task or source.task_key
             origin_task = await self.get_task(task, tx.conn) if task else None
+            source_task = await self.get_task(source.task_key, tx.conn) if source else None
+            if source_task is not None and source_task.project_slug != proj.slug:
+                raise ValidationError(
+                    f"Report #{source.report_id} is on {source_task.key} of"
+                    f" {source_task.project_slug}, not {proj.slug}: pass"
+                    f' project="{source_task.project_slug}". Nothing added.'
+                )
             sess = (
                 None if by_owner else await self._session(tx, session, session_title, hook_session)
             )
             created_by = "owner" if by_owner else (sess.name if sess else "mcp")
-            return await self._add_backlog(
+            item = await self._add_backlog(
                 tx,
                 proj,
                 title,
@@ -8254,6 +8563,80 @@ class Service:
                 kind=kind,
                 location=location,
             )
+            if source is not None:
+                await repo.set_report_item_backlog(tx.conn, source.id, item.id)
+            return item
+
+    async def _open_report_item(
+        self, conn: aiosqlite.Connection, report: Any, kind: Any, n: Any
+    ) -> ReportItem:
+        """Item `n` of the report's findings or questions, while nobody has triaged it."""
+        report_id = _clean_id(report, "report")
+        wanted = report_items.parse_kind(kind)
+        number = _clean_id(n, wanted)
+        if await repo.get_report(conn, report_id) is None:
+            raise NotFoundError(f"Report #{report_id} not found.")
+        item = await repo.get_report_item(conn, report_id, wanted, number)
+        if item is None:
+            raise NotFoundError(f"Report #{report_id} has no {wanted} {number}.")
+        if item.backlog_id is not None:
+            raise ValidationError(
+                f"{wanted.capitalize()} {number} of report #{report_id} is already backlog item"
+                f" #{item.backlog_id}."
+            )
+        if item.dismissed_at is not None:
+            raise ValidationError(
+                f"{wanted.capitalize()} {number} of report #{report_id} was dismissed by"
+                f" {item.dismissed_by} on {item.dismissed_at[:10]}."
+            )
+        return item
+
+    async def dismiss_report_item(
+        self,
+        report: Any,
+        n: Any,
+        *,
+        kind: Any = None,
+        reason: str | None = None,
+        session: str | None = None,
+        session_title: str | None = None,
+        hook_session: str | None = None,
+        actor: str = "mcp",
+    ) -> ReportItem:
+        """Close a finding or question of a report without a backlog item: it leaves the open
+        items the digests list. The reason says why (a question: what was decided)."""
+        why = _clean_text(reason, "reason", report_items.DISMISS_REASON_MAX)
+        async with self._tx() as tx:
+            if actor != "board":
+                await self._refuse_agent_creation(
+                    tx.conn, session, hook_session, AGENT_DISMISSES_NOTHING
+                )
+            item = await self._open_report_item(tx.conn, report, kind, n)
+            task = await self.get_task(item.task_id, tx.conn)
+            if why:
+                project = await self.get_project(task.project_slug, tx.conn)
+                _scan(await self._secret_rules(tx.conn, project), reason=why)
+            sess = await self._session(tx, session, session_title, hook_session)
+            who = sess.name if sess else actor
+            await repo.dismiss_report_item(tx.conn, item.id, who, why, tx.now)
+            await tx.event(
+                "report.item_dismissed",
+                who,
+                project_id=task.project_id,
+                task_id=task.id,
+                session_id=sess.id if sess else None,
+                project=task.project_slug,
+                key=task.key,
+                stage=task.stage.value,
+                report_id=item.report_id,
+                item=item.kind,
+                n=item.n,
+                title=item.title,
+                **({"reason": why} if why else {}),
+            )
+            found = await repo.get_report_item(tx.conn, item.report_id, item.kind, item.n)
+            assert found is not None
+            return found
 
     async def similar_backlog(self, item: BacklogItem) -> list[tuple[BacklogItem, float]]:
         """Other open items of the item's project whose title is like its title, most similar
@@ -9355,6 +9738,8 @@ class Service:
             )
             if current.status == "done" and status == "in_progress":
                 await self._rework(tx, task, f"rework: {current.title}", actor, sess)
+            elif task.stage == Stage.PLAN and status in ("in_progress", "done"):
+                _note(STILL_IN_PLAN_HINT.format(key=task.key))
             steps = await repo.list_plan_steps(tx.conn, task.id)
             closes = status == "done" and current.status != "done"
             ready = task.stage == Stage.DEV and task.review_total > 0
@@ -9416,7 +9801,8 @@ class Service:
             task = await self.get_task(ref, tx.conn)
             if task.stage == Stage.DONE:
                 raise ValidationError(
-                    f"{task.key}: the task is done: reopen it (task_set_stage) before adding steps."
+                    f"{task.key}: the task is done: reopen it (task_update(stage=...))"
+                    " before adding steps."
                 )
             current = await repo.list_plan_steps(tx.conn, task.id)
             if len(current) >= PLAN_STEPS_MAX:
@@ -11087,6 +11473,81 @@ class Service:
                 return True
         return False
 
+    async def _agent_cards(
+        self, conn: aiosqlite.Connection, value: str | None, hook_session: str | None
+    ) -> list[Task]:
+        """Coordinator mode: the open cards of a calling agent (a session bound to at least one
+        open card that is not a coordinator), most recently bound first; [] for anyone else, the
+        board and an unknown caller included. Like `_is_coordinator` a guard against mistakes,
+        not access control; no session row is created."""
+        if not self.coordinators:
+            return []
+        needle = (value or "").strip()
+        cc_id = (hook_session or "").strip()
+        if needle:
+            session = await self._known_session(needle, conn)
+        else:
+            session = await _hook_id_session(conn, cc_id) if cc_id else None
+        if session is None or await self._is_coordinator(conn, value, hook_session):
+            return []
+        # A desktop-id entry without its hook proof (no hook_session, or a new id after /clear)
+        # is still the coordinator here: taking it for an agent would block its own work.
+        desktops = {parse_session_id(e) for e in self.coordinators} - {None}
+        if session.external_id in desktops:
+            return []
+        bound = [await self.get_task(i, conn) for i in await repo.bound_task_ids(conn, session.id)]
+        return [t for t in bound if t.stage in OPEN_STAGES]
+
+    async def _refuse_agent_creation(
+        self,
+        conn: aiosqlite.Connection,
+        session: str | None,
+        hook_session: str | None,
+        text: str | None = None,
+    ) -> None:
+        cards = await self._agent_cards(conn, session, hook_session)
+        if cards:
+            raise ValidationError((text or AGENT_CREATES_NOTHING).format(key=cards[0].key))
+
+    async def _coordinator_names(self, conn: aiosqlite.Connection) -> list[str]:
+        """The `coordinators` entries and the names of the sessions they name."""
+        names = list(self.coordinators)
+        for entry in self.coordinators:
+            desktop = parse_session_id(entry)
+            if desktop is not None:
+                found = await repo.get_session_by_external_id(conn, desktop)
+            else:
+                found = await repo.get_session_by_alias(conn, entry)
+            if found is not None:
+                names.append(found.name)
+        return names
+
+    async def _coordinated_waiting_on(
+        self,
+        conn: aiosqlite.Connection,
+        clean: dict[str, Any],
+        card_next_step: str | None,
+        actor: str,
+    ) -> None:
+        """Coordinator mode, MCP writes only: `clean["waiting_on"]` becomes one of the fixed
+        values (domain/waiting_on.py); the text after the who goes to next_step when neither
+        the write nor the card has one. The answer gets a note when the value changed."""
+        given = clean.get("waiting_on")
+        if not self.coordinators or actor != "mcp" or not isinstance(given, str):
+            return
+        free = not clean.get("next_step") and ("next_step" in clean or not card_next_step)
+        who, moved, note = normalise_waiting_on(
+            given,
+            owner_names=self.owner_names,
+            coordinator_names=await self._coordinator_names(conn),
+            keep_rest=free,
+        )
+        clean["waiting_on"] = who
+        if moved:
+            clean["next_step"] = _clean_field("next_step", moved)
+        if note:
+            _note(note)
+
     async def _rules_scope(
         self, conn: aiosqlite.Connection, scope: str
     ) -> tuple[str, Project | None]:
@@ -11629,9 +12090,10 @@ class Service:
     ) -> tuple[Question, str]:
         """`question_ask`: a question for the owner on a card, with its default, asked by the
         calling session for itself. Returns the question and what the agent does next."""
-        if (session or "").strip() in ("", "-"):
+        if _no_caller(session, hook_session):
             raise ValidationError(
-                "question_ask needs your session: the answer goes back to who asked. Nothing asked."
+                "question_ask needs your session (session, or your own hook_session): the answer"
+                " goes back to who asked. Nothing asked."
             )
         what = qrules.clean_kind(kind)
         body = qrules.clean_text(text)
@@ -11674,8 +12136,7 @@ class Service:
                     f"{task.key} already has {qrules.OPEN_MAX} open questions: wait for the owner,"
                     " or withdraw one with question_withdraw. Nothing asked."
                 )
-            caller = await self._session(tx, session, session_title, hook_session)
-            assert caller is not None
+            caller = await self._caller(tx, session, session_title, hook_session, "question_ask")
             question_id = await repo.insert_question(
                 tx.conn,
                 {
@@ -12317,10 +12778,10 @@ class Service:
         """`approval_request`: the agent asks the owner to approve one action on a card. An open
         request for the same action and target is updated instead of a second one. Returns the
         request, what the agent does next and whether it was an update."""
-        if (session or "").strip() in ("", "-"):
+        if _no_caller(session, hook_session):
             raise ValidationError(
-                "approval_request needs your session: the decision goes back to who asked."
-                " Nothing requested."
+                "approval_request needs your session (session, or your own hook_session): the"
+                " decision goes back to who asked. Nothing requested."
             )
         what = arules.clean_action(action)
         aimed = arules.parse_target(what, target)
@@ -12334,19 +12795,19 @@ class Service:
             project = await self.get_project(task.project_slug, tx.conn)
             rules = await self._secret_rules(tx.conn, project)
             _scan(rules, summary=body, rollback=undo, target=str(target))
-            caller = await self._session(tx, session, session_title, hook_session)
-            assert caller is not None
+            caller = await self._caller(
+                tx, session, session_title, hook_session, "approval_request"
+            )
             env_id: int | None = None
             env_text: str | None = None
             if env_name is not None:
+                # A stand stored before 0.15 still drives the guard; any other target is plain
+                # text (environments were removed from the board in 0.15).
                 env = await repo.find_environment(tx.conn, project.id, env_name)
                 if env is None:
-                    names = [e.name for e in await repo.list_environments(tx.conn, [project.id])]
-                    raise NotFoundError(
-                        f"{project.slug} has no environment {env_name!r}"
-                        f" (it has: {', '.join(names) or 'none'}). Nothing requested."
-                    )
-                env_id, env_text = env.id, f"{project.slug}/{env.name}"
+                    env_text = f"{project.slug}/{env_name}"
+                else:
+                    env_id, env_text = env.id, f"{project.slug}/{env.name}"
             if repository is not None:
                 known = [r.name for r in await repo.list_project_repos(tx.conn, project.id)]
                 match = next((n for n in known if n.casefold() == repository.casefold()), None)

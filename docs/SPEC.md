@@ -60,7 +60,7 @@ letter or digit, takes the project's slug. Matching a session's folder to a proj
 repository, with who added it and how: `auto` from the hooks, `agent` over MCP, `owner` on the
 board) and its pull requests (`task_pr`: an http or https link, unique per task, the number taken
 from a `/pull/<n>`, `/pulls/<n>`, `/merge_requests/<n>` or `/pull-requests/<n>` path, optionally
-tied to one repository). `task_update` / `task_patch` take `repos` (names to add, `-name` removes
+tied to one repository). `task_update` (and the deprecated `task_patch`) take `repos` (names to add, `-name` removes
 one; an unknown name fails with the project's names) and `prs` (links to add, each optionally after
 a repository name, `web https://…`; `-<url>` removes one). Without a name, a link whose path names
 one of the project's repositories (`…/<owner>/<repo>/pull/1`, GitLab's `/-/merge_requests`) is tied
@@ -78,7 +78,7 @@ repository's `## Code` line (`· worktree `<path>``), `task_context` as a `Workt
 
 <a id="spec-task-blockers"></a>
 
-**Blockers.** A card can wait for other cards: `task_update` / `task_patch` take `blocked_by`
+**Blockers.** A card can wait for other cards: `task_update` (and the deprecated `task_patch`) take `blocked_by`
 (`task_block`, migration 0061, one row per pair with who added it and when), a list of card keys of
 any project on the board (`acme-shop-12`, case does not matter) to add; `-key` removes one. Refused
 in the same write, which then changes nothing: a key no card has (the error names it), anything
@@ -125,7 +125,7 @@ so "Web shop" and "web shop" are one area and the stored spelling stays. A name 
 have yet is added to its list (at most 24 areas a project; past that the write fails with the
 existing names), last, with the colour of its place in a palette of eight (`blue`, `green`, `amber`,
 `violet`, `teal`, `rose`, `slate`, `orange`), which the owner may change. `area` is a task field
-([below](#spec-task)): `task_create(area=…)`, `task_update(area=…)`, `task_patch(fields={"area": …})`
+([below](#spec-task)): `task_create(area=…)`, `task_update(area=…)`, `task_update(fields={"area": …})`
 and the board form set it; `-`, `""` or null clears it. A new area is a `project.updated` event with
 `changes.areas.added`; the task's own change is `task.updated` with `changes.area` (the name, or null).
 Over MCP a new name adds a line to the answer: `Area '<name>' was new: added to <slug>. Its areas now:
@@ -150,8 +150,8 @@ drives write validation, the `relaybay://schema/task` resource and the "Editable
 
 <a id="spec-task-deploy"></a>
 
-**Deploy notes and cancelled** (migration 0060). Set through `task_patch` (and the board form)
-only; `task_update` has no parameters for them. `deploy_notes` (markdown, up to 20,000
+**Deploy notes and cancelled** (migration 0060). Set through `task_update` (`deploy_notes`, `deploy_done`, `cancelled`, or the same names in `fields`;
+`task_patch` does the same, deprecated) and the board form. `deploy_notes` (markdown, up to 20,000
 characters) says what a deploy of the card needs: a migration, a feature flag, a script, the
 rollback. `deploy_done` (boolean) marks those steps as carried out; a write that changes
 `deploy_notes` clears it in the same write unless `deploy_done` is passed with it (the board form
@@ -225,8 +225,8 @@ answer only once a report of the task came strictly after the plan closed (the n
 newest step's `done_at` and the newest plan revision, so a `plan_set` that drops the last open step
 also closes it); the report and the progress that close the plan never warn. Then it joins a report
 whose state is `changed` in any open stage, or `verified` with the task in `dev`, and a
-`task_update` / `task_patch` that changes `progress` on a task in `dev`. It is a warning in `strict` mode too, never a refusal. `plan_step_add` on a
-task in `done` is refused (`the task is done: reopen it (task_set_stage) before adding steps.`);
+`task_update` (or `task_patch`) that changes `progress` on a task in `dev`. It is a warning in `strict` mode too, never a refusal. `plan_step_add` on a
+task in `done` is refused (`the task is done: reopen it (task_update(stage=…)) before adding steps.`);
 in `live` it is allowed and the answer adds `<key> is in live: the step does not move it.`.
 
 <a id="spec-plan-status"></a>
@@ -253,7 +253,7 @@ Never a line for the agent.
 
 <a id="spec-plan-size"></a>
 
-**Task size.** `size` is an optional field (`S`, `M`, `L`; `task_update`, `task_patch`, the board
+**Task size.** `size` is an optional field (`S`, `M`, `L`; `task_update`, the deprecated `task_patch`, the board
 form; `-` clears it). A report whose first line names a size sets it when the task has none (a
 `task.updated` in the same transaction); a size already set is kept. `S` tasks may go without an
 accepted plan ([§6](#spec-plan-rule)).
@@ -399,7 +399,7 @@ token is the only authorisation.
 `cli` is `terminal`, anything else (an SDK, an IDE) leaves the surface as it was, and the raw
 value is kept in `session.entrypoint`; an older hook client or an http hook sends nothing. A
 session with a desktop id (`local_<uuid>`) is a desktop one whatever these say. When the surface
-is unknown, the `SessionStart` answer asks the session to say it once with `task_patch(task,
+is unknown, the `SessionStart` answer asks the session to say it once with `task_update(task,
 fields={"session_surface": "desktop" | "terminal"}, session=…, hook_session=…)`: the field is
 stored on the calling session, not on the task: the one named by `session` (its `hook_session`
 linked to it with the guard of any write, so an id another live session linked stays there), else
@@ -588,9 +588,12 @@ file or a tool result that says "approved" changes nothing.
 - **MCP.** `approval_request(task, action, target, summary, rollback?, session, hook_session?)`:
   `action` one of `push`, `merge`, `commit`, `deploy`, `sql`; `target` the branch (`feat/x`,
   `backend:feat/x` with a repository of the project, `+feat/x` for a force push, `:feat/x` to
-  delete it), the pull request (`12`, `#12`, its URL, or a branch; `backend#12`) or an
-  environment of the card's project; `summary` required (up to 2,000 characters: the commits, the
-  files, the CI state); `rollback` (up to 1,000) required for a deploy. `session` is required;
+  delete it), the pull request (`12`, `#12`, its URL, or a branch; `backend#12`) or, for a deploy
+  or SQL change, the stand in words (`live`, `test`; stored as `<project>/<name>`, matched without
+  case; an environment stored before 0.15 with that name is used for the guard); `summary` required
+  (up to 2,000 characters: the commits, the files, the CI state); `rollback` (up to 1,000) required
+  for a deploy. `session` is required, or the caller's own `hook_session` alone when the board
+  knows it (`question_ask` likewise);
   refused on a card in `done` and at 10 open requests per card. The summary, the rollback and the
   target go through the policy's secret check. An open request for the same target (a repository
   only one of them names counts as the same) is filled in (summary, rollback, who asked) instead
@@ -656,17 +659,48 @@ mode a refusal, and never for an S report or one without a size. The first start
 (`report_marks_from`) the first report id after them: older reports show their marks but never
 the warning.
 
+<a id="spec-report-stage"></a>
+
+**Ending a stage in one call.** `report_add(stage=...)` writes the report, then moves the task in
+the same transaction, so a rule asking for a report since the last stage change sees it. The move
+is an ordinary stage change (its rules, `task.stage_changed` by the report's author, its hints):
+its rule warnings follow in the answer, and in `strict` mode a refused move refuses the report
+too, nothing written. The answer adds `Moved to <stage>.` (or `Already in <stage>.`). Without
+`stage` it adds one line naming the usual next move and what the rules ask for it, each marked
+`done` or `missing`: `Next: task_update(stage="test") needs a report since the last stage change
+(done).` The usual next stage is plan→dev, dev→test, review→test, test→done, live→done; a card
+in done gets no line (code: domain/stages.py:USUAL_NEXT_STAGE, service.py:add_report_checked).
+
+<a id="spec-report-items"></a>
+
+**Findings and questions of a report** (`report_item`, migration 0063). `report_add(findings=[…],
+questions=[…])` stores up to 10 of each with the report: a finding `{title, body?, location?,
+kind?, area?}` (the limits and kinds of a backlog item), a question `{text, default}` (`default`
+is what happens if nobody answers; the limits of `question_ask`). Each is numbered `n` from 1 per
+report and kind. A wrong shape (not a list, not an object, an unknown field, a missing required
+field, a kind not in the list, too long, more than 10) refuses the call naming the item,
+`findings[2].title is required`; every text is scanned for secret values like a backlog item;
+either way nothing is written. They are data for the coordinator, never a backlog item by
+themselves: an item is **open** until it is triaged into the backlog (`backlog_add(from_report,
+finding)`, [§12](#spec-backlog-mcp)) or dismissed with `report_item_dismiss(report, n, kind?,
+reason?)` (a finding by default; the reason is scanned; event `report.item_dismissed`). Triaging
+or dismissing an item twice is refused, naming the backlog item or who dismissed it and when.
+`portfolio_digest` and `project_digest` list open items under `## Findings and questions to
+triage` ([§8](#spec-digest-levels)); `task_context` and `task_get` list the card's own, at most 5,
+under `## Open findings and questions of its reports` with their count (code:
+domain/report_items.py, service.py:dismiss_report_item).
+
 <a id="spec-progress"></a>
 
 **Progress, next step, waiting on.** `description` says what to do and why, short; the pseudo-field
-`description_add` of `task_patch` (not a column) appends its text as a new paragraph (a blank line,
+`description_add` of `task_update(fields=…)` (not a column; `task_patch` still takes it too) appends its text as a new paragraph (a blank line,
 then the text) to the description read in the same transaction, so two writers keep each other's
 lines (the result stays within 20,000 characters, else the write fails); `progress` is the running
 summary of everything done so far (rewritten, not appended). `next_step` is what happens next,
 `waiting_on` who acts next and nothing else: a name or role, with what happens in `next_step`
 (data is never rewritten: a write whose `waiting_on` has more than 4 words gets the answer line
 `Hint: waiting_on is who acts next; put what happens into next_step.`, never a refusal or a
-`Warning (rules)`). `task_set_stage` and `report_add` take `next_step` and `waiting_on`
+`Warning (rules)`). `task_update` (and the deprecated `task_set_stage`) and `report_add` take `next_step` and `waiting_on`
 (and `report_add` takes `progress`) and save them in the same transaction. A next step written
 before the task's last stage change is **stale**: shown muted with a "stale" marker on cards and in
 the task dialog, `(stale)` in MCP output. Writing it again, even with the same text, confirms it
@@ -682,7 +716,7 @@ appends an entry, logging and unlogging stamp the current entry. **Automatic unl
 logged task (a report or a changed `progress` on a card before `live`, or a move back out of
 `live` / `done` to an earlier stage) clears the mark in the same transaction with a
 `task.tracker_unlogged` event carrying the reason. A report or a rewritten `progress` on a card in
-`live` or `done` (through `report_add`, `task_update` or `task_patch` alike) closes it and keeps
+`live` or `done` (through `report_add`, `task_update`, or the deprecated `task_patch`, alike) closes it and keeps
 the mark; a move back to an earlier stage still clears it. Metadata edits keep the mark; an explicit `tracker_logged` in the same write wins; a new
 `tracker_ref` starts as not logged unless `tracker_logged` is passed with it.
 
@@ -704,6 +738,39 @@ move needs. Served to every client and checked on stage moves ([§6](#spec-rules
 not a feature: it uses the same tools as any session. A session named in `coordinators` in the
 config may also use the tools kept for coordinators (`rules_update`, `plan_accept`, `task_archive`,
 `task_unarchive`, backlog triage; [§6](#spec-rules-versions)).
+
+<a id="spec-coordinator-mode"></a>
+
+**Coordinator mode.** A non-empty `coordinators` switches it on (code: service.py:_agent_cards).
+An **agent** is then the caller of a write (its `session`, else its `hook_session`, looked up
+without creating a session row) that is bound to at least one card not in `done` and is not a
+coordinator; the board, a coordinator, an unknown caller and a session bound to no open card are not
+agents. It is a guard against mistakes, not access control. Because the coordinator triages what
+agents find, and the tracker work log follows the coordinator's own records:
+- `task_create` and `backlog_add` from an agent are refused, nothing is created: `In coordinator
+  mode new cards and backlog items come from the coordinator: put this in report_add(task=<key>,
+  findings=[...]) (a question for the owner: questions=[...]). Nothing created.`, `<key>` the
+  caller's most recently bound open card (code: service.py:_refuse_agent_creation).
+- The `require_tracker_log` requirement does not apply to an agent's move to `done`: no warning, no
+  strict refusal; the answer gets `Tracker mark: the coordinator's (it sets tracker_logged after the
+  work log).` A coordinator's and the board's moves are checked as before (code:
+  service.py:_stage_warnings). `task_archive` refuses a done card that still needs the mark (the
+  requirement applies, `tracker_logged` is false and the card or its project keeps a tracker) with
+  `Set tracker_logged first (the work log in the tracker), then archive.` (code:
+  service.py:set_archived_mcp).
+- On MCP writes (`task_create`, `task_update`, `task_patch`, `task_set_stage`, `report_add`)
+  `waiting_on` is saved as one of: the first of `owner_names` (what the Inbox and the card state
+  match), `coordinator`, `session`, `ci`, `customer:<name>`. Case-insensitive synonyms, also
+  followed by `: text`, ` (text)` or ` — text`: every owner name, `owner` and the Russian word for
+  owner; `coordinator`, `master`, every `coordinators` entry and the names of the sessions they
+  name; `session`, `agent`, `developer`, `reviewer`, `dev`; `ci`. Anything else is saved as written.
+  The text after the who goes to `next_step` when the write sets none and the card has none
+  (otherwise it is not kept); the answer gets `waiting_on: "<given>" saved as "<who>"`, plus ` — the
+  rest went to next_step` or ` — the rest was not kept: the card already has a next_step`
+  (code: domain/waiting_on.py:normalise, service.py:_coordinated_waiting_on). The board's writes and
+  the cards a question or an approval request sets to the owner are not touched.
+- The `/mcp` and `/mcp/agent` instructions change in three places ([§3](#spec-mcp-instructions)).
+With `coordinators` empty, none of this applies and every text is as without the mode.
 
 <a id="spec-events"></a>
 
@@ -1223,7 +1290,8 @@ approved, unused approval is not archived (a move to done would withdraw or expi
 refusal says `<key> has an open question, an open approval request or an approved, unused
 approval: answer, withdraw or use it first, the archive closes nothing for good. Nothing
 changed.`; the confirmation says so too. `task_archive` / `task_unarchive` do the same for
-coordinators. Only `done` and `live` cards are archived; any other stage is refused with `Only a
+coordinators; `task_archive` also waits for the tracker mark ([coordinator
+mode](#spec-coordinator-mode)). Only `done` and `live` cards are archived; any other stage is refused with `Only a
 done or live task goes to the archive; <key> is in <stage>. Nothing changed.`
 
 <a id="spec-board-archive-bulk"></a>
@@ -1457,14 +1525,25 @@ everything else is escaped. No CDN: htmx and its SSE extension are vendored.
 
 ## 3. MCP contract
 
-Streamable HTTP at exactly `/mcp` in the server process (official `mcp` SDK 2.x, `MCPServer`).
+Streamable HTTP at exactly `/mcp` in the server process (official `mcp` SDK 2.x, `MCPServer`), and
+the role endpoints `/mcp/agent`, `/mcp/coordinator` and `/mcp/reader` (one server per role, same
+tools, token and security; `mcp_server/roles.py`): each lists its role's tools in `tools/list` and
+sends its own instructions; a tool not listed still runs when called by name. A role's list never
+holds a deprecated name; the agent's covers every moment of a card (start, plan, work, documents,
+question, decision, finding, report, review, approval, closing); the coordinator's is every current
+tool but `review_steps_set`, `review_step_update` and `annotation_reply`; the reader's is
+`task_context`, `task_get`, `plan_get`, `review_get`, `attachment_get`, `comments_list`,
+`decision_list`, `rules_get`, `backlog_list` and the `doc_list` / `doc_outline` / `doc_get` /
+`doc_search` reads. The instructions of a role name only tools of its list, and every tool a hint
+in an answer names is in the agent's list unless it names someone else's act (tested). `relaybay
+setup` accepts a user entry at `/mcp` or a role endpoint.
 Every request needs `Authorization: Bearer <token>`. Tool results are short markdown for the model;
 domain failures (unknown task, version conflict, invalid stage, rule refusal) are tool errors whose
 message says what to do. Parameters and outputs of every tool: [MCP tools reference](mcp-tools.md).
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_patch` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`).
+**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`). In [coordinator mode](#spec-coordinator-mode) three points change on `/mcp`: point 2 says a missing card is the coordinator's (ask it in your report, do not create cards), point 5 says `Findings outside your task and questions for the owner go into report_add(findings=..., questions=...): the coordinator triages them; do not create cards or backlog items.` and point 7 adds `The tracker mark is the coordinator's.`; the `/mcp/agent` instructions change the same way (its question line goes into the finding line). The text with `coordinators` empty is frozen by a test (code: mcp_server/server.py:instructions, mcp_server/roles.py:agent_instructions).
 
 <a id="spec-mcp-tools"></a>
 
@@ -1473,9 +1552,9 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 | Group | Tools |
 |---|---|
 | Projects | `project_list`, `project_upsert`, `project_delete` (coordinators only, [§2](#spec-archive-purge)), `project_snapshot` |
-| Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage`, `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
+| Tasks | `task_list`, `task_get`, `task_create`, `task_update` (also moves the stage, sets `deploy_notes`, `deploy_done`, `cancelled` and any other field through `fields`), `task_patch` (deprecated since 0.17, use `task_update`), `task_set_stage` (deprecated since 0.17, use `task_update`), `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
 | Sessions | `task_bind_session`, `task_unbind_session` |
-| Reports and decisions | `report_add`, `decision_add` |
+| Reports and decisions | `report_add`, `report_item_dismiss` ([§1](#spec-report-items)), `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
 | Review | `review_get`, `review_steps_set`, `review_step_update`, `attach_file`, `attachment_caption`, `attachment_get`, `annotation_reply` |
 | Plan | `plan_get`, `plan_set`, `plan_step_add`, `plan_step_update`, `plan_accept` |
@@ -1492,15 +1571,15 @@ digests are annotated as writes: `session` moves the caller's read position and 
 its session row.
 Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (or `""`) clears an
 optional text field, because models cannot always send an empty string. `task_update`,
-`task_patch` accept `expected_version` and fail instead of overwriting a newer version; otherwise the
-last write wins. `task_create`, `task_update` and `task_patch` take `area` ([§1](#spec-areas)),
+`task_patch` (deprecated) accept `expected_version` and fail instead of overwriting a newer version; otherwise the
+last write wins. `task_create`, `task_update` (and the deprecated `task_patch`) take `area` ([§1](#spec-areas)),
 `task_create(bind=false)` creates a card without binding the calling session (it stays the event's
 actor and its `hook_session` is linked as on any write; the default binds), and `project_upsert`
 takes `archived` ([§2](#spec-project-archive)).
 `task_list` filters by `area` (any project's area of that name without `project`); `task_get`,
 `task_context`, `task_list` and the digests show a task's area, and `project_snapshot` lists the
 project's areas with how many tasks carry each. `project_upsert` takes `repos`, `task_update` takes
-`repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_patch` reaches them as `fields={"repos": […], "prs": […], "blocked_by": […]}` for a
+`repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_update(fields={"repos": […], "prs": […], "blocked_by": […]})` reaches them (the deprecated `task_patch` too) for a
 client whose cached schema lacks them, and `relaybay://schema/task` lists them after the fields.
 
 <a id="spec-mcp-resources"></a>
@@ -1542,7 +1621,7 @@ a prompt argument; narrowing what a parameter accepts (a type dropped, `null` in
 dropped or an enum added, a tighter minimum, maximum or length, a field of an object parameter
 removed or made required); a new required parameter or prompt argument, or an optional one made
 required; a read-only tool that starts to write or a tool that becomes destructive. A field a stale
-schema lacks is reached through `task_patch(task, fields={…})` or `backlog_patch(item, fields={…})`;
+schema lacks is reached through `task_update(task, fields={…})` or `backlog_patch(item, fields={…})`;
 there is no such escape hatch for other tools.
 
 A deprecation is an entry in `DEPRECATIONS` (`src/relaybay/mcp_server/contract.py`): the tool (or
@@ -1681,7 +1760,9 @@ and cannot hand over its window's card. Who started the tool is otherwise not ch
    calling session; a row the hooks had created for it by guess hands over its status and is
    removed. An id that another live (not ended) session already linked exactly is not moved: the
    write succeeds and its response gets `Warning: hook_session <id> belongs to another session
-   (<name>); not relinked.` `task_bind_session` never links a hook id (the caller may be binding
+   (<name>); not relinked.` A readable `session` name the board has never seen, passed with a
+   hook id exactly linked to a live desktop session, is that desktop session (a launched session
+   that does not know its `local_` id): no new row, no warning. `task_bind_session` never links a hook id (the caller may be binding
    another session); it answers with a note when one is passed. A bare Claude Code id passed as
    `session` that the hooks know (exactly linked, or the hooks' own row) resolves to that session
    with the note `Note: <id> is the hook session id of <name>; that session was used. …`, instead of
@@ -1702,7 +1783,7 @@ session's surface from it ([§1](#spec-session-surface)). An older hook client o
 sends nothing and keeps working. A started session (not one a desktop session's tool started)
 whose surface is still unknown gets one more sentence at the end of the session line: "relaybay
 could not tell whether you run in the Claude desktop app or in a terminal. Tell it once, with your
-next relaybay write on your task: task_patch(task, fields={"session_surface": "desktop"} or
+next relaybay write on your task: task_update(task, fields={"session_surface": "desktop"} or
 {"session_surface": "terminal"}, session="<its name>", hook_session="<id>")."
 
 <a id="spec-hooks-repos"></a>
@@ -1712,7 +1793,9 @@ looks, in one indexed read, at the repositories of the tasks the session is boun
 such task the repository whose path is the folder or holds it (the closest one; a leading `~` or
 `~/` is the user's home, `~name` is never expanded and matches only as written; compared with the
 machine's case rules, nothing on disk is read) is linked with `how: auto` when it is not linked
-yet, with the branch checked out there. While the task has no worktree for that repository, the
+yet, with the branch checked out there, unless another card not in done already holds that
+branch in that repository (a shared working copy on another card's branch): then only the
+repository is linked, with no branch and no worktree. While the task has no worktree for that repository, the
 hook fills it ([§1](#spec-task-code)): the top of the working copy holding `cwd` (the nearest
 folder with a `.git` folder or file, looked for no higher than the repository's path; none found:
 the repository's path), so moving between folders of one checkout writes nothing, and a worktree
@@ -2027,7 +2110,11 @@ One structured document with a fixed set of keys:
 <a id="spec-plan-rule"></a>
 
 **Work by plan.** `plan_accepted` is met when the task's plan is `accepted` or its size is in
-`unless_size` (default `["S"]`; a task without a size needs the plan). In `warn` mode a move to dev
+`unless_size` (default `["S"]`; a task without a size needs the plan), or when the task is
+`inspect_only` (an analysis, a repro, a question answered by reading; set with `task_create` or
+`task_update`, migration 0062): it goes to dev and done without a plan, and a report on it whose
+state is `changed`, `committed` or `pushed` adds `Warning (rules): <key> is inspect-only, yet this
+report says <state>: …`. In `warn` mode a move to dev
 without it carries `Warning (rules): moving to dev usually needs an accepted plan (not needed for
 size S).` plus `Write it with plan_set (2-5 steps), then ask for acceptance.` or, for a draft,
 `The plan is not accepted yet: the owner accepts it on the board, the coordinator with
@@ -2041,7 +2128,13 @@ going to do (todo or 2-3 steps with plan_set).` (any size, not a rule warning).
 stage rules checked; the MCP answer adds `acme-shop-12 moved from review back to dev (rework: …).`.
 A task in `dev` stays. When a `plan_step_update` makes every step done on a task in `dev` with a
 review checklist, the answer adds `Hint: all steps done and the review checklist is set: move the
-task to review (task_set_stage).`; nothing moves to review by itself.
+task to review (task_update(stage=…)).`; nothing moves to review by itself. Nothing moves a card
+out of `plan` by itself either: while a card is in `plan`, a `plan_step_update` to `in_progress` or
+`done` and a report whose state is `changed`, `verified`, `committed` or `pushed` (without
+`stage` in the same call) add `Hint: <key> is still in plan while its work has started: move it
+with task_update(task="<key>", stage="dev").`; `plan_accept` on a card in `plan` says the card's
+session moves it to dev when the work starts, and `task_context` of a card in `plan` with an
+accepted plan says the same.
 
 <a id="spec-rules-merge"></a>
 
@@ -2146,8 +2239,8 @@ version in a `version` line.
 
 <a id="spec-rules-modes"></a>
 
-**Checks and modes:** requirements are checked on stage moves (`task_set_stage`, `task_update`
-/ `task_patch` with a stage, the board form). `rules_mode = "warn"` (default): the move succeeds and
+**Checks and modes:** requirements are checked on stage moves (`task_update` with a stage; the deprecated `task_set_stage` and
+`task_patch` alike; the board form). `rules_mode = "warn"` (default): the move succeeds and
 the response, the board form and the `task.stage_changed` event carry the warnings.
 `rules_mode = "strict"`: the move is refused with the reason and nothing changes.
 
@@ -2552,7 +2645,7 @@ any other kind is free text (default `doc`). Documents are free markdown: no sec
 and decisions have their own table ([below](#spec-memory-decisions)). A task's document is named
 `task-<ref>` (import makes it so); a task created on the board or through MCP gets one with
 `doc_update` and `task_update(doc_path="relaybay://doc/<project>/task-<ref>")`. A `task_create`,
-`task_update` or `task_patch` that sets `doc_path` to an absolute path of a local `.md` file that no
+`task_update` (or `task_patch`) that sets `doc_path` to an absolute path of a local `.md` file that no
 file document of the project reads yet makes that file the file document `task-<key>` (kind
 `task`, writes through relaybay off, the same path checks as `doc_update(source_path)`); the answer
 says so in one line with the board link, or why not (a refused or missing file, the name
@@ -2653,8 +2746,10 @@ and sets `document.file_changed_by` `outside`, `file_changed_at` and `file_chang
 anchors of every outside change since the last write through relaybay, at most 20: the added
 and changed sections the file still has, the removed ones as `-anchor`, named as a section again
 when it comes back). While it is `outside`, `doc_outline`, `doc_get`, the `doc_search` hits of the
-document (once) and the linked-section lines of `task_context` add `Note: <doc> was changed
-outside relaybay at <time>: sections a, b; removed c (version N).`; the next write through
+document and the linked-section lines of `task_context` add `Note: <doc> was changed
+outside relaybay at <time>: sections a, b; removed c (version N).` (`doc_search` gives one short
+line per changed document after its hits: `Note: <doc> was changed outside relaybay at <time> (N
+sections, version N); doc_get(project, '<doc>') names them.`); the next write through
 relaybay clears it. The answers of `doc_get`
 and `doc_outline` name the version and `writes through relaybay: on` or `off`. The board's page of
 a file document stays read-only.
@@ -2822,7 +2917,7 @@ document's text.
 with its version, `doc_get` call and board link; a line `- <doc>#<anchor> · <op>` per target and
 op; `- problem: …` per problem; and `Other cards changing the same sections: <key> (<stage>)
 <doc>#<anchor>, …` when another open card changes one of the same sections (by its targets or
-linked sections). Moving a card to done (any stage move: `task_set_stage`, `task_update`, the
+linked sections). Moving a card to done (any stage move: `task_update`, the deprecated `task_set_stage`, the
 board) adds hints, no rule warnings: `Hint: <key> is done but its change document spec-<key> is
 still there: merge it into the spec and delete it: doc_update(…, delete=true).` while the
 document exists, and `Hint: <key> is done but its deploy notes are not carried out: …` while
@@ -2954,9 +3049,18 @@ it (a stage move adds no `Note:` line). `pulse_stale_days` is accepted and ignor
 
 | Digest | Sections, most important first |
 |---|---|
-| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
-| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
-| `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the card's change document (`## Change document`, [§8](#spec-change-documents)); the effective rules line; relevant notes; open backlog items of the card |
+| `portfolio_digest` | identity and counts (the count waiting for the owner is the Inbox badge); one line per project (stage counts, the derived pulse line, the note's first line with its age); what waits for the owner (the Inbox's rows: open questions and approval requests first, then each open card once with its marks, proposals and notices, then the grouped lines); open findings and questions of reports to triage (below); **Open tasks**: one line per open card of a project not archived that is not listed there nor as stale, by project, work in progress first (`[stage] key title · note: stage note · waiting on · next · PR #n · doc <document field>`); current decisions of the last 7 days; open tasks with no change for `task_stale_days` (default 5); changes; global blocks |
+| `project_digest` | identity, stage counts, description, the derived pulse line and the note; open questions (tasks waiting on the owner, `owner_names`); open findings and questions of reports to triage (below); open tasks with next step and waiting on, work in progress before the backlog (`dev`, `review`, `test`, `live`, `plan`); the merge order of the test cards with its warnings when two or more are in test ([§1](#spec-merge-order)); recent current decisions; changes; project blocks; current project and global notes, those flagged `[verify]` (past `review_at`) or `[never read]` first |
+| `task_context` | identity, fields, description and progress (with a `Blocks:` line); plan with the current step (the plan reminder's line) and the steps; other bound tasks (session start only); the cards blocking it (`## Blocked by`, [§1](#spec-task-blockers)); unread owner comments; the task's current decisions and the project's related to the card; changes; linked document sections; the card's change document (`## Change document`, [§8](#spec-change-documents)); the effective rules line; the card's own open findings and questions of its reports (count and at most 5, [§1](#spec-report-items)); relevant notes; open backlog items of the card |
+
+**Findings and questions to triage** (`portfolio_digest`: projects not archived;
+`project_digest`: the project): only when there are open report items ([§1](#spec-report-items)).
+The first line is `Triage: backlog_add(project, title, from_report=<id>, finding=<n>) or dismiss
+with report_item_dismiss(report=<id>, n=<n>, kind, reason).` (first so that a budget cut keeps it),
+then one line per item, newest report first, at most 8, the rest counted:
+`- report #12 finding 1 on acme-shop-3: Cart total rounds down · bug`,
+`- report #12 question 1 on acme-shop-3: Keep the old route? (default: keep it)`
+(code: domain/digest.py:_report_items_section).
 
 **Linked document sections:** first the sections linked to the card with `task_doc_link` (or
 `task_create(sections)`), in the order they were linked; then the task's document field when it is
@@ -3006,8 +3110,8 @@ longer word, anchor or number). A one-word anchor (no dash) counts only as `doc#
 stems already match words.
 
 **Open backlog items** in `task_context`: items with status `new`, `later` or `planned` of the
-card's project that are linked to the card (`task`), or whose area has a stem of the subject, or
-that point inside a linked section: a `path:line` in the location, title or text whose line is in
+card's project that are linked to the card (`task`), or of the card's own area (the same name,
+case does not matter; a word shared with the card's title is not enough), or that point inside a linked section: a `path:line` in the location, title or text whose line is in
 the section's lines (with the subsections) of the same file (a file document; the path matches by
 its file name, or by its end when it names folders; separators and case do not matter, leading
 `./` and `../` are dropped, and an absolute path with a drive letter such as `C:\work\docs\spec.md:5`
@@ -3070,8 +3174,9 @@ hooks wrote. The footer names the event id reached.
 **Session start.** The `SessionStart` answer (every source: startup, clear, compact, resume) adds to
 `additionalContext`, after the hook session line:
 
-- an exactly linked session bound to an open task: `task_context` of its most recently bound task,
-  the other bound open tasks as one index line each. The plan reminder is not sent as well when the
+- an exactly linked session bound to an open task: a first line `relaybay card context for <key>:
+  the same as task_context, so do not call it now; call it later only to refresh.`, then
+  `task_context` of its most recently bound task, the other bound open tasks as one index line each. The plan reminder is not sent as well when the
   budget left its lines in that text; otherwise it goes out after it;
 - any other session whose `cwd` maps to one project: `project_digest` limited to
   `session_context_project_chars` (default 1500), which holds no comment text. Only an exactly linked
@@ -3417,6 +3522,8 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0059_drop_unread_tables` | Drops the rest of what 0.12 left unread and unwritten: `schedule`, `usage_file`, `usage_day`, `usage_message`, `usage_task_day`, `token_budget`, `budget_mark`, `brake`, `session_message`, `intake_source`, `intake_message`, `intake_thread`, and the columns `project.autonomy`, `project.run_retention`, `session.transcript_path`, `task.autonomy`, `task.answer_received_at`, `task.answer_message_id`. `task` and `backlog_item` rebuilt with foreign keys off (a column with a foreign key or a CHECK cannot be dropped in place): every other column, CHECK, index and row kept; `backlog_item.intake_message_id` stays as a plain number. The run columns of `question` and `approval` stay (a CHECK uses `run_id`). Backup and rollback as for 0058 |
 | `0060_card_fields` | `task.deploy_notes`, `task.deploy_done` (0/1, default 0), `task.cancelled` (the reason), `task.cancelled_at`, `task_repo.worktree` ([§1](#spec-task-deploy), [§1](#spec-task-code)). Additive only |
 | `0061_task_block` | `task_block` (`task_id`, `blocker_id`, both `ON DELETE CASCADE` to `task`, `created_by`, `created_at`, unique per pair) with an index on `blocker_id` ([§1](#spec-task-blockers)). Additive only |
+| `0062_task_inspect_only` | `task.inspect_only` (integer, default 0): a card that only reads needs no accepted plan before dev ([rules](#spec-rules)). Additive |
+| `0063_report_item` | `report_item` (`report_id` and `task_id` `ON DELETE CASCADE`, `kind` `finding` or `question`, `n` unique per report and kind, `title` (a question's text), `body`, `location`, `item_kind`, `area`, `question_default`, `backlog_id` `ON DELETE SET NULL` to `backlog_item`, `dismissed_at`, `dismissed_by`, `dismiss_reason`, `created_at`) with an index on `task_id` and a partial index of the open items ([§1](#spec-report-items)). Additive only |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain
@@ -3495,8 +3602,12 @@ list. The task dialog shows "From backlog #N" when the task came from the backlo
 <a id="spec-backlog-mcp"></a>
 
 **MCP.** `backlog_add(project, title, body?, area?, task?, priority?, assignee?, kind?, location?,
-session…)`: status `new`, origin `session` with the origin task when `task` is passed. It always
-writes; when open items (`new`, `later`) of the project have a title similarity (the one of
+from_report?, finding?, session…)`: status `new`, origin `session` with the origin task when `task`
+is passed. With `from_report` (a report id) and `finding` (its `n`), always together, that finding
+of the report ([§1](#spec-report-items)) is triaged into the item: its title, body, location, kind
+and area fill the parameters not given (`title` is required only without it), its card is the
+origin task unless `task` is passed, and the finding is no longer open; a finding already in the
+backlog or dismissed is refused. It always writes; when open items (`new`, `later`) of the project have a title similarity (the one of
 `memory_add`) of 0.6 or more, the answer ends with `Note: similar open items: #12 (0.71) <item title>;
 if it is the same, backlog_update(item=<new>, duplicate_of=12).` (at most three, most similar first).
 `backlog_list(project?, status?, area?, assignee?, query?, kind?, since?, task?, has_location?,

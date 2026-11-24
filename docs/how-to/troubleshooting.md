@@ -103,7 +103,7 @@ the agent links itself by passing `hook_session` on its next write.
 ## A new task field is "unknown" in a running session
 
 The client keeps the parameter schema of a tool it already loaded. Use
-`task_patch(task, fields={...})`, or reconnect the server (`/mcp` in the CLI) or start a new session.
+`task_update(task, fields={...})`, or reconnect the server (`/mcp` in the CLI) or start a new session.
 See [MCP tools](../mcp-tools.md#schema-changes-and-long-running-sessions).
 
 ## `relaybay serve` stops with a config error

@@ -36,6 +36,7 @@ from relaybay.domain.hooks import (
     WAKE_PATH,
 )
 from relaybay.install import hook_executable, location_problem
+from relaybay.mcp_server.roles import ROLES
 from relaybay.security import token_id
 
 # The hooks reference documents `http` hooks without the version that introduced them; this is
@@ -68,6 +69,7 @@ DEFAULT_MODE = "command"
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 BACKUP_INFIX = ".relaybay-backup-"
 MCP_NAME = "relaybay"
+MCP_ROLES = ROLES  # the role endpoints (mcp_server/roles.py)
 HOOK_PROGRAMS = ("relaybay-hook", "relaybay-hook.exe")
 # subprocess.CREATE_NO_WINDOW exists only on Windows; the value is the documented flag.
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -670,8 +672,10 @@ def mcp_status(config_path: Path, base_url: str) -> tuple[bool, str]:
     if not isinstance(entry, dict):
         return False, f"no user-scope '{MCP_NAME}' server in {config_path}"
     url = entry.get("url")
-    if url != f"{base_url}/mcp":
-        return False, f"'{MCP_NAME}' points at {url!r}, not {base_url}/mcp"
+    # The full set or a role's endpoint (/mcp/agent, /mcp/coordinator, /mcp/reader).
+    endpoints = [f"{base_url}/mcp", *(f"{base_url}/mcp/{role}" for role in MCP_ROLES)]
+    if url not in endpoints:
+        return False, f"'{MCP_NAME}' points at {url!r}, not {base_url}/mcp (or /mcp/<role>)"
     return True, f"'{MCP_NAME}' registered (user scope) at {url}"
 
 

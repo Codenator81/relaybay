@@ -595,7 +595,7 @@ async def test_a_report_without_the_format_warns_and_strict_refuses(tmp_path: Pa
     db = tmp_path / "relaybay.sqlite"
     service = await started(db)
     await service.upsert_project("acme-shop")
-    task = await service.create_task("acme-shop", "Checkout")
+    task = await service.create_task("acme-shop", "Checkout", stage="dev")
     with collect_notes() as notes:
         _, report = await service.add_report(task.key, "did some work")
     assert report.summary == "did some work"  # saved as before
@@ -934,9 +934,14 @@ async def test_rules_update_by_a_configured_coordinator_over_mcp(
         assert "rules updated" not in saved.split("\n", 1)[0]
 
         # Another session hears about it once, with its next write.
-        told = await call(client, "task_create", project="acme-shop", title="A", session="agent")
+        told = await call(
+            client, "task_create", project="acme-shop", title="A", session="agent", bind=False
+        )
         assert "rules updated to v2: re-read relaybay://rules/acme-shop" in told
-        again = await call(client, "task_create", project="acme-shop", title="B", session="agent")
+        # The second card unbound: in coordinator mode a bound session creates no card.
+        again = await call(
+            client, "task_create", project="acme-shop", title="B", session="agent", bind=False
+        )
         assert "rules updated" not in again
 
 
@@ -962,6 +967,8 @@ async def test_instructions_follow_the_current_version(tmp_path: Path) -> None:
     app = create_app(settings)
     with TestClient(app, base_url=BASE):
         assert "state · size · what happened" in app.state.mcp.instructions
+        for path in ("/mcp/agent", "/mcp/coordinator"):  # every role follows it too
+            assert "state · size · what happened" in app.state.mcp_servers[path].instructions
 
 
 # --- Settings → Rules --------------------------------------------------------------------------

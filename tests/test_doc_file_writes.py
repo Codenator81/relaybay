@@ -181,7 +181,10 @@ async def test_an_outside_change_is_a_version_named_until_the_next_write(
     assert "writes through relaybay: on" in outline
     assert note in fmt.document_read(await acme.read_document("acme-shop", "spec"))
     proj, hits = await acme.search_documents("acme-shop", "cash")
-    assert fmt.document_hits(proj, hits, "cash").count(note) == 1
+    hits_text = fmt.document_hits(proj, hits, "cash")
+    assert hits_text.count(note) == 1 and hits_text.splitlines()[-1].startswith(note)
+    assert "(1 section, version 2); doc_get(project, 'spec') names them." in hits_text
+    assert ": sections checkout" not in hits_text
     task = await acme.create_task("acme-shop", "Checkout")
     await acme.update_task(task.key, {"doc_path": "relaybay://doc/acme-shop/spec#checkout"})
     context = await acme.task_context(task.key)

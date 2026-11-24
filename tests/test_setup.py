@@ -27,6 +27,7 @@ from relaybay.machine_setup import (
     installed_mode,
     is_ours,
     make_plan,
+    mcp_status,
     merge_hooks,
     mode_notes,
     owned_hosts,
@@ -385,6 +386,13 @@ def test_mcp_registration_is_read_never_written(claude_home: Path, tmp_path: Pat
         environ={},
     ).mcp_ok
     assert paths.config.read_bytes() == before
+    # A role endpoint is registered too; another path is not.
+    for url, ok in ((f"{BASE}/mcp/agent", True), (f"{BASE}/mcp/owner", False)):
+        paths.config.write_text(
+            json.dumps({"mcpServers": {"relaybay": {"type": "http", "url": url}}}),
+            encoding="utf-8",
+        )
+        assert mcp_status(paths.config, BASE)[0] is ok
 
 
 def test_token_is_never_written(claude_home: Path, tmp_path: Path) -> None:

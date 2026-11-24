@@ -281,7 +281,7 @@ def surface_question(cc_session_id: str, session_name: str) -> str:
     """The line SessionStart adds when the hook could not tell where the session runs."""
     return (
         "relaybay could not tell whether you run in the Claude desktop app or in a terminal."
-        " Tell it once, with your next relaybay write on your task: task_patch(task, fields="
+        " Tell it once, with your next relaybay write on your task: task_update(task, fields="
         '{"session_surface": "desktop"} or {"session_surface": "terminal"},'
         f' session="{session_name}", hook_session="{cc_session_id}").'
     )

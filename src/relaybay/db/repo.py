@@ -45,6 +45,7 @@ from relaybay.domain.models import (
 )
 from relaybay.domain.plan import PlanRevision, PlanStep, TodoItem
 from relaybay.domain.questions import Question
+from relaybay.domain.report_items import ReportItem
 from relaybay.domain.reports import ReportCheck
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
@@ -158,6 +159,7 @@ def _task(row: aiosqlite.Row) -> Task:
         archived_from=row["archived_from"],
         deploy_notes=row["deploy_notes"],
         deploy_done=bool(row["deploy_done"]),
+        inspect_only=bool(row["inspect_only"]),
         cancelled=row["cancelled"],
         cancelled_at=row["cancelled_at"],
         area_id=row["area_id"],
@@ -620,6 +622,22 @@ async def session_repo_candidates(
         (r["task_id"], r["repo_id"], r["path"], bool(r["linked"]), r["branch"], r["worktree"])
         for r in rows
     ]
+
+
+async def branch_holder(
+    conn: aiosqlite.Connection, repo_id: int, branch: str, task_id: int
+) -> str | None:
+    """The key of another card not in done whose link to the repository already holds
+    `branch`, or None."""
+    row = await _one(
+        conn,
+        "SELECT t.key FROM task_repo tr JOIN task t ON t.id = tr.task_id"
+        " WHERE tr.project_repo_id = ? AND tr.branch = ?"
+        " AND tr.task_id != ? AND t.stage != 'done' AND t.cancelled_at IS NULL"
+        " ORDER BY t.id LIMIT 1",
+        (repo_id, branch, task_id),
+    )
+    return None if row is None else str(row["key"])
 
 
 async def set_task_repo_branch(
@@ -1259,6 +1277,136 @@ async def report_checks(
     for r in rows:
         out.setdefault(r["report_id"], []).append(ReportCheck(r["line"], r["location"], r["claim"]))
     return out
+
+
+_REPORT_ITEM_SELECT = (
+    "SELECT i.*, t.key AS task_key, t.project_id AS project_id"
+    " FROM report_item i JOIN task t ON t.id = i.task_id"
+)
+_REPORT_ITEM_OPEN = "i.backlog_id IS NULL AND i.dismissed_at IS NULL"
+
+
+def _report_item(row: aiosqlite.Row) -> ReportItem:
+    return ReportItem(
+        id=row["id"],
+        report_id=row["report_id"],
+        task_id=row["task_id"],
+        task_key=row["task_key"],
+        project_id=row["project_id"],
+        kind=row["kind"],
+        n=row["n"],
+        title=row["title"],
+        body=row["body"],
+        location=row["location"],
+        item_kind=row["item_kind"],
+        area=row["area"],
+        question_default=row["question_default"],
+        backlog_id=row["backlog_id"],
+        dismissed_at=row["dismissed_at"],
+        dismissed_by=row["dismissed_by"],
+        dismiss_reason=row["dismiss_reason"],
+        created_at=row["created_at"],
+    )
+
+
+async def insert_report_items(
+    conn: aiosqlite.Connection,
+    report_id: int,
+    task_id: int,
+    kind: str,
+    items: list[dict[str, Any]],
+    now: str,
+) -> None:
+    """`items` as `report_items.parse_findings` / `parse_questions` return them; `n` is the
+    position in the list, from 1."""
+    rows = []
+    for n, item in enumerate(items, start=1):
+        if kind == "question":
+            values = (item["text"], None, None, None, None, item["default"])
+        else:
+            values = (
+                item["title"],
+                item["body"],
+                item["location"],
+                item["kind"],
+                item["area"],
+                None,
+            )
+        rows.append((report_id, task_id, kind, n, *values, now))
+    await conn.executemany(
+        "INSERT INTO report_item (report_id, task_id, kind, n, title, body, location, item_kind,"
+        " area, question_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+
+
+async def get_report_item(
+    conn: aiosqlite.Connection, report_id: int, kind: str, n: int
+) -> ReportItem | None:
+    row = await _one(
+        conn,
+        _REPORT_ITEM_SELECT + " WHERE i.report_id = ? AND i.kind = ? AND i.n = ?",
+        (report_id, kind, n),
+    )
+    return _report_item(row) if row else None
+
+
+async def list_report_items(conn: aiosqlite.Connection, report_id: int) -> list[ReportItem]:
+    rows = await _all(
+        conn, _REPORT_ITEM_SELECT + " WHERE i.report_id = ? ORDER BY i.kind, i.n", (report_id,)
+    )
+    return [_report_item(r) for r in rows]
+
+
+async def open_report_items(
+    conn: aiosqlite.Connection,
+    *,
+    project_id: int | None = None,
+    task_id: int | None = None,
+    exclude_project_ids: set[int] | None = None,
+    limit: int,
+) -> tuple[list[ReportItem], int]:
+    """Open items (neither in the backlog nor dismissed), newest report first, at most `limit`,
+    and how many there are in all."""
+    where = [_REPORT_ITEM_OPEN]
+    args: list[Any] = []
+    if project_id is not None:
+        where.append("t.project_id = ?")
+        args.append(project_id)
+    if task_id is not None:
+        where.append("i.task_id = ?")
+        args.append(task_id)
+    if exclude_project_ids:
+        where.append(f"t.project_id NOT IN ({', '.join('?' for _ in exclude_project_ids)})")
+        args.extend(sorted(exclude_project_ids))
+    clause = " WHERE " + " AND ".join(where)
+    rows = await _all(
+        conn,
+        _REPORT_ITEM_SELECT + clause + " ORDER BY i.report_id DESC, i.kind, i.n LIMIT ?",
+        (*args, limit),
+    )
+    total = await _one(
+        conn,
+        "SELECT COUNT(*) FROM report_item i JOIN task t ON t.id = i.task_id" + clause,
+        tuple(args),
+    )
+    return [_report_item(r) for r in rows], int(total[0]) if total else 0
+
+
+async def set_report_item_backlog(
+    conn: aiosqlite.Connection, item_id: int, backlog_id: int
+) -> None:
+    await conn.execute("UPDATE report_item SET backlog_id = ? WHERE id = ?", (backlog_id, item_id))
+
+
+async def dismiss_report_item(
+    conn: aiosqlite.Connection, item_id: int, actor: str, reason: str | None, now: str
+) -> None:
+    await conn.execute(
+        "UPDATE report_item SET dismissed_at = ?, dismissed_by = ?, dismiss_reason = ?"
+        " WHERE id = ?",
+        (now, actor, reason, item_id),
+    )
 
 
 async def list_reports(conn: aiosqlite.Connection, task_id: int, limit: int) -> list[Report]:

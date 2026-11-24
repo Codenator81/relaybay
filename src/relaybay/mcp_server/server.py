@@ -2,7 +2,7 @@
 
 import functools
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
@@ -11,24 +11,42 @@ from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
 from mcp.types import INVALID_PARAMS, ToolAnnotations
+from mcp.types import Tool as MCPTool
 from pydantic import Field
 from starlette.routing import BaseRoute
 
 from relaybay import __version__
-from relaybay.domain import backlog
+from relaybay.domain import backlog, report_items
 from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
-from relaybay.mcp_server import contract
+from relaybay.domain.task_fields import BY_NAME as TASK_FIELD_BY_NAME
+from relaybay.mcp_server import contract, roles
 from relaybay.mcp_server import format as fmt
 from relaybay.service import Service, collect_notes
 
 logger = logging.getLogger("relaybay")
 
 
-def instructions(rules: Rules) -> str:
+def instructions(rules: Rules, coordinated: bool = False) -> str:
     """The working contract sent on connect; the report format comes from the effective global
-    rules, so it never contradicts rules_get."""
+    rules, so it never contradicts rules_get. `coordinated`: the server names `coordinators`,
+    whose session creates the cards and triages findings (service `_agent_cards`)."""
     report = rules.body["report_format"]
+    no_card = (
+        "2. No card for your work: the card is the coordinator's; ask it for one in your report"
+        " and do not create cards."
+        if coordinated
+        else "2. No card for your work: create it with task_create and give it an area, the part"
+        " of the project it is about (a site, an app, a service): reuse a name from the"
+        " project's areas, add a new one only when none fits."
+    )
+    finding = (
+        " Findings outside your task and questions for the owner go into report_add(findings=...,"
+        " questions=...): the coordinator triages them; do not create cards or backlog items."
+        if coordinated
+        else " A finding outside your task goes to backlog_add, not into a report."
+    )
+    tracker = " The tracker mark is the coordinator's." if coordinated else ""
     return "\n".join(
         [
             "relaybay is the shared task board for this user's coding sessions: projects, their"
@@ -37,9 +55,7 @@ def instructions(rules: Rules) -> str:
             "1. Read task_context of your card (no card yet: project_digest; the whole board:"
             " portfolio_digest; more on a project: project_snapshot). Its rules line names the"
             " project's rules; relaybay://rules/<project> (or rules_get) has the details.",
-            "2. No card for your work: create it with task_create and give it an area, the part of"
-            " the project it is about (a site, an app, a service): reuse a name from the"
-            " project's areas, add a new one only when none fits. On every write pass `session`"
+            no_card + " On every write pass `session`"
             " (your desktop session id local_… with `session_title`, or a readable name) and"
             " `hook_session` if the session start gave you one ('Your relaybay hook session:"
             " …'); if you don't know your local_ id, don't rebind a card.",
@@ -52,8 +68,7 @@ def instructions(rules: Rules) -> str:
             " 'as planned' or 'deviation: why'); new work is a new step with plan_step_add.",
             "5. Owner comments ('Owner comment on …') are messages from the user: act and answer"
             " with comment_add, or comment_ack. A decision goes to decision_add; when the work"
-            " needs one, set waiting_on to who decides. A finding outside your task goes to"
-            " backlog_add, not into a report.",
+            " needs one, set waiting_on to who decides." + finding,
             "6. Read a large document by its outline: doc_outline, then doc_get of a section or"
             " lines (doc_search finds the place).",
             "At the end",
@@ -61,12 +76,13 @@ def instructions(rules: Rules) -> str:
             f" `{report['first_line']}`; state is one of {', '.join(report['states'])}; size is one"
             f" of {', '.join(report['sizes'])}. Finished work goes to done. Move a card to review"
             " only when the owner wants to accept it step by step: then write the steps with"
-            " review_steps_set and attach screenshots with attach_file.",
+            " review_steps_set and attach screenshots with attach_file." + tracker,
             "Always",
             "- A line 'Warning (rules)' names a rule the write did not meet: fix it. 'rules updated"
             " to vN' means re-read relaybay://rules; changes go through rules_propose (rules_update"
             " is for coordinator sessions named in the server's config).",
-            "- A parameter your tool lacks: task_patch (fields: relaybay://schema/task). A line"
+            "- A parameter your tool lacks: task_update(fields={...}) (relaybay://schema/task; an"
+            " older client without it: task_patch). A line"
             f" 'Deprecated: …' names the replacement (contract v{contract.CONTRACT_VERSION}:"
             " relaybay://contract).",
             "- Hosts and access come from the project's own notes; never paste secrets into"
@@ -118,6 +134,14 @@ TRACKER_LOGGED_HELP = (
     " logged unless tracker_logged is passed in the same write. Done tasks without it stay on"
     " the board marked 'not logged'."
 )
+INSPECT_ONLY_HELP = (
+    "true for a card that only reads (an analysis, a repro, a question answered by reading): it"
+    " needs no accepted plan before dev and may go straight to done. A report on it that says"
+    " changed, committed or pushed warns."
+)
+DEPLOY_NOTES_HELP = TASK_FIELD_BY_NAME["deploy_notes"].description
+DEPLOY_DONE_HELP = TASK_FIELD_BY_NAME["deploy_done"].description
+CANCELLED_HELP = TASK_FIELD_BY_NAME["cancelled"].description + " '-' clears it and its time."
 NEXT_STEP_HELP = (
     "What happens next, one line; saved in the same write. A next step set before the last stage"
     " change shows as stale. Omit to keep it;"
@@ -221,9 +245,47 @@ DOC_PATH = (
 )
 
 
-def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServer:
-    mcp = MCPServer(
-        name="relaybay", version=__version__, instructions=instructions(service.global_rules)
+class RoleServer(MCPServer):
+    """An MCPServer whose tools/list shows only its role's tools (roles.py); a tool left out
+    still runs when called by name. `role=None` is the full set."""
+
+    def __init__(self, role: str | None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.role = role
+
+    async def list_tools(self) -> list[MCPTool]:
+        tools = await super().list_tools()
+        if self.role is None:
+            return tools
+        shown = roles.role_tools(self.role, current_tools({t.name for t in tools}))
+        return [t for t in tools if t.name in shown]
+
+
+def current_tools(names: set[str]) -> set[str]:
+    """The tool names that are not deprecated (old names and stubs stay out of every role)."""
+    gone = {d.tool for d in contract.DEPRECATIONS if d.parameter is None}
+    return names - gone
+
+
+def server_instructions(rules: Rules, role: str | None, coordinated: bool = False) -> str:
+    if role is None:
+        return instructions(rules, coordinated)
+    return roles.role_instructions(rules, role, coordinated)
+
+
+def build_mcp(
+    service: Service, *, require_tracker_log: bool = False, role: str | None = None
+) -> MCPServer:
+    """The MCP server; `role` (roles.ROLES) serves that role's tool list and instructions, None
+    the full set."""
+    if role is not None and role not in roles.ROLES:
+        raise ValueError(f"Unknown role {role!r}.")
+    coordinated = bool(service.coordinators)
+    mcp = RoleServer(
+        role,
+        name="relaybay",
+        version=__version__,
+        instructions=server_instructions(service.global_rules, role, coordinated),
     )
 
     async def doc_field_note(
@@ -259,11 +321,21 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         # The SDK has no setter: the text it sends on connect is this attribute. Without this a
         # new session would read the report format of config.toml, not of the current version.
         try:
-            mcp._lowlevel_server.instructions = instructions(service.global_rules)
+            mcp._lowlevel_server.instructions = server_instructions(
+                service.global_rules, role, coordinated
+            )
         except AttributeError as exc:
             logger.warning("Could not refresh the MCP instructions after an SDK change: %s.", exc)
 
-    service.rules_changed = refresh_instructions
+    # Several servers (one per role) share the service: each refreshes its own text.
+    earlier = service.rules_changed
+
+    def rules_changed() -> None:
+        if earlier is not None:
+            earlier()
+        refresh_instructions()
+
+    service.rules_changed = rules_changed
 
     def write(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
         """A write tool: lines the service noted without failing (a hook_session that was not
@@ -516,7 +588,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     ) -> str:
         """Full task: fields, description, progress, current version, the linked document
         sections, the latest reports and decisions, and the names of the editable fields (for
-        task_patch). Call it before task_update to get the version for expected_version."""
+        task_update(fields=...)). Call it before task_update to get the version for
+        expected_version."""
         detail = await run(service.task_detail(task, reports))
         return fmt.task_detail(detail, await log_rule(), service.board_url)
 
@@ -548,6 +621,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 " your session (a session started for it binds itself, or the launch does)."
             ),
         ] = True,
+        inspect_only: Annotated[bool, Field(description=INSPECT_ONLY_HELP)] = False,
         sections: Annotated[
             list[str] | None,
             Field(
@@ -581,6 +655,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 hook_session=hook_session,
                 bind=bind,
                 sections=sections or None,
+                inspect_only=inspect_only,
             )
         )
         filed = await doc_field_note(
@@ -647,6 +722,25 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         repos: Annotated[list[str] | None, Field(description=REPOS_HELP)] = None,
         prs: Annotated[list[str] | None, Field(description=PRS_HELP)] = None,
         blocked_by: Annotated[list[str] | None, Field(description=BLOCKED_BY_HELP)] = None,
+        inspect_only: Annotated[bool | None, Field(description=INSPECT_ONLY_HELP)] = None,
+        stage: Annotated[
+            str | None,
+            Field(
+                description="Move the task: plan, dev, review, test, live or done (a move that"
+                " misses a working rule adds a 'Warning (rules)' line)."
+            ),
+        ] = None,
+        deploy_notes: Annotated[str | None, Field(description=DEPLOY_NOTES_HELP + CLEARS)] = None,
+        deploy_done: Annotated[bool | None, Field(description=DEPLOY_DONE_HELP)] = None,
+        cancelled: Annotated[str | None, Field(description=CANCELLED_HELP)] = None,
+        fields: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="Any other task field as one JSON object, e.g. {'priority': 2}"
+                " (relaybay://schema/task lists them); for a field this tool has no parameter"
+                " for yet. A field given both here and as a parameter must agree."
+            ),
+        ] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -655,12 +749,13 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Change task fields (waiting on, next step, branch, description, progress, the area,
-        the tracker issue and its work-log mark, the repositories it touches, its pull requests,
-        the cards blocking it, ...). Omitted fields stay as they are; '-' or an empty string
-        clears a field. Keep `progress` current with every report. To move a task between stages
-        use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next)
-        whenever the stage changes or you report."""
+        """Change task fields and move its stage in one write: the stage, waiting on, next
+        step, branch, description, progress, the area, the tracker issue and its work-log mark,
+        deploy notes, a cancel reason, the repositories it touches, its pull requests, the cards
+        blocking it; `fields` for anything else. Omitted fields stay as they are; '-' or an
+        empty string clears a field. Keep `progress` current with every report. Also update
+        next_step (what happens next) and waiting_on (who acts next) whenever the stage changes
+        or you report."""
         given = {
             "title": title,
             "waiting_on": waiting_on,
@@ -675,20 +770,37 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             "tracker_url": tracker_url,
             "size": size,
             "area": area,
+            "stage": stage,
+            "deploy_notes": deploy_notes,
+            "cancelled": cancelled,
         }
         changes: dict[str, object] = {
             k: (cleared(v) or None) for k, v in given.items() if v is not None
         }
         if tracker_logged is not None:
             changes["tracker_logged"] = tracker_logged
+        if inspect_only is not None:
+            changes["inspect_only"] = inspect_only
+        if deploy_done is not None:
+            changes["deploy_done"] = deploy_done
         if repos:
             changes["repos"] = repos
         if prs:
             changes["prs"] = prs
         if blocked_by:
             changes["blocked_by"] = blocked_by
+        for name, value in (fields or {}).items():
+            if isinstance(value, str):
+                value = cleared(value) or None
+            if name in changes and changes[name] != value:
+                raise ToolError(
+                    f"{name} is given twice with different values (as a parameter and in"
+                    " fields). Nothing changed."
+                )
+            changes.setdefault(name, value)
         if not changes:
             raise ToolError("Nothing to update: pass at least one field.")
+        before = await run(service.get_task(task)) if "stage" in changes else None
         saved = await run(
             service.update_task_checked(
                 task,
@@ -702,12 +814,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         filed = await doc_field_note(
             saved.task.key, changes.get("doc_path"), session, session_title, hook_session
         )
+        moved = before is not None and before.stage != saved.task.stage
         return fmt.with_warnings(
-            fmt.task_saved(saved.task, "Updated"),
-            [*saved.warnings, *filed, *fmt.waiting_on_hint(waiting_on)],
+            fmt.task_saved(saved.task, "Moved" if moved else "Updated"),
+            [*saved.warnings, *filed, *fmt.waiting_on_hint(changes.get("waiting_on"))],
         )
 
     @write
+    @contract.deprecated()
     async def task_patch(
         task: TaskRef,
         fields: Annotated[
@@ -754,6 +868,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
 
     @write
+    @contract.deprecated()
     async def task_set_stage(
         task: TaskRef,
         stage: StageArg,
@@ -940,6 +1055,35 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         ] = None,
         next_step: Annotated[str | None, Field(description=NEXT_STEP_HELP + CLEARS)] = None,
         waiting_on: Annotated[str | None, Field(description=WAITING_ON_HELP + CLEARS)] = None,
+        stage: Annotated[
+            str | None,
+            Field(
+                description="Move the task to this stage in the same write, after the report,"
+                " so a rule asking for a report since the last stage change is met; the move's"
+                " rule warnings follow (strict rules refuse the report too). Omit: the answer"
+                " names what the usual next move needs."
+            ),
+        ] = None,
+        findings: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description="Findings outside this task, for the coordinator to triage (none"
+                f" becomes a backlog item by itself), at most {report_items.ITEMS_MAX}:"
+                ' [{"title": "Cart total rounds down", "body": "...", "location":'
+                ' "web/cart.py:41", "kind": "bug", "area": "checkout"}]. title is required'
+                f" (up to {backlog.TITLE_MAX} characters); kind is one of"
+                f" {', '.join(backlog.KINDS)}."
+            ),
+        ] = None,
+        questions: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description="Questions for the coordinator, at most"
+                f' {report_items.ITEMS_MAX}: [{{"text": "Keep the old route?", "default":'
+                ' "keep it until the next release"}]. Both are required: default is what'
+                " happens if nobody answers."
+            ),
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -947,9 +1091,11 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         """Add a report to a task. Call it at the end of every stage with your final report: what
         changed, how it was checked, what is left. Pass `progress` too, so the task's summary of
         what is done stays current with every report. Also update next_step (what happens next)
-        and waiting_on (who acts next) whenever the stage changes or you report."""
-        saved, report = await run(
-            service.add_report(
+        and waiting_on (who acts next) whenever the stage changes or you report. `stage` ends
+        the stage in the same call; findings and questions outside the task go in `findings`
+        and `questions`."""
+        saved = await run(
+            service.add_report_checked(
                 task,
                 body,
                 session=session,
@@ -958,13 +1104,13 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 progress=cleared(progress),
                 next_step=cleared(next_step),
                 waiting_on=cleared(waiting_on),
+                stage=stage or None,
+                findings=findings,
+                questions=questions,
             )
         )
-        parsed = " · ".join(x for x in (report.state, report.size) if x)
-        extra = f" ({parsed})" if parsed else ""
         return fmt.with_warnings(
-            f"Report #{report.id} added to **{saved.key}**{extra}: {report.summary}",
-            fmt.waiting_on_hint(waiting_on),
+            "\n".join(fmt.report_saved(saved, stage or None)), fmt.waiting_on_hint(waiting_on)
         )
 
     @write
@@ -1318,7 +1464,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 description="Where: for push and commit the branch (feat/x, or backend:feat/x"
                 " with the repository; +feat/x for a force push, :feat/x to delete the"
                 " branch); for merge the PR (12, #12 or its URL); for deploy and sql the"
-                " environment's name (test, live)."
+                " stand, in words: test, live, prod (a plain name, no setup needed)."
             ),
         ],
         summary: Annotated[
@@ -1404,7 +1550,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def memory_get(id: Annotated[int, Field(description="The note's id.")]) -> str:
-        """A memory note in full: body, scope, source, dates, version (for memory_update)."""
+        """A memory note in full: body, scope, source, dates, version (to change it later)."""
         return fmt.note(await run(service.get_note(id)))
 
     @mcp.tool(annotations=READ, structured_output=False)
@@ -1802,7 +1948,10 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     @write
     async def backlog_add(
         project: ProjectSlug,
-        title: Annotated[str, Field(description="Short title of the finding.")],
+        title: Annotated[
+            str | None,
+            Field(description="Short title of the finding; required unless from_report gives it."),
+        ] = None,
         body: Annotated[str | None, Field(description="What and why, markdown.")] = None,
         area: Annotated[
             str | None, Field(description="Free area, e.g. 'checkout' or 'board'.")
@@ -1814,6 +1963,18 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         assignee: BacklogAssignee = None,
         kind: BacklogKind = None,
         location: BacklogLocation = None,
+        from_report: Annotated[
+            int | None,
+            Field(
+                description="Triage a finding a report carries (report_add findings): the"
+                " report id; pass `finding` with it. The finding fills title, body, location,"
+                " kind and area unless given, its task becomes the item's task, and the digests"
+                " stop listing it."
+            ),
+        ] = None,
+        finding: Annotated[
+            int | None, Field(description="With from_report: the finding's number, from 1.")
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -1825,7 +1986,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         item = await run(
             service.add_backlog_item(
                 project,
-                title,
+                title or None,
                 body=cleared(body),
                 area=cleared(area),
                 task=task or None,
@@ -1833,6 +1994,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
                 assignee=cleared(assignee),
                 kind=cleared(kind),
                 location=cleared(location),
+                from_report=from_report,
+                finding=finding,
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
@@ -1840,6 +2003,40 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         similar = await run(service.similar_backlog(item))
         return fmt.backlog_saved(item, "Added") + fmt.backlog_similar(item, similar)
+
+    @write
+    async def report_item_dismiss(
+        report: Annotated[int, Field(description="The report id (report #N).")],
+        n: Annotated[int, Field(ge=1, description="The item's number in the report, from 1.")],
+        kind: Annotated[
+            str, Field(description="finding or question; default finding.")
+        ] = report_items.FINDING,
+        reason: Annotated[
+            str | None,
+            Field(
+                description="Why it needs no backlog item; for a question, what was decided."
+                " Optional."
+            ),
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Close a finding or question a report carries (report_add findings / questions)
+        without a backlog item: the digests stop listing it. A finding worth keeping goes to
+        backlog_add(from_report=, finding=) instead."""
+        item = await run(
+            service.dismiss_report_item(
+                report,
+                n,
+                kind=kind,
+                reason=cleared(reason) or None,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.report_item_dismissed(item)
 
     @mcp.tool(annotations=READ, structured_output=False)
     async def backlog_list(
@@ -2378,7 +2575,13 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
         if not accepted:
             return f"The plan of **{row.key}** is already accepted; nothing changed."
-        return f"Plan of **{row.key}** accepted: {len(plan.steps)} step(s)."
+        text = f"Plan of **{row.key}** accepted: {len(plan.steps)} step(s)."
+        if row.stage.value == "plan":
+            text += (
+                " The card is still in plan: its session moves it with"
+                f' task_update(task="{row.key}", stage="dev") when the work starts.'
+            )
+        return text
 
     @write
     async def attach_file(
@@ -2596,7 +2799,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     @mcp.resource(
         "relaybay://schema/task",
         name="task-schema",
-        description="Editable task fields for task_patch: name, type, description, clearing.",
+        description="Editable task fields for task_update(fields=...): name, type, description,"
+        " clearing.",
         mime_type="text/markdown",
     )
     async def task_schema_resource() -> str:
@@ -2652,13 +2856,23 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     return mcp
 
 
-def mcp_routes(mcp: MCPServer, allowed_hosts: list[str]) -> list[BaseRoute]:
-    """Routes that serve the MCP endpoint at exactly `/mcp`.
+def role_path(role: str | None) -> str:
+    """`/mcp` for the full set, `/mcp/<role>` for a role's."""
+    return "/mcp" if role is None else f"/mcp/{role}"
+
+
+def mcp_routes(
+    servers: MCPServer | Mapping[str, MCPServer], allowed_hosts: list[str]
+) -> list[BaseRoute]:
+    """Routes that serve each MCP endpoint at exactly its path (`/mcp`, `/mcp/agent`, ...); a
+    single server is served at `/mcp`.
 
     The routes are added to the main app instead of `Mount("/mcp", ...)`, which would answer
-    `/mcp` with a redirect to `/mcp/`. The caller must run `mcp.session_manager.run()` in its
-    lifespan.
+    `/mcp` with a redirect to `/mcp/`. The caller must run every server's
+    `session_manager.run()` in its lifespan.
     """
+    if isinstance(servers, MCPServer):
+        servers = {"/mcp": servers}
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=[*allowed_hosts, *(f"{h}:*" for h in allowed_hosts)],
@@ -2669,5 +2883,8 @@ def mcp_routes(mcp: MCPServer, allowed_hosts: list[str]) -> list[BaseRoute]:
             for port in ("", ":*")
         ],
     )
-    app = mcp.streamable_http_app(streamable_http_path="/mcp", transport_security=security)
-    return list(app.routes)
+    routes: list[BaseRoute] = []
+    for path, mcp in servers.items():
+        app = mcp.streamable_http_app(streamable_http_path=path, transport_security=security)
+        routes.extend(app.routes)
+    return routes

@@ -39,6 +39,35 @@ To keep the token out of the configuration file, put it in an environment variab
 
 Project-scoped servers from `.mcp.json` ask for approval once in interactive sessions.
 
+### Tool sets by role
+
+`/mcp` is the full set of tools. Three more endpoints list a smaller set with instructions for one
+role; the tools, the token and the board are the same:
+
+| Endpoint | For | Lists |
+|---|---|---|
+| `/mcp` | everyone (the default) | every tool, deprecated names included |
+| `/mcp/agent` | a session that works one card | the tools of each moment of a card: start, plan, work, documents, questions, decisions, findings, approvals, report, review, closing |
+| `/mcp/coordinator` | the session that plans, starts, triages and closes cards | every current tool but the agent's own review checklist work |
+| `/mcp/reader` | review and planning helpers (subagents) | reading tools only (`task_context` moves the caller's read position) |
+
+A role is a tool list and its instructions, not a permission: a tool left out of a list still runs
+when a client calls it by name. Claude Code, though, shows only the listed tools.
+
+To give one project's sessions another role, add a `relaybay` entry in that project with local
+scope; a project or local entry replaces the user-scope entry of the same name in those sessions
+(they do not merge):
+
+```bash
+claude mcp add --transport http --scope local relaybay http://127.0.0.1:8765/mcp/coordinator \
+  --header "Authorization: Bearer <token>"
+```
+
+Local scope keeps the token out of the repository; in a shared `.mcp.json` use `${RELAYBAY_TOKEN}`
+as above. `claude mcp get relaybay` may still print the user entry next to a warning that the
+name is defined in several scopes: `/mcp` inside a session shows the one in use. See
+[Coordinator and agents workflow](how-to/coordinator-workflow.md).
+
 After `relaybay token --rotate`, restart the server (`relaybay serve`, or **Restart server** in
 the desktop program's tray) and update the token in the entry. When the program is the client of
 an external server (`server_mode = "external"`), `token --rotate` is refused: rotate the token
@@ -58,9 +87,9 @@ This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
   `rules_get(project="acme-shop")`).
 - Before starting work, find the task with `task_list` or create it with `task_create` (with a
   short `description`: what to do and why); then call `task_bind_session` with your session name.
-- When the work moves on, call `task_set_stage` (plan → dev → review → test → live → done).
+- When the work moves on, call `task_update(task, stage=…)` (plan → dev → review → test → live → done).
 - Keep "waiting on" and "next step" current: pass `next_step` and `waiting_on` with every
-  `task_set_stage` and `report_add` (or use `task_update`).
+  `task_update` and `report_add`.
 - At the end of every stage, call `report_add` with your final report. Start it with a line
   `state · size · gist`, e.g. `verified · M · checkout works`, and pass `progress`: the updated
   summary of everything done on the task so far.
@@ -249,8 +278,8 @@ tell (an older hook client, an http hook, an IDE or SDK entrypoint), the session
 session once to say it with its next relaybay write:
 
 ```text
-task_patch(task="ACME-12", fields={"session_surface": "terminal"},
-           session="<its name>", hook_session="<id>")
+task_update(task="ACME-12", fields={"session_surface": "terminal"},
+            session="<its name>", hook_session="<id>")
 ```
 
 **Why a comment has not arrived.** Each owner comment shows `delivered` or `not delivered yet`

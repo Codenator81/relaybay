@@ -35,7 +35,7 @@ TASK_FIELDS: tuple[TaskField, ...] = (
     TaskField(
         "stage",
         "stage",
-        f"One of: {', '.join(STAGES)}. A change is a stage move (same as task_set_stage).",
+        f"One of: {', '.join(STAGES)}. A change is a stage move.",
         "cannot be cleared",
     ),
     TaskField("stage_note", "text", "Short note next to the stage.", TEXT_CLEARS, TEXT_MAX),
@@ -133,6 +133,14 @@ TASK_FIELDS: tuple[TaskField, ...] = (
         "deploy_done",
         "bool",
         "True once the steps in deploy_notes have been carried out.",
+        "false clears it",
+    ),
+    TaskField(
+        "inspect_only",
+        "bool",
+        "True for a card that only reads: an analysis, a repro, a question answered by reading."
+        " It needs no accepted plan before dev and may go straight to done; a report on it that"
+        " says changed, committed or pushed gets a warning.",
         "false clears it",
     ),
     TaskField(

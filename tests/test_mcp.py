@@ -312,6 +312,59 @@ async def test_alias_tracker_and_dash_clears(live_server: Callable[[], LiveServe
         assert "- tracker: Linear ENG-12 · work log not entered" in detail
 
 
+async def test_task_update_moves_the_stage_and_takes_any_field(
+    live_server: Callable[[], LiveServer],
+) -> None:
+    """relaybay-40: task_update replaces task_set_stage and task_patch; the old names still work
+    and say what replaces them."""
+    live = live_server()
+    async with connect(live) as client:
+        await call(client, "project_upsert", slug="acme-shop")
+        await call(client, "task_create", project="acme-shop", title="Checkout", session="dev")
+        moved = await call(
+            client,
+            "task_update",
+            task="acme-shop-1",
+            stage="dev",
+            stage_note="coding",
+            next_step="Cart",
+            waiting_on="session",
+            deploy_notes="Run migration 12.",
+            fields={"priority": 3, "description_add": "Also the cart."},
+            session="dev",
+        )
+        assert moved.startswith("Moved **acme-shop-1**") and "stage dev" in moved
+        detail = await call(client, "task_get", task="acme-shop-1")
+        assert "- stage: dev" in detail and "- next step: Cart" in detail
+        assert "Run migration 12." in detail and "Also the cart." in detail
+        same = await call(client, "task_update", task="acme-shop-1", stage="dev", next_step="x")
+        assert same.startswith("Updated **acme-shop-1**")
+        twice = await client.call_tool(
+            "task_update", {"task": "acme-shop-1", "branch": "a", "fields": {"branch": "b"}}
+        )
+        assert twice.is_error and "given twice" in twice.content[0].text
+        agreed = await call(
+            client, "task_update", task="acme-shop-1", branch="a", fields={"branch": "a"}
+        )
+        assert agreed.startswith("Updated")
+        await call(client, "task_update", task="acme-shop-1", deploy_done=True, cancelled="Dup.")
+        detail = await call(client, "task_get", task="acme-shop-1")
+        assert "Dup." in detail
+
+        old = await call(client, "task_set_stage", task="acme-shop-1", stage="review")
+        assert (
+            "stage review" in old and "Deprecated: task_set_stage is deprecated since 0.17" in old
+        )
+        assert "use task_update(task, stage=" in old
+        patched = await call(client, "task_patch", task="acme-shop-1", fields={"priority": 1})
+        assert "Deprecated: task_patch is deprecated since 0.17" in patched
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        assert "Deprecated:" in (tools["task_set_stage"].description or "")
+        assert {"stage", "fields", "deploy_notes", "deploy_done", "cancelled"} <= set(
+            tools["task_update"].input_schema["properties"]
+        )
+
+
 async def test_stage_and_report_keep_next_step_current(
     live_server: Callable[[], LiveServer], monkeypatch: pytest.MonkeyPatch
 ) -> None:

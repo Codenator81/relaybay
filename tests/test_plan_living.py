@@ -154,7 +154,7 @@ async def test_all_done_hint_needs_dev_and_review_steps(service: Service) -> Non
         await service.update_plan_step(key, 3, "done", conformance="as planned")
     assert notes == [
         "Hint: all steps done and the review checklist is set: move the task to review"
-        " (task_set_stage)."
+        " (task_update(stage=...))."
     ]
     assert (await service.get_task(key)).stage == "dev"  # never moved automatically
 
@@ -248,7 +248,7 @@ async def test_closed_plan_is_a_warning_in_strict_mode_too(tmp_path: Path) -> No
     svc = Service(tmp_path / "relaybay.sqlite", rules_mode="strict")
     await svc.start()
     try:
-        key = await planned(svc)
+        key = await planned(svc, stage="dev")
         await all_done(svc, key)
         await svc.add_report(key, "verified · S · all done")
         with collect_notes() as notes:

@@ -116,6 +116,10 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
 report_check  id, report_id, line, location (the `where` of `verified: <where>`), claim
               -- INDEX (report_id, line); parsed when the report is written
+report_item   id, report_id (CASCADE), task_id (CASCADE), kind (finding|question), n, title
+              (a question's text), body, location, item_kind, area, question_default,
+              backlog_id (SET NULL), dismissed_at, dismissed_by, dismiss_reason, created_at
+              -- UNIQUE (report_id, kind, n); open while neither backlog_id nor dismissed_at
 decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
               valid_to, recorded_at, superseded_at, superseded_by (decision.id), area (a name)

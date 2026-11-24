@@ -11,7 +11,7 @@ Clients read the same text from the resource `relaybay://contract`.
 
 Contract version 2.
 
-Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_patch` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
+Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_update(fields=...)` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
 
 Deprecations:
 
@@ -20,6 +20,8 @@ Deprecations:
 | `environments_get` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `environment_propose` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `relaybay://project/{slug}/environments` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
+| `task_set_stage` | — | 0.17 | 2027-01-15 | task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...) |
+| `task_patch` | — | 0.17 | 2027-01-15 | task_update(task, fields={...}) |
 
 ## Tools
 
@@ -69,6 +71,7 @@ Deprecations:
 | [`comment_ack`](#comment_ack) | write |
 | [`comment_add`](#comment_add) | write |
 | [`backlog_add`](#backlog_add) | write |
+| [`report_item_dismiss`](#report_item_dismiss) | write |
 | [`backlog_list`](#backlog_list) | read |
 | [`backlog_update`](#backlog_update) | write |
 | [`backlog_patch`](#backlog_patch) | write |
@@ -201,7 +204,7 @@ List tasks, filtered by project, stage, who they wait on, the bound session or t
 
 ### `task_get`
 
-Full task: fields, description, progress, current version, the linked document sections, the latest reports and decisions, and the names of the editable fields (for task_patch). Call it before task_update to get the version for expected_version.
+Full task: fields, description, progress, current version, the linked document sections, the latest reports and decisions, and the names of the editable fields (for task_update(fields=...)). Call it before task_update to get the version for expected_version.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -232,6 +235,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
 | `bind` | boolean | no | false: you create the card for someone else; it is not bound to your session (a session started for it binds itself, or the launch does). Default: `True`. |
+| `inspect_only` | boolean | no | true for a card that only reads (an analysis, a repro, a question answered by reading): it needs no accepted plan before dev and may go straight to done. A report on it that says changed, committed or pushed warns. Default: `False`. |
 | `sections` | list of string or null | no | Sections of the project's documents to link to the card, each 'doc#anchor' (as task_doc_link links one). Optional. |
 
 ### `task_doc_link`
@@ -250,7 +254,7 @@ Link a section of a project document to the card (remove=true unlinks it). The a
 
 ### `task_update`
 
-Change task fields (waiting on, next step, branch, description, progress, the area, the tracker issue and its work-log mark, the repositories it touches, its pull requests, the cards blocking it, ...). Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. To move a task between stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Change task fields and move its stage in one write: the stage, waiting on, next step, branch, description, progress, the area, the tracker issue and its work-log mark, deploy notes, a cancel reason, the repositories it touches, its pull requests, the cards blocking it; `fields` for anything else. Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -272,6 +276,12 @@ Change task fields (waiting on, next step, branch, description, progress, the ar
 | `repos` | list of string or null | no | Repositories of the task's project the task touches, by name, added to its links; '-name' removes one. An unknown name fails with the project's names. A session bound to the task links the repository it works in by itself. 'name <absolute path>' also sets the folder (worktree) the task works in there. |
 | `prs` | list of string or null | no | Pull request links (http:// or https://) added to the task, optionally after a repository name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose path names a project repository is tied to it (and links it). |
 | `blocked_by` | list of string or null | no | Cards this task waits for, by key, of any project on the board: 'acme-shop-12'; '-key' removes one. A blocker blocks while it is in plan, dev, review or test, and no longer at live or done. An unknown key, the task itself and a cycle are refused. |
+| `inspect_only` | boolean or null | no | true for a card that only reads (an analysis, a repro, a question answered by reading): it needs no accepted plan before dev and may go straight to done. A report on it that says changed, committed or pushed warns. |
+| `stage` | string or null | no | Move the task: plan, dev, review, test, live or done (a move that misses a working rule adds a 'Warning (rules)' line). |
+| `deploy_notes` | string or null | no | What a deploy of this card needs: migration, feature flag, script, rollback. Writing it clears deploy_done unless deploy_done is passed in the same write. '-' or '' clears it. |
+| `deploy_done` | boolean or null | no | True once the steps in deploy_notes have been carried out. |
+| `cancelled` | string or null | no | Why the card was given up on; setting it stamps the time. The card stays in its stage (move it to done yourself). '-' clears it and its time. |
+| `fields` | object or null | no | Any other task field as one JSON object, e.g. {'priority': 2} (relaybay://schema/task lists them); for a field this tool has no parameter for yet. A field given both here and as a parameter must agree. |
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
@@ -279,7 +289,7 @@ Change task fields (waiting on, next step, branch, description, progress, the ar
 
 ### `task_patch`
 
-Change any task fields given as one JSON object, with the same rules as task_update and task_set_stage (a `stage` value moves the task). Use it for a field your client's task_update does not offer yet: its parameter list may be older than the server. Call task_get or read relaybay://schema/task for the allowed fields. `session_surface` ("desktop" or "terminal", with your hook_session) is not a task field: it tells relaybay where you run, when your session start asks for it.
+Change any task fields given as one JSON object, with the same rules as task_update and task_set_stage (a `stage` value moves the task). Use it for a field your client's task_update does not offer yet: its parameter list may be older than the server. Call task_get or read relaybay://schema/task for the allowed fields. `session_surface` ("desktop" or "terminal", with your hook_session) is not a task field: it tells relaybay where you run, when your session start asks for it. Deprecated: task_patch is deprecated since 0.17 and may be removed in a later minor version, not before 2027-01-15; use task_update(task, fields={...}) instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -292,7 +302,7 @@ Change any task fields given as one JSON object, with the same rules as task_upd
 
 ### `task_set_stage`
 
-Move a task to another stage (plan, dev, review, test, live, done) when its work moves on, e.g. to dev when you start coding, to review when the owner should accept it step by step (fill the checklist with review_steps_set first), to test when it is on the test environment, to done when finished. Any transition is allowed; a move that misses a working rule (see rules_get) adds a 'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Move a task to another stage (plan, dev, review, test, live, done) when its work moves on, e.g. to dev when you start coding, to review when the owner should accept it step by step (fill the checklist with review_steps_set first), to test when it is on the test environment, to done when finished. Any transition is allowed; a move that misses a working rule (see rules_get) adds a 'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report. Deprecated: task_set_stage is deprecated since 0.17 and may be removed in a later minor version, not before 2027-01-15; use task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...) instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -352,7 +362,7 @@ Remove the bound session from a task, e.g. when a session stops working on it wi
 
 ### `report_add`
 
-Add a report to a task. Call it at the end of every stage with your final report: what changed, how it was checked, what is left. Pass `progress` too, so the task's summary of what is done stays current with every report. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Add a report to a task. Call it at the end of every stage with your final report: what changed, how it was checked, what is left. Pass `progress` too, so the task's summary of what is done stays current with every report. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report. `stage` ends the stage in the same call; findings and questions outside the task go in `findings` and `questions`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -361,6 +371,9 @@ Add a report to a task. Call it at the end of every stage with your final report
 | `progress` | string or null | no | Markdown summary of everything done so far on the task (not just the last step). Rewrite it as the work goes on and keep it current with every report. Saved together with the report; omit to keep it; '-' or '' clears it. |
 | `next_step` | string or null | no | What happens next, one line; saved in the same write. A next step set before the last stage change shows as stale. Omit to keep it; '-' or '' clears it. |
 | `waiting_on` | string or null | no | Only who acts next: a name or role, no text after it; what happens goes to next_step. Saved in the same write. Omit to keep it; '-' or '' clears it. |
+| `stage` | string or null | no | Move the task to this stage in the same write, after the report, so a rule asking for a report since the last stage change is met; the move's rule warnings follow (strict rules refuse the report too). Omit: the answer names what the usual next move needs. |
+| `findings` | list of object or null | no | Findings outside this task, for the coordinator to triage (none becomes a backlog item by itself), at most 10: [{"title": "Cart total rounds down", "body": "...", "location": "web/cart.py:41", "kind": "bug", "area": "checkout"}]. title is required (up to 200 characters); kind is one of bug, idea, question, debt. |
+| `questions` | list of object or null | no | Questions for the coordinator, at most 10: [{"text": "Keep the old route?", "default": "keep it until the next release"}]. Both are required: default is what happens if nobody answers. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -493,7 +506,7 @@ Ask the owner to approve one action on a card: it shows in the owner's Inbox and
 |---|---|---|---|
 | `task` | string | yes | Task key such as 'acme-shop-12', or its numeric id. |
 | `action` | string | yes | push, merge, commit, deploy or sql: what you want to do. |
-| `target` | string | yes | Where: for push and commit the branch (feat/x, or backend:feat/x with the repository; +feat/x for a force push, :feat/x to delete the branch); for merge the PR (12, #12 or its URL); for deploy and sql the environment's name (test, live). |
+| `target` | string | yes | Where: for push and commit the branch (feat/x, or backend:feat/x with the repository; +feat/x for a force push, :feat/x to delete the branch); for merge the PR (12, #12 or its URL); for deploy and sql the stand, in words: test, live, prod (a plain name, no setup needed). |
 | `summary` | string | yes | What goes where: the commits, the files, the CI state. Never a password or token. |
 | `rollback` | string or null | no | The command that undoes it: required for a deploy. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
@@ -523,7 +536,7 @@ Search memory notes, decisions, documents, reports, comments and backlog items. 
 
 ### `memory_get`
 
-A memory note in full: body, scope, source, dates, version (for memory_update).
+A memory note in full: body, scope, source, dates, version (to change it later).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -675,7 +688,7 @@ Put a finding outside your task (a bug, a missing feature, a question for later)
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `project` | string | yes | Project slug such as 'acme-shop'. |
-| `title` | string | yes | Short title of the finding. |
+| `title` | string or null | no | Short title of the finding; required unless from_report gives it. |
 | `body` | string or null | no | What and why, markdown. |
 | `area` | string or null | no | Free area, e.g. 'checkout' or 'board'. |
 | `task` | string or null | no | The task you found it in. Optional. |
@@ -683,6 +696,22 @@ Put a finding outside your task (a bug, a missing feature, a question for later)
 | `assignee` | string or null | no | Who it is for, a name or a role: To plan makes it waiting_on. '-' or '' clears it. |
 | `kind` | string or null | no | What it is: bug, idea, question, debt. Optional. '-' or '' clears it. |
 | `location` | string or null | no | Where in the code: 'repo:path:line', 'path:line' or a link, up to 300 characters. Optional. '-' or '' clears it. |
+| `from_report` | integer or null | no | Triage a finding a report carries (report_add findings): the report id; pass `finding` with it. The finding fills title, body, location, kind and area unless given, its task becomes the item's task, and the digests stop listing it. |
+| `finding` | integer or null | no | With from_report: the finding's number, from 1. |
+| `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
+| `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
+| `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
+
+### `report_item_dismiss`
+
+Close a finding or question a report carries (report_add findings / questions) without a backlog item: the digests stop listing it. A finding worth keeping goes to backlog_add(from_report=, finding=) instead.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `report` | integer | yes | The report id (report #N). |
+| `n` | integer | yes | The item's number in the report, from 1. |
+| `kind` | string | no | finding or question; default finding. Default: `finding`. |
+| `reason` | string or null | no | Why it needs no backlog item; for a question, what was decided. Optional. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -985,7 +1014,7 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 | `relaybay://project/{slug}/environments` | project-environments | text/markdown | Removed in 0.15 with the environments. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |
 | `relaybay://rules/{project}` | project-rules | text/markdown | A project's working rules: global rules merged with the project override. |
-| `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_patch: name, type, description, clearing. |
+| `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_update(fields=...): name, type, description, clearing. |
 
 ## Prompts
 

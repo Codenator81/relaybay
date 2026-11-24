@@ -198,6 +198,8 @@ async def test_without_a_default_or_session_nothing_is_asked_and_five_are_open_a
         await ask(svc, run, default="-")
     with pytest.raises(ValidationError, match="needs your session"):
         await svc.ask_question("acme-shop-1", "Which?", "Stripe")
+    with pytest.raises(ValidationError, match="knows no live session with hook_session"):
+        await svc.ask_question("acme-shop-1", "Which?", "Stripe", hook_session="cc-unknown")
     with pytest.raises(ValidationError, match="default_after is for non-blocking"):
         await ask(svc, run, blocking=True, default_after="2h")
     with pytest.raises(ValidationError, match="url and account are for look"):

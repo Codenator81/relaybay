@@ -327,6 +327,44 @@ async def test_project_digest_sections_and_note_flags(service: Service) -> None:
     assert "Read one" in notes[1] and "[" not in notes[1].split("]", 1)[1]
 
 
+async def test_digests_list_open_report_items_to_triage(service: Service) -> None:
+    title = digest.REPORT_ITEMS_TITLE
+    await service.upsert_project("acme-shop")
+    await service.upsert_project("demo-api")
+    shop = (await service.create_task("acme-shop", "Checkout", stage="dev")).key
+    api = (await service.create_task("demo-api", "Webhooks", stage="dev")).key
+    await service.add_report(shop, "changed · S · nothing to triage")
+    assert title not in await service.project_digest("acme-shop")
+    assert title not in await service.portfolio_digest()
+    many = [{"title": f"Finding {n}", "kind": "idea"} for n in range(1, 9)]
+    await service.add_report_checked(shop, "changed · S · x", findings=many)
+    await service.add_report_checked(
+        api,
+        "changed · S · y",
+        findings=[{"title": "Retry storm"}],
+        questions=[{"text": "Drop v1?", "default": "keep v1"}],
+    )
+    text = await service.portfolio_digest()
+    section = text.split(title)[1].split("\n\n")[0].strip().split("\n")
+    assert section[0] == (
+        "Triage: backlog_add(project, title, from_report=<id>, finding=<n>) or dismiss with"
+        " report_item_dismiss(report=<id>, n=<n>, kind, reason)."
+    )
+    assert section[1:4] == [
+        f"- report #3 finding 1 on {api}: Retry storm",
+        f"- report #3 question 1 on {api}: Drop v1? (default: keep v1)",
+        f"- report #2 finding 1 on {shop}: Finding 1 · idea",
+    ]
+    assert len(section) == 1 + 8 + 1 and section[-1].startswith("… 2 more: task_context(task)")
+    project = await service.project_digest("demo-api")
+    assert f"- report #3 question 1 on {api}" in project and shop not in project
+    # Triaged and dismissed items leave the digests; with none left the section goes.
+    await service.add_backlog_item("demo-api", None, from_report=3, finding=1)
+    await service.dismiss_report_item(3, 1, kind="question", reason="v1 stays")
+    assert title not in await service.project_digest("demo-api")
+    assert api not in (await service.portfolio_digest()).split(title)[1].split("\n\n")[0]
+
+
 async def test_task_context_links_comments_and_notes(service: Service) -> None:
     task = await linked_task(service, "Gift card refunds")
     body = "# Spec\n\n## Gift cards\nFirst.\nSecond.\nThird.\nFourth.\n\n## Other\nNo."
@@ -472,6 +510,7 @@ async def test_session_start_injects_the_newest_bound_task(service: Service) -> 
     await service.set_plan(older.key, [{"title": "Old step"}])
     text = context_of(await fire(service, "SessionStart", source="clear"))
     assert text.startswith(f"Your relaybay hook session: {CC_A}.")
+    assert f"\nrelaybay card context for {newer.key}: the same as task_context, so do" in text
     assert f"\n# {newer.key} — Newer task\n" in text and "About: What it is" in text
     others = text.split("## Your other bound tasks")[1].split("##")[0]
     assert older.key in others and "'Old step'" in others
