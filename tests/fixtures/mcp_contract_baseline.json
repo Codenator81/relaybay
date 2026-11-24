@@ -180,6 +180,58 @@
         "type": "object"
       }
     },
+    "approval_withdraw": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "approval": {
+            "type": "integer"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "approval",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
     "attach_file": {
       "annotations": {
         "destructive_hint": false,
@@ -450,6 +502,26 @@
               }
             ]
           },
+          "finding": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from_report": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "hook_session": {
             "anyOf": [
               {
@@ -526,12 +598,18 @@
             ]
           },
           "title": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
-          "project",
-          "title"
+          "project"
         ],
         "type": "object"
       }
@@ -3012,6 +3090,20 @@
           "body": {
             "type": "string"
           },
+          "findings": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "hook_session": {
             "anyOf": [
               {
@@ -3042,6 +3134,20 @@
               }
             ]
           },
+          "questions": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "session": {
             "anyOf": [
               {
@@ -3053,6 +3159,16 @@
             ]
           },
           "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
             "anyOf": [
               {
                 "type": "string"
@@ -3079,6 +3195,72 @@
         "required": [
           "body",
           "task"
+        ],
+        "type": "object"
+      }
+    },
+    "report_item_dismiss": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "n": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report": {
+            "type": "integer"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "n",
+          "report"
         ],
         "type": "object"
       }
@@ -3613,6 +3795,9 @@
                 "type": "null"
               }
             ]
+          },
+          "inspect_only": {
+            "type": "boolean"
           },
           "next_step": {
             "anyOf": [
@@ -4161,6 +4346,36 @@
               }
             ]
           },
+          "cancelled": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deploy_done": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deploy_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "description": {
             "anyOf": [
               {
@@ -4191,10 +4406,31 @@
               }
             ]
           },
+          "fields": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "hook_session": {
             "anyOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inspect_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
               },
               {
                 "type": "null"
@@ -4268,6 +4504,16 @@
             ]
           },
           "size": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
             "anyOf": [
               {
                 "type": "string"
@@ -4356,7 +4602,313 @@
         ],
         "type": "object"
       }
+    },
+    "timelog_fix": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delete": {
+            "type": "boolean"
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "start",
+                  "switch",
+                  "pause"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mark": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "mark",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "timelog_list": {
+      "annotations": {
+        "open_world_hint": false,
+        "read_only_hint": true
+      },
+      "input": {
+        "properties": {
+          "day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "timelog_mark": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "enum": [
+              "start",
+              "switch",
+              "pause"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      }
+    },
+    "worklog_add": {
+      "annotations": {
+        "destructive_hint": false,
+        "open_world_hint": false,
+        "read_only_hint": false
+      },
+      "input": {
+        "properties": {
+          "day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hook_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minutes": {
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "minutes",
+          "task"
+        ],
+        "type": "object"
+      }
     }
   },
-  "version": "0.16.0"
+  "version": "0.17.0"
 }

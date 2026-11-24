@@ -72,7 +72,7 @@ other cards were blocked by stops blocking them.
 
 ## Roles and tool sets
 
-The server offers the same tools at four endpoints; each lists a different set in Claude Code
+Since 0.17 the server offers the same tools at four endpoints; each lists a different set in Claude Code
 ([Connect Claude Code](../connect-claude-code.md#tool-sets-by-role)):
 
 | Endpoint | For | Lists |
@@ -96,8 +96,8 @@ What only a coordinator may do is decided by the `coordinators` setting, not by 
 
 ## Coordinator mode
 
-Naming the coordinator in the server's config (`coordinators = ["lead"]`, a name, an alias or a
-desktop session id) switches on coordinator mode ([SPEC](../SPEC.md#spec-coordinator-mode)). An
+Since 0.17, naming the coordinator in the server's config (`coordinators = ["lead"]`, a name, an
+alias or a desktop session id) switches on coordinator mode ([SPEC](../SPEC.md#spec-coordinator-mode)). An
 **agent** is then a session that is bound to an open card and is not a coordinator; the board, the
 coordinator and a session bound to no card are not agents. In this mode:
 
@@ -121,6 +121,14 @@ coordinator and a session bound to no card are not agents. In this mode:
   missing card, to put findings and questions into its reports and to leave the tracker mark.
 
 With `coordinators` empty none of this applies: texts and behaviour are as described above.
+
+**Updating a running setup to 0.17.** Sessions started before the update keep the tool list they
+loaded: every parameter they know is still accepted (deprecated ones too), new tools and
+parameters appear after a reconnect or a new session. With `coordinators` already set, the mode
+takes effect at once for those sessions as well: an agent's `task_create`, `backlog_add` and time
+log writes are refused with a line that says where the thing goes instead. To give a session its
+role's list, point its MCP entry at `/mcp/agent` or `/mcp/coordinator` and start it again;
+`/mcp` keeps working for every session.
 
 ## A card's life, moment by moment
 

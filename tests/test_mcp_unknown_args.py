@@ -113,7 +113,6 @@ async def test_deprecated_tools_and_old_shapes_still_work(
             }.items()
             if k in released["task_update"]["input"]["properties"]
         }
-        assert "stage" not in released["task_update"]["input"]["properties"]
         updated = await client.call_tool("task_update", old_shape)
         assert not updated.is_error, text_of(updated)
         stub = await client.call_tool("environments_get", {"project": "acme-shop"})

@@ -1,6 +1,6 @@
 # 0028 — The day time log across projects
 
-- Status: **Implemented** (unreleased, in `[Unreleased]`): data, domain, service and MCP, then
+- Status: **Implemented** (released in 0.17.0): data, domain, service and MCP, then
   the board (the day panel on `/`, the card chip, the task's Time row, live updates) and a
   `portfolio_digest` line.
 - One coordinator works on many projects in a day and fills the external tracker's work log at

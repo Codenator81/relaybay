@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-24
+
 ### Added
 
 - A card still in `plan` whose work has started (a plan step in progress or done, a report that changed something) gets a hint to move it to dev; `plan_accept` and `task_context` say the same for an accepted plan. Nothing moves the card by itself.
@@ -1214,7 +1216,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.17.0
 [0.16.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.16.0
 [0.15.2]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.2
 [0.15.1]: https://github.com/Codenator81/relaybay/releases/tag/v0.15.1

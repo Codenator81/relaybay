@@ -160,7 +160,8 @@ the day time log's day is UTC unless you set `TZ` (for example `-e TZ=Europe/Ber
   total, per-project totals, what runs now and the spans left unclosed, the cards show "now" or
   "today", the task its time today, in total and in the tracker. The coordinator marks it with
   `timelog_mark` (or the board's "Working on this now"), corrects it with `timelog_fix` and records
-  the minutes entered in the tracker with `worklog_add`. The day is the server machine's local date.
+  the minutes entered in the tracker with `worklog_add`. The day is the server machine's local date:
+  [Keep the day's time log](https://codenator81.github.io/relaybay/how-to/day-time-log/).
 - **Comments to agents** — write a comment on a task (dialog or task page) and the agent of the
   bound session gets it through its hooks with its next prompt or tool call; the thread shows
   "sent / delivered / read" live, `Stop` reminds the agent (at most twice) until it acknowledges,
@@ -328,7 +329,7 @@ archive_purge_days = 30             # tasks archived by hand are deleted after t
 require_tracker_log = false         # true: done tasks without the tracker work log stay and show "not logged"
 owner_names = ["owner", "me"]       # waiting_on values listed in the Inbox
 rules_mode = "warn"                 # "strict": a stage move or report that misses a rule is refused
-coordinators = []                   # sessions that may use rules_update: a guard against mistakes, not access control
+coordinators = []                   # coordinator sessions: rules_update, archive; set, it switches on coordinator mode (not access control)
 
 [stages.labels]                     # display names; the stage keys stay plan/dev/review/test/live/done
 dev = "in progress"
@@ -387,6 +388,8 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
 - **0.14 to 0.16, project knowledge** — large specs read in parts, file documents written through
   relaybay, board links in MCP answers, card fields for deploys and blockers, a merge order,
   change documents per card.
+- **0.17.0, coordinator and agents** — tool sets by role, coordinator mode, findings and questions
+  in reports, the day time log across projects, approvals in sight on the card.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
 
