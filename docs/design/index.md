@@ -33,6 +33,7 @@ One design per step: goal, model, API, UI, risks, size and status. Status is **P
 | 0025 | [The board with the desktop](0025-board-with-the-desktop.md) | Accepted | 0.12 |
 | 0026 | [Project knowledge and a quieter board](0026-project-knowledge.md) | Implemented in 0.14.0; K2 superseded by 0027 | 0.14 |
 | 0027 | [File documents written through relaybay, and a task context that fits the task](0027-file-documents-written-and-task-context.md) | Implemented in 0.15.0 | 0.15 |
+| 0028 | [The day time log across projects](0028-day-time-log.md) | Accepted (step 1 implemented, unreleased) | 0.17 |
 
 Single decisions with context and consequences are ADRs: [ADR-0001 HTMX + SSE](../adr/0001-htmx-sse.md),
 [ADR-0002 Desktop shell](../adr/0002-desktop-shell.md).

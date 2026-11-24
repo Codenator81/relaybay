@@ -2,10 +2,12 @@
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 from relaybay.domain import approvals as arules
 from relaybay.domain import questions as qrules
+from relaybay.domain import timelog as tl
 from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.approvals import Approval
 from relaybay.domain.backlog import BacklogItem
@@ -1277,6 +1279,21 @@ def profile_change(p: dict[str, Any]) -> str:
     return f"{name}: {'; '.join(moves)}" if moves else name
 
 
+def _event_clock(at: Any) -> str:
+    """An event's stored UTC time as the server's local HH:MM."""
+    try:
+        return tl.clock(datetime.fromisoformat(str(at)), None)
+    except ValueError:
+        return str(at or "")
+
+
+def _event_mark(state: Any) -> str:
+    if not isinstance(state, Mapping):
+        return "?"
+    target = state.get("key") or state.get("label") or ""
+    return f"{_event_clock(state.get('at'))} {state.get('kind')} {target}".rstrip()
+
+
 def event_detail(e: Event) -> str:
     """What changed, in a few words: `dev → test`, a report's summary, the changed fields."""
     p = e.payload
@@ -1328,6 +1345,16 @@ def event_detail(e: Event) -> str:
         return f"#{p.get('note_id')} {p.get('title') or ''}{supersedes}"
     if e.kind == "block.updated":
         return f"{p.get('label')} v{p.get('version')}"
+    if e.kind == "timelog.marked":
+        target = p.get("key") or p.get("label") or ""
+        return f"#{p.get('id')} {p.get('mark_kind')} {_event_clock(p.get('at'))} {target}".rstrip()
+    if e.kind in ("timelog.fixed", "timelog.removed"):
+        before = _event_mark(p.get("before"))
+        change = f"{before} -> {_event_mark(p['after'])}" if p.get("after") else f"{before} removed"
+        return f"#{p.get('id')} {change}: {p.get('reason') or ''}".rstrip(": ")
+    if e.kind == "worklog.added":
+        ref = f" {p['ref']}" if p.get("ref") else ""
+        return f"{p.get('key')} {p.get('day')} {tl.hm_minutes(int(p.get('minutes') or 0))}{ref}"
     if e.kind == "project.pulse_set":
         return str(p.get("text") or "")
     if e.kind == "session.status_changed":
@@ -1772,4 +1799,170 @@ def approval_requested(task: Task, a: Approval, hint: str, updated: bool) -> str
     state = deploy_state(task)
     return (
         f"{text}\nDeploy notes of the card ({state}), shown with the request:\n{task.deploy_notes}"
+    )
+
+
+# --- the day time log ------------------------------------------------------------------------
+
+TIMELOG_NEXT = (
+    "Next: timelog_mark(kind='switch' or 'pause') at the next change; timelog_list shows the"
+    " day, timelog_fix(mark, reason, ...) corrects a mark."
+)
+
+
+def unclosed_hint(log: tl.DayLog) -> str:
+    """The hint for the day it is shown for: HH:MM would land on today, so a past day names
+    its date."""
+    at = "HH:MM" if log.today else f"{log.day.isoformat()}THH:MM"
+    return (
+        f"counts 0: add the pause at the time you stopped, timelog_mark(kind='pause', at='{at}'),"
+        " or timelog_fix the mark"
+    )
+
+
+def _segment_line(s: tl.Segment) -> str:
+    start = s.start.strftime("%H:%M")
+    where = f" ({s.project})" if s.key and s.project else ""
+    if s.unclosed:
+        return f"- {start}-?  unclosed  {s.name}{where} (#{s.mark_id} {s.kind})"
+    end = "now" if s.running else (s.end.strftime("%H:%M") if s.end else "?")
+    return f"- {start}-{end}  {tl.hm(s.seconds)}  {s.name}{where} (#{s.mark_id} {s.kind})"
+
+
+def _totals(log: tl.DayLog) -> list[str]:
+    out = []
+    if log.by_project:
+        parts = [f"{p or 'labels'} {tl.hm(s)}" for p, s in log.by_project]
+        out.append("By project: " + " · ".join(parts))
+    if log.by_card:
+        out.append("By card: " + " · ".join(f"{k} {tl.hm(s)}" for k, _, s in log.by_card))
+    if log.by_label:
+        out.append("By label: " + " · ".join(f"{k} {tl.hm(s)}" for k, s in log.by_label))
+    return out
+
+
+def _now_line(log: tl.DayLog, word: str = "Now") -> str | None:
+    c = log.current
+    if c is None:
+        return None
+    return f"{word}: {c.name} since {c.start.strftime('%H:%M')} ({tl.hm(c.seconds)})"
+
+
+def day_log(log: tl.DayLog, tz: Any, project: str | None = None) -> str:
+    """The day view of timelog_list: the spans and pauses in time order, then the totals."""
+    when = "today" if log.today else log.day.strftime("%a")
+    scope = f" of {project}" if project else ""
+    head = (
+        f"**Time log{scope} {log.day.isoformat()}** ({when}, server time {log.offset}):"
+        f" total **{tl.hm(log.total)}**"
+    )
+    if not log.segments and not log.marks:
+        return "\n".join(
+            [head, "No marks on this day. Start: timelog_mark(kind='start', task='KEY')."]
+        )
+    rows: list[tuple[Any, int, str]] = [
+        (s.start, s.mark_id, _segment_line(s)) for s in log.segments
+    ]
+    for m in log.marks:
+        if m.kind == tl.PAUSE:
+            rows.append((tl.local(m.at, tz), m.id, f"- {tl.clock(m.at, tz)}  {m.target} (#{m.id})"))
+    lines = [head]
+    now = _now_line(log)
+    if now:
+        lines.append(now)
+    lines += [r[2] for r in sorted(rows, key=lambda r: (r[0], r[1]))]
+    lines += _totals(log)
+    if log.unclosed:
+        lines.append(f"Unclosed: {len(log.unclosed)} ({unclosed_hint(log)}).")
+    return "\n".join(lines)
+
+
+def time_marked(result: tl.MarkResult, tz: Any) -> str:
+    m = result.mark
+    what = f"#{m.id} {m.kind} at {tl.clock(m.at, tz)}: {m.target}"
+    lines = [f"Marked {what}." if result.created else f"Nothing written. {result.warnings[0]}"]
+    warnings = result.warnings if result.created else result.warnings[1:]
+    if result.closed is not None and result.closed.end is not None:
+        c = result.closed
+        lines.append(
+            f"Closed: {c.name} {c.start.strftime('%H:%M')}-{c.end.strftime('%H:%M')}"
+            f" {tl.hm(c.seconds)}."
+        )
+    log = result.day
+    if log is not None:
+        day = "Today" if log.today else log.day.isoformat()
+        now = _now_line(log, "now")
+        lines.append(f"{day}: total {tl.hm(log.total)}" + (f" · {now}" if now else "") + ".")
+        others = [u for u in log.unclosed if u.mark_id != m.id]
+        if any(u.mark_id == m.id for u in log.unclosed):
+            lines.append("This span counts 0 until a later mark (a switch or a pause) ends it.")
+        if others:
+            lines.append(f"Unclosed on that day: {len(others)} ({unclosed_hint(log)}).")
+    lines += warnings
+    lines.append(TIMELOG_NEXT)
+    return "\n".join(lines)
+
+
+def _mark_state(state: Mapping[str, Any], tz: Any) -> str:
+    at = tl.clock(datetime.fromisoformat(state["at"]), tz)
+    target = state.get("key") or state.get("label") or ""
+    return f"{at} {state['kind']} {target}".rstrip()
+
+
+def time_fixed(
+    mark: tl.TimeMark | None, before: Mapping[str, Any], log: tl.DayLog, reason: str, tz: Any
+) -> str:
+    if mark is None:
+        head = f"Mark removed (was {_mark_state(before, tz)}): {reason}."
+    else:
+        after = {"at": mark.at.isoformat(), "kind": mark.kind, "key": mark.task_key}
+        after["label"] = mark.label
+        head = (
+            f"Mark #{mark.id} fixed: {_mark_state(before, tz)} -> {_mark_state(after, tz)}"
+            f" ({reason})."
+        )
+    return "\n".join([head, day_log(log, tz)])
+
+
+def card_time(task: Task, time: tl.CardTime, worklog: Sequence[Mapping[str, Any]]) -> str:
+    """timelog_list(task=...): today, all days and the tracker's minutes, then the days and
+    the tracker rows."""
+    now = f" · now since {time.since.strftime('%H:%M')}" if time.current and time.since else ""
+    lines = [
+        f"**{task.key}** time: today {tl.hm(time.today)} · total {tl.hm(time.total)} · in"
+        f" tracker {tl.hm_minutes(time.tracker)}{now}"
+    ]
+    if time.days:
+        lines.append("Days: " + " · ".join(f"{d.isoformat()} {tl.hm(s)}" for d, s in time.days))
+    if worklog:
+        lines.append("Tracker rows (newest first):")
+        for row in worklog:
+            ref = f" {row['ref']}" if row.get("ref") else ""
+            why = f" ({row['reason']})" if row.get("reason") else ""
+            lines.append(
+                f"- #{row['id']} {row['day']} {tl.hm_minutes(row['minutes'])}{ref}{why}"
+                f" by {row['actor']}"
+            )
+    else:
+        lines.append("No minutes entered in the tracker yet: worklog_add(task, minutes).")
+    return "\n".join(lines)
+
+
+def project_time(project: str, log: tl.DayLog, time: tl.CardTime) -> str:
+    """timelog_list(project=...): the day's time per card, and the project's numbers."""
+    lines = [
+        f"**{project}**: today {tl.hm(time.today)} · total {tl.hm(time.total)} · in tracker"
+        f" {tl.hm_minutes(time.tracker)}",
+        f"On {log.day.isoformat()}: {tl.hm(log.total)}",
+    ]
+    lines += [f"- {k} {tl.hm(s)}" for k, _, s in log.by_card]
+    if log.unclosed:
+        lines.append(f"Unclosed: {len(log.unclosed)} ({unclosed_hint(log)}).")
+    return "\n".join(lines)
+
+
+def worklog_added(task: Task, row_id: int, minutes: int, day: str, time: tl.CardTime) -> str:
+    return (
+        f"Tracker row #{row_id} for {task.key} on {day}: {tl.hm_minutes(minutes)}. In tracker"
+        f" {tl.hm_minutes(time.tracker)} · today {tl.hm(time.today)} · total {tl.hm(time.total)}."
     )

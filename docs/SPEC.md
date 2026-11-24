@@ -720,6 +720,55 @@ logged task (a report or a changed `progress` on a card before `live`, or a move
 the mark; a move back to an earlier stage still clears it. Metadata edits keep the mark; an explicit `tracker_logged` in the same write wins; a new
 `tracker_ref` starts as not logged unless `tracker_logged` is passed with it.
 
+<a id="spec-time-log"></a>
+
+**Day time log** (`time_mark`, `tracker_worklog`, migration 0064; [design 0028](design/0028-day-time-log.md)).
+The coordinator's log of the working day across projects; relaybay shows the numbers and never
+judges what counts as work. A **mark** is `start`, `switch` or `pause` at a time `at` (stored UTC,
+like every time). `start` and `switch` name exactly one of a card (`task`) and a free `label`
+(work without a card, e.g. `call`); a `pause` names no card and its label says why. Marks are
+ordered by (`at`, id); a non-pause mark opens a **span** that ends at the next mark of any kind, a
+pause opens a gap until the next mark (code: domain/timelog.py:span_of).
+- **Day**: the local date of the server machine (Python's local time; no setting). A span over
+  midnight counts only when it ends on the very next day and lasts at most 4 hours
+  (`MAX_OVERNIGHT_SECONDS`), split between the days; a span over two midnights never counts. In
+  Docker the zone is UTC unless `TZ` is set.
+- **Running**: today's last span runs until now; the answers and the board show it as `now`.
+- **Unclosed**: a span whose next mark (any kind) is on a later day and that is not such a short
+  night (the day was not paused), or a past day's last span with no next mark, counts 0 on its
+  start day and is listed `unclosed` with the hint to add the pause with that day's date
+  (`at='YYYY-MM-DDTHH:MM'`; only today's view says `HH:MM`) or to fix the mark; it never books the
+  night. A mark that leaves an earlier day's span unclosed says so in its answer (`acme-shop-1 since
+  Mon 17:00 stays unclosed (0h00): close it with timelog_mark(kind='pause', at='<that
+  day>THH:MM')`).
+- **Durations** are summed in seconds and shown floored to whole minutes as `1h05`, `0h30`
+  (code: domain/timelog.py:hm).
+- `at` is `HH:MM` (today, server time; in `timelog_fix` the mark's own day) or an ISO time (with
+  an offset; without one, server time); unreadable or more than a minute ahead is refused (code:
+  domain/timelog.py:parse_at).
+- **The same mark again** (kind and target of the newest mark, `at` within 60 s) writes nothing and
+  returns that mark; the board's "Working on this now" (`kind` `now`: start, or switch while a span
+  runs) on the card already running is a no-op (code: service.py:mark_time). Odd sequences (a start
+  while a span runs, a switch or pause with nothing running, a mark before the newest one) are
+  written with a note, never refused.
+- **Corrections**: `timelog_fix` changes a mark in place or deletes it, with a required reason;
+  setting the card clears the label and the other way round; events `timelog.fixed` (`before`,
+  `after`, `reason`) and `timelog.removed` (`before`, `reason`) are on the Audit page's changes
+  (code: service.py:fix_time_mark).
+- **In the tracker**: `tracker_worklog` is an append-only ledger of minutes entered in the external
+  tracker per card and local day (`worklog_add`, -1440 to 1440, not 0); a correction is a negative
+  row with a required reason, refused when the card's day would go below 0; a day after today is
+  refused (code:
+  service.py:add_worklog). A card's time is `today · total · in tracker` (code:
+  service.py:task_time, `TaskDetail.time`). `tracker_logged` and `require_tracker_log`
+  ([§1](#spec-tracker)) are unchanged and separate.
+- Labels, refs and reasons are scanned for secret values like other text, under the rules of the
+  card's project (a fix without a new card: the mark's own project). The rows keep the card's
+  key and project with `ON DELETE SET NULL`: a purged card's or a deleted project's marks stay on
+  their days under the key, and a deletion's export does not hold them ([§2](#spec-archive-purge)).
+- Without `coordinators` every caller may write; in [coordinator mode](#spec-coordinator-mode) an
+  agent's write is refused.
+
 <a id="spec-decision"></a>
 
 **Decision.** A short text recorded for a project (scope `project`) or one of its tasks (scope
@@ -769,6 +818,9 @@ agents find, and the tracker work log follows the coordinator's own records:
   rest went to next_step` or ` — the rest was not kept: the card already has a next_step`
   (code: domain/waiting_on.py:normalise, service.py:_coordinated_waiting_on). The board's writes and
   the cards a question or an approval request sets to the owner are not touched.
+- `timelog_mark`, `timelog_fix` and `worklog_add` from an agent are refused, nothing is written:
+  `The day time log is the coordinator's. Nothing changed.` ([§1](#spec-time-log); code:
+  service.py:TIMELOG_COORDINATOR).
 - The `/mcp` and `/mcp/agent` instructions change in three places ([§3](#spec-mcp-instructions)).
 With `coordinators` empty, none of this applies and every text is as without the mode.
 
@@ -791,7 +843,10 @@ The event id is monotonic and doubles as the Server-Sent Events id. Kinds: `proj
 `question.delivered`, `question.withdrawn`, `question.overdue` (with `question_id` and the text,
 [§1](#spec-questions)), `approval.requested`, `approval.decided`, `approval.used` (with
 `approval_id`, `action`, `target` and `what`), `approval.expired`
-([§1](#spec-approvals))
+([§1](#spec-approvals)), `timelog.marked` (`id`, `mark_kind`, `at`, `key` or `label`, `project`,
+`keys`: the cards whose time changed), `timelog.fixed` (`id`, `before`, `after`, `reason`, `keys`),
+`timelog.removed` (`id`, `before`, `reason`, `keys`), `worklog.added` (`id`, `key`, `day`,
+`minutes`, `ref`) ([§1](#spec-time-log))
 (`decision.added` carries `supersedes` when it replaces a decision). A stage change that misses a rule carries the warnings in its payload.
 Events of runs, the coordinator run, profiles, schedules, the brake, budgets, intake and session
 messages written before 0.12 (`run.*`, `coordinator.*`, `profile.*`, `schedule.*`, `brake.*`,
@@ -1535,7 +1590,9 @@ tools, token and security; `mcp_server/roles.py`): each lists its role's tools i
 sends its own instructions; a tool not listed still runs when called by name. A role's list never
 holds a deprecated name; the agent's covers every moment of a card (start, plan, work, documents,
 question, decision, finding, report, review, approval, closing); the coordinator's is every current
-tool but `review_steps_set`, `review_step_update` and `annotation_reply`; the reader's is
+tool but `review_steps_set`, `review_step_update` and `annotation_reply` (the day time log's
+`timelog_mark`, `timelog_list`, `timelog_fix` and `worklog_add` are in it and in no other role's
+list, and its instructions have one line about them); the reader's is
 `task_context`, `task_get`, `plan_get`, `review_get`, `attachment_get`, `comments_list`,
 `decision_list`, `rules_get`, `backlog_list` and the `doc_list` / `doc_outline` / `doc_get` /
 `doc_search` reads. The instructions of a role name only tools of its list, and every tool a hint
@@ -1569,6 +1626,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 | Memory and documents | `decision_list`, `memory_add`, `memory_update`, `memory_search`, `memory_get`, `doc_list`, `doc_get`, `doc_update`, `doc_history`, `block_get`, `block_set` |
 | Digests | `portfolio_digest`, `project_digest`, `task_context`, `project_pulse_set` |
 | Backlog | `backlog_add`, `backlog_list`, `backlog_update`, `backlog_patch` ([§12](#spec-backlog-mcp)) |
+| Day time log | `timelog_mark`, `timelog_list`, `timelog_fix`, `worklog_add` ([§1](#spec-time-log)) |
 
 Read tools are annotated read-only, write tools non-destructive; none reaches outside relaybay. The
 digests are annotated as writes: `session` moves the caller's read position and can create or link
@@ -3534,6 +3592,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0061_task_block` | `task_block` (`task_id`, `blocker_id`, both `ON DELETE CASCADE` to `task`, `created_by`, `created_at`, unique per pair) with an index on `blocker_id` ([§1](#spec-task-blockers)). Additive only |
 | `0062_task_inspect_only` | `task.inspect_only` (integer, default 0): a card that only reads needs no accepted plan before dev ([rules](#spec-rules)). Additive |
 | `0063_report_item` | `report_item` (`report_id` and `task_id` `ON DELETE CASCADE`, `kind` `finding` or `question`, `n` unique per report and kind, `title` (a question's text), `body`, `location`, `item_kind`, `area`, `question_default`, `backlog_id` `ON DELETE SET NULL` to `backlog_item`, `dismissed_at`, `dismissed_by`, `dismiss_reason`, `created_at`) with an index on `task_id` and a partial index of the open items ([§1](#spec-report-items)). Additive only |
+| `0064_time_log` | `time_mark` (`at`, `kind` `start`, `pause` or `switch`, `task_id`, `project_id` and `session_id` `ON DELETE SET NULL`, `task_key`, `label`, `actor`, `created_at`, `updated_at`; a check that a pause names no card and a start or switch exactly one of card and label) with indexes on (`at`, `id`) and `task_id`; `tracker_worklog` (`task_id`, `project_id`, `session_id` `ON DELETE SET NULL`, `task_key`, `day`, `minutes` -1440 to 1440 and not 0, `ref`, `reason`, `actor`, `created_at`) with an index on (`task_id`, `day`) ([§1](#spec-time-log)). Additive only |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain

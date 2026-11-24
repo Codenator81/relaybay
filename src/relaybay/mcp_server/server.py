@@ -134,6 +134,10 @@ TRACKER_LOGGED_HELP = (
     " logged unless tracker_logged is passed in the same write. Done tasks without it stay on"
     " the board marked 'not logged'."
 )
+AT_HELP = (
+    "When, if not now: HH:MM (today, server time) or an ISO time like 2026-11-24T09:00+02:00;"
+    " at most a minute ahead."
+)
 INSPECT_ONLY_HELP = (
     "true for a card that only reads (an analysis, a repro, a question answered by reading): it"
     " needs no accepted plan before dev and may go straight to done. A report on it that says"
@@ -516,6 +520,167 @@ def build_mcp(
                 )
             )
         )
+
+    @write
+    async def timelog_mark(
+        kind: Annotated[
+            Literal["start", "switch", "pause"],
+            Field(
+                description="start: work begins on a card or a label; switch: moves to another"
+                " one; pause: work stops (a gap until the next start)."
+            ),
+        ],
+        task: Annotated[
+            str | None,
+            Field(description="The card worked on (start, switch), e.g. 'acme-shop-12'."),
+        ] = None,
+        label: Annotated[
+            str | None,
+            Field(
+                description="Work without a card (start, switch), e.g. 'call' or 'email'; on a"
+                " pause, why. Not with task."
+            ),
+        ] = None,
+        at: Annotated[str | None, Field(description=AT_HELP)] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Mark the day time log, for the coordinator: when work starts, switches to another
+        card or label, or pauses. A mark opens a span that runs until the next mark; a pause
+        is a gap. The answer names the span the mark closed and the day's total. The same mark
+        again within a minute writes nothing. In coordinator mode an agent's mark is refused."""
+        result = await run(
+            service.mark_time(
+                kind,
+                task=task,
+                label=label,
+                at=at,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.time_marked(result, service.timelog_tz)
+
+    @mcp.tool(annotations=READ, structured_output=False)
+    async def timelog_list(
+        day: Annotated[
+            str | None,
+            Field(description="A date like 2026-11-24, 'today' (the default) or 'yesterday'."),
+        ] = None,
+        task: Annotated[
+            str | None,
+            Field(description="One card instead: today, total, in the tracker, per day, rows."),
+        ] = None,
+        project: Annotated[
+            str | None, Field(description="One project's cards on the day, and its totals.")
+        ] = None,
+    ) -> str:
+        """The day time log: the spans and pauses of a day in time order with their durations,
+        the totals per project, card and label, what runs now and the unclosed spans (a past
+        day's last span without a pause counts 0). With task: that card's time (today, total,
+        in the tracker, per day, the tracker rows). With project: its cards on the day."""
+        if task and project:
+            raise ToolError(
+                "Pass task or project, not both: task shows one card's time, project one"
+                " project's cards on a day."
+            )
+        if task:
+            card = await run(service.get_task(task))
+            time = await run(service.task_time(card))
+            return fmt.card_time(card, time, await run(service.worklog_rows(card)))
+        if project:
+            found = await run(service.get_project(project))
+            log = await run(service.day_log(day, found.slug))
+            times = await run(service.project_times([found.id]))
+            return fmt.project_time(found.slug, log, times[found.id])
+        return fmt.day_log(await run(service.day_log(day)), service.timelog_tz)
+
+    @write
+    async def timelog_fix(
+        mark: Annotated[int, Field(description="The mark's number (timelog_list shows #N).")],
+        reason: Annotated[str, Field(description="Why the mark was wrong; kept in the audit.")],
+        at: Annotated[
+            str | None,
+            Field(
+                description="The right time: HH:MM on the mark's own day (server time), or an"
+                " ISO time like 2026-11-24T09:00+02:00; at most a minute ahead."
+            ),
+        ] = None,
+        kind: Annotated[
+            Literal["start", "switch", "pause"] | None, Field(description="The right kind.")
+        ] = None,
+        task: Annotated[
+            str | None, Field(description="The right card; clears the label." + CLEARS)
+        ] = None,
+        label: Annotated[
+            str | None, Field(description="The right label; clears the card." + CLEARS)
+        ] = None,
+        delete: Annotated[bool, Field(description="true deletes the mark.")] = False,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Correct a mark of the day time log in place, or delete it, for the coordinator. The
+        reason is required; the audit keeps the mark before and after. The answer shows the
+        mark's day again."""
+        fixed, before, log = await run(
+            service.fix_time_mark(
+                mark,
+                reason,
+                at=at,
+                kind=kind,
+                task=cleared(task),
+                label=cleared(label),
+                delete=delete,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        return fmt.time_fixed(fixed, before, log, reason.strip(), service.timelog_tz)
+
+    @write
+    async def worklog_add(
+        task: TaskRef,
+        minutes: Annotated[
+            int,
+            Field(
+                description="Minutes entered in the external tracker; a correction is negative"
+                " (with reason) and may not take the card's day below 0."
+            ),
+        ],
+        day: Annotated[
+            str | None, Field(description="The day they were logged for; default today.")
+        ] = None,
+        ref: Annotated[
+            str | None, Field(description="The tracker's work log entry or issue, e.g. 'ENG-12'.")
+        ] = None,
+        reason: Annotated[
+            str | None, Field(description="Why; required for a negative correction.")
+        ] = None,
+        session: Session = None,
+        session_title: SessionTitle = None,
+        hook_session: HookSession = None,
+    ) -> str:
+        """Record minutes entered in the external tracker for a card, for the coordinator: an
+        append-only ledger, shown as "in tracker" next to the card's time. tracker_logged stays
+        the separate mark that the work log is done."""
+        row_id, logged, time = await run(
+            service.add_worklog(
+                task,
+                minutes,
+                day=day,
+                ref=ref,
+                reason=reason,
+                session=session,
+                session_title=session_title,
+                hook_session=hook_session,
+            )
+        )
+        card = await run(service.get_task(task))
+        return fmt.worklog_added(card, row_id, minutes, logged, time)
 
     # The digests are writes for the annotations: `session` moves the caller's read position and
     # can create or link its session row.

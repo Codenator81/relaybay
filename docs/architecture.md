@@ -120,6 +120,13 @@ report_item   id, report_id (CASCADE), task_id (CASCADE), kind (finding|question
               (a question's text), body, location, item_kind, area, question_default,
               backlog_id (SET NULL), dismissed_at, dismissed_by, dismiss_reason, created_at
               -- UNIQUE (report_id, kind, n); open while neither backlog_id nor dismissed_at
+time_mark     id, at (UTC), kind (start|pause|switch), task_id (SET NULL), task_key, project_id
+              (SET NULL), label, actor, session_id (SET NULL), created_at, updated_at
+              -- CHECK a pause names no card, start|switch exactly one of task_key and label;
+              INDEX (at, id), (task_id); the day time log, spans derived (domain/timelog.py)
+tracker_worklog  id, task_id (SET NULL), task_key, project_id (SET NULL), day (local), minutes
+              (-1440..1440, not 0), ref, reason, actor, session_id (SET NULL), created_at
+              -- append-only; INDEX (task_id, day)
 decision      id, task_id, project_id, text, decided_by, created_at, scope (project|task),
               source_kind (report|event|comment|message), source_ref, source_text, valid_from,
               valid_to, recorded_at, superseded_at, superseded_by (decision.id), area (a name)

@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import aiosqlite
@@ -50,6 +51,7 @@ from relaybay.domain.reports import ReportCheck
 from relaybay.domain.review import Attachment, ReviewStep
 from relaybay.domain.rules import RuleProposal, RuleVersion
 from relaybay.domain.stages import ACCEPTANCE_STAGES, Stage
+from relaybay.domain.timelog import TimeMark
 
 logger = logging.getLogger("relaybay")
 
@@ -5185,3 +5187,232 @@ async def archived_in_batch(
         (project_id, batch),
     )
     return [(r[0], r[1]) for r in rows]
+
+
+# --- time log --------------------------------------------------------------
+
+# Each mark with the next mark of the whole log (any card): where its span ends. A range read
+# windows over the table once (LEAD); a lookup of one mark or one card's marks finds each next
+# mark by a correlated query on the index time_mark_at (at, id).
+_TIME_MARK_SELECT = """
+WITH m AS (
+    SELECT tm.*, LEAD(tm.at) OVER w AS next_at, LEAD(tm.kind) OVER w AS next_kind
+    FROM time_mark tm WINDOW w AS (ORDER BY tm.at, tm.id)
+)
+SELECT m.*, p.slug AS project_slug FROM m LEFT JOIN project p ON p.id = m.project_id
+"""
+_NEXT_MARK = (
+    "SELECT n.{col} FROM time_mark n WHERE (n.at, n.id) > (m.at, m.id) ORDER BY n.at, n.id LIMIT 1"
+)
+_TIME_MARK_ONE = f"""
+SELECT m.*, p.slug AS project_slug, ({_NEXT_MARK.format(col="at")}) AS next_at,
+       ({_NEXT_MARK.format(col="kind")}) AS next_kind
+FROM time_mark m LEFT JOIN project p ON p.id = m.project_id
+"""
+_TIME_MARK_ORDER = " ORDER BY m.at, m.id"
+
+
+def _time(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value else None
+
+
+def _time_mark(row: aiosqlite.Row) -> TimeMark:
+    keys = row.keys()
+    return TimeMark(
+        id=row["id"],
+        at=datetime.fromisoformat(row["at"]),
+        kind=row["kind"],
+        task_id=row["task_id"],
+        task_key=row["task_key"],
+        project_id=row["project_id"],
+        project_slug=row["project_slug"] if "project_slug" in keys else None,
+        label=row["label"],
+        actor=row["actor"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        next_at=_time(row["next_at"]) if "next_at" in keys else None,
+        next_kind=row["next_kind"] if "next_kind" in keys else None,
+    )
+
+
+async def insert_time_mark(
+    conn: aiosqlite.Connection,
+    *,
+    at: str,
+    kind: str,
+    task_id: int | None,
+    task_key: str | None,
+    project_id: int | None,
+    label: str | None,
+    actor: str,
+    session_id: int | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO time_mark (at, kind, task_id, task_key, project_id, label, actor,"
+        " session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (at, kind, task_id, task_key, project_id, label, actor, session_id, now),
+    )
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+async def get_time_mark(conn: aiosqlite.Connection, mark_id: int) -> TimeMark | None:
+    row = await _one(conn, _TIME_MARK_ONE + " WHERE m.id = ?", (mark_id,))
+    return _time_mark(row) if row else None
+
+
+async def update_time_mark(
+    conn: aiosqlite.Connection, mark_id: int, fields: dict[str, Any], now: str
+) -> None:
+    sets = ", ".join(f"{name} = ?" for name in fields)
+    await conn.execute(
+        f"UPDATE time_mark SET {sets}, updated_at = ? WHERE id = ?",
+        (*fields.values(), now, mark_id),
+    )
+
+
+async def delete_time_mark(conn: aiosqlite.Connection, mark_id: int) -> None:
+    await conn.execute("DELETE FROM time_mark WHERE id = ?", (mark_id,))
+
+
+async def time_mark_before(
+    conn: aiosqlite.Connection, at: str, exclude: int | None = None
+) -> TimeMark | None:
+    """The latest mark at or before `at` (ties: the higher id), `exclude` left out."""
+    row = await _one(
+        conn,
+        _TIME_MARK_ONE + " WHERE m.at <= ? AND m.id IS NOT ? ORDER BY m.at DESC, m.id DESC LIMIT 1",
+        (at, exclude),
+    )
+    return _time_mark(row) if row else None
+
+
+async def newest_time_mark(conn: aiosqlite.Connection) -> TimeMark | None:
+    row = await _one(conn, _TIME_MARK_ONE + " ORDER BY m.at DESC, m.id DESC LIMIT 1", ())
+    return _time_mark(row) if row else None
+
+
+async def time_marks_around(conn: aiosqlite.Connection, start: str, end: str) -> list[TimeMark]:
+    """The marks in [start, end) and the one before `start`, whose span may reach into it."""
+    rows = await _all(
+        conn,
+        _TIME_MARK_SELECT + " WHERE (m.at >= ? AND m.at < ?) OR m.id = (SELECT id FROM time_mark"
+        " WHERE at < ? ORDER BY at DESC, id DESC LIMIT 1)" + _TIME_MARK_ORDER,
+        (start, end, start),
+    )
+    return [_time_mark(r) for r in rows]
+
+
+async def time_marks_for_tasks(
+    conn: aiosqlite.Connection, task_ids: list[int]
+) -> dict[int, list[TimeMark]]:
+    """The marks of these cards, each with its next mark of the whole log, by card."""
+    found: dict[int, list[TimeMark]] = {i: [] for i in task_ids}
+    for start in range(0, len(task_ids), _CHUNK):
+        part = task_ids[start : start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        rows = await _all(
+            conn,
+            _TIME_MARK_ONE + f" WHERE m.task_id IN ({marks})" + _TIME_MARK_ORDER,
+            tuple(part),
+        )
+        for row in rows:
+            found[row["task_id"]].append(_time_mark(row))
+    return found
+
+
+async def time_marks_for_projects(
+    conn: aiosqlite.Connection, project_ids: list[int]
+) -> dict[int, list[TimeMark]]:
+    """The card marks of these projects (a purged card's included), by project."""
+    found: dict[int, list[TimeMark]] = {i: [] for i in project_ids}
+    for start in range(0, len(project_ids), _CHUNK):
+        part = project_ids[start : start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        rows = await _all(
+            conn,
+            _TIME_MARK_ONE + f" WHERE m.project_id IN ({marks})" + _TIME_MARK_ORDER,
+            tuple(part),
+        )
+        for row in rows:
+            found[row["project_id"]].append(_time_mark(row))
+    return found
+
+
+async def insert_tracker_worklog(
+    conn: aiosqlite.Connection,
+    *,
+    task_id: int,
+    task_key: str,
+    project_id: int,
+    day: str,
+    minutes: int,
+    ref: str | None,
+    reason: str | None,
+    actor: str,
+    session_id: int | None,
+    now: str,
+) -> int:
+    cur = await conn.execute(
+        "INSERT INTO tracker_worklog (task_id, task_key, project_id, day, minutes, ref, reason,"
+        " actor, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_id, task_key, project_id, day, minutes, ref, reason, actor, session_id, now),
+    )
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+async def worklog_day_sum(conn: aiosqlite.Connection, task_id: int, day: str) -> int:
+    row = await _one(
+        conn,
+        "SELECT COALESCE(SUM(minutes), 0) FROM tracker_worklog WHERE task_id = ? AND day = ?",
+        (task_id, day),
+    )
+    return int(row[0])
+
+
+async def worklog_sums(conn: aiosqlite.Connection, task_ids: list[int]) -> dict[int, int]:
+    """Minutes entered in the tracker per card (the ledger's sum)."""
+    found: dict[int, int] = {}
+    for start in range(0, len(task_ids), _CHUNK):
+        part = task_ids[start : start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        rows = await _all(
+            conn,
+            f"SELECT task_id, SUM(minutes) FROM tracker_worklog WHERE task_id IN ({marks})"
+            " GROUP BY task_id",
+            tuple(part),
+        )
+        found.update({r[0]: int(r[1]) for r in rows})
+    return found
+
+
+async def worklog_project_sums(
+    conn: aiosqlite.Connection, project_ids: list[int]
+) -> dict[int, int]:
+    found: dict[int, int] = {}
+    for start in range(0, len(project_ids), _CHUNK):
+        part = project_ids[start : start + _CHUNK]
+        marks = ", ".join("?" for _ in part)
+        rows = await _all(
+            conn,
+            f"SELECT project_id, SUM(minutes) FROM tracker_worklog WHERE project_id IN ({marks})"
+            " GROUP BY project_id",
+            tuple(part),
+        )
+        found.update({r[0]: int(r[1]) for r in rows})
+    return found
+
+
+async def list_worklog(
+    conn: aiosqlite.Connection, task_id: int, limit: int = 20
+) -> list[dict[str, Any]]:
+    """The card's ledger rows, newest first."""
+    rows = await _all(
+        conn,
+        "SELECT id, day, minutes, ref, reason, actor, created_at FROM tracker_worklog"
+        " WHERE task_id = ? ORDER BY id DESC LIMIT ?",
+        (task_id, limit),
+    )
+    return [dict(r) for r in rows]

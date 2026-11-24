@@ -29,7 +29,8 @@
     "concurrency.over", "inbox.worktrees_seen",
     "question.asked", "question.answered", "question.defaulted", "question.delivered",
     "question.withdrawn", "question.overdue",
-    "approval.requested", "approval.decided", "approval.used", "approval.expired"
+    "approval.requested", "approval.decided", "approval.used", "approval.expired",
+    "timelog.marked", "timelog.fixed", "timelog.removed", "worklog.added"
   ];
   // Events that can change what the Inbox lists (and its count in the sidebar).
   var INBOX_KINDS = [
