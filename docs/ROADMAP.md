@@ -238,11 +238,15 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | `doc_update(from_path)`: a one-off import of a local file; warnings for links without a target | done | — |
 | The task dialog puts what waits for the owner first and leaves out empty blocks | done | — |
 
-## 0.17 — the day time log (unreleased)
+## 0.17 — tool sets by role, coordinator mode, the day time log (released 2026-11-24)
 
 | Item | Status | Design |
 |---|---|---|
 | The day time log across projects: marks on cards or labels, the day's strip and totals on `/`, the card's time, minutes entered in the tracker; coordinator tools `timelog_mark`, `timelog_list`, `timelog_fix`, `worklog_add` | done | [0028](design/0028-day-time-log.md) |
+| Tool sets by role at `/mcp/agent`, `/mcp/coordinator`, `/mcp/reader`; coordinator mode with `coordinators` set (agents report findings and questions, the tracker mark and archive are the coordinator's, `waiting_on` as a fixed role); next-call hints; `task_update(stage=…, fields=…)` and `report_add(stage=…)` | done | — |
+| Findings and questions as data in reports (`report_add(findings=…, questions=…)`), triaged by the coordinator; `inspect_only` cards; a writing tool refuses an argument it does not take | done | — |
+| The card dialog's Approvals right under Next with Approve and Refuse in sight, why a decided request has no button, `approval waits` on the board card; `approval_withdraw` | done | — |
+| A repository with a worktree on one line of the Code row | done | — |
 
 ## 1.0
 

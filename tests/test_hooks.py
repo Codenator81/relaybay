@@ -261,7 +261,7 @@ async def test_exact_link_through_an_alias_and_report_add(service: Service) -> N
 
 async def test_a_new_name_with_the_own_hook_id_is_that_desktop_session(service: Service) -> None:
     """A launched session that does not know its local_ id writes with a readable name and its
-    own hook id: the write is that desktop session's, with no warning (finboo, 2026-11-23)."""
+    own hook id: the write is that desktop session's, with no warning (seen 2026-11-23)."""
     from relaybay.service import collect_notes
 
     task = await bound_task(service)
