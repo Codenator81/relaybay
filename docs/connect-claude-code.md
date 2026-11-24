@@ -58,9 +58,9 @@ This project is `acme-shop` on the relaybay board (MCP server `relaybay`).
   `rules_get(project="acme-shop")`).
 - Before starting work, find the task with `task_list` or create it with `task_create` (with a
   short `description`: what to do and why); then call `task_bind_session` with your session name.
-- When the work moves on, call `task_set_stage` (plan → dev → review → test → live → done).
+- When the work moves on, call `task_update(task, stage=…)` (plan → dev → review → test → live → done).
 - Keep "waiting on" and "next step" current: pass `next_step` and `waiting_on` with every
-  `task_set_stage` and `report_add` (or use `task_update`).
+  `task_update` and `report_add`.
 - At the end of every stage, call `report_add` with your final report. Start it with a line
   `state · size · gist`, e.g. `verified · M · checkout works`, and pass `progress`: the updated
   summary of everything done on the task so far.
@@ -249,8 +249,8 @@ tell (an older hook client, an http hook, an IDE or SDK entrypoint), the session
 session once to say it with its next relaybay write:
 
 ```text
-task_patch(task="ACME-12", fields={"session_surface": "terminal"},
-           session="<its name>", hook_session="<id>")
+task_update(task="ACME-12", fields={"session_surface": "terminal"},
+            session="<its name>", hook_session="<id>")
 ```
 
 **Why a comment has not arrived.** Each owner comment shows `delivered` or `not delivered yet`

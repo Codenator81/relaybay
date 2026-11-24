@@ -1140,7 +1140,7 @@ CLOSED_PLAN_WARNING = "Warning (rules): " + CLOSED_PLAN + "."
 REWORK_NOTE = "{key} moved from {stage} back to dev ({note})."
 ALL_DONE_REVIEW_HINT = (
     "Hint: all steps done and the review checklist is set: move the task to review"
-    " (task_set_stage)."
+    " (task_update(stage=...))."
 )
 DRAFT_HINTS_MAX = 5
 DRAFT_HINT = (
@@ -1149,7 +1149,7 @@ DRAFT_HINT = (
 PLAN_LINK_RE = re.compile(r"(?:report\s*[:#]?\s*|#)?(\d+)", re.IGNORECASE)
 CANCELLED_HINT = (
     "Hint: {key} is marked cancelled and stays in {stage}: the card is not moved; move it to"
-    " done with task_set_stage when nothing is left to do."
+    ' done with task_update(stage="done") when nothing is left to do.'
 )
 EMPTY_CHECKLIST_HINT = (
     "Hint: the review checklist of {key} is empty. Write what the owner should check by eye"
@@ -9496,7 +9496,8 @@ class Service:
             task = await self.get_task(ref, tx.conn)
             if task.stage == Stage.DONE:
                 raise ValidationError(
-                    f"{task.key}: the task is done: reopen it (task_set_stage) before adding steps."
+                    f"{task.key}: the task is done: reopen it (task_update(stage=...))"
+                    " before adding steps."
                 )
             current = await repo.list_plan_steps(tx.conn, task.id)
             if len(current) >= PLAN_STEPS_MAX:

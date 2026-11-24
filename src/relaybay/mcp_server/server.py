@@ -18,6 +18,7 @@ from relaybay import __version__
 from relaybay.domain import backlog
 from relaybay.domain.errors import DomainError, NotFoundError, ValidationError
 from relaybay.domain.rules import Rules
+from relaybay.domain.task_fields import BY_NAME as TASK_FIELD_BY_NAME
 from relaybay.mcp_server import contract
 from relaybay.mcp_server import format as fmt
 from relaybay.service import Service, collect_notes
@@ -66,7 +67,8 @@ def instructions(rules: Rules) -> str:
             "- A line 'Warning (rules)' names a rule the write did not meet: fix it. 'rules updated"
             " to vN' means re-read relaybay://rules; changes go through rules_propose (rules_update"
             " is for coordinator sessions named in the server's config).",
-            "- A parameter your tool lacks: task_patch (fields: relaybay://schema/task). A line"
+            "- A parameter your tool lacks: task_update(fields={...}) (relaybay://schema/task; an"
+            " older client without it: task_patch). A line"
             f" 'Deprecated: …' names the replacement (contract v{contract.CONTRACT_VERSION}:"
             " relaybay://contract).",
             "- Hosts and access come from the project's own notes; never paste secrets into"
@@ -123,6 +125,9 @@ INSPECT_ONLY_HELP = (
     " needs no accepted plan before dev and may go straight to done. A report on it that says"
     " changed, committed or pushed warns."
 )
+DEPLOY_NOTES_HELP = TASK_FIELD_BY_NAME["deploy_notes"].description
+DEPLOY_DONE_HELP = TASK_FIELD_BY_NAME["deploy_done"].description
+CANCELLED_HELP = TASK_FIELD_BY_NAME["cancelled"].description + " '-' clears it and its time."
 NEXT_STEP_HELP = (
     "What happens next, one line; saved in the same write. A next step set before the last stage"
     " change shows as stale. Omit to keep it;"
@@ -521,7 +526,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     ) -> str:
         """Full task: fields, description, progress, current version, the linked document
         sections, the latest reports and decisions, and the names of the editable fields (for
-        task_patch). Call it before task_update to get the version for expected_version."""
+        task_update(fields=...)). Call it before task_update to get the version for
+        expected_version."""
         detail = await run(service.task_detail(task, reports))
         return fmt.task_detail(detail, await log_rule(), service.board_url)
 
@@ -655,6 +661,24 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         prs: Annotated[list[str] | None, Field(description=PRS_HELP)] = None,
         blocked_by: Annotated[list[str] | None, Field(description=BLOCKED_BY_HELP)] = None,
         inspect_only: Annotated[bool | None, Field(description=INSPECT_ONLY_HELP)] = None,
+        stage: Annotated[
+            str | None,
+            Field(
+                description="Move the task: plan, dev, review, test, live or done (a move that"
+                " misses a working rule adds a 'Warning (rules)' line)."
+            ),
+        ] = None,
+        deploy_notes: Annotated[str | None, Field(description=DEPLOY_NOTES_HELP + CLEARS)] = None,
+        deploy_done: Annotated[bool | None, Field(description=DEPLOY_DONE_HELP)] = None,
+        cancelled: Annotated[str | None, Field(description=CANCELLED_HELP)] = None,
+        fields: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="Any other task field as one JSON object, e.g. {'priority': 2}"
+                " (relaybay://schema/task lists them); for a field this tool has no parameter"
+                " for yet. A field given both here and as a parameter must agree."
+            ),
+        ] = None,
         expected_version: Annotated[
             int | None,
             Field(description="Fail instead of overwriting if the task changed since you read it."),
@@ -663,12 +687,13 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
     ) -> str:
-        """Change task fields (waiting on, next step, branch, description, progress, the area,
-        the tracker issue and its work-log mark, the repositories it touches, its pull requests,
-        the cards blocking it, ...). Omitted fields stay as they are; '-' or an empty string
-        clears a field. Keep `progress` current with every report. To move a task between stages
-        use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next)
-        whenever the stage changes or you report."""
+        """Change task fields and move its stage in one write: the stage, waiting on, next
+        step, branch, description, progress, the area, the tracker issue and its work-log mark,
+        deploy notes, a cancel reason, the repositories it touches, its pull requests, the cards
+        blocking it; `fields` for anything else. Omitted fields stay as they are; '-' or an
+        empty string clears a field. Keep `progress` current with every report. Also update
+        next_step (what happens next) and waiting_on (who acts next) whenever the stage changes
+        or you report."""
         given = {
             "title": title,
             "waiting_on": waiting_on,
@@ -683,6 +708,9 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             "tracker_url": tracker_url,
             "size": size,
             "area": area,
+            "stage": stage,
+            "deploy_notes": deploy_notes,
+            "cancelled": cancelled,
         }
         changes: dict[str, object] = {
             k: (cleared(v) or None) for k, v in given.items() if v is not None
@@ -691,14 +719,26 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
             changes["tracker_logged"] = tracker_logged
         if inspect_only is not None:
             changes["inspect_only"] = inspect_only
+        if deploy_done is not None:
+            changes["deploy_done"] = deploy_done
         if repos:
             changes["repos"] = repos
         if prs:
             changes["prs"] = prs
         if blocked_by:
             changes["blocked_by"] = blocked_by
+        for name, value in (fields or {}).items():
+            if isinstance(value, str):
+                value = cleared(value) or None
+            if name in changes and changes[name] != value:
+                raise ToolError(
+                    f"{name} is given twice with different values (as a parameter and in"
+                    " fields). Nothing changed."
+                )
+            changes.setdefault(name, value)
         if not changes:
             raise ToolError("Nothing to update: pass at least one field.")
+        before = await run(service.get_task(task)) if "stage" in changes else None
         saved = await run(
             service.update_task_checked(
                 task,
@@ -712,12 +752,14 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         filed = await doc_field_note(
             saved.task.key, changes.get("doc_path"), session, session_title, hook_session
         )
+        moved = before is not None and before.stage != saved.task.stage
         return fmt.with_warnings(
-            fmt.task_saved(saved.task, "Updated"),
+            fmt.task_saved(saved.task, "Moved" if moved else "Updated"),
             [*saved.warnings, *filed, *fmt.waiting_on_hint(waiting_on)],
         )
 
     @write
+    @contract.deprecated()
     async def task_patch(
         task: TaskRef,
         fields: Annotated[
@@ -764,6 +806,7 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
         )
 
     @write
+    @contract.deprecated()
     async def task_set_stage(
         task: TaskRef,
         stage: StageArg,
@@ -2606,7 +2649,8 @@ def build_mcp(service: Service, *, require_tracker_log: bool = False) -> MCPServ
     @mcp.resource(
         "relaybay://schema/task",
         name="task-schema",
-        description="Editable task fields for task_patch: name, type, description, clearing.",
+        description="Editable task fields for task_update(fields=...): name, type, description,"
+        " clearing.",
         mime_type="text/markdown",
     )
     async def task_schema_resource() -> str:

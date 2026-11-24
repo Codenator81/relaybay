@@ -189,8 +189,8 @@ program as its client:
 - **MCP server** — Streamable HTTP at `/mcp` in the same process: create and update tasks, change
   stages, keep a task's description and progress summary current, add reports and decisions, bind
   and unbind sessions, get a markdown snapshot of a project. A plain session name never replaces a
-  task's desktop session binding: it becomes that session's alias. `task_patch` takes any task
-  fields as one JSON object, so clients with an older tool schema can still set new fields.
+  task's desktop session binding: it becomes that session's alias. `task_update` takes any task
+  fields as one JSON object (`fields`), so clients with an older tool schema can still set new fields.
 - **Working rules** — the server tells every connected session how to work with the board (MCP
   instructions: read the snapshot, pick a task, keep next step / waiting on / progress current,
   report as `state · size · gist`) and serves the rules as data: report format, what a stage move
@@ -267,7 +267,7 @@ running. Details: [docs/connect-claude-code.md](docs/connect-claude-code.md#3-li
 
 A Claude Code session keeps the parameter schema of a tool it already loaded, even after relaybay
 restarts and the client reconnects: new tools appear, but new parameters of an existing tool do
-not. Use `task_patch(task, fields={...})` for fields your client does not know yet (the allowed
+not. Use `task_update(task, fields={...})` for fields your client does not know yet (the allowed
 names are at the end of `task_get` and in `relaybay://schema/task`), or refresh the schemas by
 reconnecting the server in the client (`/mcp` in the CLI) or starting a new session. See
 [docs/mcp-tools.md](docs/mcp-tools.md#schema-changes-and-long-running-sessions). A release only adds

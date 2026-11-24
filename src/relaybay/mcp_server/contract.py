@@ -21,10 +21,10 @@ RULE = (
     " prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or"
     " range), never adds a required parameter to an existing tool and never turns a read-only"
     " tool into a writing one; new behaviour comes as new optional parameters or new tools, and"
-    " `task_patch` and `backlog_patch` reach fields a cached schema lacks. A removal is announced"
-    " first: the tool's description and every result of the deprecated tool or parameter carry a"
-    " `Deprecated: …` line, for at least one minor version and 30 days. The release that removes"
-    " it raises the contract version."
+    " `task_update(fields=...)` and `backlog_patch` reach fields a cached schema lacks. A"
+    " removal is announced first: the tool's description and every result of the deprecated"
+    " tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30"
+    " days. The release that removes it raises the contract version."
 )
 
 
@@ -66,9 +66,30 @@ ENVIRONMENTS_GONE = (
     " project's own notes."
 )
 
+# task_update took over the stage move and the fields as one object in 0.17 (relaybay-40). The
+# date is at least 30 days after that release; the release PR moves it if the release is later.
+MERGED_SINCE = "0.17"
+MERGED_NOT_BEFORE = date(2027, 1, 15)
+
 DEPRECATIONS: list[Deprecation] = [
-    Deprecation(t, None, REMOVED_SINCE, REMOVED_NOT_BEFORE, None, ENVIRONMENTS_GONE)
-    for t in ("environments_get", "environment_propose", "relaybay://project/{slug}/environments")
+    *(
+        Deprecation(t, None, REMOVED_SINCE, REMOVED_NOT_BEFORE, None, ENVIRONMENTS_GONE)
+        for t in (
+            "environments_get",
+            "environment_propose",
+            "relaybay://project/{slug}/environments",
+        )
+    ),
+    Deprecation(
+        "task_set_stage",
+        None,
+        MERGED_SINCE,
+        MERGED_NOT_BEFORE,
+        "task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...)",
+    ),
+    Deprecation(
+        "task_patch", None, MERGED_SINCE, MERGED_NOT_BEFORE, "task_update(task, fields={...})"
+    ),
 ]
 
 

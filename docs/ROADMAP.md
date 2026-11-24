@@ -14,7 +14,7 @@ live board.
 | Item | Status | Design / spec |
 |---|---|---|
 | Board, data model and event log, token security, MCP server with the task tools, live SSE updates, phone layout | done | [SPEC](SPEC.md) |
-| Desktop session links and binding history, aliases, done window and archive, tracker mark and history, next-step freshness, `task_patch`, slimmer cards and task dialog | done | [SPEC §1–2](SPEC.md#spec-concepts) |
+| Desktop session links and binding history, aliases, done window and archive, tracker mark and history, next-step freshness, `task_patch` (since 0.17 folded into `task_update(fields=…)`), slimmer cards and task dialog | done | [SPEC §1–2](SPEC.md#spec-concepts) |
 | Working rules contract (1.5a): MCP instructions, rules as data, `rules_get`, warn and strict checks | done | [0002](design/0002-working-rules.md) |
 | Claude Code hooks and `relaybay setup` (1.6), Integrations page, `setup --check --json` | done | [0001](design/0001-hooks-and-setup.md) |
 | Documentation restructure: SPEC, ROADMAP, architecture, designs, docs site skeleton, `llms.txt` | done | this page |

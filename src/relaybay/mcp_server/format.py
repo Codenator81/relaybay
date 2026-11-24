@@ -474,7 +474,7 @@ def start_task_prompt(rules: Rules, task: Task | None) -> str:
         f"1. Read {target} and the rules below.",
         "2. Pass `session` (your own id or name) on every write so the board shows who works.",
         "3. Write the plan with plan_set (2-5 steps); S tasks need at least a todo.",
-        "4. Set next_step and waiting_on, then move the task with task_set_stage.",
+        "4. Move the task with task_update(stage=..., next_step=..., waiting_on=...).",
         "5. Fix every line starting with 'Warning (rules)'; re-read the rules when a response says"
         " they were updated.",
         "",
@@ -504,7 +504,7 @@ def finish_stage_prompt(rules: Rules, task: Task | None) -> str:
         moving,
         "4. Before review or test, write what the owner checks by eye with review_steps_set and"
         " attach screenshots with attach_file.",
-        "5. Move the task with task_set_stage and fix any 'Warning (rules)' line.",
+        "5. Move the task with task_update(stage=...) and fix any 'Warning (rules)' line.",
         "",
         rules_text(rules),
     ]
@@ -1160,7 +1160,7 @@ def task_schema() -> str:
     """The editable task fields as a markdown table (resource `relaybay://schema/task`)."""
     lines = [
         "# Task fields",
-        "Set any of them with task_patch(task, fields={...}); omitted fields stay as they are.",
+        "Set any of them with task_update(task, fields={...}); omitted fields stay as they are.",
         "",
         "| field | type | description | clearing |",
         "|---|---|---|---|",
@@ -1719,7 +1719,7 @@ def approval_requested(task: Task, a: Approval, hint: str, updated: bool) -> str
     if not task.deploy_notes:
         return (
             f"{text}\nThe card has no deploy notes: write what the deploy needs (migration, flag,"
-            " script, rollback) with task_patch(fields={'deploy_notes': ...})."
+            " script, rollback) with task_update(task, deploy_notes=...)."
         )
     state = deploy_state(task)
     return (

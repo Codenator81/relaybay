@@ -154,7 +154,7 @@ async def test_all_done_hint_needs_dev_and_review_steps(service: Service) -> Non
         await service.update_plan_step(key, 3, "done", conformance="as planned")
     assert notes == [
         "Hint: all steps done and the review checklist is set: move the task to review"
-        " (task_set_stage)."
+        " (task_update(stage=...))."
     ]
     assert (await service.get_task(key)).stage == "dev"  # never moved automatically
 

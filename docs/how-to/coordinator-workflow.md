@@ -17,10 +17,10 @@ Everything a stranger needs to pick the task up lives on its card, not in a chat
 | What happens next and who acts | Next, Waiting on | `task_update(next_step=…, waiting_on=…)` |
 | Decisions and their reasons | Decisions | `decision_add` |
 | Stage reports (`state · size · gist`) | Reports | `report_add` |
-| What a deploy needs: a migration, a flag, a script, the rollback | Deploy notes, with a done mark | `task_patch(fields={"deploy_notes": …, "deploy_done": true})` |
+| What a deploy needs: a migration, a flag, a script, the rollback | Deploy notes, with a done mark | `task_update(deploy_notes=…, deploy_done=true)` |
 | Cards that must land first | Blocked by (and Blocks) | `task_update(blocked_by=["demo-api-2"])` |
 | The repositories, branches, worktrees and pull requests | Code | `task_update(repos=…, prs=…)`, the hooks |
-| Why the card was given up on | Cancelled | `task_patch(fields={"cancelled": "…"})` |
+| Why the card was given up on | Cancelled | `task_update(cancelled="…")` |
 
 A card blocked by another shows a `blocked by <key>` chip until the blocker reaches `live` or
 `done`. With two or more cards in `test`, the project digest and the board's test column show the

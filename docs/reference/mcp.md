@@ -11,7 +11,7 @@ Clients read the same text from the resource `relaybay://contract`.
 
 Contract version 2.
 
-Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_patch` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
+Within a contract version a release never removes a tool, a parameter, a resource or a prompt (or a prompt argument), never narrows what a parameter accepts (its type, enum or range), never adds a required parameter to an existing tool and never turns a read-only tool into a writing one; new behaviour comes as new optional parameters or new tools, and `task_update(fields=...)` and `backlog_patch` reach fields a cached schema lacks. A removal is announced first: the tool's description and every result of the deprecated tool or parameter carry a `Deprecated: …` line, for at least one minor version and 30 days. The release that removes it raises the contract version.
 
 Deprecations:
 
@@ -20,6 +20,8 @@ Deprecations:
 | `environments_get` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `environment_propose` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `relaybay://project/{slug}/environments` | — | 0.15 | 2026-12-19 | environments and access were removed in 0.15; environments are kept in the project's own notes. |
+| `task_set_stage` | — | 0.17 | 2027-01-15 | task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...) |
+| `task_patch` | — | 0.17 | 2027-01-15 | task_update(task, fields={...}) |
 
 ## Tools
 
@@ -201,7 +203,7 @@ List tasks, filtered by project, stage, who they wait on, the bound session or t
 
 ### `task_get`
 
-Full task: fields, description, progress, current version, the linked document sections, the latest reports and decisions, and the names of the editable fields (for task_patch). Call it before task_update to get the version for expected_version.
+Full task: fields, description, progress, current version, the linked document sections, the latest reports and decisions, and the names of the editable fields (for task_update(fields=...)). Call it before task_update to get the version for expected_version.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -251,7 +253,7 @@ Link a section of a project document to the card (remove=true unlinks it). The a
 
 ### `task_update`
 
-Change task fields (waiting on, next step, branch, description, progress, the area, the tracker issue and its work-log mark, the repositories it touches, its pull requests, the cards blocking it, ...). Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. To move a task between stages use task_set_stage. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Change task fields and move its stage in one write: the stage, waiting on, next step, branch, description, progress, the area, the tracker issue and its work-log mark, deploy notes, a cancel reason, the repositories it touches, its pull requests, the cards blocking it; `fields` for anything else. Omitted fields stay as they are; '-' or an empty string clears a field. Keep `progress` current with every report. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -274,6 +276,11 @@ Change task fields (waiting on, next step, branch, description, progress, the ar
 | `prs` | list of string or null | no | Pull request links (http:// or https://) added to the task, optionally after a repository name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose path names a project repository is tied to it (and links it). |
 | `blocked_by` | list of string or null | no | Cards this task waits for, by key, of any project on the board: 'acme-shop-12'; '-key' removes one. A blocker blocks while it is in plan, dev, review or test, and no longer at live or done. An unknown key, the task itself and a cycle are refused. |
 | `inspect_only` | boolean or null | no | true for a card that only reads (an analysis, a repro, a question answered by reading): it needs no accepted plan before dev and may go straight to done. A report on it that says changed, committed or pushed warns. |
+| `stage` | string or null | no | Move the task: plan, dev, review, test, live or done (a move that misses a working rule adds a 'Warning (rules)' line). |
+| `deploy_notes` | string or null | no | What a deploy of this card needs: migration, feature flag, script, rollback. Writing it clears deploy_done unless deploy_done is passed in the same write. '-' or '' clears it. |
+| `deploy_done` | boolean or null | no | True once the steps in deploy_notes have been carried out. |
+| `cancelled` | string or null | no | Why the card was given up on; setting it stamps the time. The card stays in its stage (move it to done yourself). '-' clears it and its time. |
+| `fields` | object or null | no | Any other task field as one JSON object, e.g. {'priority': 2} (relaybay://schema/task lists them); for a field this tool has no parameter for yet. A field given both here and as a parameter must agree. |
 | `expected_version` | integer or null | no | Fail instead of overwriting if the task changed since you read it. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
@@ -281,7 +288,7 @@ Change task fields (waiting on, next step, branch, description, progress, the ar
 
 ### `task_patch`
 
-Change any task fields given as one JSON object, with the same rules as task_update and task_set_stage (a `stage` value moves the task). Use it for a field your client's task_update does not offer yet: its parameter list may be older than the server. Call task_get or read relaybay://schema/task for the allowed fields. `session_surface` ("desktop" or "terminal", with your hook_session) is not a task field: it tells relaybay where you run, when your session start asks for it.
+Change any task fields given as one JSON object, with the same rules as task_update and task_set_stage (a `stage` value moves the task). Use it for a field your client's task_update does not offer yet: its parameter list may be older than the server. Call task_get or read relaybay://schema/task for the allowed fields. `session_surface` ("desktop" or "terminal", with your hook_session) is not a task field: it tells relaybay where you run, when your session start asks for it. Deprecated: task_patch is deprecated since 0.17 and may be removed in a later minor version, not before 2027-01-15; use task_update(task, fields={...}) instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -294,7 +301,7 @@ Change any task fields given as one JSON object, with the same rules as task_upd
 
 ### `task_set_stage`
 
-Move a task to another stage (plan, dev, review, test, live, done) when its work moves on, e.g. to dev when you start coding, to review when the owner should accept it step by step (fill the checklist with review_steps_set first), to test when it is on the test environment, to done when finished. Any transition is allowed; a move that misses a working rule (see rules_get) adds a 'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report.
+Move a task to another stage (plan, dev, review, test, live, done) when its work moves on, e.g. to dev when you start coding, to review when the owner should accept it step by step (fill the checklist with review_steps_set first), to test when it is on the test environment, to done when finished. Any transition is allowed; a move that misses a working rule (see rules_get) adds a 'Warning (rules)' line. Also update next_step (what happens next) and waiting_on (who acts next) whenever the stage changes or you report. Deprecated: task_set_stage is deprecated since 0.17 and may be removed in a later minor version, not before 2027-01-15; use task_update(task, stage=..., stage_note=..., next_step=..., waiting_on=...) instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -987,7 +994,7 @@ Propose a change to the policy. Nothing changes until the owner accepts it on th
 | `relaybay://project/{slug}/environments` | project-environments | text/markdown | Removed in 0.15 with the environments. Deprecated: environments and access were removed in 0.15; environments are kept in the project's own notes. |
 | `relaybay://rules` | rules | text/markdown | The global working rules (same as rules_get without a project). |
 | `relaybay://rules/{project}` | project-rules | text/markdown | A project's working rules: global rules merged with the project override. |
-| `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_patch: name, type, description, clearing. |
+| `relaybay://schema/task` | task-schema | text/markdown | Editable task fields for task_update(fields=...): name, type, description, clearing. |
 
 ## Prompts
 

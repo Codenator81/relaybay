@@ -60,7 +60,7 @@ letter or digit, takes the project's slug. Matching a session's folder to a proj
 repository, with who added it and how: `auto` from the hooks, `agent` over MCP, `owner` on the
 board) and its pull requests (`task_pr`: an http or https link, unique per task, the number taken
 from a `/pull/<n>`, `/pulls/<n>`, `/merge_requests/<n>` or `/pull-requests/<n>` path, optionally
-tied to one repository). `task_update` / `task_patch` take `repos` (names to add, `-name` removes
+tied to one repository). `task_update` (and the deprecated `task_patch`) take `repos` (names to add, `-name` removes
 one; an unknown name fails with the project's names) and `prs` (links to add, each optionally after
 a repository name, `web https://…`; `-<url>` removes one). Without a name, a link whose path names
 one of the project's repositories (`…/<owner>/<repo>/pull/1`, GitLab's `/-/merge_requests`) is tied
@@ -78,7 +78,7 @@ repository's `## Code` line (`· worktree `<path>``), `task_context` as a `Workt
 
 <a id="spec-task-blockers"></a>
 
-**Blockers.** A card can wait for other cards: `task_update` / `task_patch` take `blocked_by`
+**Blockers.** A card can wait for other cards: `task_update` (and the deprecated `task_patch`) take `blocked_by`
 (`task_block`, migration 0061, one row per pair with who added it and when), a list of card keys of
 any project on the board (`acme-shop-12`, case does not matter) to add; `-key` removes one. Refused
 in the same write, which then changes nothing: a key no card has (the error names it), anything
@@ -125,7 +125,7 @@ so "Web shop" and "web shop" are one area and the stored spelling stays. A name 
 have yet is added to its list (at most 24 areas a project; past that the write fails with the
 existing names), last, with the colour of its place in a palette of eight (`blue`, `green`, `amber`,
 `violet`, `teal`, `rose`, `slate`, `orange`), which the owner may change. `area` is a task field
-([below](#spec-task)): `task_create(area=…)`, `task_update(area=…)`, `task_patch(fields={"area": …})`
+([below](#spec-task)): `task_create(area=…)`, `task_update(area=…)`, `task_update(fields={"area": …})`
 and the board form set it; `-`, `""` or null clears it. A new area is a `project.updated` event with
 `changes.areas.added`; the task's own change is `task.updated` with `changes.area` (the name, or null).
 Over MCP a new name adds a line to the answer: `Area '<name>' was new: added to <slug>. Its areas now:
@@ -150,8 +150,8 @@ drives write validation, the `relaybay://schema/task` resource and the "Editable
 
 <a id="spec-task-deploy"></a>
 
-**Deploy notes and cancelled** (migration 0060). Set through `task_patch` (and the board form)
-only; `task_update` has no parameters for them. `deploy_notes` (markdown, up to 20,000
+**Deploy notes and cancelled** (migration 0060). Set through `task_update` (`deploy_notes`, `deploy_done`, `cancelled`, or the same names in `fields`;
+`task_patch` does the same, deprecated) and the board form. `deploy_notes` (markdown, up to 20,000
 characters) says what a deploy of the card needs: a migration, a feature flag, a script, the
 rollback. `deploy_done` (boolean) marks those steps as carried out; a write that changes
 `deploy_notes` clears it in the same write unless `deploy_done` is passed with it (the board form
@@ -225,8 +225,8 @@ answer only once a report of the task came strictly after the plan closed (the n
 newest step's `done_at` and the newest plan revision, so a `plan_set` that drops the last open step
 also closes it); the report and the progress that close the plan never warn. Then it joins a report
 whose state is `changed` in any open stage, or `verified` with the task in `dev`, and a
-`task_update` / `task_patch` that changes `progress` on a task in `dev`. It is a warning in `strict` mode too, never a refusal. `plan_step_add` on a
-task in `done` is refused (`the task is done: reopen it (task_set_stage) before adding steps.`);
+`task_update` (or `task_patch`) that changes `progress` on a task in `dev`. It is a warning in `strict` mode too, never a refusal. `plan_step_add` on a
+task in `done` is refused (`the task is done: reopen it (task_update(stage=…)) before adding steps.`);
 in `live` it is allowed and the answer adds `<key> is in live: the step does not move it.`.
 
 <a id="spec-plan-status"></a>
@@ -253,7 +253,7 @@ Never a line for the agent.
 
 <a id="spec-plan-size"></a>
 
-**Task size.** `size` is an optional field (`S`, `M`, `L`; `task_update`, `task_patch`, the board
+**Task size.** `size` is an optional field (`S`, `M`, `L`; `task_update`, the deprecated `task_patch`, the board
 form; `-` clears it). A report whose first line names a size sets it when the task has none (a
 `task.updated` in the same transaction); a size already set is kept. `S` tasks may go without an
 accepted plan ([§6](#spec-plan-rule)).
@@ -399,7 +399,7 @@ token is the only authorisation.
 `cli` is `terminal`, anything else (an SDK, an IDE) leaves the surface as it was, and the raw
 value is kept in `session.entrypoint`; an older hook client or an http hook sends nothing. A
 session with a desktop id (`local_<uuid>`) is a desktop one whatever these say. When the surface
-is unknown, the `SessionStart` answer asks the session to say it once with `task_patch(task,
+is unknown, the `SessionStart` answer asks the session to say it once with `task_update(task,
 fields={"session_surface": "desktop" | "terminal"}, session=…, hook_session=…)`: the field is
 stored on the calling session, not on the task: the one named by `session` (its `hook_session`
 linked to it with the guard of any write, so an id another live session linked stays there), else
@@ -662,14 +662,14 @@ the warning.
 <a id="spec-progress"></a>
 
 **Progress, next step, waiting on.** `description` says what to do and why, short; the pseudo-field
-`description_add` of `task_patch` (not a column) appends its text as a new paragraph (a blank line,
+`description_add` of `task_update(fields=…)` (not a column; `task_patch` still takes it too) appends its text as a new paragraph (a blank line,
 then the text) to the description read in the same transaction, so two writers keep each other's
 lines (the result stays within 20,000 characters, else the write fails); `progress` is the running
 summary of everything done so far (rewritten, not appended). `next_step` is what happens next,
 `waiting_on` who acts next and nothing else: a name or role, with what happens in `next_step`
 (data is never rewritten: a write whose `waiting_on` has more than 4 words gets the answer line
 `Hint: waiting_on is who acts next; put what happens into next_step.`, never a refusal or a
-`Warning (rules)`). `task_set_stage` and `report_add` take `next_step` and `waiting_on`
+`Warning (rules)`). `task_update` (and the deprecated `task_set_stage`) and `report_add` take `next_step` and `waiting_on`
 (and `report_add` takes `progress`) and save them in the same transaction. A next step written
 before the task's last stage change is **stale**: shown muted with a "stale" marker on cards and in
 the task dialog, `(stale)` in MCP output. Writing it again, even with the same text, confirms it
@@ -685,7 +685,7 @@ appends an entry, logging and unlogging stamp the current entry. **Automatic unl
 logged task (a report or a changed `progress` on a card before `live`, or a move back out of
 `live` / `done` to an earlier stage) clears the mark in the same transaction with a
 `task.tracker_unlogged` event carrying the reason. A report or a rewritten `progress` on a card in
-`live` or `done` (through `report_add`, `task_update` or `task_patch` alike) closes it and keeps
+`live` or `done` (through `report_add`, `task_update`, or the deprecated `task_patch`, alike) closes it and keeps
 the mark; a move back to an earlier stage still clears it. Metadata edits keep the mark; an explicit `tracker_logged` in the same write wins; a new
 `tracker_ref` starts as not logged unless `tracker_logged` is passed with it.
 
@@ -1467,7 +1467,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 
 <a id="spec-mcp-instructions"></a>
 
-**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_patch` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`).
+**Server instructions** (sent on connect) are the working contract, seven numbered points in four parts, by when they apply. **At the start**: read `task_context` of your card (no card: `project_digest`; the whole board: `portfolio_digest`; more on a project: `project_snapshot`, whose first line names the rules); create a missing card with `task_create` and give it an area (the part of the project it is about; reuse a name from the project's areas, add one only when none fits); pass `session` (your `local_` id with `session_title`, else a name) and `hook_session` on writes; plan every task with `plan_set` (2-5 steps) and keep the Claude Code todo (TaskCreate / TaskUpdate). **While you work**: update `next_step`, `waiting_on` (only who acts next) and `progress` on every stage change and report; mark plan steps with `plan_step_update`, new work is `plan_step_add`; answer owner comments with `comment_add` or `comment_ack`; record decisions with `decision_add` and findings outside the task with `backlog_add`; read large documents by `doc_outline` and `doc_get` of a section. **At the end**: `report_add` with the configured first line, states and sizes (from the effective global rules); finished work goes to done, and review only when the owner wants a step-by-step acceptance (`review_steps_set`, `attach_file`). **Always**: fix what a `Warning (rules)` line names and re-read the rules on `rules updated to vN` (changes through `rules_propose`); `task_update(fields=…)` for fields a cached schema lacks (a `Deprecated: …` line names the replacement); hosts and access come from the project's own notes, never paste secrets; a guard stop says why (`policy_get`, `policy_propose`).
 
 <a id="spec-mcp-tools"></a>
 
@@ -1476,7 +1476,7 @@ message says what to do. Parameters and outputs of every tool: [MCP tools refere
 | Group | Tools |
 |---|---|
 | Projects | `project_list`, `project_upsert`, `project_delete` (coordinators only, [§2](#spec-archive-purge)), `project_snapshot` |
-| Tasks | `task_list`, `task_get`, `task_create`, `task_update`, `task_patch`, `task_set_stage`, `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
+| Tasks | `task_list`, `task_get`, `task_create`, `task_update` (also moves the stage, sets `deploy_notes`, `deploy_done`, `cancelled` and any other field through `fields`), `task_patch` (deprecated since 0.17, use `task_update`), `task_set_stage` (deprecated since 0.17, use `task_update`), `task_doc_link` ([sections linked to a card](#spec-task-sections)), `task_archive`, `task_unarchive` (coordinators only, [§2](#spec-board-archive)) |
 | Sessions | `task_bind_session`, `task_unbind_session` |
 | Reports and decisions | `report_add`, `decision_add` |
 | Comments | `comments_list`, `comment_ack`, `comment_add` |
@@ -1495,15 +1495,15 @@ digests are annotated as writes: `session` moves the caller's read position and 
 its session row.
 Write tools take optional `session`, `session_title` and `hook_session`. `"-"` (or `""`) clears an
 optional text field, because models cannot always send an empty string. `task_update`,
-`task_patch` accept `expected_version` and fail instead of overwriting a newer version; otherwise the
-last write wins. `task_create`, `task_update` and `task_patch` take `area` ([§1](#spec-areas)),
+`task_patch` (deprecated) accept `expected_version` and fail instead of overwriting a newer version; otherwise the
+last write wins. `task_create`, `task_update` (and the deprecated `task_patch`) take `area` ([§1](#spec-areas)),
 `task_create(bind=false)` creates a card without binding the calling session (it stays the event's
 actor and its `hook_session` is linked as on any write; the default binds), and `project_upsert`
 takes `archived` ([§2](#spec-project-archive)).
 `task_list` filters by `area` (any project's area of that name without `project`); `task_get`,
 `task_context`, `task_list` and the digests show a task's area, and `project_snapshot` lists the
 project's areas with how many tasks carry each. `project_upsert` takes `repos`, `task_update` takes
-`repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_patch` reaches them as `fields={"repos": […], "prs": […], "blocked_by": […]}` for a
+`repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_update(fields={"repos": […], "prs": […], "blocked_by": […]})` reaches them (the deprecated `task_patch` too) for a
 client whose cached schema lacks them, and `relaybay://schema/task` lists them after the fields.
 
 <a id="spec-mcp-resources"></a>
@@ -1545,7 +1545,7 @@ a prompt argument; narrowing what a parameter accepts (a type dropped, `null` in
 dropped or an enum added, a tighter minimum, maximum or length, a field of an object parameter
 removed or made required); a new required parameter or prompt argument, or an optional one made
 required; a read-only tool that starts to write or a tool that becomes destructive. A field a stale
-schema lacks is reached through `task_patch(task, fields={…})` or `backlog_patch(item, fields={…})`;
+schema lacks is reached through `task_update(task, fields={…})` or `backlog_patch(item, fields={…})`;
 there is no such escape hatch for other tools.
 
 A deprecation is an entry in `DEPRECATIONS` (`src/relaybay/mcp_server/contract.py`): the tool (or
@@ -1707,7 +1707,7 @@ session's surface from it ([§1](#spec-session-surface)). An older hook client o
 sends nothing and keeps working. A started session (not one a desktop session's tool started)
 whose surface is still unknown gets one more sentence at the end of the session line: "relaybay
 could not tell whether you run in the Claude desktop app or in a terminal. Tell it once, with your
-next relaybay write on your task: task_patch(task, fields={"session_surface": "desktop"} or
+next relaybay write on your task: task_update(task, fields={"session_surface": "desktop"} or
 {"session_surface": "terminal"}, session="<its name>", hook_session="<id>")."
 
 <a id="spec-hooks-repos"></a>
@@ -2052,7 +2052,7 @@ going to do (todo or 2-3 steps with plan_set).` (any size, not a rule warning).
 stage rules checked; the MCP answer adds `acme-shop-12 moved from review back to dev (rework: …).`.
 A task in `dev` stays. When a `plan_step_update` makes every step done on a task in `dev` with a
 review checklist, the answer adds `Hint: all steps done and the review checklist is set: move the
-task to review (task_set_stage).`; nothing moves to review by itself.
+task to review (task_update(stage=…)).`; nothing moves to review by itself.
 
 <a id="spec-rules-merge"></a>
 
@@ -2157,8 +2157,8 @@ version in a `version` line.
 
 <a id="spec-rules-modes"></a>
 
-**Checks and modes:** requirements are checked on stage moves (`task_set_stage`, `task_update`
-/ `task_patch` with a stage, the board form). `rules_mode = "warn"` (default): the move succeeds and
+**Checks and modes:** requirements are checked on stage moves (`task_update` with a stage; the deprecated `task_set_stage` and
+`task_patch` alike; the board form). `rules_mode = "warn"` (default): the move succeeds and
 the response, the board form and the `task.stage_changed` event carry the warnings.
 `rules_mode = "strict"`: the move is refused with the reason and nothing changes.
 
@@ -2563,7 +2563,7 @@ any other kind is free text (default `doc`). Documents are free markdown: no sec
 and decisions have their own table ([below](#spec-memory-decisions)). A task's document is named
 `task-<ref>` (import makes it so); a task created on the board or through MCP gets one with
 `doc_update` and `task_update(doc_path="relaybay://doc/<project>/task-<ref>")`. A `task_create`,
-`task_update` or `task_patch` that sets `doc_path` to an absolute path of a local `.md` file that no
+`task_update` (or `task_patch`) that sets `doc_path` to an absolute path of a local `.md` file that no
 file document of the project reads yet makes that file the file document `task-<key>` (kind
 `task`, writes through relaybay off, the same path checks as `doc_update(source_path)`); the answer
 says so in one line with the board link, or why not (a refused or missing file, the name
@@ -2835,7 +2835,7 @@ document's text.
 with its version, `doc_get` call and board link; a line `- <doc>#<anchor> · <op>` per target and
 op; `- problem: …` per problem; and `Other cards changing the same sections: <key> (<stage>)
 <doc>#<anchor>, …` when another open card changes one of the same sections (by its targets or
-linked sections). Moving a card to done (any stage move: `task_set_stage`, `task_update`, the
+linked sections). Moving a card to done (any stage move: `task_update`, the deprecated `task_set_stage`, the
 board) adds hints, no rule warnings: `Hint: <key> is done but its change document spec-<key> is
 still there: merge it into the spec and delete it: doc_update(…, delete=true).` while the
 document exists, and `Hint: <key> is done but its deploy notes are not carried out: …` while

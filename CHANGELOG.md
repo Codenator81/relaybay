@@ -19,6 +19,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `inspect_only` on a card (`task_create`, `task_update`, `task_patch`; migration 0062): an analysis, a repro or a question answered by reading needs no accepted plan before dev, also in strict mode, and may go straight to done. A report on such a card that says `changed`, `committed` or `pushed` warns that it needs a plan.
+### Added
+
+- `task_update` moves the stage and reaches every card field in one write: new parameters `stage`, `deploy_notes`, `deploy_done`, `cancelled` and `fields` (any other field of `relaybay://schema/task` as one object; a field given twice must agree). Its answer says `Moved` when the stage changed.
+
+### Deprecated
+
+- `task_set_stage` and `task_patch`: use `task_update(stage=...)` and `task_update(fields={...})`. Both keep working and say so in their description and results; not removed before 2027-01-15.
 
 ## [0.16.0] - 2026-11-23
 
