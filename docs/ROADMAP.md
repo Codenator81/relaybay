@@ -256,6 +256,13 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | MCP contract 3: a replaced tool or parameter is removed in the release that replaces it, no deprecation period; `task_set_stage`, `task_patch`, `environments_get`, `environment_propose` and `relaybay://project/{slug}/environments` removed; `task_create(size=…)` | done | [SPEC §3](SPEC.md#spec-mcp-compat) |
 | All boards lists the projects by their last activity, the most recently active first | done | — |
 
+## 0.18.1 — the card reads at a glance (released 2026-11-25)
+
+| Item | Status | Design |
+|---|---|---|
+| Unread agent replies as a chip on the board card; the git icon inside the branch chip; a repository kind equal to its name left out | done | — |
+| `llms-full.txt`; a CI check that a change under `src/` touches `CHANGELOG.md` | done | [0003](design/0003-packaging-and-release.md) |
+
 ## 1.0
 
 Stable MCP contract, complete documentation, a migration path from earlier versions, tested on three

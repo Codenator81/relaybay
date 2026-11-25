@@ -392,6 +392,8 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
   in reports, the day time log across projects, approvals in sight on the card.
 - **0.18.0, MCP contract 3** — replaced tools removed at once (no deprecation period while
   there are no outside users), `task_create` takes `size`, All boards ordered by last activity.
+- **0.18.1, the card reads at a glance** — unread agent replies as a chip on the card, the git
+  icon inside the branch chip, `llms-full.txt` for AI tools, a CHANGELOG check in CI.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
 
