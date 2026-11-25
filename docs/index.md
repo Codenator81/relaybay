@@ -36,7 +36,7 @@ you click **Update to X.Y.Z** in the program, the download of that release's ins
   [roadmap](ROADMAP.md), [changelog](changelog.md).
 - **Explanation** — [architecture](architecture.md), [design documents](design/index.md).
 
-For AI tools: [`llms.txt`](llms.txt) is a short index of these pages.
+For AI tools: [`llms.txt`](llms.txt) is a short index of these pages; [`llms-full.txt`](llms-full.txt) holds the specification and the generated reference in one file.
 
 relaybay is open source under the MIT license:
 [github.com/Codenator81/relaybay](https://github.com/Codenator81/relaybay).

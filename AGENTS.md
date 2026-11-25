@@ -18,7 +18,7 @@ uv run ruff format --check   # formatting (use `uv run ruff format` to fix)
 uv run pytest                # tests
 uv run relaybay serve --home ./.dev-data
 uv run relaybay demo --home ./.demo-data       # demo workspace in a separate folder
-uv run python scripts/gen_reference.py         # regenerate docs/reference/*.md
+uv run python scripts/gen_reference.py         # regenerate docs/reference/*.md and docs/llms-full.txt (after a SPEC change too)
 uv sync --extra desktop --group build          # the desktop program and its build tools
 uv run --no-sync pyinstaller --noconfirm packaging/relaybay.spec   # frozen build in dist/relaybay/
 ```
