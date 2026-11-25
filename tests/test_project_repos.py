@@ -401,7 +401,11 @@ def test_code_row_shows_a_worktree_as_one_line(board: TestClient) -> None:
     view = board.get(f"/p/acme-shop/t/{task.key}/view").text
     for page in (card, view):
         line = page.split('<li class="code-repo">', 1)[1].split("</li>", 1)[0]
-        assert 'class="git-icon"' in line and ">feat/pay</code>" in line
+        # The git icon belongs to the branch: inside its chip, right before the name.
+        chip = line.split('<code class="branch code-branch"', 1)[1].split("</code>", 1)[0]
+        name = '<span class="branch-name">feat/pay</span>'
+        assert chip.index('class="git-icon"') < chip.index(name)
+        assert line.count("git-icon") == 1
         assert f'class="code-worktree copy-path" data-path="{worktree}"' in line
         # The path is only in the title and data-path, never the text of the line.
         assert ">worktree</button>" in line and f">{worktree}<" not in line
