@@ -1,8 +1,9 @@
 # 0003 — Packaging and release 0.1.0
 
 - Status: **Implemented in v0.1.0** (behaviour in [SPEC §5](../SPEC.md#spec-doctor) and
-  [§10](../SPEC.md#spec-distribution)), except the README GIF (recorded by the maintainer),
-  repository settings (labels, Discussions) and the "CHANGELOG touched" CI check (later).
+  [§10](../SPEC.md#spec-distribution)); the README GIF, the repository settings (Discussions,
+  private vulnerability reporting) and the "CHANGELOG touched" CI check (`.github/workflows/changelog.yml`,
+  label `skip-changelog`) followed after 0.1.0.
 - Size: ~3–4 agent-days (packaging and release workflow ~1, `doctor` ~0.5, `demo` ~0.5, agent
   install page and Getting started ~0.5, community files ~0.5, generated reference and drift checks
   ~0.5–1, GIF ~0.25).

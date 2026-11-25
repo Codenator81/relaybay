@@ -57,7 +57,8 @@ that changes what a session sees gets a scenario there. Tests never run the real
 - Open pull requests against `main`; keep one topic per pull request.
 - A change in behaviour, a command, a setting or an MCP tool updates `README.md`, `docs/SPEC.md` and
   the relevant reference page in `docs/`, and `CHANGELOG.md` (`[Unreleased]`) in the same pull
-  request.
+  request. The `Changelog` workflow fails a pull request that changes `src/` without adding a line
+  to `CHANGELOG.md`; label it `skip-changelog` when users see no change (a refactor, a test helper).
 - Never commit secrets, tokens or personal data. Examples use the demo projects `acme-shop` and
   `demo-api`.
 

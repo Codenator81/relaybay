@@ -23,11 +23,11 @@ live board.
 | "Install relaybay with your coding agent" page (idempotent procedure, dry run first) | done | [0003](design/0003-packaging-and-release.md) |
 | `relaybay demo`: neutral demo workspace (`acme-shop`, `demo-api`) for screenshots and testing | done | [0003](design/0003-packaging-and-release.md) |
 | Community files: issue forms, PR template, CODE_OF_CONDUCT, SECURITY, GOVERNANCE note | done | [0003](design/0003-packaging-and-release.md) |
-| README GIF of the live board | next | [0003](design/0003-packaging-and-release.md) |
-| Repository settings: labels, Discussions (Ideas, Q&A, Show and tell), private vulnerability reporting | next | [0003](design/0003-packaging-and-release.md) |
+| README GIF of the live board | done | [0003](design/0003-packaging-and-release.md) |
+| Repository settings: labels, Discussions (Ideas, Q&A, Show and tell), private vulnerability reporting | done | [0003](design/0003-packaging-and-release.md) |
 | CI: smoke-start the server from the wheel, generated CLI/config/MCP reference drift check, links (`mkdocs build --strict`) | done | [0003](design/0003-packaging-and-release.md) |
-| CI check that a user-visible change touches `CHANGELOG.md` | later | [0003](design/0003-packaging-and-release.md) |
-| `llms-full.txt` (SPEC + reference in one file) | later | deferred from the docs restructure |
+| CI check that a user-visible change touches `CHANGELOG.md` (label `skip-changelog` for a change users do not see) | done | [0003](design/0003-packaging-and-release.md) |
+| `llms-full.txt` (SPEC + reference in one file) | next | deferred from the docs restructure |
 
 ## 0.2.0 — working with sessions (released 2026-11-02)
 
@@ -35,7 +35,7 @@ live board.
 |---|---|---|
 | Left sidebar navigation (replaces the header links), Inbox, Sessions, Activity | done | [0004](design/0004-navigation.md) |
 | Comments from the board to agents, delivered through hooks, opt-in wake-up hook (11.4) | done | [0005](design/0005-comments-to-agents.md) |
-| Unread comment counter on the card; wake-up hook verified against a live Claude Code | later | [0005](design/0005-comments-to-agents.md) |
+| Unread comment counter on the card; wake-up hook verified against a live Claude Code | next | [0005](design/0005-comments-to-agents.md) |
 | Project environments and access map, agent permission levels, guard, live-actions journal (11.4b) | done | [0006](design/0006-environments-and-access.md) |
 | Policy as data: presets, layered `policy.json` / project / environment policy, custom guard patterns, secret rules, test secrets, Settings → Policy, `policy_get` / `policy_propose` (11.4c) | done | [0013](design/0013-policy-as-data.md) |
 
@@ -152,6 +152,7 @@ Ships when a coordinator runs its daily work from relaybay.
 |---|---|---|
 | Plugins on top of the versioned MCP contract: a manifest, an MCP server and, if needed, a panel on the card in a `sandbox`. A plugin declares what it may read; the contract's version keeps an update of relaybay from breaking plugins | later | — |
 | Diff as the first plugin: one piece of work across all the task's repositories. On the card, an Open diff button per repository opens a ready tool (VS Code, a GitHub or Bitbucket compare page); an MCP tool gives an agent the task's diff. Uncommitted changes show only in a local tool. No line comments in the first version | not now (owner, 2026-11-10) | — |
+| Skills served through the MCP server (the MCP Skills extension, in beta): how to work a card, coordinate and review, per role | later | — |
 | Browser as the second plugin: claude-in-chrome or Playwright MCP, no panel of its own; live hosts stay behind the No live now switch | not now (owner, 2026-11-10) | — |
 
 Not planned: Electron and a browser panel of our own, because the browser and the diff are solved through MCP and plugins.

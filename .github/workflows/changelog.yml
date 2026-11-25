@@ -1,0 +1,46 @@
+name: Changelog
+
+# A pull request that changes the package (src/) adds a line to CHANGELOG.md. The label
+# `skip-changelog` lets a change through that a user does not see (a refactor, a test helper).
+# A workflow of its own, so adding or removing the label re-runs this check and not the whole CI.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    name: CHANGELOG.md has a line for the change
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: A change under src/ adds a line to CHANGELOG.md
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
+        run: |
+          if [ "$SKIP" = "true" ]; then
+            echo "Label skip-changelog: no CHANGELOG.md line needed."
+            exit 0
+          fi
+          if ! git diff --name-only "$BASE...$HEAD" | grep -q '^src/'; then
+            echo "Nothing under src/ changed: no CHANGELOG.md line needed."
+            exit 0
+          fi
+          added=$(git diff "$BASE...$HEAD" -- CHANGELOG.md | grep -E '^\+[^+]' | grep -vE '^\+\s*$' || true)
+          if [ -z "$added" ]; then
+            echo "::error file=CHANGELOG.md::This pull request changes src/ but adds no line to CHANGELOG.md. Add one under [Unreleased], or label the pull request skip-changelog if users see no change."
+            exit 1
+          fi
+          echo "CHANGELOG.md lines added:"
+          echo "$added"

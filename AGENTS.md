@@ -52,7 +52,8 @@ rewrites (`scripts/gen_reference.py --rebaseline`; so the guard stays armed for 
   temporary folders (`--claude-home`, `claude_home` in settings); never against your real home.
 - Conventional Commits titles; pull requests go into `main`.
 - Behaviour, command, setting or MCP tool changes update `README.md`, `docs/SPEC.md` (and the
-  reference page), `CHANGELOG.md` and the design's status in the same change. SPEC describes only
+  reference page), `CHANGELOG.md` and the design's status in the same change (CI fails a change
+  under `src/` without a `CHANGELOG.md` line unless the pull request has the `skip-changelog` label). SPEC describes only
   shipped behaviour; plans go to `docs/ROADMAP.md` and `docs/design/`.
 - Docs build: `uv sync --group docs`, then `uv run --no-sync mkdocs build --strict`.
 - Never add secrets, tokens, personal paths or personal data. Use the demo projects `acme-shop` and
