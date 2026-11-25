@@ -57,7 +57,14 @@ logger = logging.getLogger("relaybay")
 
 # Within a stage column; the tie-break is the order before ranks existed.
 BOARD_ORDER = "t.rank, t.updated_at DESC, t.id DESC"
-_TASK_SELECT = """
+# An agent reply the owner has not read; on a done card only one written after it closed (the
+# close marked the older ones read). Alias `c` for the comment, `t` for its task.
+_UNREAD_REPLY = (
+    "c.author_kind = 'agent' AND c.read_at IS NULL"
+    " AND (t.stage != 'done' OR t.closed_at IS NULL OR c.created_at > t.closed_at)"
+)
+
+_TASK_SELECT = f"""
 SELECT t.*, p.slug AS project_slug,
        s.name AS session_name, s.external_id AS session_external_id,
        s.status AS session_status, s.desktop_link AS session_link,
@@ -82,6 +89,8 @@ SELECT t.*, p.slug AS project_slug,
            AS open_questions,
        (SELECT COUNT(*) FROM approval a WHERE a.task_id = t.id AND a.status = 'open')
            AS open_approvals,
+       (SELECT COUNT(*) FROM comment c WHERE c.task_id = t.id AND {_UNREAD_REPLY})
+           AS unread_replies,
        (SELECT ls.status FROM task_session b JOIN session ls ON ls.id = b.session_id
            WHERE b.task_id = t.id ORDER BY b.id DESC LIMIT 1) AS last_session_status,
        pa.name AS area_name, pa.color AS area_color
@@ -169,6 +178,7 @@ def _task(row: aiosqlite.Row) -> Task:
         area_color=row["area_color"],
         open_questions=row["open_questions"],
         open_approvals=row["open_approvals"],
+        unread_replies=row["unread_replies"],
         last_session_status=row["last_session_status"],
     )
 
@@ -1816,12 +1826,10 @@ async def waiting_owner_comments(
 
 async def unread_agent_replies(conn: aiosqlite.Connection, limit: int = 200) -> list[Comment]:
     """Agent replies the owner has not marked read, oldest first. On a done card only those
-    written after it was closed: the close marked the older ones read."""
+    written after it was closed (`_UNREAD_REPLY`, which `_TASK_SELECT` counts per card)."""
     rows = await _all(
         conn,
-        _COMMENT_SELECT + " WHERE c.author_kind = 'agent' AND c.read_at IS NULL"
-        " AND (t.stage != 'done' OR t.closed_at IS NULL OR c.created_at > t.closed_at)"
-        " ORDER BY c.id LIMIT ?",
+        _COMMENT_SELECT + f" WHERE {_UNREAD_REPLY} ORDER BY c.id LIMIT ?",
         (limit,),
     )
     return [_comment(r) for r in rows]

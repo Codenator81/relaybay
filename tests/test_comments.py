@@ -500,6 +500,38 @@ def test_board_thread_shows_marks_and_escapes(board: TestClient, token: str) -> 
     assert plain.status_code == 303 and plain.headers["location"] == f"/t/{task.key}"
 
 
+def test_card_chip_counts_unread_agent_replies(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    task = run_in_app(board, linked_task, service)
+    url = f"/p/acme-shop/t/{task.key}/card"
+    assert "replies-chip" not in board.get(url).text
+
+    def chip() -> str:
+        card = board.get(url).text
+        return card.split('class="chip replies-chip"', 1)[1].split("</a>", 1)[0]
+
+    run_in_app(board, service.add_agent_comment, task.key, "First", session=DESKTOP_A)
+    assert chip().endswith(">reply") and "1 unread reply from the agent" in chip()
+    run_in_app(board, service.add_agent_comment, task.key, "Second", session=DESKTOP_A)
+    assert chip().endswith(">replies · 2") and "2 unread replies" in chip()
+    assert "replies-chip" in board.get("/p/acme-shop").text
+
+    run_in_app(board, service.mark_replies_read, task.key)
+    assert "replies-chip" not in board.get(url).text
+
+    run_in_app(board, service.add_agent_comment, task.key, "Third", session=DESKTOP_A)
+    assert chip().endswith(">reply")
+    run_in_app(board, service.add_owner_comment, task.key, "Seen, thanks")
+    assert "replies-chip" not in board.get(url).text
+
+    # A done card counts only the replies written after it was closed.
+    run_in_app(board, service.add_agent_comment, task.key, "Before close", session=DESKTOP_A)
+    run_in_app(board, service.set_stage, task.key, "done")
+    assert "replies-chip" not in board.get(url).text
+    run_in_app(board, service.add_agent_comment, task.key, "After close", session=DESKTOP_A)
+    assert chip().endswith(">reply")
+
+
 def test_comment_events_reach_the_board_stream(board: TestClient) -> None:
     service: Service = board.app.state.service
     task = run_in_app(board, linked_task, service)

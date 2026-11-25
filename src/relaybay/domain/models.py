@@ -106,6 +106,7 @@ class Task:
     area_color: str | None = None  # its palette key
     open_questions: int = 0  # open questions and approval requests on the card
     open_approvals: int = 0
+    unread_replies: int = 0  # the rule of repo.unread_agent_replies, counted per card
     # The status of the session of the latest binding: the bound one, or the last one unbound.
     last_session_status: str | None = None
 
