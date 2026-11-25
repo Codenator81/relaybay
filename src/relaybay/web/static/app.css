@@ -720,7 +720,23 @@ a.badge.tracker:hover { text-decoration: underline; }
 .code-row { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 13px; }
 .code-row ul { margin: 4px 0 0; padding: 0 0 0 12px; list-style: none; display: grid; gap: 2px; }
 .code-repo, .code-loose { min-width: 0; overflow-wrap: anywhere; }
+/* One line per repository where it fits: the branch chip counts as 4em when the line is laid
+   out, then grows up to its full name, which otherwise ends in an ellipsis (title: the whole
+   name). On a card too narrow even for that, the trailing marks wrap instead of overflowing. */
+.code-repo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 4px; white-space: nowrap; }
+.code-repo > * { flex: none; }
 .code-name { font-weight: 600; }
+.code-repo > .code-name { flex: 0 1 auto; min-width: 2em; overflow: hidden; text-overflow: ellipsis; }
+.code-repo > .code-branch {
+  flex: 1 1 0;
+  min-width: 4em;
+  max-width: max-content;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  overflow-wrap: normal;
+}
+.code-branch .branch-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .code-kind { padding: 0 6px; border-radius: 999px; background: var(--surface-2); font-size: 11px; color: var(--muted); }
 .code-open { font-size: 12px; white-space: nowrap; }
 /* The mark is a button only for the copy click (app.js copyPath): it reads as muted text. */
@@ -734,13 +750,14 @@ a.badge.tracker:hover { text-decoration: underline; }
   cursor: copy;
 }
 .code-worktree:hover { color: var(--accent); }
+/* The git icon belongs to the branch: inside its chip, before the name, in the theme's green. */
 .git-icon {
+  flex: none;
   width: 12px;
   height: 12px;
   margin-right: 3px;
-  vertical-align: -1px;
   fill: none;
-  stroke: var(--muted);
+  stroke: var(--ok);
   stroke-width: 1.3;
 }
 .code-all summary { cursor: pointer; }
