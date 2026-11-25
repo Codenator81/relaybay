@@ -83,7 +83,7 @@ The CLI, configuration, MCP and policy reference pages in `docs/reference/`, and
 setting, an MCP tool or the policy schema and presets, regenerate them; CI fails when they drift:
 
 ```bash
-uv run python scripts/gen_reference.py           # rewrite docs/reference/*.md
+uv run python scripts/gen_reference.py           # rewrite docs/reference/*.md and docs/llms-full.txt
 uv run python scripts/gen_reference.py --check   # what CI runs
 ```
 
