@@ -27,7 +27,7 @@ live board.
 | Repository settings: labels, Discussions (Ideas, Q&A, Show and tell), private vulnerability reporting | done | [0003](design/0003-packaging-and-release.md) |
 | CI: smoke-start the server from the wheel, generated CLI/config/MCP reference drift check, links (`mkdocs build --strict`) | done | [0003](design/0003-packaging-and-release.md) |
 | CI check that a user-visible change touches `CHANGELOG.md` (label `skip-changelog` for a change users do not see) | done | [0003](design/0003-packaging-and-release.md) |
-| `llms-full.txt` (SPEC + reference in one file) | next | deferred from the docs restructure |
+| `llms-full.txt` (SPEC + reference in one file) | done | deferred from the docs restructure |
 
 ## 0.2.0 — working with sessions (released 2026-11-02)
 
