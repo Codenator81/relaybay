@@ -94,4 +94,5 @@ unread counter on the card. Unanswered agent replies appear in the Inbox
   installed hook as `UNVERIFIED`. The reference documents no hook input field that tells a hook it
   runs in the background, so the client cannot detect the fallback itself. Without it, a comment
   waits for the next prompt, and the coordinator sees `comment.added` in `events_since`.
-- Not built in this step: the unread counter on the card, channels and the cross-session inbox.
+- Not built in this step: channels and the cross-session inbox.
+- Built later: the unread counter on the card, as the board card's `reply` / `replies · N` chip.

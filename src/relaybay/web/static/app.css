@@ -715,6 +715,18 @@ a.badge.tracker:hover { text-decoration: underline; }
   text-decoration: none;
 }
 .chip.approval-chip:hover { text-decoration: underline; }
+/* A card with agent replies the owner has not read yet. */
+.chip.replies-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  justify-self: start; /* a grid item of the card: as wide as its text */
+}
+.chip.replies-chip:hover { text-decoration: underline; }
 .card-next.stale { color: var(--muted); }
 /* The Code row: repositories the task touches, their pull requests, "Open in VS Code". */
 .code-row { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 13px; }

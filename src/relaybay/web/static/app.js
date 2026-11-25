@@ -504,6 +504,11 @@
       case "report.added":
         queue(card(data.key) || column(data.stage));
         break;
+      case "comment.added":
+      case "comment.read":
+        // The card's unread replies chip.
+        queue(card(data.key));
+        break;
       case "session.status_changed":
         // One event names every bound task of this project; a card not on the board is skipped.
         (data.keys || []).forEach(function (key) { queue(card(key)); });

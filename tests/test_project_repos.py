@@ -422,6 +422,21 @@ def test_code_row_shows_a_worktree_as_one_line(board: TestClient) -> None:
     assert "git-icon" not in line and 'class="branch"' not in line
 
 
+def test_code_row_leaves_out_a_kind_equal_to_the_name(board: TestClient) -> None:
+    service: Service = board.app.state.service
+    repos = [
+        {"name": "Web", "path": "C:\\code\\acme\\web", "kind": "web"},
+        {"name": "site", "path": "C:\\code\\acme\\site", "kind": "web"},
+    ]
+    run_in_app(board, service.upsert_project, "acme-shop", name="Acme Shop", repos=repos)
+    task = run_in_app(board, service.create_task, "acme-shop", "Checkout")
+    run_in_app(board, service.update_task, task.key, {"repos": ["Web", "site"]})
+    card = board.get(f"/p/acme-shop/t/{task.key}/card").text
+    web, site = card.split('<li class="code-repo">')[1:3]
+    assert ">Web</span>" in web and "code-kind" not in web.split("</li>", 1)[0]
+    assert '<span class="code-kind">web</span>' in site.split("</li>", 1)[0]
+
+
 async def test_mcp_tools_take_repos_and_prs(service: Service) -> None:
     mcp = build_mcp(service)
 

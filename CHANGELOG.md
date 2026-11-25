@@ -10,10 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `docs/llms-full.txt`: the specification and the generated CLI, configuration, MCP and policy reference in one file for AI tools, written by `scripts/gen_reference.py` and checked for drift in CI.
+- A board card with agent replies the owner has not read shows the chip `reply` or `replies · N`; it opens the card and goes when the replies are marked read or the owner writes a comment.
 
 ### Changed
 
 - The repository line of a card and of the card dialog shows the git icon inside the branch chip, right before the branch name, in the theme's green. The line stays on one row where it fits: a long branch name ends in an ellipsis inside the chip (the whole name on hover), and on a card too narrow even for that the worktree mark and links move to a second row instead of running past the card's edge.
+- The Code row leaves out a repository's kind when it equals the repository's name.
 
 ## [0.18.0] - 2026-11-24
 

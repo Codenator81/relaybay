@@ -43,6 +43,8 @@
   {%- elif tm and tm.today %}<span class="chip time-chip" title="Time today from the day log">today {{ tm.today|hm }}</span>{% endif %}
   {#- An open approval request: the owner decides it in the dialog, right under Next. #}
   {% if t.open_approvals and is_open %}<a class="chip approval-chip" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}" title="{{ t.open_approvals }} approval request{{ 's' if t.open_approvals > 1 else '' }} waiting for your Approve or Refuse">approval waits{% if t.open_approvals > 1 %} · {{ t.open_approvals }}{% endif %}</a>{% endif %}
+  {#- Agent replies the owner has not read. #}
+  {% if t.unread_replies %}<a class="chip replies-chip" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}" title="{{ t.unread_replies }} unread repl{{ 'ies' if t.unread_replies > 1 else 'y' }} from the agent: open the card to read them">{% if t.unread_replies > 1 %}replies · {{ t.unread_replies }}{% else %}reply{% endif %}</a>{% endif %}
   {% if t.inspect_only %}<span class="chip" title="Inspect-only: no accepted plan needed">inspect-only</span>{% endif %}
   {% if t.cancelled %}<span class="chip cancelled-chip" title="Cancelled: {{ t.cancelled }}">cancelled</span>{% endif %}
   {#- Only the blockers still open; one at live or done is listed in the task dialog alone. #}
