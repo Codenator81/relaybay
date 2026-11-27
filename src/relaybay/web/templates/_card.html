@@ -26,8 +26,8 @@
       </div>
     </details>
   </div>
-  {#- The area on a line of its own above the title: whole, never cut by the top row's icons. #}
-  {% if t.area %}<div class="card-area">{% include "_area_chip.html" %}</div>{% endif %}
+  {#- The areas on a line of their own above the title: whole, never cut by the top row's icons. #}
+  {% if t.areas %}<div class="card-area">{% include "_area_chip.html" %}</div>{% endif %}
   <h3 class="card-title">
     <a class="card-open" href="/p/{{ slug }}?task={{ t.key }}" data-task="{{ t.key }}">{{ t.title }}</a>
   </h3>

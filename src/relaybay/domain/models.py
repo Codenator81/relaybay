@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
+from relaybay.domain.areas import CardArea
 from relaybay.domain.stages import Stage
 
 
@@ -101,14 +102,20 @@ class Task:
     inspect_only: bool = False  # changes no code: no accepted plan needed before dev
     cancelled: str | None = None  # the reason the card was given up on
     cancelled_at: str | None = None
+    # The first area mirrored from `areas`, for readers that show one.
     area_id: int | None = None
     area: str | None = None  # the area's name
     area_color: str | None = None  # its palette key
+    areas: list[CardArea] = field(default_factory=list)  # in order, the first is `area`
     open_questions: int = 0  # open questions and approval requests on the card
     open_approvals: int = 0
     unread_replies: int = 0  # the rule of repo.unread_agent_replies, counted per card
     # The status of the session of the latest binding: the bound one, or the last one unbound.
     last_session_status: str | None = None
+
+    @property
+    def area_names(self) -> list[str]:
+        return [a.name for a in self.areas]
 
     @property
     def next_step_stale(self) -> bool:
@@ -268,14 +275,18 @@ class SavedFilter:
     session: str | None
     q: str | None
     created_at: str
-    area: str | None = None
+    areas: tuple[str, ...] = ()  # any of them, in order
 
     @property
-    def query(self) -> dict[str, str]:
+    def area(self) -> str | None:
+        return self.areas[0] if self.areas else None
+
+    @property
+    def query(self) -> dict[str, str | list[str]]:
         """The board's query parameters; the filter's URL is built from them."""
-        given = {
+        given: dict[str, str | list[str] | None] = {
             "stage": self.stage,
-            "area": self.area,
+            "area": list(self.areas),
             "waiting_on": self.waiting_on,
             "session": self.session,
             "q": self.q,
@@ -284,4 +295,4 @@ class SavedFilter:
 
     @property
     def qs(self) -> str:
-        return urlencode(self.query)
+        return urlencode(self.query, doseq=True)

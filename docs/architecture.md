@@ -104,6 +104,8 @@ task_doc_section  id, task_id (CASCADE), document_id (CASCADE), anchor (as linke
               created_at -- UNIQUE (task_id, document_id, anchor); task_doc_link
 project_area  id, project_id, name, color (a palette key), position, created_at
               -- UNIQUE (project_id, lower(name)); at most 24 per project (the service)
+task_area     task_id, area_id, position -- a card's areas in order, at most 8 (the service);
+              PRIMARY KEY (task_id, area_id), both ON DELETE CASCADE
 task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|test|live|done), stage_note,
               waiting_on, next_step, branch, doc_path, description, progress, session_id,
               priority, version, tracker_ref, tracker_name, tracker_url, tracker_logged,
@@ -112,7 +114,7 @@ task          id, project_id, key UNIQUE, title, stage CHECK(plan|dev|review|tes
               plan_status (draft|accepted), plan_accepted_at, plan_accepted_by,
               archived_at, archived_by, unarchived_at (the hand archive of a done task),
               rank   -- the owner's order within the stage column, lower first; INDEX (project_id, stage, rank)
-              area_id -- project_area, ON DELETE SET NULL
+              area_id -- project_area, ON DELETE SET NULL; mirrors the first task_area row
 report        id, task_id, session_id, author, state, size, summary, body_md, created_at
 report_check  id, report_id, line, location (the `where` of `verified: <where>`), claim
               -- INDEX (report_id, line); parsed when the report is written
@@ -217,7 +219,8 @@ rule_version  id, rule_set_id, number, body (JSON), rendered, author, session_id
 rule_proposal id, scope, project_id, patch (JSON), reason, proposed_by, session_id, status
               (open|accepted|rejected), version, created_at, decided_at, decided_by
 rule_seen     session_id, project_id (0 = global), version   -- PRIMARY KEY (session_id, project_id)
-saved_filter  id, project_id, name, stage, area, waiting_on, session, q, created_at
+saved_filter  id, project_id, name, stage, area (the first of areas), areas (JSON list of
+              names, any of them), waiting_on, session, q, created_at
               -- UNIQUE (project_id, name)
 event         id AUTOINCREMENT, ts, kind, project_id, task_id, session_id, actor, payload (JSON)
 import_item   kind (document|task|task_note|decision|note|backlog), item, source_path, target_id,

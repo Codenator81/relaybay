@@ -247,7 +247,7 @@ List tasks, filtered by project, stage, who they wait on, the bound session or t
 | `waiting_on` | string or null | no | Exact 'waiting on' value. |
 | `session` | string or null | no | Bound session: desktop session id or name. |
 | `include_done` | boolean | no | Include done tasks. Default: `False`. |
-| `area` | string or null | no | Area name filter (case does not matter). |
+| `area` | string or list of string or null | no | Area name filter (case does not matter); several as a list or comma-separated list the tasks carrying any of them. |
 
 ### `task_get`
 
@@ -278,7 +278,7 @@ Create a task when you start work that is not on the board yet. Give it a short 
 | `tracker_url` | string or null | no | Link to the issue (http:// or https:// only). '-' or '' leaves it empty. |
 | `tracker_logged` | boolean | no | True once the work log is entered in the external tracker. New work clears it again (a report, a progress change, a move back from live or done). A new tracker_ref starts as not logged unless tracker_logged is passed in the same write. Done tasks without it stay on the board marked 'not logged'. Default: `False`. |
 | `size` | string or null | no | Task size: S, M or L. S tasks may go without an accepted plan; a task of unknown size needs one. '-' or '' leaves it empty. |
-| `area` | string or null | no | What part of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot lists the project's areas; case does not matter). A new name is added to the project's areas and the answer says so. '-' or '' leaves it empty. |
+| `area` | string or list of string or null | no | What parts of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot lists the project's areas; case does not matter): a name, several as a list or comma-separated, the first is the card's first area; a list replaces the card's areas. A new name is added to the project's areas and the answer says so. '-', '' or [] leaves none. |
 | `session` | string or null | no | Who is calling: pass your own desktop session id (local_…) if you know it, otherwise a human-readable session name. Optional. |
 | `session_title` | string or null | no | Display name of your session (its title), used with a desktop session id. |
 | `hook_session` | string or null | no | Your own Claude Code hook session id, if the session start told you one ('Your relaybay hook session: …'); never another session's. Links the board's live status and owner comments to your session. An id another live session linked first is not moved (the response says so). Optional. |
@@ -320,7 +320,7 @@ Change task fields and move its stage in one write: the stage, waiting on, next 
 | `tracker_url` | string or null | no | Link to the issue (http:// or https:// only). '-' or '' clears it. |
 | `tracker_logged` | boolean or null | no | True once the work log is entered in the external tracker. New work clears it again (a report, a progress change, a move back from live or done). A new tracker_ref starts as not logged unless tracker_logged is passed in the same write. Done tasks without it stay on the board marked 'not logged'. |
 | `size` | string or null | no | Task size: S, M or L. S tasks may go without an accepted plan; a task of unknown size needs one. '-' or '' clears it. |
-| `area` | string or null | no | What part of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot lists the project's areas; case does not matter). A new name is added to the project's areas and the answer says so. '-' or '' clears it. |
+| `area` | string or list of string or null | no | What parts of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot lists the project's areas; case does not matter): a name, several as a list or comma-separated, the first is the card's first area; a list replaces the card's areas. A new name is added to the project's areas and the answer says so. '-', '' or [] clears them. |
 | `repos` | list of string or null | no | Repositories of the task's project the task touches, by name, added to its links; '-name' removes one. An unknown name fails with the project's names. A session bound to the task links the repository it works in by itself. 'name <absolute path>' also sets the folder (worktree) the task works in there. |
 | `prs` | list of string or null | no | Pull request links (http:// or https://) added to the task, optionally after a repository name: 'web https://host/acme/web/pull/12'; '-url' removes one. Without a name, a link whose path names a project repository is tied to it (and links it). |
 | `blocked_by` | list of string or null | no | Cards this task waits for, by key, of any project on the board: 'acme-shop-12'; '-key' removes one. A blocker blocks while it is in plan, dev, review or test, and no longer at live or done. An unknown key, the task itself and a cycle are refused. |
@@ -756,7 +756,7 @@ Backlog items: new first, the highest priority first within a status, then newes
 |---|---|---|---|
 | `project` | string or null | no | Project slug. Optional. |
 | `status` | string or null | no | new, later, planned, done or declined. Optional. |
-| `area` | string or null | no | Area. Optional. |
+| `area` | string or list of string or null | no | Area; several as a list or comma-separated list the items of any of them. Optional. |
 | `assignee` | string or null | no | Who it is for; '-' lists the items for nobody. Optional. |
 | `query` | string or null | no | Words that must all be in the title, the text, the location, the source or the decision (word forms match). Optional. |
 | `kind` | string or null | no | bug, idea, question, debt; '-' lists the items without a kind. Optional. |

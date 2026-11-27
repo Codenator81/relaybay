@@ -113,6 +113,7 @@ nav:
           - Project knowledge and a quieter board: design/0026-project-knowledge.md
           - File documents written and a task context that fits: design/0027-file-documents-written-and-task-context.md
           - The day time log across projects: design/0028-day-time-log.md
+          - Several areas on one card: design/0029-several-areas-per-card.md
       - Decisions (ADR):
           - HTMX + SSE front-end: adr/0001-htmx-sse.md
           - Desktop shell: adr/0002-desktop-shell.md

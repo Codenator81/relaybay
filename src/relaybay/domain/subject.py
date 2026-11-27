@@ -3,6 +3,7 @@ title, and the filters built on them for the task context: the open backlog item
 project decisions that belong to the card. No I/O."""
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from relaybay.domain.backlog import BacklogItem
@@ -104,10 +105,16 @@ def section_number(title: str) -> str | None:
     return match[1].casefold() if match else None
 
 
-def card_subject(area: str | None, title: str, linked: list[LinkedSection]) -> set[str]:
-    """The card's subject: its area name, the titles of its linked sections and their heading
+def _area_keys(areas: Sequence[str]) -> set[str]:
+    return {key for name in areas if (key := name.strip().casefold())}
+
+
+def card_subject(areas: Sequence[str], title: str, linked: list[LinkedSection]) -> set[str]:
+    """The card's subject: its area names, the titles of its linked sections and their heading
     paths below the document's title, and its title."""
-    found = stems(area)
+    found: set[str] = set()
+    for name in areas:
+        found |= stems(name)
     for link in linked:
         if link.row is not None:
             found |= stems(link.row.title) | stems(link.path_below_root)
@@ -173,13 +180,13 @@ def points_inside(text: str, linked: list[LinkedSection]) -> bool:
 
 
 def backlog_for_card(
-    items: list[BacklogItem], task_id: int, area: str | None, linked: list[LinkedSection]
+    items: list[BacklogItem], task_id: int, areas: Sequence[str], linked: list[LinkedSection]
 ) -> list[BacklogItem]:
-    """The open items that belong to the card: linked to it, of the card's own area (case does
-    not matter), or pointing inside or naming a linked section. An item whose area only shares a
-    word with the card's title is not one of them. Linked ones first, then by priority, then
-    newest."""
-    own_area = (area or "").strip().casefold()
+    """The open items that belong to the card: linked to it, of any of the card's areas (case
+    does not matter), or pointing inside or naming a linked section. An item whose area only
+    shares a word with the card's title is not one of them. Linked ones first, then by priority,
+    then newest."""
+    own_areas = _area_keys(areas)
     picked: list[tuple[bool, BacklogItem]] = []
     for item in items:
         if item.status not in OPEN_BACKLOG:
@@ -188,7 +195,7 @@ def backlog_for_card(
         text = "\n".join(x for x in (item.title, item.body_md, item.location) if x)
         if (
             own
-            or (own_area and (item.area or "").strip().casefold() == own_area)
+            or (item.area or "").strip().casefold() in own_areas
             or points_inside(text, linked)
             or names_section(text, linked)
         ):
@@ -205,11 +212,11 @@ def backlog_line(item: BacklogItem) -> str:
 
 
 def related_decision(
-    decision: Decision, area: str | None, subject: set[str], linked: list[LinkedSection]
+    decision: Decision, areas: Sequence[str], subject: set[str], linked: list[LinkedSection]
 ) -> bool:
-    """A project decision belongs to the card: the card's area, a linked section named in its
-    text, or at least DECISION_STEMS_MIN stems of the card's subject in its text."""
-    if area and decision.area and decision.area.strip().casefold() == area.strip().casefold():
+    """A project decision belongs to the card: any of the card's areas, a linked section named
+    in its text, or at least DECISION_STEMS_MIN stems of the card's subject in its text."""
+    if decision.area and decision.area.strip().casefold() in _area_keys(areas):
         return True
     if names_section(decision.text, linked):
         return True

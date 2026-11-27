@@ -10,6 +10,7 @@ from relaybay.domain import questions as qrules
 from relaybay.domain import timelog as tl
 from relaybay.domain.annotations import Annotation, pin_line, shape_line
 from relaybay.domain.approvals import Approval
+from relaybay.domain.areas import area_field
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.blockers import blocker_line, blocks_text
 from relaybay.domain.change_doc import ChangeMark
@@ -144,8 +145,9 @@ def task_line(
 ) -> str:
     parts = [f"**{task.key}** {task.title}"]
     extras = []
-    if task.area:
-        extras.append(f"area: {task.area}")
+    area_label, area_text = area_field(task.area_names)
+    if area_text:
+        extras.append(f"{area_label}: {area_text}")
     if task.waiting_on:
         extras.append(f"waiting on: {task.waiting_on}")
     if task.next_step:
@@ -543,7 +545,7 @@ def snapshot(snap: Snapshot, require_log: LogRule = None) -> str:
         by_stage.setdefault(task.stage.value, []).append(task)
     if snap.areas:
         names = ", ".join(f"{a.name} ({a.tasks})" for a in snap.areas)
-        lines.append(f"Areas (tasks carrying each; task_update(area=...) sets one): {names}")
+        lines.append(f"Areas (tasks carrying each; task_update(area=...) sets a card's): {names}")
     counts = " · ".join(f"{s} {len(by_stage.get(s, []))}" for s in STAGES if s in by_stage)
     lines.append(f"Tasks: {len(snap.tasks)}" + (f" ({counts})" if counts else ""))
     for stage in STAGES:
@@ -1102,7 +1104,7 @@ def task_detail(detail: TaskDetail, require_log: LogRule = None, board: str | No
         f"- version: {t.version}",
     ]
     for label, value in (
-        ("area", t.area),
+        area_field(t.area_names),
         ("waiting on", t.waiting_on),
         ("next step", next_step_label(t)),
         ("branch", t.branch),
@@ -1302,7 +1304,9 @@ def event_detail(e: Event) -> str:
     if e.kind in ("report.added", "task.created"):
         return str(p.get("summary") or p.get("title") or "")
     if e.kind == "task.updated":
-        return ", ".join(sorted(p.get("changes", {})))
+        changes = p.get("changes", {})
+        # `areas` comes with `area` (its first name): one name keeps a change reading as before.
+        return ", ".join(sorted(k for k in changes if k != "areas" or "area" not in changes))
     if e.kind == "task.reordered":
         where = f"position {p['position']}" if p.get("position") else f"rank {p.get('rank')}"
         return f"{p.get('stage')}, {where}"

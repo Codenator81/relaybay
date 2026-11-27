@@ -97,7 +97,7 @@ the day time log's day is UTC unless you set `TZ` (for example `-e TZ=Europe/Ber
 ## Features
 
 - **Board** — projects with per-stage counts; per project, columns `plan → dev → review → test → live → done` on two pages
-  with cards showing only the essentials: key, area, tracker badge, an "open in desktop" icon when a
+  with cards showing only the essentials: key, areas, tracker badge, an "open in desktop" icon when a
   desktop session works on the task, title, waiting-on person, branch and the next step (a
   Compact toggle leaves key, tracker, title and who it waits on, with a chevron per card). Drag
   cards to set their order in a column or to move them to another stage (or use the card's ⋯ menu
@@ -119,15 +119,16 @@ the day time log's day is UTC unless you set `TZ` (for example `-e TZ=Europe/Ber
   repository. A card's change to the spec is written first as a change document `spec-<card>`,
   and the sections it changes carry a `changing on <stage>` mark until it is merged:
   [Coordinator and agents workflow](https://codenator81.github.io/relaybay/how-to/coordinator-workflow/).
-- **Areas** — a card can name the part of its project it belongs to ("web shop", "api"), from a
-  list per project that grows from use; the area shows as a coloured chip and filters the board.
+- **Areas** — a card can name the parts of its project it belongs to ("web shop", "api"; one or
+  several), from a list per project that grows from use; each area shows as a coloured chip, and the
+  board filters by any of them.
 - **Repositories and "Open in VS Code"** — a project lists its repositories (the project's Settings, or
   `project_upsert(repos=…)`); each card shows the ones the task touches with its pull requests and
   an "Open in VS Code" link, linked by agents (`task_update(repos=…, prs=…)`) or by the hooks from
   the folder a bound session works in.
 - **Quick switcher and saved filters** — Ctrl+K (Cmd+K on macOS) finds any task, project or
   session by a few letters; board filters by stage, area, waiting-on and session stay in the URL and can
-  be saved as chips on the board and items in the sidebar.
+  be saved as chips on the board and a submenu of Board in the sidebar.
 - **Review** — agents write what you should check by eye as a checklist and attach screenshots
   (`review_steps_set`, `attach_file`); you accept or reject each step in the task's Review tab,
   look at screenshots full screen, draw on them and drop numbered pins for the agent, paste your
@@ -394,6 +395,8 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
   there are no outside users), `task_create` takes `size`, All boards ordered by last activity.
 - **0.18.1, the card reads at a glance** — unread agent replies as a chip on the card, the git
   icon inside the branch chip, `llms-full.txt` for AI tools, a CHANGELOG check in CI.
+- **0.19.0, several areas per card** — a card carries a list of areas, the board, saved filters
+  and MCP filter by any of them; saved filters sit under Board in the sidebar.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
 

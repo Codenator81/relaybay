@@ -93,7 +93,7 @@
 
   <section class="panel" id="areas">
     <h2>Areas</h2>
-    <p class="muted">What part of the project a card belongs to: one coloured chip per card, a board filter. A name typed on a card or sent by an agent that is not here is added; names match without regard to case. Renaming an area into another one's name merges the two; deleting one clears it from its cards.</p>
+    <p class="muted">What parts of the project a card belongs to: a card carries up to 8, each a coloured chip; the board filters by any of them. A name typed on a card or sent by an agent that is not here is added; names match without regard to case. A name cannot hold a comma. Renaming an area into another one's name merges the two; deleting one takes it off its cards, their other areas stay.</p>
     {% if areas %}
     <ul class="area-list">
       {% for a in areas %}
@@ -117,7 +117,7 @@
       {% endfor %}
     </ul>
     {% else %}
-    <p class="muted">No areas yet: type one in a card's Area field, or add one here.</p>
+    <p class="muted">No areas yet: type one in a card's Areas field, or add one here.</p>
     {% endif %}
     {{ error_for("area-new") }}
     <form class="area-row" method="post" action="/p/{{ project.slug }}/areas">

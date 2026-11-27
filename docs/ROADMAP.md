@@ -263,6 +263,13 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | Unread agent replies as a chip on the board card; the git icon inside the branch chip; a repository kind equal to its name left out | done | — |
 | `llms-full.txt`; a CI check that a change under `src/` touches `CHANGELOG.md` | done | [0003](design/0003-packaging-and-release.md) |
 
+## 0.19.0 — several areas per card (released 2026-11-27)
+
+| Item | Status | Design |
+|---|---|---|
+| A card carries several areas; the board filter, saved filters, `task_list` and `backlog_list` match any of them; MCP `area` takes a name or a list | done | [0029](design/0029-several-areas-per-card.md) |
+| Saved filters as a submenu of Board in the sidebar | done | — |
+
 ## 1.0
 
 Stable MCP contract, complete documentation, a migration path from earlier versions, tested on three

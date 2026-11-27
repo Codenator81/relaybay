@@ -626,6 +626,12 @@
                 "type": "string"
               },
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -3674,6 +3680,12 @@
                 "type": "string"
               },
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -3948,6 +3960,12 @@
                 "type": "string"
               },
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -4107,6 +4125,12 @@
             "anyOf": [
               {
                 "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
@@ -4700,5 +4724,5 @@
       }
     }
   },
-  "version": "0.18.1"
+  "version": "0.19.0"
 }

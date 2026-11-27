@@ -1,4 +1,4 @@
-{#- Edit form of the task dialog. Expects: t, values, waiting_values, area_values, optional error / saved / warnings. The box
+{#- Edit form of the task dialog. Expects: t, values, waiting_values, form_areas, optional error / saved / warnings. The box
     is refetched on live events only while the form is untouched (see app.js). -#}
 <div class="task-form-box" id="form-{{ t.key }}"
      hx-get="/p/{{ t.project_slug }}/t/{{ t.key }}/form" hx-trigger="rb:refresh" hx-swap="outerHTML">
@@ -42,13 +42,16 @@
       <textarea name="next_step" rows="2">{{ values.get('next_step', t.next_step or '') }}</textarea>
     </label>
     <div class="field-row">
-      <label class="field"><span>Area <span class="muted">· a new name is added to the project</span></span>
-        <input name="area" maxlength="32" list="area-values-{{ t.key }}" value="{{ values.get('area', t.area or '') }}"
-               placeholder="e.g. web shop" autocomplete="off">
-        <datalist id="area-values-{{ t.key }}">
-          {% for v in area_values or [] %}<option value="{{ v }}">{% endfor %}
-        </datalist>
-      </label>
+      <div class="area-field">
+        <label class="field"><span>Areas <span class="muted">· comma-separated; a new name is added to the project</span></span>
+          <input name="area" maxlength="270" value="{{ values.get('area', t.area_names|join(', ')) }}"
+                 placeholder="e.g. web shop, api" autocomplete="off">
+        </label>
+        {#- The project's areas: a click adds or removes the name in the field above (app.js). #}
+        {% if form_areas %}<div class="area-picks">
+          {%- for a in form_areas %}<button type="button" class="area-chip area-{{ a.color }} area-pick" data-area="{{ a.name }}" aria-pressed="{{ 'true' if a.name|lower in t.area_names|map('lower')|list else 'false' }}">{{ a.name }}</button>{% endfor -%}
+        </div>{% endif %}
+      </div>
       <label class="field"><span>Branch</span>
         <input name="branch" value="{{ values.get('branch', t.branch or '') }}" spellcheck="false">
       </label>

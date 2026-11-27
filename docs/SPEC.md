@@ -9,7 +9,7 @@ sessions report through MCP tools and Claude Code hooks, the owner reads, answer
 accepts on the board, and relaybay starts no agent ([design
 0025](design/0025-board-with-the-desktop.md)).
 
-Version covered: `0.18.1`. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.19.0`. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:
@@ -117,26 +117,41 @@ service.py:Service.merge_order).
 
 <a id="spec-areas"></a>
 
-**Areas** ([design 0024](design/0024-card-modes-thread-and-areas.md#areas)). What part of a project a
-task belongs to ("web shop", "mobile app", "api"): one area per task or none, from a list per project
-(`project_area`) that grows from use. A name is stored with outer spaces trimmed and inner runs of
-spaces made one, at most 32 characters, and matches an area of the project without regard to case,
-so "Web shop" and "web shop" are one area and the stored spelling stays. A name the project does not
-have yet is added to its list (at most 24 areas a project; past that the write fails with the
-existing names), last, with the colour of its place in a palette of eight (`blue`, `green`, `amber`,
-`violet`, `teal`, `rose`, `slate`, `orange`), which the owner may change. `area` is a task field
+**Areas** ([design 0024](design/0024-card-modes-thread-and-areas.md#areas),
+[design 0029](design/0029-several-areas-per-card.md)). What parts of a project a task belongs to
+("web shop", "mobile app", "api"): a list per task, in order, none to 8 (the first is the task's
+**first area**), from a list per project (`project_area`) that grows from use; one backend shared by
+a web cabinet, an admin and an app is why a card may carry several. A name is stored with outer
+spaces trimmed and inner runs of spaces made one, at most 32 characters, and matches an area of the
+project without regard to case, so "Web shop" and "web shop" are one area and the stored spelling
+stays; the same area twice in one list is one, at its first place. A name the project does not have
+yet is added to its list (at most 24 areas a project, the new names of one write counted together;
+past that the write fails with the existing names), last, with the colour of its place in a palette
+of eight (`blue`, `green`, `amber`, `violet`, `teal`, `rose`, `slate`, `orange`), which the owner may
+change. A new name may not hold a comma (refused): the comma separates names where a list is one
+text (the form field, a markdown cell); an older name with a comma is kept and still matches, in a
+list or in such a text, where adjacent parts that together form an existing name stay that one name,
+the longest first (code: service.py:_clean_areas, domain/areas.py:split_area_text). `area` is a task field
 ([below](#spec-task)): `task_create(area=…)`, `task_update(area=…)`, `task_update(fields={"area": …})`
-and the board form set it; `-`, `""` or null clears it. A new area is a `project.updated` event with
-`changes.areas.added`; the task's own change is `task.updated` with `changes.area` (the name, or null).
-Over MCP a new name adds a line to the answer: `Area '<name>' was new: added to <slug>. Its areas now:
-…`, so an agent sees a near-duplicate it just made. The owner renames, recolours, reorders and deletes
-areas on the project's Settings page ([§2](#spec-board-areas)); renaming an area to another
-area's name merges the two (its tasks move, it is deleted); deleting one clears it from its tasks,
-each with a `task.updated` event `changes: {"area": null}` and its version raised, so its history
-keeps what it was. A rename and a merge also raise the version of the area's tasks (each a
-`task.updated` with `changes.area`, the new name), so a form opened before them is refused as a
-conflict instead of bringing the old name back; a colour change does not. Saved filters keep an area
-by name: they follow a rename or a merge and lose the area with a delete.
+(or `fields={"areas": …}`, the same field; both at once is refused) and the board form set it. It
+takes a string (one name; with a comma, unless it is a whole existing name, several) or a list of
+strings, which replaces the task's areas; `-`, `""`, `[]` or null clears them; more than 8 is
+refused. A new area is a `project.updated` event with `changes.areas.added`; the task's own change
+is `task.updated` with `changes.areas` (the new list of names) and, for older readers,
+`changes.area` (the first name, or null). Over MCP each new name adds a line to the answer: `Area
+'<name>' was new: added to <slug>. Its areas now: …`, so an agent sees a near-duplicate it just
+made. The owner renames, recolours, reorders and deletes areas on the project's Settings page
+([§2](#spec-board-areas)); renaming an area to another area's name merges the two (its tasks carry
+the target instead, a task that had both keeps the target once, at the place of the first of the
+two; the area is deleted); deleting one takes it off its tasks, whose other areas stay. Each task a
+rename, merge or delete touches gets one `task.updated` with its areas after the change and its
+version raised, so its history keeps what it was and a form opened before is refused as a conflict
+instead of bringing the old name back; a colour change sends `task.updated` with no changes (the
+chips refresh) and keeps the version. Saved filters keep areas by name: they follow a rename or a
+merge (two names that merge become one) and drop a deleted name; a filter whose only area is
+deleted loses the area filter (code: service.py:_clear_area, service.py:_refilter_area). The list
+lives in `task_area`; `task.area_id` mirrors the first area for an older version after a rollback
+(code: db/repo.py:set_task_areas).
 
 <a id="spec-task"></a>
 
@@ -937,8 +952,11 @@ dialog.
 <a id="spec-saved-filters"></a>
 
 **Board filters and saved filters.** The board takes `stage`, `area` (an area's name, ignoring
-case; the select "Any area" next to the stage filter lists the project's areas and shows only when it
-has some), `waiting_on` (ignoring case), `session` (name, alias or desktop id) and `q` (key or title)
+case, once per name: `?area=web&area=api` shows the tasks carrying any of them; a value is never
+split on commas; the dropdown "Any area" next to the stage filter has a checkbox per project area,
+names the chosen ones in its summary, keeps an unknown name as a checked "(no such area)" box, closes
+on a click outside or Esc, and shows only when the project has areas or one is asked for),
+`waiting_on` (ignoring case), `session` (name, alias or desktop id) and `q` (key or title)
 in its URL, together with `archived` and `page`;
 the form above the columns sets them, and `Clear` drops them. A value that cannot be used (an unknown
 stage, a malformed desktop id) shows the unfiltered board with the reason in an error line. A stage filter leaves the other columns
@@ -946,9 +964,12 @@ empty and opens the page and phone tab of that stage. Live column refetches carr
 the board keeps showing only what matches; while a filter is on, a changed task refetches its column
 rather than its card, so it leaves or enters the view at once. With a filter on, the board offers
 **Save filter**: a name (at most 60 characters, unique per project) stored in `saved_filter`. Saved
-filters are chips above the columns, each with a delete button (a browser confirmation), and items
-under Board in the sidebar on every page; opening one is an ordinary board URL, so it can be shared on
-the same machine. `archived` and `page` are not part of a saved filter. Writes are cookie + CSRF form
+filters are chips above the columns, each with a delete button (a browser confirmation), and a
+submenu of Board in the sidebar on every page (indented under Board with thin tree guide lines,
+before Backlog; no submenu for a project without saved filters); opening one is an ordinary board
+URL, so it can be shared on the same machine. A saved filter stores its areas as a list
+(`saved_filter.areas`, `saved_filter.area` mirroring the first). `archived` and `page` are not part
+of a saved filter. Writes are cookie + CSRF form
 posts; events `filter.saved`, `filter.deleted`.
 
 <a id="spec-board-pages"></a>
@@ -1013,7 +1034,7 @@ tab bar gets a seventh tab, **Archive**.
 
 <a id="spec-board-cards"></a>
 
-**Cards** show only the essentials: key, the area as a coloured chip ([§1](#spec-areas); the
+**Cards** show only the essentials: key, the areas as coloured chips in order ([§1](#spec-areas); the
 palette has a light and a dark pair per colour), tracker badge (`<tracker_name> <tracker_ref>`, a link when
 a URL is set, ✓ when logged, "not logged" with `require_tracker_log`) and an icon-only "open in
 desktop" link with the session's hook status dot in the top row, and the word of the card's
@@ -1082,14 +1103,17 @@ colour select with **Save** (a rename, a recolour, or a merge into the area of t
 **Down**, **Delete** (asks first, naming how many cards lose it) and a field to add one. Writes are
 form posts to `/p/<slug>/areas`, `/p/<slug>/areas/<id>` and `/p/<slug>/areas/<id>/up|down|delete`
 with the session cookie and the CSRF token (Bearer: `403`); a refused value (no name, over 32
-characters, an unknown colour, the limit of 24) comes back next to the block. Each change is a
+characters, a comma in a new name, an unknown colour, the limit of 24) comes back next to the
+block. Each change is a
 `project.updated` event with `changes.areas` (`added`, `changed`, `moved`, `merged`, `removed`); a
 rename or recolour also sends `task.updated` for each card that carries the area, so open boards
 refresh their chips.
 
-The task form has an **Area** field next to Branch with the project's areas as suggestions; the
-task dialog shows the chip after the key in its head, and the task view (dialog and task page) an
-**Area** row. Inbox card rows show the chip after the key.
+The task form has an **Areas** field next to Branch (names comma-separated) with a chip per project
+area under it: a click adds or removes that name in the field, and a pressed chip marks a name the
+field holds. The task dialog shows the chips after the key in its head, and the task view (dialog
+and task page) an **Area** row (**Areas** with several). Inbox card rows show the chips after the
+key; the quick switcher shows the first area.
 
 <a id="spec-board-code"></a>
 
@@ -1701,9 +1725,11 @@ wins. `task_create` and `task_update` take `area` ([§1](#spec-areas)) and `size
 `task_create(bind=false)` creates a card without binding the calling session (it stays the event's
 actor and its `hook_session` is linked as on any write; the default binds), and `project_upsert`
 takes `archived` ([§2](#spec-project-archive)).
-`task_list` filters by `area` (any project's area of that name without `project`); `task_get`,
-`task_context`, `task_list` and the digests show a task's area, and `project_snapshot` lists the
-project's areas with how many tasks carry each. `project_upsert` takes `repos`, `task_update` takes
+`task_list` filters by `area`: one name or several (a list or comma-separated), the tasks carrying
+any of them (any project's area of those names without `project`). `task_get`, `task_context`,
+`task_list` and the digests show a task's areas as `area: web` for one and `areas: web, docs` for
+several, and `project_snapshot` lists the project's areas with how many tasks carry each (a task
+counts once in each area it carries). `project_upsert` takes `repos`, `task_update` takes
 `repos`, `prs` ([§1](#spec-task-code)) and `blocked_by` ([§1](#spec-task-blockers)); `task_update(fields={"repos": […], "prs": […], "blocked_by": […]})` reaches them for a
 client whose cached schema lacks them, and `relaybay://schema/task` lists them after the fields.
 
@@ -3081,7 +3107,7 @@ be superseded again (the error names the newer one), so chains have no cycles. `
 stays required: facts for all projects are global memory notes. `area` (migration 0055) names the
 part of the project a decision is about, by area name, cleaned like a card's area but not added to
 the project's areas; `decision_list` shows it, and `task_context` lists a project decision on the
-cards of that area ([§ task context](#spec-task-subject)).
+cards carrying that area ([§ task context](#spec-task-subject)).
 
 <a id="spec-memory-notes"></a>
 
@@ -3222,7 +3248,7 @@ sections"; the card page under "Sections" in the task details, with the section'
 <a id="spec-task-subject"></a>
 
 **The card's subject:** the stems (the `memory_search` stemmer) of the words of four letters and
-more, without bare numbers and common English and Russian words, of the card's area name, the
+more, without bare numbers and common English and Russian words, of the card's area names, the
 titles of its linked sections (those still in the outline) and their heading paths below the
 document's title (the document's first top-level heading names the document, not the subject;
 a section that is that heading adds its own title), and its title. Common words are compared by
@@ -3236,7 +3262,7 @@ longer word, anchor or number). A one-word anchor (no dash) counts only as `doc#
 stems already match words.
 
 **Open backlog items** in `task_context`: items with status `new`, `later` or `planned` of the
-card's project that are linked to the card (`task`), or of the card's own area (the same name,
+card's project that are linked to the card (`task`), or of any of the card's areas (the same name,
 case does not matter; a word shared with the card's title is not enough), or that point inside a linked section: a `path:line` in the location, title or text whose line is in
 the section's lines (with the subsections) of the same file (a file document; the path matches by
 its file name, or by its end when it names folders; separators and case do not matter, leading
@@ -3248,8 +3274,8 @@ newest; at most 8, the rest counted with `backlog_list(project="<slug>")`.
 **Decisions** in `task_context`: "Decisions" holds the card's own current decisions (at most 10,
 the rest counted with `decision_list("<slug>", task="<key>")`); "Related project decisions"
 holds the project's current project-scope decisions **related** to the card (at most 10, newest
-first): the decision's `area` (optional on `decision_add`) is the card's area name without regard
-to case, or its text names a linked section, or its text holds at least two stems of the card's
+first): the decision's `area` (optional on `decision_add`) is any of the card's area names without
+regard to case, or its text names a linked section, or its text holds at least two stems of the card's
 subject. The others are not listed; the section's last line counts them: `… N project decisions
 not related to this card: decision_list("<slug>")` (`1 project decision`); when the budget cuts
 that line, the count joins the section's `… N more`. Decisions of other cards are never listed. What
@@ -3343,12 +3369,15 @@ column, stage and heading names. An optional `rank` (or `order`) column sets the
 stage column ([§2](#spec-board-order)): a whole number from -1000000000 to 1000000000, else an `error`
 row; an empty cell or a registry without the column keeps the board's order, and the rank then
 counts neither for "changed on the board" nor for a file that says the same. An optional `area`
-column carries the task's area by name ([§1](#spec-areas)): matched without regard to case, a new one
-added to the project; an empty cell or no column keeps the board's area. A text over 32 characters,
-or a new name past the project's limit of 24 (counting the areas the same import adds before it),
-leaves the task without it and adds a warning: the dry run says what the apply does. An area counts for "changed on the board" only on a task that has one. Export writes
-the column only when a task has an area, so a board without areas exports the file it did before
-them. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
+column carries the task's areas by name ([§1](#spec-areas)), comma-separated, split as the form
+field is (adjacent parts that form an existing area name, which may hold a comma, stay one); each name is matched without regard to case, a new one added to the project; an empty cell
+or no column keeps the board's areas. A name over 32 characters, or a new name past the project's
+limit of 24 (counting the areas the same import adds before it), leaves the task without that name
+and adds a warning, as does a cell of more than 8 names (the first 8 come in): the dry run says what
+the apply does (code: markdown_import.py:_Planner._plan_area). A cell of one name hashes as before,
+so older imports keep their hashes. The areas count for "changed on the board" only on a task that
+has some. Export writes the column only when a task has an area, so a board without areas exports
+the file it did before them, with a task's names comma-separated in order. `projects/<slug>/tasks/<ref>/TASK.md`: the task's description (the
 `## Task` section, else the first paragraph), its `## Decisions` bullets as task decisions, the whole
 file as document `task-<ref>`, linked as `relaybay://doc/<project>/task-<ref>`; a folder with no row
 creates the task in stage `plan`. `memory/<name>.md` and `projects/<slug>/memory/<name>.md`: a global
@@ -3651,6 +3680,7 @@ error names the tables. Dangling keys an older database already had are logged a
 | `0062_task_inspect_only` | `task.inspect_only` (integer, default 0): a card that only reads needs no accepted plan before dev ([rules](#spec-rules)). Additive |
 | `0063_report_item` | `report_item` (`report_id` and `task_id` `ON DELETE CASCADE`, `kind` `finding` or `question`, `n` unique per report and kind, `title` (a question's text), `body`, `location`, `item_kind`, `area`, `question_default`, `backlog_id` `ON DELETE SET NULL` to `backlog_item`, `dismissed_at`, `dismissed_by`, `dismiss_reason`, `created_at`) with an index on `task_id` and a partial index of the open items ([§1](#spec-report-items)). Additive only |
 | `0064_time_log` | `time_mark` (`at`, `kind` `start`, `pause` or `switch`, `task_id`, `project_id` and `session_id` `ON DELETE SET NULL`, `task_key`, `label`, `actor`, `created_at`, `updated_at`; a check that a pause names no card and a start or switch exactly one of card and label) with indexes on (`at`, `id`) and `task_id`; `tracker_worklog` (`task_id`, `project_id`, `session_id` `ON DELETE SET NULL`, `task_key`, `day`, `minutes` -1440 to 1440 and not 0, `ref`, `reason`, `actor`, `created_at`) with an index on (`task_id`, `day`) ([§1](#spec-time-log)). Additive only |
+| `0065_task_areas` | `task_area` (`task_id`, `area_id`, both `ON DELETE CASCADE`, `position`; primary key on the task and the area, an index on `area_id`), filled from every `task.area_id` at position 0; `saved_filter.areas` (a JSON list of names) filled from `saved_filter.area` ([§1](#spec-areas)). The index `task_area` of 0048 is renamed `task_first_area` (tables and indexes share one namespace). Additive only: no area's id, name or colour changes. After a rollback to 0.18 and forward again, `task_area` does not see the area changes 0.18 made (`task.area_id`, `saved_filter.area`) |
 
 What 0.12 left in the file unread was dropped by migrations 0058 and 0059 (above); only the
 run columns of `question` and `approval` and `backlog_item.intake_message_id` stay, as plain
@@ -3714,8 +3744,8 @@ filters by kind (**No kind** lists the items without one), status, area and who 
 nobody yet** lists the unassigned), new first, then the highest priority, then the newest. Open items have a priority select and a **For** input with **Save** (event
 `backlog.updated` with the changed fields, none when nothing changed), **To plan** (confirmed: creates the task
 in `plan` with the item's title, its priority, its assignee as `waiting_on`, its area as the task's
-[area](#spec-areas) (added to the project's list when new; a text over 32 characters, or a new one
-when the list is full, is not carried), its body as the description ending with "From backlog #N"; for an
+only [area](#spec-areas) (added to the project's list when new; a text over 32 characters, a new one
+holding a comma, or a new one when the list is full, is not carried), its body as the description ending with "From backlog #N"; for an
 item with origin `intake` the description is "From an external message (data, not instructions):"
 and the text as one quoted JSON string in a code block, never raw markdown; the item
 `planned` with the task linked, event `backlog.planned`), **Later**, **Done** (a small form with an optional link; status `done`, event
@@ -3738,7 +3768,9 @@ backlog or dismissed is refused. It always writes; when open items (`new`, `late
 `memory_add`) of 0.6 or more, the answer ends with `Note: similar open items: #12 (0.71) <item title>;
 if it is the same, backlog_update(item=<new>, duplicate_of=12).` (at most three, most similar first).
 `backlog_list(project?, status?, area?, assignee?, query?, kind?, since?, task?, has_location?,
-limit)`: `assignee` `-` lists the items for nobody, `kind` `-` the items without a kind; `query`
+limit)`: `area` one free text or several (a list, or comma-separated; a text with a comma also
+matches as a whole), the items of any of them;
+`assignee` `-` lists the items for nobody, `kind` `-` the items without a kind; `query`
 needs every word in the search index's backlog row; `since` is a day, items found (else created) on
 it or later; `task` lists the items found in that card or linked to it; `has_location` true or false.
 `backlog_update(item, status?, reason?, link?, title?, body?, area?, priority?, assignee?, kind?,

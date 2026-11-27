@@ -1282,16 +1282,53 @@
   window.setInterval(refreshAges, 60000);
 })();
 
-// The session picker in the task dialog closes on a click outside it or on Escape.
+// The session picker in the task dialog and the board's area filter close on a click outside
+// them or on Escape.
+const OPEN_PICKERS = ".bind-picker[open], .area-filter[open]";
 document.addEventListener("click", (event) => {
-  for (const picker of document.querySelectorAll(".bind-picker[open]")) {
+  for (const picker of document.querySelectorAll(OPEN_PICKERS)) {
     if (!picker.contains(event.target)) picker.removeAttribute("open");
   }
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  for (const picker of document.querySelectorAll(".bind-picker[open]")) picker.removeAttribute("open");
+  for (const picker of document.querySelectorAll(OPEN_PICKERS)) picker.removeAttribute("open");
 });
+
+// The task form's area chips add or remove their name in the Areas field (names compare
+// without regard to case, as the server does); typing in the field keeps the chips in step.
+(() => {
+  const key = (name) => name.trim().replace(/\s+/g, " ").toLowerCase();
+  const names = (input) => input.value.split(",").map((n) => n.trim()).filter(Boolean);
+  const sync = (box) => {
+    const input = box.querySelector("input[name=area]");
+    if (!input) return;
+    const chosen = new Set(names(input).map(key));
+    for (const chip of box.querySelectorAll(".area-pick[data-area]")) {
+      chip.setAttribute("aria-pressed", chosen.has(key(chip.dataset.area)) ? "true" : "false");
+    }
+  };
+  document.addEventListener("click", (event) => {
+    const chip = event.target.closest && event.target.closest(".area-pick[data-area]");
+    if (!chip) return;
+    const box = chip.closest(".area-field");
+    const input = box && box.querySelector("input[name=area]");
+    if (!input) return;
+    const wanted = key(chip.dataset.area);
+    const now = names(input);
+    const kept = now.filter((n) => key(n) !== wanted);
+    input.value = (kept.length === now.length ? [...now, chip.dataset.area] : kept).join(", ");
+    // An input event marks the form as edited, so live refreshes keep the user's text.
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  document.addEventListener("input", (event) => {
+    const box = event.target.closest && event.target.closest(".area-field");
+    if (box) sync(box);
+  });
+  document.addEventListener("htmx:load", (event) => {
+    for (const box of event.target.querySelectorAll(".area-field")) sync(box);
+  });
+})();
 
 // A backlog item not seen yet carries "new"; once it has been on screen it is recorded as seen
 // (POST /backlog/seen) and the mark is gone from the next render.
