@@ -84,7 +84,7 @@ def test_the_subject_is_stems_of_area_sections_and_title() -> None:
     section = row("9.6a Payout provider", path)
     roots = frozenset({"Acme shop specification"})
     linked = [subj.LinkedSection("spec", "payouts", section, roots=roots)]
-    found = subj.card_subject("Payouts", "Fix the retry of a batch", linked)
+    found = subj.card_subject(["Payouts"], "Fix the retry of a batch", linked)
     assert {stem("payout"), stem("provider"), stem("payments"), stem("retry")} <= found
     assert stem("batch") in found
     # The document's own title names the document, not the card's subject.
@@ -100,14 +100,14 @@ def test_the_subject_is_stems_of_area_sections_and_title() -> None:
     top = subj.LinkedSection(
         "spec", "acme", row("Acme shop", "Acme shop"), roots=frozenset({"Acme shop"})
     )
-    assert subj.card_subject(None, "", [top]) == {stem("acme"), stem("shop")}
+    assert subj.card_subject([], "", [top]) == {stem("acme"), stem("shop")}
 
 
 def test_every_top_level_heading_is_left_out_of_the_path() -> None:
     roots = frozenset({"Acme shop guide", "Acme shop appendix"})
     under_second = row("Payout limits", "Acme shop appendix > Payout limits")
     linked = [subj.LinkedSection("spec", "payout-limits", under_second, roots=roots)]
-    assert subj.card_subject(None, "", linked) == {stem("payout"), stem("limits")}
+    assert subj.card_subject([], "", linked) == {stem("payout"), stem("limits")}
 
 
 def test_russian_words_stem_and_common_ones_are_left_out() -> None:
@@ -343,6 +343,20 @@ async def test_only_related_project_decisions_are_listed(svc: Service, spec_file
 
     _, listed = await svc.list_decisions("acme-shop")
     assert next(d for d in listed if d.id == by_area.id).area == "PAYOUTS"
+
+
+async def test_a_decision_and_an_item_of_the_second_area_are_listed(svc: Service) -> None:
+    await svc.upsert_project("acme-shop")
+    card = await svc.create_task("acme-shop", "Token refresh", area=["backend", "Mobile app"])
+    decided = await svc.add_decision("acme-shop", "Tokens live a week", area="mobile app")
+    item = await svc.add_backlog_item("acme-shop", "Refresh on resume", area="MOBILE APP")
+    elsewhere = await svc.add_decision("acme-shop", "Prices round down", area="billing")
+    text = await svc.task_context(card.key)
+    assert "Areas: backend, Mobile app" in text
+    assert f"#{decided.id} " in text and f"#{item.id} " in text
+    assert f"#{elsewhere.id} " not in text
+    assert subj.related_decision(decided, ["backend", "Mobile app"], set(), [])
+    assert not subj.related_decision(decided, [], set(), [])
 
 
 async def test_mcp_task_doc_link_and_decision_area(

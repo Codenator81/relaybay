@@ -23,10 +23,17 @@
       <details class="nav-project"{% if here %} open{% endif %}>
         <summary class="nav-item{% if here %} is-current{% endif %}" title="{{ p.slug }}">{{ p.name }}</summary>
         <ul class="nav-list nav-sub">
-          <li>{{ item("/p/" ~ p.slug, "Board", here and nav.active == "board" and not nav.filter_active) }}</li>
-          {% for f in nav.saved_filters.get(p.slug, []) %}
-          <li>{{ item("/p/" ~ p.slug ~ "?" ~ f.qs, f.name, here and nav.active == "board" and view_qs == f.qs) }}</li>
-          {% endfor %}
+          {%- set filters = nav.saved_filters.get(p.slug, []) %}
+          <li>{{ item("/p/" ~ p.slug, "Board", here and nav.active == "board" and not nav.filter_active) }}
+            {%- if filters %}
+            {#- The project's saved filters: a submenu of Board. #}
+            <ul class="nav-list nav-sub nav-filters" aria-label="Saved filters of {{ p.name }}">
+              {% for f in filters %}
+              <li>{{ item("/p/" ~ p.slug ~ "?" ~ f.qs, f.name, here and nav.active == "board" and view_qs == f.qs) }}</li>
+              {% endfor %}
+            </ul>
+            {%- endif %}
+          </li>
           {%- set new_backlog = nav.backlog_counts.get(p.slug, 0) if nav.backlog_counts else 0 %}
           <li>{% call item("/p/" ~ p.slug ~ "/backlog", "Backlog", here and nav.active == "backlog") %}{% if new_backlog %} <span class="col-count" title="{{ new_backlog }} new">{{ new_backlog }}</span>{% endif %}{% endcall %}</li>
           <li>{{ item("/p/" ~ p.slug ~ "/sessions", "Sessions", here and nav.active == "sessions") }}</li>

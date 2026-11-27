@@ -119,10 +119,12 @@ DESCRIPTION_HELP = "What to do and why, 1-5 sentences of markdown."
 CLEARS = " '-' or '' clears it."
 EMPTY = " '-' or '' leaves it empty."
 AREA_HELP = (
-    "What part of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot"
-    " lists the project's areas; case does not matter). A new name is added to the project's"
-    " areas and the answer says so."
+    "What parts of the project the task belongs to, by name, e.g. 'web shop' (project_snapshot"
+    " lists the project's areas; case does not matter): a name, several as a list or"
+    " comma-separated, the first is the card's first area; a list replaces the card's areas. A"
+    " new name is added to the project's areas and the answer says so."
 )
+AREA_CLEARS = " '-', '' or [] clears them."
 TRACKER_REF_HELP = "Issue key or number in the external tracker, e.g. 'ENG-12'."
 TRACKER_NAME_HELP = "Name of the external tracker, e.g. 'Linear'."
 TRACKER_URL_HELP = "Link to the issue (http:// or https:// only)."
@@ -231,6 +233,12 @@ BacklogLocation = Annotated[
 def cleared(value: str | None) -> str | None:
     """'-' means "empty": models cannot reliably send '' as a tool argument."""
     return "" if value is not None and value.strip() == "-" else value
+
+
+def cleared_areas(value: str | list[str] | None) -> str | list[str] | None:
+    """An area argument as the service takes it: a text as `cleared` (None when empty), a list
+    as given ([] clears)."""
+    return value if isinstance(value, list) else cleared(value) or None
 
 
 async def run[T](awaitable: Awaitable[T]) -> T:
@@ -757,7 +765,11 @@ def build_mcp(
         ] = None,
         include_done: Annotated[bool, Field(description="Include done tasks.")] = False,
         area: Annotated[
-            str | None, Field(description="Area name filter (case does not matter).")
+            str | list[str] | None,
+            Field(
+                description="Area name filter (case does not matter); several as a list or"
+                " comma-separated list the tasks carrying any of them."
+            ),
         ] = None,
     ) -> str:
         """List tasks, filtered by project, stage, who they wait on, the bound session or the
@@ -804,7 +816,9 @@ def build_mcp(
         tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + EMPTY)] = None,
         tracker_logged: Annotated[bool, Field(description=TRACKER_LOGGED_HELP)] = False,
         size: Annotated[str | None, Field(description=SIZE_HELP + EMPTY)] = None,
-        area: Annotated[str | None, Field(description=AREA_HELP + EMPTY)] = None,
+        area: Annotated[
+            str | list[str] | None, Field(description=AREA_HELP + " '-', '' or [] leaves none.")
+        ] = None,
         session: Session = None,
         session_title: SessionTitle = None,
         hook_session: HookSession = None,
@@ -844,7 +858,7 @@ def build_mcp(
                 tracker_url=cleared(tracker_url),
                 tracker_logged=tracker_logged,
                 size=cleared(size),
-                area=cleared(area),
+                area=cleared_areas(area),
                 session=session,
                 session_title=session_title,
                 hook_session=hook_session,
@@ -913,7 +927,7 @@ def build_mcp(
         tracker_url: Annotated[str | None, Field(description=TRACKER_URL_HELP + CLEARS)] = None,
         tracker_logged: Annotated[bool | None, Field(description=TRACKER_LOGGED_HELP)] = None,
         size: Annotated[str | None, Field(description=SIZE_HELP + CLEARS)] = None,
-        area: Annotated[str | None, Field(description=AREA_HELP + CLEARS)] = None,
+        area: Annotated[str | list[str] | None, Field(description=AREA_HELP + AREA_CLEARS)] = None,
         repos: Annotated[list[str] | None, Field(description=REPOS_HELP)] = None,
         prs: Annotated[list[str] | None, Field(description=PRS_HELP)] = None,
         blocked_by: Annotated[list[str] | None, Field(description=BLOCKED_BY_HELP)] = None,
@@ -964,7 +978,6 @@ def build_mcp(
             "tracker_name": tracker_name,
             "tracker_url": tracker_url,
             "size": size,
-            "area": area,
             "stage": stage,
             "deploy_notes": deploy_notes,
             "cancelled": cancelled,
@@ -972,6 +985,8 @@ def build_mcp(
         changes: dict[str, object] = {
             k: (cleared(v) or None) for k, v in given.items() if v is not None
         }
+        if area is not None:
+            changes["area"] = cleared_areas(area)
         if tracker_logged is not None:
             changes["tracker_logged"] = tracker_logged
         if inspect_only is not None:
@@ -2183,7 +2198,13 @@ def build_mcp(
             str | None,
             Field(description="new, later, planned, done or declined. Optional."),
         ] = None,
-        area: Annotated[str | None, Field(description="Area. Optional.")] = None,
+        area: Annotated[
+            str | list[str] | None,
+            Field(
+                description="Area; several as a list or comma-separated list the items of any"
+                " of them. Optional."
+            ),
+        ] = None,
         assignee: Annotated[
             str | None,
             Field(description="Who it is for; '-' lists the items for nobody. Optional."),

@@ -22,7 +22,14 @@ from typing import Any
 from relaybay.backup import backup_before_upgrade, record_version
 from relaybay.config import Settings
 from relaybay.domain import backlog
-from relaybay.domain.areas import AREA_NAME_MAX, AREAS_MAX, area_key
+from relaybay.domain.areas import (
+    AREA_NAME_MAX,
+    AREAS_MAX,
+    CARD_AREAS_MAX,
+    area_key,
+    clean_area_name,
+    split_area_text,
+)
 from relaybay.domain.backlog import BacklogItem
 from relaybay.domain.environments import DEFAULT_SECRET_RULES, SecretRules, find_secrets
 from relaybay.domain.errors import DomainError, NotFoundError
@@ -295,18 +302,26 @@ def task_hash(task: Task, ranked: bool = False) -> str:
     """The rank counts only for a registry that gives one, and the area only for a task that has
     one, so older imports keep their hashes."""
     rank = (str(task.rank),) if ranked else ()
-    area = (area_key(task.area),) if task.area else ()
+    area = (area_key(", ".join(task.area_names)),) if task.areas else ()
     return text_hash(*(str(getattr(task, name) or "") for name in TASK_FIELDS), *rank, *area)
 
 
 def _field_text(task: Task, name: str) -> str:
+    if name == "area":
+        return ", ".join(task.area_names)
     return str(task.rank) if name == "rank" else str(getattr(task, name) or "")
 
 
-def _same(task: Task, name: str, value: str) -> bool:
-    """A registry cell says what the task holds; areas match without regard to case."""
+def _cell(value: str | list[str]) -> str:
+    return ", ".join(value) if isinstance(value, list) else value
+
+
+def _same(task: Task, name: str, value: str | list[str]) -> bool:
+    """A registry cell says what the task holds; areas match without regard to case. A text
+    area is one name (or none), several come as a list (`_plan_area`)."""
     if name == "area":
-        return area_key(task.area or "") == area_key(value)
+        names = value if isinstance(value, list) else [n for n in [clean_area_name(value)] if n]
+        return [area_key(n) for n in names] == [area_key(n) for n in task.area_names]
     return _field_text(task, name) == value
 
 
@@ -331,7 +346,7 @@ class _Row:
     identity: str  # the ref, stable across imports and exports
     source: str
     line: int
-    values: dict[str, str]
+    values: dict[str, Any]  # text, except several areas: a list of names
     folder: SourceFile | None = None
     warning: str | None = None  # shown once the row passed the secret scan
     explicit_ref: bool = False  # the registry names its ref: never matched by title
@@ -685,14 +700,24 @@ class _Planner:
         if document:
             values["doc_path"] = document
         if row.area is not None:
+            # A free-text column of a hand-written registry: the row still comes in. A text no
+            # one name fits in is several, split on commas.
+            parts = [row.area]
             if len(row.area) > AREA_NAME_MAX:
-                # A free-text column of a hand-written registry: the row still comes in.
+                parts = [p for p in row.area.split(",") if p.strip()]
+            fits = [p for p in parts if len(p.strip()) <= AREA_NAME_MAX]
+            if len(parts) == 1 and not fits:
                 self.warnings.append(
                     f"{source}: the area is longer than {AREA_NAME_MAX} characters; the task"
                     " comes in without it"
                 )
-            else:
-                values["area"] = row.area
+            elif len(fits) < len(parts):
+                self.warnings.append(
+                    f"{source}: an area is longer than {AREA_NAME_MAX} characters; the task"
+                    " comes in without it"
+                )
+            if fits:
+                values["area"] = row.area if fits == parts else ",".join(fits)
         if row.rank is not None:
             try:
                 rank = int(row.rank)
@@ -716,8 +741,10 @@ class _Planner:
         return _Row(row.project, identity, REGISTRY, row.line, values, folder, warning, explicit)
 
     async def _plan_area(self, row: _Row) -> None:
-        """Count a row's new area against the project's limit, as the apply adds them in order:
-        past it the task comes in without the area, so the plan says what the apply does."""
+        """Split a row's area cell into names (a whole existing name stays one) and count the
+        new ones against the project's limit, as the apply adds them in order: past it the task
+        comes in without them, so the plan says what the apply does. One name stays the cell's
+        text, so the row hashes as it did; several become a list."""
         if "area" not in row.values:
             return
         keys = self.area_keys.get(row.project)
@@ -725,17 +752,35 @@ class _Planner:
             project = self.projects.get(row.project)
             found = (await self.service.project_areas(project.slug))[1] if project else []
             keys = self.area_keys[row.project] = {area_key(a.name) for a in found}
-        key = area_key(row.values["area"])
-        if key in keys:
-            return
-        if len(keys) >= AREAS_MAX:
-            del row.values["area"]
+        names = split_area_text(row.values["area"], keys)
+        kept: list[str] = []
+        for name in names:
+            key = area_key(name)
+            if key in {area_key(k) for k in kept}:
+                continue
+            if key in keys:
+                kept.append(name)
+            elif len(keys) >= AREAS_MAX:
+                self.warnings.append(
+                    f"{row.source}:{row.line}: {row.project} would have more than {AREAS_MAX}"
+                    f" areas; the task comes in without {name!r}"
+                )
+            else:
+                keys.add(key)
+                kept.append(name)
+        if len(kept) > CARD_AREAS_MAX:
             self.warnings.append(
-                f"{row.source}:{row.line}: {row.project} would have more than {AREAS_MAX} areas;"
-                " the task comes in without its area"
+                f"{row.source}:{row.line}: more than {CARD_AREAS_MAX} areas; the task comes in"
+                f" with the first {CARD_AREAS_MAX}"
             )
+            kept = kept[:CARD_AREAS_MAX]
+        if kept == names and len(names) == 1:
             return
-        keys.add(key)
+        if not kept:
+            if names:
+                del row.values["area"]
+            return
+        row.values["area"] = kept if len(kept) > 1 else kept[0]
 
     async def _task(self, row: _Row) -> None:
         name = f"{row.project}/{row.identity}"
@@ -774,7 +819,8 @@ class _Planner:
         )
         if task and action in ("update", "conflict"):
             shown = ", ".join(
-                f"{k}: {_first_line(_field_text(task, k) or '-', 40)} -> {_first_line(v, 40)}"
+                f"{k}: {_first_line(_field_text(task, k) or '-', 40)} ->"
+                f" {_first_line(_cell(v), 40)}"
                 for k, v in changes.items()
             )
             detail = f"{detail}; {shown}" if detail else shown

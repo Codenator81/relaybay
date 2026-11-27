@@ -36,7 +36,7 @@ from relaybay.domain import doc_index, guard, timelog
 from relaybay.domain import memory as mem
 from relaybay.domain.annotations import BODY_MAX as ANNOTATION_BODY_MAX
 from relaybay.domain.annotations import COLOURS
-from relaybay.domain.areas import AREA_COLORS
+from relaybay.domain.areas import AREA_COLORS, ProjectArea
 from relaybay.domain.backlog import ASSIGNEE_MAX, KINDS, NO_KIND, QUERY_MAX
 from relaybay.domain.code import REPO_KINDS, vscode_url
 from relaybay.domain.comments import COMMENT_MAX
@@ -471,17 +471,22 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         stage: str = "",
         waiting_on: str = "",
         session: str = "",
-        area: str = "",
+        area: list[str] | None = None,
     ) -> dict[str, Any]:
         """Columns of the board. Archived done tasks are never in the done column with `archived`
         set: they make the Archive column (`archive`, newest archived first). Without it they are
         left out unless a search `q` (matched against key and title) is given; a search covers
         the archive too and shows its hits in done. `stage`, `area`, `waiting_on` and `session`
-        narrow the tasks like `task_list` does, the Archive column too."""
+        narrow the tasks like `task_list` does, the Archive column too. `area` is one URL value
+        per name (any of them); a value is never split on commas."""
         project = await service.get_project(slug)
         waiting_on = waiting_on.strip()[:SEARCH_MAX]
         session = session.strip()[:SEARCH_MAX]
-        area = " ".join(area.split())[:SEARCH_MAX]
+        names: dict[str, str] = {}
+        for value in area or []:
+            if name := " ".join(value.split())[:SEARCH_MAX]:
+                names.setdefault(name.casefold(), name)
+        areas = list(names.values())
         filter_error = None
         try:
             stage = parse_stage(stage).value if stage.strip() else ""
@@ -490,14 +495,15 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
                 stage=stage or None,
                 waiting_on=waiting_on or None,
                 session=session or None,
-                area=area or None,
+                area=areas or None,
                 include_done=True,
                 by_rank=True,
             )
         except ValidationError as exc:
             # A hand-typed URL still shows the board, with the reason, not a bare 400.
             filter_error = f"Filter ignored: {exc}"
-            stage = waiting_on = session = area = ""
+            stage = waiting_on = session = ""
+            areas = []
             tasks = await service.list_tasks(project=project.slug, include_done=True, by_rank=True)
         q = q.strip()[:SEARCH_MAX]
         needle = q.casefold()
@@ -524,7 +530,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         archive = archive[:DONE_COLUMN_LIMIT]
         query = {
             "stage": stage,
-            "area": area,
+            "area": areas,
             "waiting_on": waiting_on,
             "session": session,
             "q": q,
@@ -533,7 +539,10 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         # A saved filter's URL is exactly filter_query: the same order, so the sidebar can match.
         view = {**filter_query, "archived": "1" if archived else ""}
         page_qs = {
-            n: urlencode({k: v for k, v in {**view, "page": str(n) if n > 1 else ""}.items() if v})
+            n: urlencode(
+                {k: v for k, v in {**view, "page": str(n) if n > 1 else ""}.items() if v},
+                doseq=True,
+            )
             for n in range(1, len(BOARD_PAGES) + 1)
         }
         shown = [t for column in by_stage.values() for t in column] + archive
@@ -551,21 +560,24 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "archived": archived,
             "q": q,
             "stage_filter": stage,
-            "area_filter": area,
+            "area_filter": areas,
             "areas": (await service.project_areas(project.slug))[1],
             "waiting_filter": waiting_on,
             "session_filter": session,
             "filter_query": filter_query,
             "filter_error": filter_error,
-            "view_qs": urlencode({k: v for k, v in view.items() if v}),
-            "archived_qs": urlencode({k: v for k, v in {**view, "archived": "1"}.items() if v}),
+            "view_qs": urlencode({k: v for k, v in view.items() if v}, doseq=True),
+            "archived_qs": urlencode(
+                {k: v for k, v in {**view, "archived": "1"}.items() if v}, doseq=True
+            ),
             "hidden_archived": hidden_archived,
             "done_more": done_more,
             "done_window_days": settings.done_window_days,
         }
 
-    async def area_names(slug: str) -> list[str]:
-        return [a.name for a in (await service.project_areas(slug))[1]]
+    async def form_areas(slug: str) -> list[ProjectArea]:
+        """The project's areas as the task form's chips."""
+        return (await service.project_areas(slug))[1]
 
     async def find_task(slug: str, key: str) -> Task:
         task = await service.get_task(key)
@@ -714,7 +726,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         stage: str = "",
         waiting_on: str = "",
         session: str = "",
-        area: str = "",
+        area: Annotated[list[str] | None, Query()] = None,
         page_number: Annotated[str, Query(alias="page")] = "",
         tab: str = "",
     ):
@@ -758,18 +770,18 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         waiting_on: Annotated[str, Form()] = "",
         session: Annotated[str, Form()] = "",
         q: Annotated[str, Form()] = "",
-        area: Annotated[str, Form()] = "",
+        area: Annotated[list[str] | None, Form()] = None,
         csrf: Annotated[str, Form(alias=CSRF_FIELD)] = "",
     ) -> Response:
         board_only(request, csrf)
-        given = {
+        given: dict[str, Any] = {
             "stage": stage,
-            "area": area,
+            "area": [a for a in area or [] if a.strip()],
             "waiting_on": waiting_on,
             "session": session,
             "q": q,
         }
-        back = f"/p/{slug}?{urlencode({k: v for k, v in given.items() if v})}"
+        back = f"/p/{slug}?{urlencode({k: v for k, v in given.items() if v}, doseq=True)}"
         try:
             saved = await service.save_filter(slug, name, **given, actor="owner")
         except NotFoundError:
@@ -1095,7 +1107,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         stage_filter: Annotated[str, Query(alias="stage")] = "",
         waiting_on: str = "",
         session: str = "",
-        area: str = "",
+        area: Annotated[list[str] | None, Query()] = None,
     ):
         context = await board_context(slug, True, q, stage_filter, waiting_on, session, area)
         return render(request, "_archive_column.html", **context)
@@ -1110,7 +1122,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
         stage_filter: Annotated[str, Query(alias="stage")] = "",
         waiting_on: str = "",
         session: str = "",
-        area: str = "",
+        area: Annotated[list[str] | None, Query()] = None,
     ):
         context = await board_context(slug, archived, q, stage_filter, waiting_on, session, area)
         return render(
@@ -1289,7 +1301,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             "detail": await card_detail(task.key),
             "values": {},
             "waiting_values": await service.waiting_on_values(),
-            "area_values": await area_names(task.project_slug),
+            "form_areas": await form_areas(task.project_slug),
             "tab": tab,
         }
 
@@ -1331,7 +1343,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             warnings=warnings or [],
             values=values or {},
             waiting_values=await service.waiting_on_values(),
-            area_values=await area_names(task.project_slug),
+            form_areas=await form_areas(task.project_slug),
         )
 
     @router.post("/p/{slug}/t/{key}", response_class=HTMLResponse)
@@ -3039,7 +3051,7 @@ def build_router(service: Service, settings: Settings, token: str) -> APIRouter:
             items = await service.list_backlog(
                 project=project,
                 status=status or None,
-                area=area or None,
+                area=[area] if area else None,  # one free text, never split
                 assignee=assignee or None,
                 kind=kind or None,
                 query=q or None,

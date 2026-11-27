@@ -11,7 +11,7 @@ import aiosqlite
 
 from relaybay.domain.annotations import Annotation, AnnotationReply, geometry_json
 from relaybay.domain.approvals import Approval
-from relaybay.domain.areas import ProjectArea
+from relaybay.domain.areas import CardArea, ProjectArea
 from relaybay.domain.backlog import NO_KIND, UNASSIGNED, BacklogItem
 from relaybay.domain.blockers import BlockLink
 from relaybay.domain.code import ProjectRepo, TaskPr, TaskRepo
@@ -93,10 +93,11 @@ SELECT t.*, p.slug AS project_slug,
            AS unread_replies,
        (SELECT ls.status FROM task_session b JOIN session ls ON ls.id = b.session_id
            WHERE b.task_id = t.id ORDER BY b.id DESC LIMIT 1) AS last_session_status,
-       pa.name AS area_name, pa.color AS area_color
+       (SELECT json_group_array(json_array(ta.position, pa.id, pa.name, pa.color))
+           FROM task_area ta JOIN project_area pa ON pa.id = ta.area_id
+           WHERE ta.task_id = t.id) AS areas_json
 FROM task t
 JOIN project p ON p.id = t.project_id
-LEFT JOIN project_area pa ON pa.id = t.area_id
 LEFT JOIN session s ON s.id = t.session_id
 """
 
@@ -117,7 +118,15 @@ def _project(row: aiosqlite.Row) -> Project:
     )
 
 
+def _card_areas(text: str | None) -> list[CardArea]:
+    # Sorted here: ORDER BY inside json_group_array needs SQLite 3.44.
+    rows = sorted(json.loads(text) if text else [])
+    return [CardArea(id=area_id, name=name, color=color) for _, area_id, name, color in rows]
+
+
 def _task(row: aiosqlite.Row) -> Task:
+    areas = _card_areas(row["areas_json"])
+    first = areas[0] if areas else None
     return Task(
         id=row["id"],
         project_id=row["project_id"],
@@ -173,9 +182,10 @@ def _task(row: aiosqlite.Row) -> Task:
         inspect_only=bool(row["inspect_only"]),
         cancelled=row["cancelled"],
         cancelled_at=row["cancelled_at"],
-        area_id=row["area_id"],
-        area=row["area_name"],
-        area_color=row["area_color"],
+        area_id=first.id if first else None,
+        area=first.name if first else None,
+        area_color=first.color if first else None,
+        areas=areas,
         open_questions=row["open_questions"],
         open_approvals=row["open_approvals"],
         unread_replies=row["unread_replies"],
@@ -386,7 +396,8 @@ def _area(row: aiosqlite.Row) -> ProjectArea:
 
 
 _AREA_SELECT = (
-    "SELECT a.*, (SELECT COUNT(*) FROM task t WHERE t.area_id = a.id) AS tasks FROM project_area a"
+    "SELECT a.*, (SELECT COUNT(*) FROM task_area ta WHERE ta.area_id = a.id) AS tasks"
+    " FROM project_area a"
 )
 
 
@@ -422,14 +433,24 @@ async def delete_area(conn: aiosqlite.Connection, area_id: int) -> None:
     await conn.execute("DELETE FROM project_area WHERE id = ?", (area_id,))
 
 
-async def move_area_tasks(
-    conn: aiosqlite.Connection, area_id: int, into_id: int | None, now: str
-) -> None:
-    """The area's tasks carry `into_id` (None: no area): a change of each task, so an open form
-    sees it as one."""
+async def set_task_areas(conn: aiosqlite.Connection, task_id: int, area_ids: list[int]) -> None:
+    """The card's areas in order; `task.area_id` is set equal to the first, so an older version
+    after a rollback still shows it."""
+    await conn.execute("DELETE FROM task_area WHERE task_id = ?", (task_id,))
+    await conn.executemany(
+        "INSERT INTO task_area (task_id, area_id, position) VALUES (?, ?, ?)",
+        [(task_id, area_id, n) for n, area_id in enumerate(area_ids)],
+    )
     await conn.execute(
-        "UPDATE task SET area_id = ?, version = version + 1, updated_at = ? WHERE area_id = ?",
-        (into_id, now, area_id),
+        "UPDATE task SET area_id = ? WHERE id = ?", (area_ids[0] if area_ids else None, task_id)
+    )
+
+
+async def bump_tasks(conn: aiosqlite.Connection, task_ids: list[int], now: str) -> None:
+    """A change of each task (its area list or an area's name), so an open form sees it as one."""
+    await conn.executemany(
+        "UPDATE task SET version = version + 1, updated_at = ? WHERE id = ?",
+        [(now, task_id) for task_id in task_ids],
     )
 
 
@@ -1072,7 +1093,8 @@ async def list_tasks(
         where.append("t.project_id = ?")
         params.append(project_id)
     if area_ids is not None:
-        where.append(f"t.area_id IN ({', '.join('?' for _ in area_ids) or 'NULL'})")
+        marks = ", ".join("?" for _ in area_ids) or "NULL"
+        where.append(f"t.id IN (SELECT task_id FROM task_area WHERE area_id IN ({marks}))")
         params.extend(area_ids)
     if stages:
         where.append(f"t.stage IN ({', '.join('?' for _ in stages)})")
@@ -2926,8 +2948,15 @@ def _saved_filter(row: aiosqlite.Row) -> SavedFilter:
         session=row["session"],
         q=row["q"],
         created_at=row["created_at"],
-        area=row["area"],
+        areas=_filter_areas(row["areas"], row["area"]),
     )
+
+
+def _filter_areas(text: str | None, first: str | None) -> tuple[str, ...]:
+    # `areas` is empty on a row an older version wrote after a rollback; `area` still holds one.
+    if text:
+        return tuple(json.loads(text))
+    return (first,) if first else ()
 
 
 _SAVED_FILTER_SELECT = (
@@ -2958,16 +2987,22 @@ async def saved_filter_named(
 
 
 async def insert_saved_filter(
-    conn: aiosqlite.Connection, project_id: int, name: str, query: dict[str, str], now: str
+    conn: aiosqlite.Connection,
+    project_id: int,
+    name: str,
+    query: dict[str, str],
+    areas: list[str],
+    now: str,
 ) -> int:
     cur = await conn.execute(
-        "INSERT INTO saved_filter (project_id, name, stage, area, waiting_on, session, q,"
-        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO saved_filter (project_id, name, stage, area, areas, waiting_on, session, q,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             project_id,
             name,
             query.get("stage"),
-            query.get("area"),
+            areas[0] if areas else None,
+            json.dumps(areas) if areas else None,
             query.get("waiting_on"),
             query.get("session"),
             query.get("q"),
@@ -2978,10 +3013,14 @@ async def insert_saved_filter(
     return cur.lastrowid
 
 
-async def set_saved_filter_area(
-    conn: aiosqlite.Connection, filter_id: int, area: str | None
+async def set_saved_filter_areas(
+    conn: aiosqlite.Connection, filter_id: int, areas: list[str]
 ) -> None:
-    await conn.execute("UPDATE saved_filter SET area = ? WHERE id = ?", (area, filter_id))
+    """`area` mirrors the first name, for an older version after a rollback."""
+    await conn.execute(
+        "UPDATE saved_filter SET area = ?, areas = ? WHERE id = ?",
+        (areas[0] if areas else None, json.dumps(areas) if areas else None, filter_id),
+    )
 
 
 async def delete_saved_filter(conn: aiosqlite.Connection, filter_id: int) -> None:
@@ -4700,7 +4739,7 @@ async def list_backlog(
     *,
     project_id: int | None = None,
     status: str | None = None,
-    area: str | None = None,
+    area: list[str] | None = None,
     assignee: str | None = None,
     origin_task_id: int | None = None,
     task_id: int | None = None,
@@ -4713,8 +4752,8 @@ async def list_backlog(
 ) -> list[BacklogItem]:
     """`new` first, then later, planned and done, declined; within a status the highest priority
     first, then the newest. `assignee` "-" means items that are for nobody, `kind` "-" items
-    without a kind. `since` is a day: items found (or else created) on it or later.
-    `either_task_id`: items found in that task or planned as it."""
+    without a kind, `area` items with any of the names. `since` is a day: items found (or else
+    created) on it or later. `either_task_id`: items found in that task or planned as it."""
     where: list[str] = []
     params: list[Any] = []
     for column, value in (
@@ -4743,8 +4782,8 @@ async def list_backlog(
         where.append(f"b.id IN ({', '.join('?' for _ in ids) or 'NULL'})")
         params.extend(ids)
     if area is not None:
-        where.append("b.area = ? COLLATE NOCASE")
-        params.append(area)
+        where.append(f"b.area COLLATE NOCASE IN ({', '.join('?' for _ in area) or 'NULL'})")
+        params.extend(area)
     if assignee == UNASSIGNED:
         where.append("b.assignee IS NULL")
     elif assignee is not None:

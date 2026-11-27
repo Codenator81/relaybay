@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-27
+
+### Added
+
+- A card carries several areas, in order (at most 8; the first is its first area). `task_create(area=…)` and `task_update(area=…)` take a list of names or a comma-separated text as well as one name; `[]`, `-`, `""` or null clears them, and `task_update(fields={"areas": …})` is the same field. A card with several shows one chip per area, `task_get`, `task_context`, the digests and `task_list` say `Areas: web, docs`; one area reads as before. `task.updated` carries `changes.areas` (the list) next to `changes.area` (the first name). A new area name cannot hold a comma.
+- The board's area filter is a dropdown of checkboxes: `?area=web&area=api` shows the cards carrying any of them, and saved filters keep the list. `task_list(area=…)` and `backlog_list(area=…)` take several names (a list or comma-separated) the same way.
+- The task form's **Areas** field (comma-separated) has a chip per project area that adds or removes the name.
+- Markdown import and export carry several areas in the `area` column, comma-separated.
+- Migration 0065 (additive): `task_area` holds each card's areas, filled from the one area every card had; `saved_filter.areas` from the filter's area. A rollback to 0.18 still shows each card's first area; area changes 0.18 makes are not seen after moving forward again.
+
+### Changed
+
+- In the sidebar a project's saved filters are a submenu of Board, indented under it with thin tree guide lines.
+- Renaming, merging or deleting an area changes only that area on each card: a merge keeps the target once on a card that had both, a delete leaves the card's other areas.
+
 ## [0.18.1] - 2026-11-25
 
 ### Added
@@ -1244,7 +1259,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.19.0
 [0.18.1]: https://github.com/Codenator81/relaybay/releases/tag/v0.18.1
 [0.18.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.18.0
 [0.17.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.17.0

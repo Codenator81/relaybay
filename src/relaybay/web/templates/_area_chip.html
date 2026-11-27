@@ -1,2 +1,2 @@
-{#- The task's area as a coloured chip; `t` is the task. -#}
-{%- if t.area %}<span class="area-chip area-{{ t.area_color }}" title="Area: {{ t.area }}">{{ t.area }}</span>{% endif -%}
+{#- The task's areas as coloured chips, in order; `t` is the task. -#}
+{%- for a in t.areas %}<span class="area-chip area-{{ a.color }}" title="Area: {{ a.name }}">{{ a.name }}</span>{% endfor -%}

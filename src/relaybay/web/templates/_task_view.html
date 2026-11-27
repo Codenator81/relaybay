@@ -189,7 +189,7 @@
   <details class="panel fold" data-fold="details">
     <summary><h2>Task details</h2></summary>
     <dl class="fields">
-      {% if t.area %}<dt>Area</dt><dd>{% include "_area_chip.html" %}</dd>{% endif %}
+      {% if t.areas %}<dt>{{ "Areas" if t.areas|length > 1 else "Area" }}</dt><dd>{% include "_area_chip.html" %}</dd>{% endif %}
       <dt>Stage</dt><dd><span class="stage-pill stage-{{ t.stage.value }}">{{ label(t.stage.value) }}</span>{% if t.stage_note %} <span class="muted">{{ t.stage_note }}</span>{% endif %}</dd>
       {% if t.branch %}<dt>Branch</dt><dd><code class="branch">{{ t.branch }}</code></dd>{% endif %}
       {% if detail.code.board_shown and not closed %}<dt>Code</dt><dd>{% with c = detail.code, branch = t.branch %}{% include "_code_row.html" %}{% endwith %}</dd>{% endif %}

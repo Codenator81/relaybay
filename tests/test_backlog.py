@@ -1079,3 +1079,23 @@ def test_new_marks_an_item_until_it_was_on_screen(board: TestClient, token: str)
         "seen": 0
     }
     assert run_in_app(board, service.backlog_item, item.id).status == "new"
+
+
+async def test_list_backlog_takes_several_areas_and_to_plan_drops_a_comma_area(
+    svc: Service,
+) -> None:
+    await svc.upsert_project("acme-shop")
+    cart = await svc.add_backlog_item("acme-shop", "Coupon", area="cart")
+    api = await svc.add_backlog_item("acme-shop", "Tokens", area="api")
+    await svc.add_backlog_item("acme-shop", "Docs", area="docs")
+    both = {cart.id, api.id}
+    assert {b.id for b in await svc.list_backlog(area=["CART", "api"])} == both
+    assert {b.id for b in await svc.list_backlog(area="cart, API")} == both
+    assert {b.id for b in await svc.list_backlog(area="cart")} == {cart.id}
+    whole = await svc.add_backlog_item("acme-shop", "Whole", area="checkout, cart")
+    found = {b.id for b in await svc.list_backlog(area="checkout, cart")}
+    assert found == {whole.id, cart.id}  # the whole text matches, and so does each part
+    comma = await svc.add_backlog_item("acme-shop", "Both", area="web, api")
+    planned = await svc.decide_backlog(comma.id, "plan", actor="owner")
+    task = await svc.get_task(planned.task_key or "")
+    assert task.areas == [] and task.area is None  # a new name cannot hold a comma

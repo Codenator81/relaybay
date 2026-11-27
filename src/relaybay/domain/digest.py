@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from relaybay.domain.areas import area_field
 from relaybay.domain.change_doc import change_doc_slug
 from relaybay.domain.digest_limits import PULSE_CHARS_MAX, PULSE_LINES_MAX
 from relaybay.domain.doc_index import IndexedSection, lookup, size_label, whole_size
@@ -299,10 +300,12 @@ def _task_ref(task: Task, title_max: int = 80) -> str:
 
 
 def _task_line(task: Task) -> str:
-    """`- [dev] acme-shop-2 Checkout page — area: web shop · next: ... · waiting on: owner`."""
+    """`- [dev] acme-shop-2 Checkout page — area: web shop · next: ... · waiting on: owner`;
+    several areas read `areas: web shop, api`."""
     bits = []
-    if task.area:
-        bits.append(f"area: {task.area}")
+    area_label, area_text = area_field(task.area_names)
+    if area_text:
+        bits.append(f"{area_label}: {area_text}")
     if task.next_step:
         stale = " (stale)" if task.next_step_stale else ""
         bits.append(f"next: {_clip(task.next_step, 120)}{stale}")
@@ -817,8 +820,9 @@ def _task_head(
     cancelled = task.cancelled
     if cancelled and task.cancelled_at:
         cancelled = f"{cancelled} ({task.cancelled_at[:10]})"
+    area_label, area_text = area_field(task.area_names)
     for label, value in (
-        ("Area", task.area),
+        (area_label.capitalize(), area_text),
         ("Next step", f"{task.next_step}{stale}" if task.next_step else None),
         ("Waiting on", task.waiting_on),
         ("Note", task.stage_note),

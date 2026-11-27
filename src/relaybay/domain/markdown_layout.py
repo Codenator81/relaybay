@@ -481,7 +481,8 @@ def render_stage(task: Task) -> str:
 
 def render_registry(rows: list[tuple[str, str, Task]]) -> str:
     """(project slug, ref, task) rows as the task registry. The area column is there only when a
-    task has an area, so a board without areas exports the file it did before them."""
+    task has an area, so a board without areas exports the file it did before them; several
+    areas are one cell, comma-separated."""
     areas = any(task.area for _, _, task in rows)
     names = ["project", "ref", "task", *(["area"] if areas else []), "stage", "waiting on"]
     names += ["next step", "document", "rank"]
@@ -496,7 +497,7 @@ def render_registry(rows: list[tuple[str, str, Task]]) -> str:
             project,
             ref,
             task.title,
-            *([task.area] if areas else []),
+            *([", ".join(task.area_names)] if areas else []),
             render_stage(task),
             task.waiting_on,
             task.next_step,

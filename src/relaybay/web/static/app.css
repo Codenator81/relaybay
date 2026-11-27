@@ -178,6 +178,17 @@ body.has-nav { display: grid; grid-template-columns: var(--nav-width) minmax(0, 
 .nav-project[open] > summary::before { transform: rotate(45deg); }
 .nav-sub { padding-left: 16px; margin-top: 2px; }
 .nav-sub .nav-item { padding: 4px 10px; font-size: 13px; }
+.nav-filters { margin-top: 2px; }
+.nav-filters .nav-item { overflow-wrap: anywhere; }
+/* Tree guides from Board to its saved filters: a line down under Board's text, a tick to each
+   item, the last one ending as a corner. Drawn outside the links: click targets stay as they are. */
+.nav-filters > li { position: relative; }
+.nav-filters { --nav-guide: color-mix(in srgb, var(--muted) 45%, transparent); }
+.nav-filters > li::before,
+.nav-filters > li::after { content: ""; position: absolute; left: -6px; pointer-events: none; }
+.nav-filters > li::before { top: -2px; bottom: 0; border-left: 1px solid var(--nav-guide); }
+.nav-filters > li:last-child::before { bottom: 50%; }
+.nav-filters > li::after { top: 50%; width: 6px; border-top: 1px solid var(--nav-guide); }
 .nav-empty { margin: 0 10px; font-size: 13px; }
 .nav-badge {
   margin-left: auto;
@@ -835,8 +846,9 @@ a.badge.tracker:hover { text-decoration: underline; }
   white-space: nowrap;
   vertical-align: middle;
 }
-.card-area { margin-bottom: 2px; }
+.card-area { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 2px; }
 .card-area .area-chip { max-width: 100%; }
+.dialog-area { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .area-blue { --area-text: #1c4fb8; --area-bg: #e3ecff; }
 .area-green { --area-text: #1f7a33; --area-bg: #e3f6e7; }
 .area-amber { --area-text: #8a5300; --area-bg: #fff4e0; }
@@ -859,7 +871,27 @@ a.badge.tracker:hover { text-decoration: underline; }
 .area-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .area-row form { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; }
 .area-row input[type="text"] { width: 14em; max-width: 100%; }
-.board-filters .area-filter { max-width: 12em; }
+/* The board's area filter: a dropdown of checkboxes, its summary styled as the other filters. */
+.area-filter { position: relative; flex: 0 1 auto; min-width: 0; }
+.area-filter > summary {
+  display: block;
+  max-width: 16em;
+  list-style: none;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.area-filter > summary::-webkit-details-marker { display: none; }
+.area-filter > summary::after { content: " \25BE"; color: var(--muted); }
+.area-menu { min-width: 200px; gap: 2px; }
+.area-option { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 14px; cursor: pointer; }
+.area-option:hover { background: var(--surface-2); border-radius: 6px; }
+/* The task form: the project's areas as chips that add or remove a name in the field. */
+.area-field { display: grid; gap: 6px; }
+.area-picks { display: flex; flex-wrap: wrap; gap: 4px; }
+.area-pick { border: 1px solid transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; opacity: 0.6; }
+.area-pick[aria-pressed="true"] { border-color: currentColor; opacity: 1; }
 
 /* --- edit form ----------------------------------------------------------- */
 

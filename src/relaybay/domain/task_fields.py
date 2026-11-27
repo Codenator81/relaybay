@@ -3,7 +3,7 @@ resource and the "Editable fields" line of `task_get`, so a new field reaches al
 
 from dataclasses import dataclass
 
-from relaybay.domain.areas import AREA_NAME_MAX, AREAS_MAX
+from relaybay.domain.areas import AREA_NAME_MAX, AREAS_MAX, CARD_AREAS_MAX
 from relaybay.domain.stages import STAGES
 
 TITLE_MAX = 200
@@ -25,9 +25,12 @@ class TaskField:
 
     @property
     def type(self) -> str:
-        return {"bool": "boolean", "integer": "integer", "list": "list of strings"}.get(
-            self.kind, "string"
-        )
+        return {
+            "bool": "boolean",
+            "integer": "integer",
+            "list": "list of strings",
+            "area": "string or list of strings",
+        }.get(self.kind, "string")
 
 
 TASK_FIELDS: tuple[TaskField, ...] = (
@@ -86,11 +89,12 @@ TASK_FIELDS: tuple[TaskField, ...] = (
     TaskField(
         "area",
         "area",
-        "What part of the project the task belongs to, by name (e.g. 'web shop'), matched"
-        f" without regard to case. A new name is added to the project's areas (at most"
-        f" {AREAS_MAX}); project_snapshot lists them.",
-        TEXT_CLEARS,
-        AREA_NAME_MAX,
+        "What parts of the project the task belongs to, by name (e.g. 'web shop'), matched"
+        " without regard to case: one name, several as a list or comma-separated, in order"
+        f" (the first is the card's first area), at most {CARD_AREAS_MAX} a card and"
+        f" {AREA_NAME_MAX} characters a name. A list replaces the card's areas. A new name is"
+        f" added to the project's areas (at most {AREAS_MAX}); project_snapshot lists them.",
+        "'-', '', [] or null clears them",
     ),
     TaskField(
         "tracker_ref",
@@ -154,6 +158,8 @@ TASK_FIELDS: tuple[TaskField, ...] = (
 )
 
 BY_NAME: dict[str, TaskField] = {f.name: f for f in TASK_FIELDS}
+# `fields={"areas": ...}` is the same field as `area`.
+AREAS_ALIAS = "areas"
 FIELD_NAMES: tuple[str, ...] = tuple(BY_NAME)
 
 # Not columns of the task: links to the project's repositories, to pull requests and to the cards
