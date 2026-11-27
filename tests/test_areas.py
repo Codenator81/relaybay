@@ -268,7 +268,11 @@ def test_board_form_chip_filter_and_saved_filter(board: TestClient, token: str) 
 
     form = board.get(f"/p/acme-shop/t/{api.key}/form").text
     assert 'name="area"' in form and '<datalist id="area-values' not in form
-    assert 'class="area-chip area-blue area-pick" data-area="web shop" aria-pressed="false"' in form
+    assert (
+        'class="area-chip area-blue area-pick" data-area="web shop" data-color="blue" '
+        'aria-pressed="false"' in form
+    )
+    assert '<input type="hidden" name="area" value="">' in form and 'class="area-new"' in form
     saved = board.post(
         f"/p/acme-shop/t/{api.key}",
         data={**csrf, "version": str(api.version), "area": "API"},
@@ -773,8 +777,8 @@ def test_board_filters_by_several_areas_and_saves_them(board: TestClient, token:
     assert "<dt>Areas</dt>" in board.get(f"/p/acme-shop/t/{web.key}/view").text
     form = board.get(f"/p/acme-shop/t/{web.key}/form").text
     assert 'value="web, api"' in form
-    assert 'data-area="api" aria-pressed="true"' in form
-    assert 'data-area="docs" aria-pressed="false"' in form
+    assert 'data-area="api" data-color="green" aria-pressed="true" hidden>' in form
+    assert 'data-area="docs" data-color="amber" aria-pressed="false">+ docs</button>' in form
     saved = board.post(
         f"/p/acme-shop/t/{docs.key}",
         data={**csrf, "version": str(docs.version), "area": "docs, API"},
@@ -782,13 +786,24 @@ def test_board_filters_by_several_areas_and_saves_them(board: TestClient, token:
     )
     assert saved.status_code == 200 and "Saved." in saved.text
     assert run_in_app(board, service.get_task, docs.key).area_names == ["docs", "api"]
+    form = board.get(f"/p/acme-shop/t/{docs.key}/form").text
+    assert (
+        'data-area="docs">docs<button type="button" class="area-x" aria-label="Remove docs">'
+        in form
+    )
+    assert '<input type="hidden" name="area" value="docs, api">' in form
+    assert (
+        'data-area="api" data-color=' in form
+        and 'aria-pressed="true" hidden>+ api</button>' in form
+    )
 
     page = board.get("/p/acme-shop", params=[("area", "web"), ("area", "docs")]).text
     assert f'id="card-{web.key}"' in page and f'id="card-{docs.key}"' in page
     assert f'id="card-{other.key}"' not in page
     assert '<input type="checkbox" name="area" value="web" checked>' in page
     assert '<input type="checkbox" name="area" value="api">' in page
-    assert ">web, docs</summary>" in page
+    assert 'class="area-chip area-blue area-tag" data-area="web">web<span class="area-x"' in page
+    assert 'aria-label="Remove docs from the filter">&times;</span></span></summary>' in page
     assert 'col/plan?area=web&amp;area=docs"' in page
     hidden = (
         '<input type="hidden" name="area" value="web">'

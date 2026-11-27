@@ -5,33 +5,60 @@
 {% block content %}
 <main class="board-page" id="live" hx-ext="sse" sse-connect="/events"
       data-last-event-id="{{ last_event_id }}" data-project="{{ project.slug }}">
+  {#- One row: search, a Filters button that opens a panel with the other filters and Save filter
+      (a badge counts the filters in use), the chosen areas as chips with a cross, Compact and the pager. #}
+  {%- set area_colors = {} %}{% for a in areas %}{% set _ = area_colors.update({a.name|lower: a.color}) %}{% endfor %}
+  {%- set filters_on = [stage_filter, area_filter, waiting_filter, session_filter, archived]|select|list|length %}
   <form class="board-tools" method="get" action="/p/{{ project.slug }}" role="search">
     <input class="board-search" type="search" name="q" value="{{ q }}" maxlength="200"
            placeholder="Search key or title" aria-label="Search tasks by key or title">
-    <select class="board-filter" name="stage" aria-label="Stage">
-      <option value="">Any stage</option>
-      {% for s in stages %}<option value="{{ s }}"{% if s == stage_filter %} selected{% endif %}>{{ label(s) }}</option>{% endfor %}
-    </select>
-    {% if areas or area_filter %}
-    {#- Any of the checked areas; the URL carries `area` once per name. Closes on a click outside (app.js). #}
-    {%- set chosen = area_filter|map("lower")|list %}
-    {%- set known = areas|map(attribute="name")|map("lower")|list %}
-    <details class="area-filter">
-      <summary class="board-filter" aria-label="Area">{{ area_filter|join(", ") if area_filter else "Any area" }}</summary>
-      <div class="bind-menu area-menu" role="group" aria-label="Areas">
-        {% for a in areas %}<label class="area-option"><input type="checkbox" name="area" value="{{ a.name }}"{% if a.name|lower in chosen %} checked{% endif %}> <span class="area-chip area-{{ a.color }}">{{ a.name }}</span></label>{% endfor %}
-        {% for name in area_filter if name|lower not in known %}<label class="area-option"><input type="checkbox" name="area" value="{{ name }}" checked> {{ name }} (no such area)</label>{% endfor %}
+    <details class="filters-panel">
+      <summary class="btn filters-toggle" aria-label="Filters{% if filters_on %}, {{ filters_on }} in use{% endif %}">Filters{% if filters_on %} <span class="filters-count">{{ filters_on }}</span>{% endif %}</summary>
+      <div class="filters-menu">
+        <select class="board-filter" name="stage" aria-label="Stage">
+          <option value="">Any stage</option>
+          {% for s in stages %}<option value="{{ s }}"{% if s == stage_filter %} selected{% endif %}>{{ label(s) }}</option>{% endfor %}
+        </select>
+        {% if areas or area_filter %}
+        {#- Any of the checked areas; the URL carries `area` once per name. Closes on a click outside (app.js). #}
+        {%- set chosen = area_filter|map("lower")|list %}
+        {%- set known = areas|map(attribute="name")|map("lower")|list %}
+        <details class="area-filter">
+          <summary class="board-filter" aria-label="Area">
+            {%- for name in area_filter %}<span class="area-chip area-{{ area_colors.get(name|lower, 'slate') }} area-tag" data-area="{{ name }}">{{ name }}<span class="area-x" data-drop-area="{{ name }}" role="button" tabindex="0" aria-label="Remove {{ name }} from the filter">&times;</span></span>{% else %}Any area{% endfor -%}
+          </summary>
+          <div class="bind-menu area-menu" role="group" aria-label="Areas">
+            {% for a in areas %}<label class="area-option"><input type="checkbox" name="area" value="{{ a.name }}"{% if a.name|lower in chosen %} checked{% endif %}> <span class="area-chip area-{{ a.color }}">{{ a.name }}</span></label>{% endfor %}
+            {% for name in area_filter if name|lower not in known %}<label class="area-option"><input type="checkbox" name="area" value="{{ name }}" checked> {{ name }} (no such area)</label>{% endfor %}
+          </div>
+        </details>
+        {% endif %}
+        <input class="board-filter" type="search" name="waiting_on" value="{{ waiting_filter }}" maxlength="200"
+               placeholder="Waiting on" aria-label="Waiting on" list="waiting-values">
+        <datalist id="waiting-values">{% for w in waiting_values %}<option value="{{ w }}"></option>{% endfor %}</datalist>
+        <input class="board-filter" type="search" name="session" value="{{ session_filter }}" maxlength="200"
+               placeholder="Session" aria-label="Session (name, alias or desktop id)">
+        <label class="board-archived"><input type="checkbox" name="archived" value="1"{% if archived %} checked{% endif %}> Show archived</label>
+        <span class="filters-actions">
+          <button type="submit" class="btn primary">Filter</button>
+          {% if view_qs %}<a class="action" href="/p/{{ project.slug }}">Clear</a>{% endif %}
+        </span>
+        {#- Save filter and the saved filters live in their own forms after this one (nested forms are not
+            allowed); these controls reach them through the `form` attribute. #}
+        {% if filter_query %}
+        <span class="filters-save">
+          <input class="board-filter" type="text" name="name" form="save-filter" maxlength="60" required placeholder="Name this filter" aria-label="Name of the saved filter">
+          <button type="submit" class="btn" form="save-filter">Save filter</button>
+        </span>
+        {% endif %}
+        {% if saved_filters %}
+        <div class="saved-filters" aria-label="Saved filters">
+          {% for f in saved_filters %}<span class="saved-filter"><a class="chip" href="/p/{{ project.slug }}?{{ f.qs }}">{{ f.name }}</a><button type="submit" form="delete-filter-{{ f.id }}" class="saved-filter-delete" aria-label="Delete the saved filter {{ f.name }}" title="Delete this saved filter">×</button></span>{% endfor %}
+        </div>
+        {% endif %}
       </div>
     </details>
-    {% endif %}
-    <input class="board-filter" type="search" name="waiting_on" value="{{ waiting_filter }}" maxlength="200"
-           placeholder="Waiting on" aria-label="Waiting on" list="waiting-values">
-    <datalist id="waiting-values">{% for w in waiting_values %}<option value="{{ w }}"></option>{% endfor %}</datalist>
-    <input class="board-filter" type="search" name="session" value="{{ session_filter }}" maxlength="200"
-           placeholder="Session" aria-label="Session (name, alias or desktop id)">
-    <label class="board-archived"><input type="checkbox" name="archived" value="1"{% if archived %} checked{% endif %}> Show archived</label>
-    <button type="submit" class="btn">Filter</button>
-    {% if view_qs %}<a class="action" href="/p/{{ project.slug }}">Clear</a>{% endif %}
+    {%- for name in area_filter %}<span class="area-chip area-{{ area_colors.get(name|lower, 'slate') }} area-tag board-area-tag" data-area="{{ name }}">{{ name }}<span class="area-x" data-drop-area="{{ name }}" role="button" tabindex="0" aria-label="Remove {{ name }} from the filter">&times;</span></span>{% endfor %}
     <button type="button" class="btn board-compact" aria-pressed="false" title="Show only key, tracker, title and who the task waits on">Compact</button>
     {#- Pages of the board on wide screens; ←/→ switch them too (app.js). #}
     <span class="board-pager">
@@ -44,34 +71,25 @@
     </span>
   </form>
   {% if project.archived_at %}<p class="muted">This project is in the archive (not in the sidebar, the Inbox or the digests) · <a href="/p/{{ project.slug }}/settings#archive">Back from the archive</a></p>{% endif %}
-  {% if message %}<p class="form-ok" role="status">{{ message }}</p>{% endif %}
+  {#- A notice of a done action shows for a few seconds over the board (a toast), not as a row. #}
+  {% if message %}<p class="form-ok board-toast" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
   {#- What a drag or a card's menu answered: rule warnings of a stage move, or why nothing moved. #}
   <div class="board-flash" id="board-flash" hidden>
     <div class="board-flash-lines" id="board-flash-lines"></div>
     <button type="button" class="board-flash-close" id="board-flash-close" aria-label="Dismiss this notice" title="Dismiss">×</button>
   </div>
-  {% if saved_filters or filter_query %}
-  <div class="saved-filters">
-    {% for f in saved_filters %}
-    <span class="saved-filter">
-      <a class="chip" href="/p/{{ project.slug }}?{{ f.qs }}">{{ f.name }}</a>
-      <form method="post" action="/p/{{ project.slug }}/filters/{{ f.id }}/delete" data-confirm="Delete the saved filter {{ f.name }}?">
-        <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-        <button type="submit" class="saved-filter-delete" aria-label="Delete the saved filter {{ f.name }}" title="Delete this saved filter">×</button>
-      </form>
-    </span>
-    {% endfor %}
-    {% if filter_query %}
-    <form class="saved-filter-new" method="post" action="/p/{{ project.slug }}/filters">
-      <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
-      {% for name, value in filter_query.items() %}{% for v in ([value] if value is string else value) %}<input type="hidden" name="{{ name }}" value="{{ v }}">{% endfor %}{% endfor %}
-      <input class="board-filter" type="text" name="name" maxlength="60" required placeholder="Name this filter" aria-label="Name of the saved filter">
-      <button type="submit" class="btn">Save filter</button>
-    </form>
-    {% endif %}
-  </div>
+  {% if filter_query %}
+  <form id="save-filter" class="saved-filter-new" method="post" action="/p/{{ project.slug }}/filters" hidden>
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+    {% for name, value in filter_query.items() %}{% for v in ([value] if value is string else value) %}<input type="hidden" name="{{ name }}" value="{{ v }}">{% endfor %}{% endfor %}
+  </form>
   {% endif %}
+  {% for f in saved_filters %}
+  <form id="delete-filter-{{ f.id }}" method="post" action="/p/{{ project.slug }}/filters/{{ f.id }}/delete" data-confirm="Delete the saved filter {{ f.name }}?" hidden>
+    <input type="hidden" name="{{ csrf_field }}" value="{{ csrf_token }}">
+  </form>
+  {% endfor %}
   {#- Radios drive the phone layout (one stage at a time) without JavaScript. #}
   {% for stage in stages %}
   <input class="stage-radio" type="radio" name="stage-tab" id="tab-{{ stage }}" value="{{ stage }}"{% if stage == active_stage %} checked{% endif %}>

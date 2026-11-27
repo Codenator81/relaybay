@@ -270,6 +270,12 @@ Not planned: project managers and a Managers page (the owner, 2026-11-16).
 | A card carries several areas; the board filter, saved filters, `task_list` and `backlog_list` match any of them; MCP `area` takes a name or a list | done | [0029](design/0029-several-areas-per-card.md) |
 | Saved filters as a submenu of Board in the sidebar | done | — |
 
+## 0.19.1 — area chips (released 2026-11-27)
+
+| Item | Status | Design |
+|---|---|---|
+| Chosen areas as coloured chips with a remove cross in the board filter and the task form | done | [0029](design/0029-several-areas-per-card.md) |
+
 ## 1.0
 
 Stable MCP contract, complete documentation, a migration path from earlier versions, tested on three

@@ -308,6 +308,17 @@ def test_saved_filter_create_list_apply_delete_on_the_board(board: TestClient, t
     assert "Saved the filter Mine &lt;b&gt;." in saved.text
     assert str(saved.url) == f"{BASE}/p/acme-shop?waiting_on=owner"
     assert "Mine <b>" not in saved.text
+    # One header row: the filters behind the Filters button (one in use), the notice as a toast,
+    # Save filter and the saved filter's delete button reaching their forms by the form attribute.
+    assert '<span class="filters-count">1</span>' in saved.text
+    assert 'class="form-ok board-toast" role="status">Saved the filter Mine' in saved.text
+    assert 'form="save-filter">Save filter</button>' in saved.text
+    assert '<form id="save-filter" class="saved-filter-new"' in saved.text
+    assert 'form="delete-filter-1" class="saved-filter-delete"' in saved.text
+    assert '<form id="delete-filter-1" method="post" action="/p/acme-shop/filters/1/delete"' in (
+        saved.text
+    )
+    assert '<span class="filters-count">' not in plain
     # In the sidebar under the project, marked current; the plain Board item is not.
     assert re.search(
         r'<a class="nav-item is-active" href="/p/acme-shop\?waiting_on=owner" aria-current="page">',

@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-27
+
+### Changed
+
+- The board's area filter shows each chosen area as a chip in its colour with a cross that drops it from the filter at once; the dropdown of checkboxes still adds areas.
+- The board header is one row: the stage, area, waiting-on, session and archived filters, Filter, Clear and Save filter sit in a panel behind a **Filters** button with a badge of how many are in use; the chosen areas stay visible next to it as chips. The saved filters move from the row above the columns into the panel (and the sidebar), and "Saved the filter …" is a notice that fades after a few seconds.
+- The task form's Areas field is a tag input: the chosen areas as coloured chips with a cross, a box that adds a name on Enter or a comma (Backspace on an empty box removes the last), and the project's other areas as chips that add themselves.
+
 ## [0.19.0] - 2026-11-27
 
 ### Added
@@ -1259,7 +1267,8 @@ image), with Claude Code hooks for live session status, working rules served to 
 - A long session title no longer widens a card past its column: the session badge shrinks with an
   ellipsis and shows the full title on hover.
 
-[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/Codenator81/relaybay/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/Codenator81/relaybay/releases/tag/v0.19.1
 [0.19.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.19.0
 [0.18.1]: https://github.com/Codenator81/relaybay/releases/tag/v0.18.1
 [0.18.0]: https://github.com/Codenator81/relaybay/releases/tag/v0.18.0

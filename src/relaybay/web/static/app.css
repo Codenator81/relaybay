@@ -412,7 +412,7 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
   margin: 0 0 14px;
 }
 .board-search {
-  flex: 0 1 280px;
+  flex: 0 1 240px;
   min-width: 0;
   padding: 5px 8px;
   font: inherit;
@@ -436,12 +436,78 @@ h1 { font-size: 22px; margin: 0 0 16px; letter-spacing: -0.01em; }
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+/* The board header is one row: the filters sit in a panel behind the Filters button. */
+.filters-panel { position: relative; flex: 0 0 auto; }
+.filters-toggle { display: inline-flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; user-select: none; }
+.filters-toggle::-webkit-details-marker { display: none; }
+.filters-toggle::after { content: "\25BE"; color: var(--muted); }
+.filters-panel[open] > .filters-toggle { border-color: var(--accent); }
+.filters-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--badge-text);
+  background: var(--badge-bg);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.filters-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 8px;
+  width: 300px;
+  max-width: calc(100vw - 28px);
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.filters-menu .board-filter, .filters-menu .area-filter, .filters-menu .area-filter > summary { width: 100%; max-width: none; flex: none; }
+.filters-actions, .filters-save { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.filters-save { padding-top: 8px; border-top: 1px solid var(--border); }
+.filters-save .board-filter { flex: 1 1 140px; width: auto; }
+.board-area-tag { flex: 0 0 auto; }
+@media (max-width: 760px) {
+  /* On a phone the panel spans the toolbar instead of hanging off the button. */
+  .board-tools { position: relative; }
+  .filters-panel { position: static; }
+  .filters-menu { left: 14px; right: 14px; width: auto; max-width: none; }
+}
+/* A notice of a done action (e.g. a saved filter) floats over the board and fades out. */
+.board-toast {
+  position: fixed;
+  z-index: 60;
+  left: 50%;
+  bottom: 24px;
+  max-width: min(480px, calc(100vw - 32px));
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transform: translateX(-50%);
+  animation: board-toast 4.5s ease forwards;
+  pointer-events: none;
+}
+@keyframes board-toast {
+  0%, 85% { opacity: 1; visibility: visible; }
+  100% { opacity: 0; visibility: hidden; }
+}
+@media (prefers-reduced-motion: reduce) { .board-toast { animation-timing-function: steps(1, end); } }
 .saved-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 14px;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 .saved-filter { display: inline-flex; align-items: center; gap: 2px; }
 .saved-filter form { display: inline; }
@@ -874,29 +940,63 @@ a.badge.tracker:hover { text-decoration: underline; }
 /* The board's area filter: a dropdown of checkboxes, its summary styled as the other filters. */
 .area-filter { position: relative; flex: 0 1 auto; min-width: 0; }
 .area-filter > summary {
-  display: block;
-  max-width: 16em;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 28em;
   list-style: none;
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .area-filter > summary::-webkit-details-marker { display: none; }
 .area-filter > summary::after { content: " \25BE"; color: var(--muted); }
 .area-menu { min-width: 200px; gap: 2px; }
 .area-option { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 14px; cursor: pointer; }
 .area-option:hover { background: var(--surface-2); border-radius: 6px; }
-/* The task form: the project's areas as chips that add or remove a name in the field. */
-.area-field { display: grid; gap: 6px; }
+/* A chosen area: its chip with a remove cross (the board filter and the task form). */
+.area-tag { display: inline-flex; align-items: center; gap: 2px; padding-right: 3px; }
+.area-x {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.area-x:hover, .area-x:focus-visible { opacity: 1; background: color-mix(in srgb, currentColor 18%, transparent); }
+/* The task form: a tag input, then the project's other areas as chips that add themselves. */
+.area-field { display: grid; gap: 6px; align-content: start; }
+.area-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: text;
+}
+.area-tags:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
+.area-new { flex: 1 1 6em; min-width: 6em; border: 0; outline: 0; padding: 2px; background: transparent; color: inherit; font: inherit; }
 .area-picks { display: flex; flex-wrap: wrap; gap: 4px; }
-.area-pick { border: 1px solid transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; opacity: 0.6; }
-.area-pick[aria-pressed="true"] { border-color: currentColor; opacity: 1; }
+.area-pick { border: 1px dashed currentColor; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; opacity: 0.75; }
+.area-pick:hover { opacity: 1; }
+.area-pick[hidden] { display: none; }
 
 /* --- edit form ----------------------------------------------------------- */
 
 .task-form { display: grid; gap: 10px; }
-.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; align-items: start; }
 .field { display: grid; gap: 3px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .field input, .field select, .field textarea {
   width: 100%;
