@@ -19,7 +19,7 @@ sessions report through MCP tools and Claude Code hooks, the owner reads, answer
 accepts on the board, and relaybay starts no agent ([design
 0025](design/0025-board-with-the-desktop.md)).
 
-Version covered: `0.19.0`. Anchors of the form `#spec-…` are stable and may be
+Version covered: `0.19.1`. Anchors of the form `#spec-…` are stable and may be
 linked from code, issues and other documents.
 
 Contents:
@@ -964,17 +964,19 @@ dialog.
 **Board filters and saved filters.** The board takes `stage`, `area` (an area's name, ignoring
 case, once per name: `?area=web&area=api` shows the tasks carrying any of them; a value is never
 split on commas; the dropdown "Any area" next to the stage filter has a checkbox per project area,
-names the chosen ones in its summary, keeps an unknown name as a checked "(no such area)" box, closes
+shows the chosen ones in its summary as chips in their colours, each with a cross that drops it from the filter and applies it at once, keeps an unknown name as a checked "(no such area)" box, closes
 on a click outside or Esc, and shows only when the project has areas or one is asked for),
 `waiting_on` (ignoring case), `session` (name, alias or desktop id) and `q` (key or title)
 in its URL, together with `archived` and `page`;
-the form above the columns sets them, and `Clear` drops them. A value that cannot be used (an unknown
+the board header sets them in one row: the search box, a **Filters** button whose badge counts the filters in use (stage, area, waiting on, session, archived) and which opens a panel with those filters, **Filter** and `Clear` (which drops them), the chosen areas as coloured chips with a cross next to the button, **Compact** and the pager; the panel closes on a click outside or Esc, and ticking areas waits for **Filter** while "Show archived" applies at once. A value that cannot be used (an unknown
 stage, a malformed desktop id) shows the unfiltered board with the reason in an error line. A stage filter leaves the other columns
 empty and opens the page and phone tab of that stage. Live column refetches carry the same query, so
 the board keeps showing only what matches; while a filter is on, a changed task refetches its column
-rather than its card, so it leaves or enters the view at once. With a filter on, the board offers
-**Save filter**: a name (at most 60 characters, unique per project) stored in `saved_filter`. Saved
-filters are chips above the columns, each with a delete button (a browser confirmation), and a
+rather than its card, so it leaves or enters the view at once. With a filter on, the panel offers
+**Save filter**: a name (at most 60 characters, unique per project) stored in `saved_filter`; the
+answer "Saved the filter …" shows for a few seconds as a notice over the board (as every board notice
+of a done action does), not as a row. Saved filters are listed at the foot of the panel, each with a
+delete button (a browser confirmation), and are a
 submenu of Board in the sidebar on every page (indented under Board with thin tree guide lines,
 before Backlog; no submenu for a project without saved filters); opening one is an ordinary board
 URL, so it can be shared on the same machine. A saved filter stores its areas as a list
@@ -1119,9 +1121,10 @@ block. Each change is a
 rename or recolour also sends `task.updated` for each card that carries the area, so open boards
 refresh their chips.
 
-The task form has an **Areas** field next to Branch (names comma-separated) with a chip per project
-area under it: a click adds or removes that name in the field, and a pressed chip marks a name the
-field holds. The task dialog shows the chips after the key in its head, and the task view (dialog
+The task form has an **Areas** field next to Branch: a tag input with the chosen areas as chips in
+their colours, each with a cross that removes it, and a box that adds a name on Enter or a comma (a
+new name is added to the project on save; Backspace in the empty box removes the last chip); under it
+a chip per other project area adds that area. The form sends the names comma-separated in `area`. The task dialog shows the chips after the key in its head, and the task view (dialog
 and task page) an **Area** row (**Areas** with several). Inbox card rows show the chips after the
 key; the quick switcher shows the first area.
 

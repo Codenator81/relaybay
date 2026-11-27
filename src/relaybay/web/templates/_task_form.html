@@ -42,14 +42,22 @@
       <textarea name="next_step" rows="2">{{ values.get('next_step', t.next_step or '') }}</textarea>
     </label>
     <div class="field-row">
+      {#- A tag input: the chosen areas as coloured chips with a remove cross, a text box that adds a
+          name on Enter or a comma (a new one is added to the project), and the project's other areas
+          as chips that add themselves. The hidden `area` field carries the names, comma-separated (app.js). #}
+      {%- set area_value = values.get('area', t.area_names|join(', ')) %}
+      {%- set area_colors = {} %}{% for a in form_areas %}{% set _ = area_colors.update({a.name|lower: a.color}) %}{% endfor %}
+      {%- set chosen_areas = area_value.split(',')|map('trim')|select|list %}
+      {%- set chosen_keys = chosen_areas|map('lower')|list %}
       <div class="area-field">
-        <label class="field"><span>Areas <span class="muted">· comma-separated; a new name is added to the project</span></span>
-          <input name="area" maxlength="270" value="{{ values.get('area', t.area_names|join(', ')) }}"
-                 placeholder="e.g. web shop, api" autocomplete="off">
-        </label>
-        {#- The project's areas: a click adds or removes the name in the field above (app.js). #}
+        <span class="field"><span>Areas</span></span>
+        <div class="area-tags">
+          {%- for name in chosen_areas %}<span class="area-chip area-{{ area_colors.get(name|lower, 'slate') }} area-tag" data-area="{{ name }}">{{ name }}<button type="button" class="area-x" aria-label="Remove {{ name }}">&times;</button></span>{% endfor -%}
+          <input class="area-new" maxlength="32" placeholder="Add area" aria-label="Add an area" autocomplete="off">
+        </div>
+        <input type="hidden" name="area" value="{{ area_value }}">
         {% if form_areas %}<div class="area-picks">
-          {%- for a in form_areas %}<button type="button" class="area-chip area-{{ a.color }} area-pick" data-area="{{ a.name }}" aria-pressed="{{ 'true' if a.name|lower in t.area_names|map('lower')|list else 'false' }}">{{ a.name }}</button>{% endfor -%}
+          {%- for a in form_areas %}<button type="button" class="area-chip area-{{ a.color }} area-pick" data-area="{{ a.name }}" data-color="{{ a.color }}" aria-pressed="{{ 'true' if a.name|lower in chosen_keys else 'false' }}"{% if a.name|lower in chosen_keys %} hidden{% endif %}>+ {{ a.name }}</button>{% endfor -%}
         </div>{% endif %}
       </div>
       <label class="field"><span>Branch</span>

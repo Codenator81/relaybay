@@ -397,6 +397,8 @@ everything else in one command ([troubleshooting](https://codenator81.github.io/
   icon inside the branch chip, `llms-full.txt` for AI tools, a CHANGELOG check in CI.
 - **0.19.0, several areas per card** — a card carries a list of areas, the board, saved filters
   and MCP filter by any of them; saved filters sit under Board in the sidebar.
+- **0.19.1, a one-row board header** — the filters behind one Filters button, chosen areas as
+  coloured chips with a cross, the card form's areas as a tag input.
 - **1.0** — a stable MCP contract, complete documentation, a migration path, tested on three
   operating systems.
 

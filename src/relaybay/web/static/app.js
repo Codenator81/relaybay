@@ -1031,7 +1031,8 @@
 
   // "Show archived" applies at once; the search applies on Enter or the Filter button.
   document.addEventListener("change", function (event) {
-    if (event.target.matches && event.target.matches(".board-tools input[type=checkbox]")) {
+    // Area boxes wait for the Filter button, so several can be ticked in one go.
+    if (event.target.matches && event.target.matches(".board-tools input[type=checkbox]:not([name=area])")) {
       event.target.form.requestSubmit();
     }
   });
@@ -1284,7 +1285,7 @@
 
 // The session picker in the task dialog and the board's area filter close on a click outside
 // them or on Escape.
-const OPEN_PICKERS = ".bind-picker[open], .area-filter[open]";
+const OPEN_PICKERS = ".bind-picker[open], .area-filter[open], .filters-panel[open]";
 document.addEventListener("click", (event) => {
   for (const picker of document.querySelectorAll(OPEN_PICKERS)) {
     if (!picker.contains(event.target)) picker.removeAttribute("open");
@@ -1295,38 +1296,119 @@ document.addEventListener("keydown", (event) => {
   for (const picker of document.querySelectorAll(OPEN_PICKERS)) picker.removeAttribute("open");
 });
 
-// The task form's area chips add or remove their name in the Areas field (names compare
-// without regard to case, as the server does); typing in the field keeps the chips in step.
+// Areas as a tag input (names compare without regard to case, as the server does).
+// The task form: chips with a cross for the chosen areas, a text box that adds a name on Enter or
+// a comma, and the project's other areas as chips that add themselves; the hidden `area` field
+// carries the names (plus a name still being typed). The board's area filter: a cross on a chosen
+// area drops it from the filter and applies the filter at once.
 (() => {
   const key = (name) => name.trim().replace(/\s+/g, " ").toLowerCase();
-  const names = (input) => input.value.split(",").map((n) => n.trim()).filter(Boolean);
-  const sync = (box) => {
-    const input = box.querySelector("input[name=area]");
-    if (!input) return;
-    const chosen = new Set(names(input).map(key));
-    for (const chip of box.querySelectorAll(".area-pick[data-area]")) {
-      chip.setAttribute("aria-pressed", chosen.has(key(chip.dataset.area)) ? "true" : "false");
+  const tags = (box) => [...box.querySelectorAll(".area-tags .area-tag")].map((t) => t.dataset.area);
+  const colorOf = (box, name) => {
+    const pick = [...box.querySelectorAll(".area-pick[data-area]")].find((p) => key(p.dataset.area) === key(name));
+    return (pick && pick.dataset.color) || "slate";
+  };
+  const store = (box) => {
+    const hidden = box.querySelector("input[name=area]");
+    const typed = box.querySelector(".area-new");
+    if (!hidden) return;
+    const pending = typed ? typed.value.split(",").map((n) => n.trim()).filter(Boolean) : [];
+    hidden.value = [...tags(box), ...pending].join(", ");
+    const chosen = new Set(tags(box).map(key));
+    for (const pick of box.querySelectorAll(".area-pick[data-area]")) {
+      const on = chosen.has(key(pick.dataset.area));
+      pick.hidden = on;
+      pick.setAttribute("aria-pressed", on ? "true" : "false");
     }
+    // An input event marks the form as edited, so live refreshes keep the user's choice.
+    hidden.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const add = (box, name) => {
+    const clean = name.trim().replace(/\s+/g, " ");
+    if (!clean || tags(box).some((n) => key(n) === key(clean))) return;
+    const chip = document.createElement("span");
+    chip.className = `area-chip area-${colorOf(box, clean)} area-tag`;
+    chip.dataset.area = clean;
+    chip.textContent = clean;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "area-x";
+    x.setAttribute("aria-label", `Remove ${clean}`);
+    x.textContent = "×";
+    chip.append(x);
+    box.querySelector(".area-tags").insertBefore(chip, box.querySelector(".area-new"));
+  };
+  const commit = (box) => {
+    const typed = box.querySelector(".area-new");
+    if (!typed || !typed.value.trim()) return;
+    for (const name of typed.value.split(",")) add(box, name);
+    typed.value = "";
+    store(box);
   };
   document.addEventListener("click", (event) => {
-    const chip = event.target.closest && event.target.closest(".area-pick[data-area]");
-    if (!chip) return;
-    const box = chip.closest(".area-field");
-    const input = box && box.querySelector("input[name=area]");
-    if (!input) return;
-    const wanted = key(chip.dataset.area);
-    const now = names(input);
-    const kept = now.filter((n) => key(n) !== wanted);
-    input.value = (kept.length === now.length ? [...now, chip.dataset.area] : kept).join(", ");
-    // An input event marks the form as edited, so live refreshes keep the user's text.
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const target = event.target.closest ? event.target : null;
+    if (!target) return;
+    const filterX = target.closest("[data-drop-area]");
+    if (filterX) {
+      event.preventDefault(); // not a toggle of a dropdown
+      const wanted = key(filterX.dataset.dropArea);
+      const form = filterX.closest("form");
+      if (!form) return;
+      for (const box of form.querySelectorAll("input[type=checkbox][name=area]")) {
+        if (key(box.value) === wanted) box.checked = false;
+      }
+      form.requestSubmit ? form.requestSubmit() : form.submit();
+      return;
+    }
+    const box = target.closest(".area-field");
+    if (!box) return;
+    const x = target.closest(".area-x");
+    if (x) {
+      x.closest(".area-tag").remove();
+      store(box);
+      box.querySelector(".area-new")?.focus();
+      return;
+    }
+    const pick = target.closest(".area-pick[data-area]");
+    if (pick) {
+      add(box, pick.dataset.area);
+      store(box);
+      return;
+    }
+    if (target.closest(".area-tags")) box.querySelector(".area-new")?.focus();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!event.target.closest) return;
+    const filterX = event.target.closest("[data-drop-area]");
+    if (filterX && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      filterX.click();
+      return;
+    }
+    const typed = event.target.closest(".area-new");
+    if (!typed) return;
+    const box = typed.closest(".area-field");
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault(); // Enter would submit the task form
+      commit(box);
+    } else if (event.key === "Backspace" && !typed.value) {
+      const last = box.querySelector(".area-tags .area-tag:last-of-type");
+      if (last) {
+        last.remove();
+        store(box);
+      }
+    }
   });
   document.addEventListener("input", (event) => {
-    const box = event.target.closest && event.target.closest(".area-field");
-    if (box) sync(box);
+    const typed = event.target.closest && event.target.closest(".area-new");
+    if (!typed) return;
+    // A comma typed or pasted ends a name, also where no keydown came first.
+    if (typed.value.includes(",")) commit(typed.closest(".area-field"));
+    else store(typed.closest(".area-field"));
   });
-  document.addEventListener("htmx:load", (event) => {
-    for (const box of event.target.querySelectorAll(".area-field")) sync(box);
+  document.addEventListener("focusout", (event) => {
+    const typed = event.target.closest && event.target.closest(".area-new");
+    if (typed) commit(typed.closest(".area-field"));
   });
 })();
 
